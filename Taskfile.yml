@@ -33,8 +33,17 @@ tasks:
     cmds:
       - cargo fmt --all
       - alejandra .
+  up:
+    desc: Start the testing database
+    aliases: [db:up, db:start]
+    cmd: source ./tests/test.sh up
+  down:
+    desc: Stop the testing database
+    aliases: [db:down, db:stop]
+    cmd: source ./tests/test.sh down
   test:
     desc: Run all tests
+    deps: [db:start]
     aliases: [t]
     cmd: cargo nextest run
   doc:

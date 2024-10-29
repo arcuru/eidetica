@@ -72,6 +72,12 @@
           # Clean the src to only have the Rust-relevant files
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+          ];
+          buildInputs = with pkgs; [
+            openssl
+          ];
         };
 
         # Build only the cargo dependencies so we can cache them all when running in CI
@@ -150,6 +156,9 @@
         devShells.default = pkgs.mkShell {
           name = "eidetica";
           shellHook = ''
+            # It is tempting to initialize the test db, however because it requires explicit teardown we should not
+            # ./tests/test.sh up
+
             echo ---------------------
             task --list
             echo ---------------------
@@ -165,6 +174,7 @@
           packages = with pkgs; [
             act # For running Github Actions locally
             go-task # Taskfile
+            docker # required for testing
 
             # Nix code analysis
             deadnix
@@ -181,6 +191,9 @@
 
           # Many tools read this to find the sources for rust stdlib
           RUST_SRC_PATH = "${rustSrc}/lib/rustlib/src/rust/library";
+
+          # Pointer to the testing Database
+          DATABASE_URL = "postgresql://postgres:postgres@localhost:55555/postgres";
         };
       };
     };
