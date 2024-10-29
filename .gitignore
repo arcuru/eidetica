@@ -1,0 +1,5 @@
+# Rust Build directory
+/target
+
+# Nix Build directory
+/result

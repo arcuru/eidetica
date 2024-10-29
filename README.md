@@ -1,0 +1,5 @@
+# Eidetica
+
+Remember Everything.
+
+unimplemented!();
