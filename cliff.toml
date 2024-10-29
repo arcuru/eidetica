@@ -51,11 +51,12 @@ commit_preprocessors = [
 commit_parsers = [
   { message = "^feat", group = "Features" },
   { message = "^fix", group = "Bug Fixes" },
-  { message = "^doc", group = "Documentation" },
+  { message = "^doc|docs", group = "Documentation" },
   { message = "^perf", group = "Performance" },
   { message = "^refactor", group = "Refactor" },
   { message = "^style", group = "Styling" },
   { message = "^test", group = "Testing" },
+  { message = "^build", group = "Builds" },
   { message = "^chore\\(release\\): prepare for", skip = true },
   { message = "^chore\\(deps\\)", skip = true },
   { message = "^chore\\(pr\\)", skip = true },

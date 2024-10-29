@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [unreleased]
+
+### Documentation
+
+- Install and use git-cliff
+
 ## [0.1.0] - 2024-10-29
 
 ### Miscellaneous Tasks
