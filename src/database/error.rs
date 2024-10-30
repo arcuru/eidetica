@@ -13,8 +13,9 @@ pub enum Error {
 
     /// Invalid data format
     InvalidData,
-    // Permission denied
-    //PermissionDenied,
+
+    /// Entry already exists
+    AlreadyExists,
 }
 
 impl fmt::Display for Error {
@@ -23,6 +24,7 @@ impl fmt::Display for Error {
             Error::Database(e) => write!(f, "Database error: {}", e),
             Error::NotFound => write!(f, "Entry not found"),
             Error::InvalidData => write!(f, "Invalid data format"),
+            Error::AlreadyExists => write!(f, "Entry already exists"),
         }
     }
 }
@@ -33,6 +35,7 @@ impl StdError for Error {
             Error::Database(e) => Some(e.as_ref()),
             Error::NotFound => None,
             Error::InvalidData => None,
+            Error::AlreadyExists => None,
         }
     }
 }

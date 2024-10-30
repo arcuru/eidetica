@@ -313,7 +313,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data_hash: generate_hash("entry".as_bytes())
+            data_hash: generate_hash("entry".as_bytes()),
         };
 
         assert!(table.create_entry(entry).await.is_ok());
@@ -333,7 +333,7 @@ mod tests {
                 "type": "test",
                 "name": "parent_entry"
             }),
-            data_hash: generate_hash("parent_entry".as_bytes())
+            data_hash: generate_hash("parent_entry".as_bytes()),
         };
 
         // Insert the parent entry
@@ -349,7 +349,7 @@ mod tests {
                 "type": "test",
                 "name": "child_entry"
             }),
-            data_hash: generate_hash("child_entry".as_bytes())
+            data_hash: generate_hash("child_entry".as_bytes()),
         };
 
         // Insert the child entry
@@ -374,7 +374,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data_hash: generate_hash("original_entry".as_bytes())
+            data_hash: generate_hash("original_entry".as_bytes()),
         };
 
         // Insert the entry
@@ -411,7 +411,7 @@ mod tests {
             archived: false,
             parent_id: None,
             metadata: serde_json::json!({"test": "data"}),
-            data_hash: generate_hash("entry".as_bytes())
+            data_hash: generate_hash("entry".as_bytes()),
         };
 
         // Insert the entry
@@ -445,7 +445,7 @@ mod tests {
             archived: false,
             parent_id: None,
             metadata: serde_json::json!({"version": 1}),
-            data_hash: generate_hash("entry1".as_bytes())
+            data_hash: generate_hash("entry1".as_bytes()),
         };
 
         let entry2 = MetadataEntry {
@@ -454,7 +454,7 @@ mod tests {
             archived: false,
             parent_id: Some(entry1.id),
             metadata: serde_json::json!({"version": 2}),
-            data_hash: generate_hash("entry2".as_bytes())
+            data_hash: generate_hash("entry2".as_bytes()),
         };
 
         let entry3 = MetadataEntry {
@@ -463,7 +463,7 @@ mod tests {
             archived: false,
             parent_id: Some(entry2.id),
             metadata: serde_json::json!({"version": 3}),
-            data_hash: generate_hash("entry3".as_bytes())
+            data_hash: generate_hash("entry3".as_bytes()),
         };
 
         // Insert entries
@@ -508,7 +508,7 @@ mod tests {
                 "type": "parent",
                 "name": "parent_entry"
             }),
-            data_hash: generate_hash("parent_entry".as_bytes())
+            data_hash: generate_hash("parent_entry".as_bytes()),
         };
 
         // Create child entries
@@ -521,7 +521,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry1"
             }),
-            data_hash: generate_hash("child_entry1".as_bytes())
+            data_hash: generate_hash("child_entry1".as_bytes()),
         };
 
         let child_entry2 = MetadataEntry {
@@ -533,7 +533,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry2"
             }),
-            data_hash: generate_hash("child_entry2".as_bytes())
+            data_hash: generate_hash("child_entry2".as_bytes()),
         };
 
         // Insert the entries
