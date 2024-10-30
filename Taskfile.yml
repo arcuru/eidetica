@@ -13,7 +13,7 @@ tasks:
     desc: Run CI locally
     aliases: [ci]
     deps:
-      [audit, doc, fmt, test, nix:check, nix:build, clippy, pre-commit, build]
+      [audit, doc, fmt, test, nix:check, nix:build, clippy, build]
   nix:check:
     desc: Run Nix CI checks
     cmds:
@@ -25,9 +25,6 @@ tasks:
   clippy:
     desc: Run clippy
     cmd: cargo clippy
-  pre-commit:
-    desc: Run pre-commit
-    cmd: pre-commit run --all-files --show-diff-on-failure
   fmt:
     desc: Run all formatters
     cmds:
