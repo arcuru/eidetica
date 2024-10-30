@@ -1,4 +1,5 @@
-use serde_json::Value;
+use crate::database::error::Error;
+use crate::database::schema::MetadataEntry;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -6,28 +7,6 @@ use uuid::Uuid;
 ///
 /// This is the interface and implementation of the Metadata Table in the database.
 /// We run on postgresql, and store the blob data as described in the design doc.
-
-/// Represents a single entry in the metadata table
-#[derive(Debug, Clone)]
-pub struct MetadataEntry {
-    /// UUIDv7 that serves as unique identifier across all devices
-    pub id: Uuid,
-
-    /// UUID identifying the device that created this entry
-    pub device_id: Uuid,
-
-    /// Whether this entry has been superseded by a newer version
-    pub archived: bool,
-
-    /// Optional reference to parent entry's UUID
-    pub parent_id: Option<Uuid>,
-
-    /// JSON metadata about the referenced data
-    pub metadata: Value,
-
-    /// The actual data or reference to it
-    pub data: Option<Vec<u8>>,
-}
 
 /// Interface for interacting with the metadata table
 #[allow(dead_code, async_fn_in_trait)]
@@ -298,22 +277,6 @@ impl MetadataTable for PostgresMetadataTable {
 
         Ok(entries)
     }
-}
-
-/// Error types that can occur during database operations
-#[derive(Debug)]
-pub enum Error {
-    /// Database connection/query errors
-    #[allow(dead_code)]
-    Database(Box<dyn std::error::Error>),
-
-    /// Entry not found
-    NotFound,
-
-    /// Invalid data format
-    InvalidData,
-    // Permission denied
-    //PermissionDenied,
 }
 
 #[cfg(test)]
