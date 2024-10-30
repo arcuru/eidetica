@@ -69,14 +69,14 @@ This is the table form of how devices will communicate.
 
 Each entry in the table contains the following data
 
-| Name | Type | Description |
-|-----------|-----------|-----------|
-| ID     | UUIDv7     | Increasing id that is guaranteed* unique from any device     |
-| Device ID | UUID??   | Unique Device ID where this data was inserted |
-| Archived bit | bool  | Indicating if this data has been replaced by a newer row. This bit can be modified only in the direction of archival. |
-| Parent | UUIDv7 | Optional, Reference to the UUID of the parent of this change |
-| Metadata     | json     | Metadata about the referenced data     |
-| Data  | blob | The data actually being stored, or a reference to it. |
+| Name         | Type   | Description                                                                                                           |
+| ------------ | ------ | --------------------------------------------------------------------------------------------------------------------- |
+| ID           | UUIDv7 | Increasing id that is guaranteed\* unique from any device                                                             |
+| Device ID    | UUID?? | Unique Device ID where this data was inserted                                                                         |
+| Archived bit | bool   | Indicating if this data has been replaced by a newer row. This bit can be modified only in the direction of archival. |
+| Parent       | UUIDv7 | Optional, Reference to the UUID of the parent of this change                                                          |
+| Metadata     | json   | Metadata about the referenced data                                                                                    |
+| Data         | blob   | The data actually being stored, or a reference to it.                                                                 |
 
 The ID is generated at the time of insertion, and _should_ be unique across any device.
 The likelihood of a collision is ridiculously small.
@@ -99,9 +99,13 @@ This design makes it an expensive operation to find the children of a node, but 
 ### Data Storage
 
 Fundamentally, the Metadata info is shared across all devices, but the actual data is not.
+So you can separately sync the Metadata/history without syncing the data.
+You can also delete/move/archive data without modifying the metadata.
 
-Data itself can be stored either inline, in a separate table, locally on the filesystem, remotely on some other device, or remotely in an S3 compatible cache.
-The data may not necessarily be present.
+The data is stored by its hash in a separate table.
+It can be either stored inline in that table, in a local file, in S3, or as a reference to another Eidetica node.
+At some point, it may be possible to store it as a diff on top of another piece of data.
+The data may not necessarily be present, so we may only have links/hints as to where the data is.
 
 Local devices will use caching strategies to keep recent or frequently accessed data.
 
@@ -114,3 +118,14 @@ The indexed data will be configurable, and should be as small as possible for pe
 
 Plugins will be responsible for deciding how the data blobs are formatted into ES.
 
+### Encryption
+
+unimplemented!();
+
+End-to-End encryption should be relatively easy to implement from a technical level.
+Similar to how Syncthing does it, we'll also be able to support having some nodes unable to see the data at all.
+
+We can just create a plugin for Encryption that wraps any other module underneath it.
+The data and optionally metadata can be encrypted using a key only the user has that Eidetica will never sync.
+
+The user can enter that key into an instance of Eidetica where they want to be able to read the data, and the Encryption plugin will handle unwrapping.
