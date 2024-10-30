@@ -71,7 +71,7 @@ impl PostgresMetadataTable {
                 archived BOOLEAN NOT NULL DEFAULT FALSE,
                 parent_id UUID,
                 metadata JSONB NOT NULL,
-                data BYTEA,
+                data_hash CHAR(67),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
                 FOREIGN KEY (parent_id) REFERENCES metadata_entries(id)
@@ -112,7 +112,7 @@ impl MetadataTable for PostgresMetadataTable {
         let result = sqlx::query(
             r#"
         INSERT INTO metadata_entries
-            (id, device_id, archived, parent_id, metadata, data)
+            (id, device_id, archived, parent_id, metadata, data_hash)
         VALUES
             ($1, $2, $3, $4, $5, $6)
         "#,
@@ -122,7 +122,7 @@ impl MetadataTable for PostgresMetadataTable {
         .bind(entry.archived)
         .bind(entry.parent_id)
         .bind(metadata_json)
-        .bind(entry.data.as_deref())
+        .bind(entry.data_hash)
         .execute(&mut *tx)
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
@@ -161,7 +161,7 @@ impl MetadataTable for PostgresMetadataTable {
                 archived,
                 parent_id,
                 metadata,
-                data
+                data_hash
             FROM metadata_entries
             WHERE id = $1
             "#,
@@ -179,7 +179,7 @@ impl MetadataTable for PostgresMetadataTable {
                     archived: row.get("archived"),
                     parent_id: row.get("parent_id"),
                     metadata: row.get("metadata"),
-                    data: row.get("data"),
+                    data_hash: row.get("data_hash"),
                 };
                 Ok(Some(entry))
             }
@@ -208,7 +208,7 @@ impl MetadataTable for PostgresMetadataTable {
             WITH RECURSIVE history AS (
                 -- Base case: start with the entry we want
                 SELECT
-                    id, device_id, archived, parent_id, metadata, data
+                    id, device_id, archived, parent_id, metadata, data_hash
                 FROM metadata_entries
                 WHERE id = $1
 
@@ -216,7 +216,7 @@ impl MetadataTable for PostgresMetadataTable {
 
                 -- Recursive case: join with parent entries
                 SELECT
-                    e.id, e.device_id, e.archived, e.parent_id, e.metadata, e.data
+                    e.id, e.device_id, e.archived, e.parent_id, e.metadata, e.data_hash
                 FROM metadata_entries e
                 INNER JOIN history h ON h.parent_id = e.id
             )
@@ -241,7 +241,7 @@ impl MetadataTable for PostgresMetadataTable {
                 archived: row.get("archived"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
-                data: row.get("data"),
+                data_hash: row.get("data_hash"),
             })
             .collect();
 
@@ -252,7 +252,7 @@ impl MetadataTable for PostgresMetadataTable {
         let rows = sqlx::query(
             r#"
         SELECT 
-            id, device_id, archived, parent_id, metadata, data
+            id, device_id, archived, parent_id, metadata, data_hash
         FROM metadata_entries
         WHERE parent_id = $1
         ORDER BY id DESC
@@ -271,7 +271,7 @@ impl MetadataTable for PostgresMetadataTable {
                 archived: row.get("archived"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
-                data: row.get("data"),
+                data_hash: row.get("data_hash"),
             })
             .collect();
 
@@ -282,6 +282,23 @@ impl MetadataTable for PostgresMetadataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use blake2::{digest::consts::U32, Blake2b, Digest};
+    type Blake2b256 = Blake2b<U32>;
+    use hex;
+
+    /// Generate a valid hash to use for testing
+    fn generate_hash(data: &[u8]) -> String {
+        // Create hasher instance
+        let mut hasher = Blake2b256::new();
+
+        // Feed data to hasher
+        hasher.update(data);
+
+        // Get hash bytes and convert to hex string with prefix
+        let hash_bytes = hasher.finalize();
+        format!("b2_{}", hex::encode(hash_bytes))
+    }
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
@@ -296,7 +313,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data: Some(vec![1, 2, 3, 4]),
+            data_hash: generate_hash("entry".as_bytes())
         };
 
         assert!(table.create_entry(entry).await.is_ok());
@@ -316,7 +333,7 @@ mod tests {
                 "type": "test",
                 "name": "parent_entry"
             }),
-            data: Some(vec![1, 2, 3, 4]),
+            data_hash: generate_hash("parent_entry".as_bytes())
         };
 
         // Insert the parent entry
@@ -332,7 +349,7 @@ mod tests {
                 "type": "test",
                 "name": "child_entry"
             }),
-            data: Some(vec![5, 6, 7, 8]),
+            data_hash: generate_hash("child_entry".as_bytes())
         };
 
         // Insert the child entry
@@ -357,7 +374,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data: Some(vec![1, 2, 3, 4]),
+            data_hash: generate_hash("original_entry".as_bytes())
         };
 
         // Insert the entry
@@ -376,7 +393,7 @@ mod tests {
         assert_eq!(retrieved_entry.archived, original_entry.archived);
         assert_eq!(retrieved_entry.parent_id, original_entry.parent_id);
         assert_eq!(retrieved_entry.metadata, original_entry.metadata);
-        assert_eq!(retrieved_entry.data, original_entry.data);
+        assert_eq!(retrieved_entry.data_hash, original_entry.data_hash);
 
         // Test getting a non-existent entry
         let non_existent = table.get_entry(Uuid::new_v4()).await.unwrap();
@@ -394,7 +411,7 @@ mod tests {
             archived: false,
             parent_id: None,
             metadata: serde_json::json!({"test": "data"}),
-            data: Some(vec![1, 2, 3, 4]),
+            data_hash: generate_hash("entry".as_bytes())
         };
 
         // Insert the entry
@@ -428,7 +445,7 @@ mod tests {
             archived: false,
             parent_id: None,
             metadata: serde_json::json!({"version": 1}),
-            data: Some(vec![1]),
+            data_hash: generate_hash("entry1".as_bytes())
         };
 
         let entry2 = MetadataEntry {
@@ -437,7 +454,7 @@ mod tests {
             archived: false,
             parent_id: Some(entry1.id),
             metadata: serde_json::json!({"version": 2}),
-            data: Some(vec![2]),
+            data_hash: generate_hash("entry2".as_bytes())
         };
 
         let entry3 = MetadataEntry {
@@ -446,7 +463,7 @@ mod tests {
             archived: false,
             parent_id: Some(entry2.id),
             metadata: serde_json::json!({"version": 3}),
-            data: Some(vec![3]),
+            data_hash: generate_hash("entry3".as_bytes())
         };
 
         // Insert entries
@@ -491,7 +508,7 @@ mod tests {
                 "type": "parent",
                 "name": "parent_entry"
             }),
-            data: None,
+            data_hash: generate_hash("parent_entry".as_bytes())
         };
 
         // Create child entries
@@ -504,7 +521,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry1"
             }),
-            data: Some(vec![1, 2, 3]),
+            data_hash: generate_hash("child_entry1".as_bytes())
         };
 
         let child_entry2 = MetadataEntry {
@@ -516,7 +533,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry2"
             }),
-            data: Some(vec![4, 5, 6]),
+            data_hash: generate_hash("child_entry2".as_bytes())
         };
 
         // Insert the entries

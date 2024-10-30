@@ -19,6 +19,8 @@ pub struct MetadataEntry {
     /// JSON metadata about the referenced data
     pub metadata: Value,
 
-    /// The actual data or reference to it
-    pub data: Option<Vec<u8>>,
+    /// Hash of the data with algorithm prefix
+    /// Current format: "b2_" + hex(BLAKE2b-256)
+    /// Allows for future hash algorithms with different prefixes
+    pub data_hash: String,
 }
