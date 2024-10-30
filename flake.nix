@@ -128,12 +128,14 @@
           inherit eidetica;
           # Build almost every package in checks, with exceptions:
           # - coverage: It requires a full rebuild, and only needs to be run occasionally
-          inherit (self.packages.${system}) clippy doc fmt test audit;
+          # - audit: Requires remote access
+          # - test: Requires a running postgres db
+          inherit (self.packages.${system}) clippy doc fmt;
         };
 
         # This also sets up `nix fmt` to run all formatters
         treefmt = {
-          projectRootFile = ./flake.nix;
+          projectRootFile = "flake.nix";
           programs = {
             alejandra.enable = true;
             prettier.enable = true;
@@ -141,6 +143,7 @@
               enable = true;
               package = toolChain;
             };
+            shfmt.enable = true;
           };
         };
 

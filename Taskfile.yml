@@ -12,8 +12,7 @@ tasks:
   ci:local:
     desc: Run CI locally
     aliases: [ci]
-    deps:
-      [audit, doc, fmt, test, nix:check, nix:build, clippy, build]
+    deps: [audit, doc, fmt, test, nix:check, nix:build, clippy, build]
   nix:check:
     desc: Run Nix CI checks
     cmds:
