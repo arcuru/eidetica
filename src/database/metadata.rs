@@ -31,6 +31,11 @@ pub trait MetadataTable {
 
     /// Get all the children of an entry
     async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error>;
+
+    /// Get all the entries that are not archived
+    ///
+    /// Be advised that this will return _all_ active entries and may be expensive on large databases.
+    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error>;
 }
 
 /// PostgreSQL implementation of the metadata table
@@ -297,6 +302,38 @@ impl MetadataTable for PostgresMetadataTable {
 
         let rows = sqlx::query(&query)
             .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        let entries = rows
+            .into_iter()
+            .map(|row| MetadataEntry {
+                id: row.get("id"),
+                device_id: row.get("device_id"),
+                archived: row.get("archived"),
+                parent_id: row.get("parent_id"),
+                metadata: row.get("metadata"),
+                data_hash: row.get("data_hash"),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error> {
+        let query = format!(
+            r#"
+        SELECT
+            id, device_id, archived, parent_id, metadata, data_hash
+        FROM {}
+        WHERE archived = FALSE
+        ORDER BY id DESC
+        "#,
+            self.table_name
+        );
+
+        let rows = sqlx::query(&query)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -603,5 +640,71 @@ mod tests {
         // Test getting children of an entry with no children
         let no_children = table.get_child_entries(Uuid::new_v4()).await.unwrap();
         assert!(no_children.is_empty());
+    }
+
+    #[sqlx::test]
+    async fn test_get_active_entries(pool: PgPool) {
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
+
+        // Create some test entries, both archived and active
+        let active_entry1 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "active",
+                "name": "active_entry1"
+            }),
+            data_hash: generate_hash("active_entry1".as_bytes()),
+        };
+
+        let active_entry2 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "active",
+                "name": "active_entry2"
+            }),
+            data_hash: generate_hash("active_entry2".as_bytes()),
+        };
+
+        let archived_entry = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: true,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "archived",
+                "name": "archived_entry"
+            }),
+            data_hash: generate_hash("archived_entry".as_bytes()),
+        };
+
+        // Insert all entries
+        table.create_entry(active_entry1.clone()).await.unwrap();
+        table.create_entry(active_entry2.clone()).await.unwrap();
+        table.create_entry(archived_entry.clone()).await.unwrap();
+
+        // Get active entries
+        let active_entries = table.get_active_entries().await.unwrap();
+
+        // Verify we got the correct number of entries
+        assert_eq!(active_entries.len(), 2);
+
+        // Verify only active entries are returned
+        let active_ids: Vec<Uuid> = active_entries.iter().map(|e| e.id).collect();
+        assert!(active_ids.contains(&active_entry1.id));
+        assert!(active_ids.contains(&active_entry2.id));
+        assert!(!active_ids.contains(&archived_entry.id));
+
+        // Verify all returned entries are not archived
+        for entry in active_entries {
+            assert!(!entry.archived);
+        }
     }
 }
