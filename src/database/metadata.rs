@@ -1,5 +1,6 @@
 use crate::database::error::Error;
 use crate::database::schema::MetadataEntry;
+use serde::Serialize;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -36,6 +37,13 @@ pub trait MetadataTable {
     ///
     /// Be advised that this will return _all_ active entries and may be expensive on large databases.
     async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error>;
+
+    /// Get entries by 1 or more metadata conditions
+    async fn get_entries_by_metadata_conditions<T: Serialize + Send + Sync>(
+        &self,
+        conditions: &[(&str, &T)],
+        include_archived: bool,
+    ) -> Result<Vec<MetadataEntry>, Error>;
 }
 
 /// PostgreSQL implementation of the metadata table
@@ -334,6 +342,69 @@ impl MetadataTable for PostgresMetadataTable {
         );
 
         let rows = sqlx::query(&query)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        let entries = rows
+            .into_iter()
+            .map(|row| MetadataEntry {
+                id: row.get("id"),
+                device_id: row.get("device_id"),
+                archived: row.get("archived"),
+                parent_id: row.get("parent_id"),
+                metadata: row.get("metadata"),
+                data_hash: row.get("data_hash"),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Query entries by multiple metadata key-value pairs
+    async fn get_entries_by_metadata_conditions<T: Serialize + Send + Sync>(
+        &self,
+        conditions: &[(&str, &T)],
+        include_archived: bool,
+    ) -> Result<Vec<MetadataEntry>, Error> {
+        let archived_clause = if !include_archived {
+            "AND archived = FALSE"
+        } else {
+            ""
+        };
+
+        let conditions_clause: Vec<String> = conditions
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("metadata->>${} = ${}", i * 2 + 1, i * 2 + 2))
+            .collect();
+
+        let query = format!(
+            r#"
+            SELECT
+                id, device_id, archived, parent_id, metadata, data_hash
+            FROM {}
+            WHERE {}
+            {}
+            ORDER BY id DESC
+            "#,
+            self.table_name,
+            conditions_clause.join(" AND "),
+            archived_clause
+        );
+
+        let mut query_builder = sqlx::query(&query);
+
+        for (key, value) in conditions {
+            let value_str = serde_json::to_string(value)
+                .map_err(|e| Error::Serialization(Box::new(e)))?
+                .trim_matches('"')
+                .to_string();
+
+            query_builder = query_builder.bind(key).bind(value_str);
+        }
+
+        let rows = query_builder
             .fetch_all(&self.pool)
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -706,5 +777,98 @@ mod tests {
         for entry in active_entries {
             assert!(!entry.archived);
         }
+    }
+
+    #[sqlx::test]
+    async fn test_get_entries_by_metadata_conditions(pool: PgPool) {
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
+
+        // Create several test entries with different metadata
+        let entry1 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "document",
+                "category": "important",
+                "status": "active"
+            }),
+            data_hash: generate_hash("entry1".as_bytes()),
+        };
+
+        let entry2 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "document",
+                "category": "normal",
+                "status": "active"
+            }),
+            data_hash: generate_hash("entry2".as_bytes()),
+        };
+
+        let entry3 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: true,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "document",
+                "category": "important",
+                "status": "archived"
+            }),
+            data_hash: generate_hash("entry3".as_bytes()),
+        };
+
+        // Insert all entries
+        table.create_entry(entry1.clone()).await.unwrap();
+        table.create_entry(entry2.clone()).await.unwrap();
+        table.create_entry(entry3.clone()).await.unwrap();
+
+        // Test single condition query
+        let conditions = [("type", &"document")];
+        let results = table
+            .get_entries_by_metadata_conditions(&conditions, true)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Test multiple conditions
+        let conditions = [("type", &"document"), ("category", &"important")];
+        let results = table
+            .get_entries_by_metadata_conditions(&conditions, true)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+
+        let conditions = [("category", &"important")];
+        let results = table
+            .get_entries_by_metadata_conditions(&conditions, false)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, entry1.id);
+
+        // Test condition that should return no results
+        let conditions = [("category", &"nonexistent")];
+        let results = table
+            .get_entries_by_metadata_conditions(&conditions, true)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+
+        // Test multiple conditions that narrow down to one result
+        let conditions = [("category", &"important"), ("status", &"active")];
+        let results = table
+            .get_entries_by_metadata_conditions(&conditions, true)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, entry1.id);
     }
 }
