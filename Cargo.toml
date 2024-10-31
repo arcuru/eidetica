@@ -10,10 +10,19 @@ repository = "https://github.com/arcuru/eidetica"
 homepage = "https://eidetica.dev"
 
 [dependencies]
-sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "uuid", "json", "chrono"] }
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-native-tls",
+    "postgres",
+    "uuid",
+    "json",
+    "chrono",
+] }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7", "v4"] }
 chrono = "0.4"
 blake2 = "0.10"
 hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+log = "0.4"
+validator = { version = "0.18", features = ["derive"] }

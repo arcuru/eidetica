@@ -1,6 +1,6 @@
 use crate::database::error::Error;
 use crate::database::schema::MetadataEntry;
-use serde::Serialize;
+use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -39,17 +39,17 @@ pub trait MetadataTable {
     async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error>;
 
     /// Get entries by 1 or more metadata conditions
-    async fn get_entries_by_metadata_conditions<T: Serialize + Send + Sync>(
+    async fn get_entries_by_metadata_conditions(
         &self,
-        conditions: &[(&str, &T)],
+        conditions: &Value,
         include_archived: bool,
     ) -> Result<Vec<MetadataEntry>, Error>;
 }
 
 /// PostgreSQL implementation of the metadata table
 pub struct PostgresMetadataTable {
-    table_name: String,
-    pool: PgPool,
+    pub table_name: String,
+    pub pool: PgPool,
 }
 
 #[allow(dead_code)]
@@ -362,9 +362,9 @@ impl MetadataTable for PostgresMetadataTable {
     }
 
     /// Query entries by multiple metadata key-value pairs
-    async fn get_entries_by_metadata_conditions<T: Serialize + Send + Sync>(
+    async fn get_entries_by_metadata_conditions(
         &self,
-        conditions: &[(&str, &T)],
+        conditions: &Value,
         include_archived: bool,
     ) -> Result<Vec<MetadataEntry>, Error> {
         let archived_clause = if !include_archived {
@@ -373,11 +373,16 @@ impl MetadataTable for PostgresMetadataTable {
             ""
         };
 
-        let conditions_clause: Vec<String> = conditions
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("metadata->>${} = ${}", i * 2 + 1, i * 2 + 2))
-            .collect();
+        // Build conditions for each key-value pair in the JSON object
+        let mut condition_parts = Vec::new();
+        let mut bind_values = Vec::new();
+
+        if let Value::Object(map) = conditions {
+            for (key, value) in map {
+                condition_parts.push(format!("metadata->>'{}' = ${}", key, bind_values.len() + 1));
+                bind_values.push(value.as_str().unwrap_or_default().to_string());
+            }
+        }
 
         let query = format!(
             r#"
@@ -389,19 +394,15 @@ impl MetadataTable for PostgresMetadataTable {
             ORDER BY id DESC
             "#,
             self.table_name,
-            conditions_clause.join(" AND "),
+            condition_parts.join(" AND "),
             archived_clause
         );
 
         let mut query_builder = sqlx::query(&query);
 
-        for (key, value) in conditions {
-            let value_str = serde_json::to_string(value)
-                .map_err(|e| Error::Serialization(Box::new(e)))?
-                .trim_matches('"')
-                .to_string();
-
-            query_builder = query_builder.bind(key).bind(value_str);
+        // Bind all values in order
+        for value in bind_values {
+            query_builder = query_builder.bind(value);
         }
 
         let rows = query_builder
@@ -831,7 +832,9 @@ mod tests {
         table.create_entry(entry3.clone()).await.unwrap();
 
         // Test single condition query
-        let conditions = [("type", &"document")];
+        let conditions = serde_json::json!({
+            "type": "document"
+        });
         let results = table
             .get_entries_by_metadata_conditions(&conditions, true)
             .await
@@ -839,14 +842,19 @@ mod tests {
         assert_eq!(results.len(), 3);
 
         // Test multiple conditions
-        let conditions = [("type", &"document"), ("category", &"important")];
+        let conditions = serde_json::json!({
+            "type": "document",
+            "category": "important"
+        });
         let results = table
             .get_entries_by_metadata_conditions(&conditions, true)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
 
-        let conditions = [("category", &"important")];
+        let conditions = serde_json::json!({
+            "category": "important"
+        });
         let results = table
             .get_entries_by_metadata_conditions(&conditions, false)
             .await
@@ -855,7 +863,9 @@ mod tests {
         assert_eq!(results[0].id, entry1.id);
 
         // Test condition that should return no results
-        let conditions = [("category", &"nonexistent")];
+        let conditions = serde_json::json!({
+            "category": "nonexistent"
+        });
         let results = table
             .get_entries_by_metadata_conditions(&conditions, true)
             .await
@@ -863,7 +873,10 @@ mod tests {
         assert!(results.is_empty());
 
         // Test multiple conditions that narrow down to one result
-        let conditions = [("category", &"important"), ("status", &"active")];
+        let conditions = serde_json::json!({
+            "category": "important",
+            "status": "active"
+        });
         let results = table
             .get_entries_by_metadata_conditions(&conditions, true)
             .await
