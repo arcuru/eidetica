@@ -11,6 +11,12 @@ use uuid::Uuid;
 /// Interface for interacting with the metadata table
 #[allow(dead_code, async_fn_in_trait)]
 pub trait MetadataTable {
+    /// Get the name of this metadata table
+    fn table_name(&self) -> &str;
+
+    /// Create a new metadata table with the given name if it doesn't exist
+    async fn create_table(&mut self) -> Result<(), Error>;
+
     /// Create a new metadata entry
     async fn create_entry(&mut self, entry: MetadataEntry) -> Result<(), Error>;
 
@@ -29,73 +35,42 @@ pub trait MetadataTable {
 
 /// PostgreSQL implementation of the metadata table
 pub struct PostgresMetadataTable {
+    table_name: String,
     pool: PgPool,
 }
 
 #[allow(dead_code)]
 impl PostgresMetadataTable {
     /// Create a new PostgresMetadataTable instance
-    pub async fn new(connection_string: &str) -> Result<Self, Error> {
+    pub async fn new(connection_string: &str, table_name: &str) -> Result<Self, Error> {
         let pool = PgPool::connect(connection_string)
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        // Ensure table exists
-        Self::create_table(&pool).await?;
-
-        Ok(Self { pool })
+        let mut table = Self {
+            table_name: table_name.to_string(),
+            pool,
+        };
+        table.create_table().await?;
+        Ok(table)
     }
 
     /// Create a new PostgresMetadataTable from an existing pool connection
-    pub async fn from_pool(pool: PgPool) -> Result<Self, Error> {
-        Self::create_table(&pool).await?;
-        Ok(Self { pool })
-    }
-
-    /// Create the metadata table if it doesn't exist
-    async fn create_table(pool: &PgPool) -> Result<(), Error> {
-        // This command may fail if we're trying to run this in parallel (as in testing).
-        // If postgres is already creating a table it throws an error.
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY_MS: u64 = 500;
-
-        let mut attempts = 0;
-        let mut last_error = None;
-
-        while attempts < MAX_RETRIES {
-            match sqlx::query(
-                r#"
-            CREATE TABLE IF NOT EXISTS metadata_entries (
-                id UUID PRIMARY KEY,
-                device_id UUID NOT NULL,
-                archived BOOLEAN NOT NULL DEFAULT FALSE,
-                parent_id UUID,
-                metadata JSONB NOT NULL,
-                data_hash CHAR(67),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-                FOREIGN KEY (parent_id) REFERENCES metadata_entries(id)
-            );"#,
-            )
-            .execute(pool)
-            .await
-            {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    attempts += 1;
-                    if attempts < MAX_RETRIES {
-                        tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
-                    }
-                }
-            }
-        }
-
-        Err(Error::Database(Box::new(last_error.unwrap())))
+    pub async fn from_pool(pool: PgPool, table_name: &str) -> Result<Self, Error> {
+        let mut table = Self {
+            table_name: table_name.to_string(),
+            pool,
+        };
+        table.create_table().await?;
+        Ok(table)
     }
 }
 
 impl MetadataTable for PostgresMetadataTable {
+    fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
     async fn create_entry(&mut self, entry: MetadataEntry) -> Result<(), Error> {
         // Convert the metadata to a sqlx::types::Json
         let metadata_json =
@@ -108,24 +83,27 @@ impl MetadataTable for PostgresMetadataTable {
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        // Insert the new entry
-        let result = sqlx::query(
+        // Insert the new entry using the table name from the struct
+        let query = format!(
             r#"
-        INSERT INTO metadata_entries
+            INSERT INTO {}
             (id, device_id, archived, parent_id, metadata, data_hash)
         VALUES
             ($1, $2, $3, $4, $5, $6)
         "#,
-        )
-        .bind(entry.id)
-        .bind(entry.device_id)
-        .bind(entry.archived)
-        .bind(entry.parent_id)
-        .bind(metadata_json)
-        .bind(entry.data_hash)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+            self.table_name
+        );
+
+        let result = sqlx::query(&query)
+            .bind(entry.id)
+            .bind(entry.device_id)
+            .bind(entry.archived)
+            .bind(entry.parent_id)
+            .bind(metadata_json)
+            .bind(entry.data_hash)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         // Verify one row was inserted
         if result.rows_affected() != 1 {
@@ -137,7 +115,11 @@ impl MetadataTable for PostgresMetadataTable {
 
         // If there's a parent_id, archive it
         if let Some(parent_id) = entry.parent_id {
-            sqlx::query("UPDATE metadata_entries SET archived = TRUE WHERE id = $1")
+            let update_query = format!(
+                "UPDATE {} SET archived = TRUE WHERE id = $1",
+                self.table_name
+            );
+            sqlx::query(&update_query)
                 .bind(parent_id)
                 .execute(&mut *tx)
                 .await
@@ -152,8 +134,50 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(())
     }
 
+    /// Create the metadata table if it doesn't exist
+    async fn create_table(&mut self) -> Result<(), Error> {
+        // This command may fail if we're trying to run this in parallel (as in testing).
+        // If postgres is already creating a table it throws an error.
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 500;
+
+        let mut attempts = 0;
+        let mut last_error = None;
+
+        let query = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                id UUID PRIMARY KEY,
+                device_id UUID NOT NULL,
+                archived BOOLEAN NOT NULL DEFAULT FALSE,
+                parent_id UUID,
+                metadata JSONB NOT NULL,
+                data_hash CHAR(67),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+                FOREIGN KEY (parent_id) REFERENCES {}(id)
+            );"#,
+            self.table_name, self.table_name
+        );
+
+        while attempts < MAX_RETRIES {
+            match sqlx::query(&query).execute(&self.pool).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_error = Some(e);
+                    attempts += 1;
+                    if attempts < MAX_RETRIES {
+                        tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                    }
+                }
+            }
+        }
+
+        Err(Error::Database(Box::new(last_error.unwrap())))
+    }
+
     async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>, Error> {
-        let row = sqlx::query(
+        let query = format!(
             r#"
             SELECT
                 id,
@@ -162,14 +186,17 @@ impl MetadataTable for PostgresMetadataTable {
                 parent_id,
                 metadata,
                 data_hash
-            FROM metadata_entries
+            FROM {}
             WHERE id = $1
             "#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+            self.table_name
+        );
+
+        let row = sqlx::query(&query)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         match row {
             Some(row) => {
@@ -188,7 +215,12 @@ impl MetadataTable for PostgresMetadataTable {
     }
 
     async fn archive_entry(&mut self, id: Uuid) -> Result<(), Error> {
-        let result = sqlx::query("UPDATE metadata_entries SET archived = TRUE WHERE id = $1")
+        let query = format!(
+            "UPDATE {} SET archived = TRUE WHERE id = $1",
+            self.table_name
+        );
+
+        let result = sqlx::query(&query)
             .bind(id)
             .execute(&self.pool)
             .await
@@ -203,13 +235,13 @@ impl MetadataTable for PostgresMetadataTable {
 
     async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error> {
         // Using a WITH RECURSIVE query to follow the parent_id chain
-        let rows = sqlx::query(
+        let query = format!(
             r#"
             WITH RECURSIVE history AS (
                 -- Base case: start with the entry we want
                 SELECT
                     id, device_id, archived, parent_id, metadata, data_hash
-                FROM metadata_entries
+                FROM {}
                 WHERE id = $1
 
                 UNION ALL
@@ -217,17 +249,20 @@ impl MetadataTable for PostgresMetadataTable {
                 -- Recursive case: join with parent entries
                 SELECT
                     e.id, e.device_id, e.archived, e.parent_id, e.metadata, e.data_hash
-                FROM metadata_entries e
+                FROM {} e
                 INNER JOIN history h ON h.parent_id = e.id
             )
             SELECT * FROM history
             ORDER BY id DESC
             "#,
-        )
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+            self.table_name, self.table_name
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         if rows.is_empty() {
             return Err(Error::NotFound);
@@ -249,19 +284,22 @@ impl MetadataTable for PostgresMetadataTable {
     }
 
     async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error> {
-        let rows = sqlx::query(
+        let query = format!(
             r#"
-        SELECT 
+            SELECT
             id, device_id, archived, parent_id, metadata, data_hash
-        FROM metadata_entries
+            FROM {}
         WHERE parent_id = $1
         ORDER BY id DESC
         "#,
-        )
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+            self.table_name
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         let entries = rows
             .into_iter()
@@ -302,7 +340,9 @@ mod tests {
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
@@ -321,7 +361,9 @@ mod tests {
 
     #[sqlx::test]
     async fn test_create_entry_archives_parent(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         // Create a parent entry
         let parent_entry = MetadataEntry {
@@ -362,7 +404,9 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         // Create a test entrySelf
         let original_entry = MetadataEntry {
@@ -402,7 +446,9 @@ mod tests {
 
     #[sqlx::test]
     async fn test_archive_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         // Create a test entry
         let entry = MetadataEntry {
@@ -436,7 +482,9 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry_history(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         // Create a chain of entries
         let entry1 = MetadataEntry {
@@ -495,7 +543,9 @@ mod tests {
     #[sqlx::test]
     async fn test_get_child_entries(pool: PgPool) {
         // Create table instance directly with the injected pool
-        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
 
         // Create a parent entry
         let parent_id = Uuid::now_v7();
