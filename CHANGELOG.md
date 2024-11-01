@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+## [0.1.1](https://github.com/arcuru/eidetica/compare/v0.1.0...v0.1.1) - 2024-11-01
+
+### Added
+
+- add a settings table on top of metadatatable
+- adding accessor method for searching the metadata
+- adding get_active_entries interface to metadatatable
+- add configurable table name to PostgresMetadataTable
+- add data table for storing file data and tracking file locations
+- Use a blake2b hash instead of data
+- implement SQL database interface for metadata storage
+
+### Fixed
+
+- remove pre-commit from the Taskfile
+
+### Other
+
+- poking the coverage workflow
+- updating repo badges
+- fixing coverage workflow
+- adding workflows for CI
+- add helper for code coverage
+- removing leftover debug statements
+- add architectural description of encryption scheme
+- update the flake and run formatting
+- move database into a folder module
+- add initial planned architecture
+- ignoring more files
+- fix git cliff generation
+- install and use git-cliff
+
 ### Documentation
 
 - Install and use git-cliff
