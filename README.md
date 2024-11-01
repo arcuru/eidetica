@@ -1,9 +1,9 @@
 # Eidetica
 
-[![build](https://img.shields.io/github/actions/workflow/status/arcuru/eidetica/rust.yml?style=flat-square)](https://github.com/arcuru/eidetica/actions?query=workflow%3ARust)
+[![build](https://img.shields.io/github/actions/workflow/status/arcuru/eidetica/rust.yml?style=flat-square)](https://github.com/arcuru/eidetica/actions)
 [![crates.io](https://img.shields.io/crates/v/eidetica.svg?style=flat-square)](https://crates.io/crates/eidetica)
 [![coverage](https://img.shields.io/codecov/c/github/arcuru/eidetica)](https://codecov.io/gh/arcuru/eidetica)
-![license](https://img.shields.io/github/license/arcuru/eidetica)
+[![license](https://img.shields.io/badge/license-FSL_1.1_MIT-green)](https://fsl.software/)
 
 Remember Everything.
 
