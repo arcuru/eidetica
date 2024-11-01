@@ -25,6 +25,10 @@ jobs:
         ports:
           - 55532:5432
 
+    container:
+      image: xd009642/tarpaulin:latest
+      options: --security-opt seccomp=unconfined
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,10 +40,10 @@ jobs:
       - name: Build Coverage
         env:
             DATABASE_URL: postgresql://postgres:postgres@localhost:55532/postgres
-        run: cargo tarpaulin --include-tests --output-dir coverage --out lcov
+        run: cargo tarpaulin --verbose --all-features --include-tests --out lcov
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./coverage/lcov.info
+          fail_ci_if_error: true
