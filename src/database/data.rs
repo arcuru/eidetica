@@ -590,7 +590,6 @@ mod tests {
 
         // Verify no duplicates in arrays
         let entry = table.get_entry(&hash).await.unwrap().unwrap();
-        eprintln!("ASDF: {:?}", entry.s3_path);
         assert_eq!(entry.s3_path.len(), 1);
         assert_eq!(entry.devices.len(), 1);
     }

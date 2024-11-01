@@ -372,7 +372,6 @@ mod tests {
         assert_eq!(metadata_entry.metadata["type"], "setting");
         assert_eq!(metadata_entry.metadata["key"], "test_key");
         assert_eq!(metadata_entry.metadata["value"], "test_value");
-        eprintln!("ASDF: {:?}", metadata_entry);
         assert!(metadata_entry.metadata.get("description").is_none());
 
         // Convert back to setting
