@@ -39,7 +39,7 @@ tasks:
     cmd: source ./tests/test.sh down
   test:
     desc: Run all tests
-    deps: [db:start]
+    deps: [up]
     aliases: [t]
     cmd: cargo nextest run
   doc:
@@ -52,3 +52,8 @@ tasks:
     desc: Build the project
     aliases: [b]
     cmd: cargo build
+  coverage:
+    desc: Generate coverage data
+    aliases: [cov]
+    deps: [up]
+    cmd: cargo tarpaulin --skip-clean --include-tests --output-dir coverage --out lcov

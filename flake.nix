@@ -95,6 +95,7 @@
           eidetica = eidetica;
 
           # Check code coverage with tarpaulin
+          # This is currently broken because the tests require the running database
           coverage = craneLib.cargoTarpaulin (commonArgs
             // {
               # Use lcov output as thats far more widely supported

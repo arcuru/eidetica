@@ -13,3 +13,6 @@
 
 # task files for tracking already run commands
 /.task
+
+# Code coverage files. This is the default folder for many tools
+/coverage
