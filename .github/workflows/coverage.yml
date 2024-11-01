@@ -12,6 +12,9 @@ env:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:latest
+      options: --security-opt seccomp=unconfined
     services:
       postgres:
         image: postgres:14
@@ -23,23 +26,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
         ports:
-          - 55532:5432
-
-    container:
-      image: xd009642/tarpaulin:latest
-      options: --security-opt seccomp=unconfined
+          - 55533:5432
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
 
       - name: Build Coverage
         env:
-            DATABASE_URL: postgresql://postgres:postgres@localhost:55532/postgres
+            DATABASE_URL: postgresql://postgres:postgres@postgres:55533/postgres
         run: cargo tarpaulin --verbose --all-features --include-tests --out lcov
 
       - name: Upload coverage to Codecov
