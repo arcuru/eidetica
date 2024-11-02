@@ -1,5 +1,4 @@
-use crate::database::error::Error;
-use crate::database::schema::DataEntry;
+use crate::datastore::{error::Error, schema::DataEntry};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 

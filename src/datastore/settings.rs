@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use validator::Validate;
 
-use crate::database::{
+use crate::datastore::{
     error::Error,
     metadata::{MetadataTable, PostgresMetadataTable},
     schema::MetadataEntry,

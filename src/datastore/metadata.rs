@@ -1,5 +1,4 @@
-use crate::database::error::Error;
-use crate::database::schema::MetadataEntry;
+use crate::datastore::{error::Error, schema::MetadataEntry};
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;

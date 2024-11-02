@@ -13,12 +13,13 @@ This necessitates either waiting for all the disparate storage providers I use t
 
 unimplemented!();
 
-Data stored in Eidetica is stored in "Data Stores", name TBD, that are groups of related data managed together.
+Data stored in Eidetica is stored in "Data Stores", that are groups of related data managed together.
+They could also be called "Folders".
 
 A "Data Store" may contain different types of data, but should be logically grouped.
 Names are from the user.
 
-As an example, an "Email" data store would contain all Emails and attachments.
+As an example, an "Email" data store could contain all Emails and attachments.
 
 The intention is that you will be able to set "sync all my email locally" or "sync the last year of emails locally" or "sync the most recent X GB of email locally" or "index all emails for searching".
 
