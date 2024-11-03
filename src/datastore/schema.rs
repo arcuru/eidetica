@@ -13,6 +13,9 @@ pub struct MetadataEntry {
     /// Whether this entry has been superseded by a newer version
     pub archived: bool,
 
+    /// Whether this entry is configured to sync to the local device
+    pub local: bool,
+
     /// Optional reference to parent entry's UUID
     pub parent_id: Option<Uuid>,
 

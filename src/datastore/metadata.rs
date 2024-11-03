@@ -23,6 +23,9 @@ pub trait MetadataTable {
     /// Retrieve an entry by its ID
     async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>, Error>;
 
+    // Set whether an entry's data should be kept locally
+    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<(), Error>;
+
     /// Mark an entry as archived
     async fn archive_entry(&mut self, id: Uuid) -> Result<(), Error>;
 
@@ -99,9 +102,9 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
             INSERT INTO {}
-            (id, device_id, archived, parent_id, metadata, data_hash)
+            (id, device_id, archived, local, parent_id, metadata, data_hash)
         VALUES
-            ($1, $2, $3, $4, $5, $6)
+            ($1, $2, $3, $4, $5, $6, $7)
         "#,
             self.table_name
         );
@@ -110,6 +113,7 @@ impl MetadataTable for PostgresMetadataTable {
             .bind(entry.id)
             .bind(entry.device_id)
             .bind(entry.archived)
+            .bind(entry.local)
             .bind(entry.parent_id)
             .bind(metadata_json)
             .bind(entry.data_hash)
@@ -162,6 +166,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id UUID PRIMARY KEY,
                 device_id UUID NOT NULL,
                 archived BOOLEAN NOT NULL DEFAULT FALSE,
+                local BOOLEAN NOT NULL DEFAULT FALSE,
                 parent_id UUID,
                 metadata JSONB NOT NULL,
                 data_hash CHAR(67),
@@ -195,6 +200,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id,
                 device_id,
                 archived,
+                local,
                 parent_id,
                 metadata,
                 data_hash
@@ -216,6 +222,7 @@ impl MetadataTable for PostgresMetadataTable {
                     id: row.get("id"),
                     device_id: row.get("device_id"),
                     archived: row.get("archived"),
+                    local: row.get("local"),
                     parent_id: row.get("parent_id"),
                     metadata: row.get("metadata"),
                     data_hash: row.get("data_hash"),
@@ -245,6 +252,23 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(())
     }
 
+    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<(), Error> {
+        let query = format!("UPDATE {} SET local = $1 WHERE id = $2", self.table_name);
+
+        let result = sqlx::query(&query)
+            .bind(local)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+
+        if result.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
+
+        Ok(())
+    }
+
     async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error> {
         // Using a WITH RECURSIVE query to follow the parent_id chain
         let query = format!(
@@ -252,7 +276,7 @@ impl MetadataTable for PostgresMetadataTable {
             WITH RECURSIVE history AS (
                 -- Base case: start with the entry we want
                 SELECT
-                    id, device_id, archived, parent_id, metadata, data_hash
+                    id, device_id, archived, local, parent_id, metadata, data_hash
                 FROM {}
                 WHERE id = $1
 
@@ -260,7 +284,7 @@ impl MetadataTable for PostgresMetadataTable {
 
                 -- Recursive case: join with parent entries
                 SELECT
-                    e.id, e.device_id, e.archived, e.parent_id, e.metadata, e.data_hash
+                    e.id, e.device_id, e.archived, e.local, e.parent_id, e.metadata, e.data_hash
                 FROM {} e
                 INNER JOIN history h ON h.parent_id = e.id
             )
@@ -286,6 +310,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id: row.get("id"),
                 device_id: row.get("device_id"),
                 archived: row.get("archived"),
+                local: row.get("local"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
                 data_hash: row.get("data_hash"),
@@ -299,7 +324,7 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
             SELECT
-            id, device_id, archived, parent_id, metadata, data_hash
+            id, device_id, archived, local, parent_id, metadata, data_hash
             FROM {}
         WHERE parent_id = $1
         ORDER BY id DESC
@@ -319,6 +344,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id: row.get("id"),
                 device_id: row.get("device_id"),
                 archived: row.get("archived"),
+                local: row.get("local"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
                 data_hash: row.get("data_hash"),
@@ -332,7 +358,7 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
         SELECT
-            id, device_id, archived, parent_id, metadata, data_hash
+            id, device_id, archived, local, parent_id, metadata, data_hash
         FROM {}
         WHERE archived = FALSE
         ORDER BY id DESC
@@ -351,6 +377,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id: row.get("id"),
                 device_id: row.get("device_id"),
                 archived: row.get("archived"),
+                local: row.get("local"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
                 data_hash: row.get("data_hash"),
@@ -386,7 +413,7 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
             SELECT
-                id, device_id, archived, parent_id, metadata, data_hash
+                id, device_id, archived, local, parent_id, metadata, data_hash
             FROM {}
             WHERE {}
             {}
@@ -415,6 +442,7 @@ impl MetadataTable for PostgresMetadataTable {
                 id: row.get("id"),
                 device_id: row.get("device_id"),
                 archived: row.get("archived"),
+                local: row.get("local"),
                 parent_id: row.get("parent_id"),
                 metadata: row.get("metadata"),
                 data_hash: row.get("data_hash"),
@@ -456,6 +484,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "test",
@@ -478,6 +507,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "test",
@@ -494,6 +524,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: Some(parent_entry.id),
             metadata: serde_json::json!({
                 "type": "test",
@@ -521,6 +552,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "test",
@@ -543,6 +575,7 @@ mod tests {
         assert_eq!(retrieved_entry.id, original_entry.id);
         assert_eq!(retrieved_entry.device_id, original_entry.device_id);
         assert_eq!(retrieved_entry.archived, original_entry.archived);
+        assert_eq!(retrieved_entry.local, original_entry.local);
         assert_eq!(retrieved_entry.parent_id, original_entry.parent_id);
         assert_eq!(retrieved_entry.metadata, original_entry.metadata);
         assert_eq!(retrieved_entry.data_hash, original_entry.data_hash);
@@ -563,6 +596,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({"test": "data"}),
             data_hash: generate_hash("entry".as_bytes()),
@@ -589,6 +623,47 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_set_local(pool: PgPool) {
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
+
+        // Create a test entry
+        let entry = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            local: false,
+            parent_id: None,
+            metadata: serde_json::json!({"test": "data"}),
+            data_hash: generate_hash("entry".as_bytes()),
+        };
+
+        // Insert the entry
+        table.create_entry(entry.clone()).await.unwrap();
+
+        // Set the entry to local
+        assert!(table.set_local(entry.id, true).await.is_ok());
+
+        // Verify the entry is now local
+        let updated_entry = table.get_entry(entry.id).await.unwrap().unwrap();
+        assert!(updated_entry.local);
+
+        // Set it back to non-local
+        assert!(table.set_local(entry.id, false).await.is_ok());
+
+        // Verify the entry is no longer local
+        let updated_entry = table.get_entry(entry.id).await.unwrap().unwrap();
+        assert!(!updated_entry.local);
+
+        // Try to set local on a non-existent entry
+        assert!(matches!(
+            table.set_local(Uuid::new_v4(), true).await,
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[sqlx::test]
     async fn test_get_entry_history(pool: PgPool) {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
@@ -599,6 +674,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({"version": 1}),
             data_hash: generate_hash("entry1".as_bytes()),
@@ -608,6 +684,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: Some(entry1.id),
             metadata: serde_json::json!({"version": 2}),
             data_hash: generate_hash("entry2".as_bytes()),
@@ -617,6 +694,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: Some(entry2.id),
             metadata: serde_json::json!({"version": 3}),
             data_hash: generate_hash("entry3".as_bytes()),
@@ -661,6 +739,7 @@ mod tests {
             id: parent_id,
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "parent",
@@ -674,6 +753,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: Some(parent_id),
             metadata: serde_json::json!({
                 "type": "child",
@@ -686,6 +766,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: Some(parent_id),
             metadata: serde_json::json!({
                 "type": "child",
@@ -724,6 +805,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "active",
@@ -736,6 +818,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "active",
@@ -748,6 +831,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: true,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "archived",
@@ -790,6 +874,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "document",
@@ -803,6 +888,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "document",
@@ -816,6 +902,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id: Uuid::new_v4(),
             archived: true,
+            local: false,
             parent_id: None,
             metadata: serde_json::json!({
                 "type": "document",

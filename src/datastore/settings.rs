@@ -122,6 +122,7 @@ impl<T: MetadataTable> SettingsTable<T> {
             id: Uuid::now_v7(),
             device_id: self.device_id,
             archived: false,
+            local: false,
             parent_id: None,
             metadata,
             data_hash: "empty".to_string(),
@@ -239,6 +240,7 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
             id: Uuid::now_v7(),
             device_id: self.device_id,
             archived: false,
+            local: false, // No data to download
             parent_id,
             metadata: serde_json::json!({
                 "type": "setting",
@@ -323,6 +325,7 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
             id: Uuid::now_v7(),
             device_id: self.device_id,
             archived: false,
+            local: false,
             parent_id: Some(parent_id),
             metadata: serde_json::json!({
                 "type": "setting",
@@ -367,6 +370,7 @@ mod tests {
         // Verify metadata entry fields
         assert_eq!(metadata_entry.device_id, device_id);
         assert!(!metadata_entry.archived);
+        assert!(!metadata_entry.local);
         assert_eq!(metadata_entry.parent_id, None);
         assert_eq!(metadata_entry.data_hash, "empty");
         assert_eq!(metadata_entry.metadata["type"], "setting");
@@ -399,6 +403,7 @@ mod tests {
         // Verify metadata entry fields for complex setting
         assert_eq!(metadata_entry.device_id, device_id);
         assert!(!metadata_entry.archived);
+        assert!(!metadata_entry.local);
         assert_eq!(metadata_entry.parent_id, None);
         assert_eq!(metadata_entry.metadata["type"], "setting");
         assert_eq!(metadata_entry.metadata["key"], "complex_key");
@@ -424,6 +429,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id,
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "setting",
@@ -445,6 +451,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id,
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "not_a_setting",
@@ -466,6 +473,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id,
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "setting",
@@ -518,6 +526,7 @@ mod tests {
             id: Uuid::new_v4(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "setting",
@@ -537,6 +546,7 @@ mod tests {
             id: Uuid::new_v4(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "not_a_setting",
@@ -556,6 +566,7 @@ mod tests {
             id: Uuid::new_v4(),
             device_id: Uuid::new_v4(),
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "setting",
@@ -602,6 +613,7 @@ mod tests {
             id: Uuid::now_v7(),
             device_id,
             archived: false,
+            local: false,
             parent_id: None,
             metadata: json!({
                 "type": "setting",
