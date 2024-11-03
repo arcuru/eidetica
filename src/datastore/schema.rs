@@ -37,6 +37,10 @@ pub struct DataEntry {
     /// Allows for future hash algorithms with different prefixes
     pub hash: String,
 
+    /// Reference Count
+    /// How many metadata entries expect this data
+    pub ref_count: i32, // TODO: I'm not sure how safe this type is...
+
     /// Inline data for small entries
     pub inline_data: Option<Vec<u8>>,
 
@@ -59,6 +63,7 @@ impl DataEntry {
     pub fn new<S: Into<String>>(hash: S) -> Self {
         Self {
             hash: hash.into(),
+            ref_count: 0,
             inline_data: None,
             devices: Vec::new(),
             local_path: Vec::new(),
