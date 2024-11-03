@@ -34,7 +34,7 @@ jobs:
 
       - name: Build Coverage
         env:
-            DATABASE_URL: postgresql://postgres:postgres@postgres:55533/postgres
+          DATABASE_URL: postgresql://postgres:postgres@postgres:55533/postgres
         run: cargo tarpaulin --verbose --all-features --include-tests --out lcov
 
       - name: Upload coverage to Codecov

@@ -67,5 +67,5 @@ jobs:
 
       - name: Test
         env:
-            DATABASE_URL: postgresql://postgres:postgres@localhost:55532/postgres
+          DATABASE_URL: postgresql://postgres:postgres@localhost:55532/postgres
         run: cargo test
