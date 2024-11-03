@@ -20,6 +20,12 @@ pub trait DataTable {
     /// Retrieve an entry by its hash
     async fn get_entry(&self, hash: &str) -> Result<Option<DataEntry>, Error>;
 
+    /// Increase the ref_count
+    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32, Error>;
+
+    /// Decrease the ref_count
+    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32, Error>;
+
     /// Add a device to the list of devices that have this data
     async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<(), Error>;
 
@@ -84,6 +90,7 @@ impl PostgresDataTable {
                 r#"
                 CREATE TABLE IF NOT EXISTS data_entries (
                     hash CHAR(67) PRIMARY KEY,
+                    ref_count INT NOT NULL DEFAULT 0,
                     inline_data BYTEA,
                     devices UUID[] NOT NULL DEFAULT '{}',
                     local_path TEXT[] NOT NULL DEFAULT '{}',
@@ -115,14 +122,15 @@ impl DataTable for PostgresDataTable {
         let row = sqlx::query(
             r#"
         INSERT INTO data_entries
-            (hash, inline_data, devices, local_path, s3_path)
+            (hash, ref_count, inline_data, devices, local_path, s3_path)
         VALUES
-            ($1, NULL, ARRAY[]::UUID[], ARRAY[]::TEXT[], ARRAY[]::TEXT[])
+            ($1, 0, NULL, ARRAY[]::UUID[], ARRAY[]::TEXT[], ARRAY[]::TEXT[])
         ON CONFLICT (hash) DO UPDATE SET
             -- Set hash to itself to trigger the RETURNING clause
             hash = EXCLUDED.hash
         RETURNING
             hash,
+            ref_count,
             inline_data,
             devices,
             local_path,
@@ -136,6 +144,7 @@ impl DataTable for PostgresDataTable {
 
         Ok(DataEntry {
             hash: row.get("hash"),
+            ref_count: row.get("ref_count"),
             inline_data: row.get("inline_data"),
             devices: row.get("devices"),
             local_path: row.get("local_path"),
@@ -148,6 +157,7 @@ impl DataTable for PostgresDataTable {
             r#"
             SELECT
                 hash,
+                ref_count,
                 inline_data,
                 devices,
                 local_path,
@@ -165,6 +175,7 @@ impl DataTable for PostgresDataTable {
             Some(row) => {
                 let entry = DataEntry {
                     hash: row.get("hash"),
+                    ref_count: row.get("ref_count"),
                     inline_data: row.get("inline_data"),
                     devices: row.get("devices"),
                     local_path: row.get("local_path"),
@@ -188,12 +199,13 @@ impl DataTable for PostgresDataTable {
         let result = sqlx::query(
             r#"
             INSERT INTO data_entries
-                (hash, inline_data, devices, local_path, s3_path)
+                (hash, ref_count, inline_data, devices, local_path, s3_path)
             VALUES
-                ($1, $2, $3, $4, $5)
+                ($1, $2, $3, $4, $5, $6)
             "#,
         )
         .bind(&entry.hash)
+        .bind(entry.ref_count)
         .bind(entry.inline_data)
         .bind(&entry.devices)
         .bind(&entry.local_path)
@@ -220,6 +232,46 @@ impl DataTable for PostgresDataTable {
             .map_err(|e| Error::Database(Box::new(e)))?;
 
         Ok(())
+    }
+
+    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32, Error> {
+        let row = sqlx::query(
+            r#"
+            UPDATE data_entries
+            SET ref_count = ref_count + 1
+            WHERE hash = $1
+            RETURNING ref_count
+            "#,
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+
+        match row {
+            Some(row) => Ok(row.get("ref_count")),
+            None => Err(Error::NotFound),
+        }
+    }
+
+    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32, Error> {
+        let row = sqlx::query(
+            r#"
+            UPDATE data_entries
+            SET ref_count = GREATEST(ref_count - 1, 0)
+            WHERE hash = $1
+            RETURNING ref_count
+            "#,
+        )
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+
+        match row {
+            Some(row) => Ok(row.get("ref_count")),
+            None => Err(Error::NotFound),
+        }
     }
 
     async fn add_inline_data(&mut self, hash: &str, data: Vec<u8>) -> Result<(), Error> {
@@ -409,6 +461,7 @@ mod tests {
 
         let entry = DataEntry {
             hash: generate_hash("test_data".as_bytes()),
+            ref_count: 1,
             inline_data: Some(b"test data".to_vec()),
             devices: vec![Uuid::new_v4()],
             local_path: vec!["local/path/to/file".to_string()],
@@ -434,6 +487,7 @@ mod tests {
 
         let original_entry = DataEntry {
             hash: hash.clone(),
+            ref_count: 1,
             inline_data: Some(b"test data".to_vec()),
             devices: vec![device_id],
             local_path: vec!["local/path/to/file".to_string()],
@@ -471,6 +525,7 @@ mod tests {
 
         // Verify the newly inserted entry has the correct hash and empty fields
         assert_eq!(entry.hash, hash);
+        assert_eq!(entry.ref_count, 0);
         assert!(entry.inline_data.is_none());
         assert!(entry.devices.is_empty());
         assert!(entry.local_path.is_empty());
@@ -484,6 +539,7 @@ mod tests {
 
         // Verify we got back the same entry
         assert_eq!(existing_entry.hash, entry.hash);
+        assert_eq!(existing_entry.ref_count, entry.ref_count);
         assert_eq!(existing_entry.inline_data, entry.inline_data);
         assert_eq!(existing_entry.devices, entry.devices);
         assert_eq!(existing_entry.local_path, entry.local_path);
@@ -601,6 +657,7 @@ mod tests {
         // Create an entry with inline data
         let entry = DataEntry {
             hash: hash.clone(),
+            ref_count: 1,
             inline_data: Some(b"test data".to_vec()),
             devices: vec![],
             local_path: vec![],
@@ -638,6 +695,7 @@ mod tests {
         // Create an entry with paths and device
         let entry = DataEntry {
             hash: hash.clone(),
+            ref_count: 1,
             inline_data: None,
             devices: vec![device_id],
             local_path: vec!["local/path/test.dat".to_string()],
@@ -696,6 +754,7 @@ mod tests {
         // Create an entry with multiple paths
         let entry = DataEntry {
             hash: hash.clone(),
+            ref_count: 1,
             inline_data: None,
             devices: vec![],
             local_path: vec![
@@ -724,5 +783,77 @@ mod tests {
         assert!(table.remove_local_path(&hash, "path2.dat").await.is_ok());
         let entry3 = table.get_entry(&hash).await.unwrap().unwrap();
         assert!(entry3.local_path.is_empty());
+    }
+
+    #[sqlx::test]
+    async fn test_ref_count_operations(pool: PgPool) -> Result<(), Error> {
+        let mut table = PostgresDataTable::from_pool(pool.clone()).await?;
+        let test_hash = "b2_test_hash_ref_count";
+
+        // Insert initial test entry
+        let entry = DataEntry {
+            hash: test_hash.to_string(),
+            ref_count: 0,
+            inline_data: None,
+            devices: vec![],
+            local_path: vec![],
+            s3_path: vec![],
+        };
+        table.create_entry(entry).await?;
+
+        // Test increasing ref_count
+        let count = table.increase_ref_count(test_hash).await?;
+        assert_eq!(count, 1, "First increase should result in ref_count = 1");
+
+        let count = table.increase_ref_count(test_hash).await?;
+        assert_eq!(count, 2, "Second increase should result in ref_count = 2");
+
+        // Test decreasing ref_count
+        let count = table.decrease_ref_count(test_hash).await?;
+        assert_eq!(count, 1, "First decrease should result in ref_count = 1");
+
+        let count = table.decrease_ref_count(test_hash).await?;
+        assert_eq!(count, 0, "Second decrease should result in ref_count = 0");
+
+        // Test that ref_count doesn't go below 0
+        let count = table.decrease_ref_count(test_hash).await?;
+        assert_eq!(count, 0, "ref_count should not go below 0");
+
+        // Test operations on non-existent hash
+        let non_existent = "b2_nonexistent_hash";
+        assert!(matches!(
+            table.increase_ref_count(non_existent).await,
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(
+            table.decrease_ref_count(non_existent).await,
+            Err(Error::NotFound)
+        ));
+
+        // Test concurrent operations
+        let mut handles = vec![];
+        for _ in 0..5 {
+            let pool = pool.clone();
+            let hash = test_hash.to_string();
+            handles.push(tokio::spawn(async move {
+                let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
+                let inc = table.increase_ref_count(&hash).await.unwrap();
+                let dec = table.decrease_ref_count(&hash).await.unwrap();
+                (inc, dec)
+            }));
+        }
+
+        // Wait for all operations to complete and verify counts
+        for handle in handles {
+            let (inc, dec) = handle.await.unwrap();
+            assert!(inc > 0, "Increased count should be positive");
+            assert!(dec >= 0, "Decreased count should not be negative");
+        }
+
+        // Verify final count is 0
+        let final_count = table.decrease_ref_count(test_hash).await?;
+        assert_eq!(final_count, 0, "Final ref_count should be 0");
+
+        Ok(())
     }
 }
