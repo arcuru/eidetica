@@ -6,7 +6,7 @@ type Blake2b256 = Blake2b<U32>;
 
 /// Generate a valid hash to use for testing
 #[allow(dead_code)]
-fn generate_hash(data: &[u8]) -> std::io::Result<String> {
+pub fn generate_hash(data: &[u8]) -> std::io::Result<String> {
     // Create hasher instance
     let mut hasher = Blake2b256::new();
 
@@ -20,7 +20,7 @@ fn generate_hash(data: &[u8]) -> std::io::Result<String> {
 
 /// Generate a hash from a file
 #[allow(dead_code)]
-fn generate_hash_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
+pub fn generate_hash_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Blake2b256::new();
     let mut buffer = [0; 8192];
