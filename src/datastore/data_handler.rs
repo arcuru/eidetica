@@ -28,10 +28,9 @@ impl<T: DataTable> DataTableHandler<T> {
     /// 1. Calculate the Blake2b hash of the file
     /// 2. Create an entry in the data table
     /// 3. Move the file to the correct local path
-    pub async fn copy_file(&mut self, path: PathBuf) -> std::io::Result<PathBuf> {
-        let hash = utils::generate_hash_from_path(&path)?;
+    pub async fn copy_file(&mut self, input_file: PathBuf) -> std::io::Result<PathBuf> {
+        let hash = utils::generate_hash_from_path(&input_file)?;
 
-        // Do we already have it?
         let entry = match self.data_table.get_or_insert_entry(&hash.clone()).await {
             Ok(entry) => entry,
             Err(e) => {
@@ -58,12 +57,12 @@ impl<T: DataTable> DataTableHandler<T> {
             }
 
             // Copy the file
-            std::fs::copy(&path, &dest_path)?;
+            std::fs::copy(&input_file, &dest_path)?;
 
-            // Update
+            // Update the table
             match self
                 .data_table
-                .add_local_path(&hash, path.to_str().unwrap().to_string())
+                .add_local_path(&hash, dest_path.to_str().unwrap().to_string())
                 .await
             {
                 Ok(_) => {}
@@ -74,9 +73,11 @@ impl<T: DataTable> DataTableHandler<T> {
                     ))
                 }
             };
+        } else {
+            eprintln!("ASDF: {:?}", entry.local_path);
         }
 
-        Ok(path)
+        Ok(dest_path)
     }
 
     /// Converts a hash string to a filesystem path.
@@ -142,6 +143,7 @@ impl<T: DataTable> DataTableHandler<T> {
 mod tests {
     use super::*;
     use crate::datastore::data::PostgresDataTable;
+    use sqlx::PgPool;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::PathBuf;
@@ -310,19 +312,18 @@ mod tests {
         assert_eq!(result, Err(()));
     }
 
-    async fn setup_handler_postgres() -> DataTableHandler<PostgresDataTable> {
+    async fn setup_handler_postgres(pool: PgPool) -> DataTableHandler<PostgresDataTable> {
         let base_path = tempdir().unwrap().into_path();
-        let postgres = PostgresDataTable::new(
-            &std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
-        )
-        .await
-        .expect("Failed to connect to test database");
+        let postgres = PostgresDataTable::from_pool(pool)
+            .await
+            .expect("Failed to connect to test database");
+
         DataTableHandler::new(postgres, base_path)
     }
 
-    #[tokio::test]
-    async fn test_copy_file_basic() -> std::io::Result<()> {
-        let mut handler = setup_handler_postgres().await;
+    #[sqlx::test]
+    async fn test_copy_file_basic(pool: PgPool) -> Result<(), sqlx::Error> {
+        let mut handler = setup_handler_postgres(pool).await;
 
         // Create a temporary directory and file
         let temp_dir = tempdir()?;
@@ -334,7 +335,11 @@ mod tests {
         let result = handler.copy_file(source_path).await?;
 
         // Verify the file was copied and exists at the new location
-        assert!(result.exists());
+        assert!(
+            result.exists(),
+            "Copied file does not exist at {:?}",
+            result
+        );
 
         // Verify content was copied correctly
         let content = fs::read_to_string(&result)?;
@@ -343,9 +348,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_copy_file_idempotent() -> std::io::Result<()> {
-        let mut handler = setup_handler_postgres().await;
+    #[sqlx::test]
+    async fn test_copy_file_idempotent(pool: PgPool) -> Result<(), sqlx::Error> {
+        let mut handler = setup_handler_postgres(pool).await;
 
         // Create a temporary file
         let temp_dir = tempdir()?;
@@ -370,14 +375,19 @@ mod tests {
             .expect("Entry not found");
 
         // Verify there's only one local path entry
-        assert_eq!(entry.local_path.len(), 1);
+        assert_eq!(
+            entry.local_path.len(),
+            1,
+            "Expected 1 local path entry but found {:?}",
+            entry.local_path
+        );
 
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_copy_file_different_content() -> std::io::Result<()> {
-        let mut handler = setup_handler_postgres().await;
+    #[sqlx::test]
+    async fn test_copy_file_different_content(pool: PgPool) -> Result<(), sqlx::Error> {
+        let mut handler = setup_handler_postgres(pool).await;
 
         let temp_dir = tempdir()?;
 
@@ -418,9 +428,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_copy_file_nonexistent() {
-        let mut handler = setup_handler_postgres().await;
+    #[sqlx::test]
+    async fn test_copy_file_nonexistent(pool: PgPool) {
+        let mut handler = setup_handler_postgres(pool).await;
         let result = handler
             .copy_file(PathBuf::from("nonexistent_file.txt"))
             .await;
