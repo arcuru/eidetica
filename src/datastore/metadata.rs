@@ -49,6 +49,20 @@ pub trait MetadataTable {
     ) -> Result<Vec<MetadataEntry>>;
 }
 
+impl From<sqlx::postgres::PgRow> for MetadataEntry {
+    fn from(row: sqlx::postgres::PgRow) -> Self {
+        Self {
+            id: row.get("id"),
+            device_id: row.get("device_id"),
+            archived: row.get("archived"),
+            local: row.get("local"),
+            parent_id: row.get("parent_id"),
+            metadata: row.get("metadata"),
+            data_hash: row.get("data_hash"),
+        }
+    }
+}
+
 /// PostgreSQL implementation of the metadata table
 pub struct PostgresMetadataTable {
     pub table_name: String,
@@ -202,18 +216,7 @@ impl MetadataTable for PostgresMetadataTable {
             .await?;
 
         match row {
-            Some(row) => {
-                let entry = MetadataEntry {
-                    id: row.get("id"),
-                    device_id: row.get("device_id"),
-                    archived: row.get("archived"),
-                    local: row.get("local"),
-                    parent_id: row.get("parent_id"),
-                    metadata: row.get("metadata"),
-                    data_hash: row.get("data_hash"),
-                };
-                Ok(Some(entry))
-            }
+            Some(row) => Ok(Some(MetadataEntry::from(row))),
             None => Ok(None),
         }
     }
@@ -280,18 +283,7 @@ impl MetadataTable for PostgresMetadataTable {
             return Err(Error::RowNotFound.into());
         }
 
-        let entries = rows
-            .into_iter()
-            .map(|row| MetadataEntry {
-                id: row.get("id"),
-                device_id: row.get("device_id"),
-                archived: row.get("archived"),
-                local: row.get("local"),
-                parent_id: row.get("parent_id"),
-                metadata: row.get("metadata"),
-                data_hash: row.get("data_hash"),
-            })
-            .collect();
+        let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
@@ -310,18 +302,7 @@ impl MetadataTable for PostgresMetadataTable {
 
         let rows = sqlx::query(&query).bind(id).fetch_all(&self.pool).await?;
 
-        let entries = rows
-            .into_iter()
-            .map(|row| MetadataEntry {
-                id: row.get("id"),
-                device_id: row.get("device_id"),
-                archived: row.get("archived"),
-                local: row.get("local"),
-                parent_id: row.get("parent_id"),
-                metadata: row.get("metadata"),
-                data_hash: row.get("data_hash"),
-            })
-            .collect();
+        let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
@@ -340,18 +321,7 @@ impl MetadataTable for PostgresMetadataTable {
 
         let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
 
-        let entries = rows
-            .into_iter()
-            .map(|row| MetadataEntry {
-                id: row.get("id"),
-                device_id: row.get("device_id"),
-                archived: row.get("archived"),
-                local: row.get("local"),
-                parent_id: row.get("parent_id"),
-                metadata: row.get("metadata"),
-                data_hash: row.get("data_hash"),
-            })
-            .collect();
+        let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
@@ -402,18 +372,7 @@ impl MetadataTable for PostgresMetadataTable {
 
         let rows = query_builder.fetch_all(&self.pool).await?;
 
-        let entries = rows
-            .into_iter()
-            .map(|row| MetadataEntry {
-                id: row.get("id"),
-                device_id: row.get("device_id"),
-                archived: row.get("archived"),
-                local: row.get("local"),
-                parent_id: row.get("parent_id"),
-                metadata: row.get("metadata"),
-                data_hash: row.get("data_hash"),
-            })
-            .collect();
+        let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
