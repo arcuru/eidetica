@@ -40,7 +40,7 @@ impl<T: DataTable> DataTableHandler<T> {
     /// This increases the refcount for this piece of data or adds it into the
     /// table if necessary.
     pub async fn set_local_needed(&mut self, hash: &str) -> Result<i32> {
-        Ok(self.data_table.increase_ref_count(hash).await?)
+        self.data_table.increase_ref_count(hash).await
 
         // TODO: Poke a bg job to go try to find data
     }
@@ -49,7 +49,7 @@ impl<T: DataTable> DataTableHandler<T> {
     /// This decreases the refcount for this piece of data or removes it from the
     /// table if necessary.
     pub async fn set_local_not_needed(&mut self, hash: &str) -> Result<i32> {
-        Ok(self.data_table.decrease_ref_count(hash).await?)
+        self.data_table.decrease_ref_count(hash).await
 
         // TODO: Cleanup the table and rows if it's 0, right now this is mostly a no-op.
     }
@@ -112,7 +112,7 @@ impl<T: DataTable> DataTableHandler<T> {
         let path = self.hash_to_path(hash)?;
         std::fs::remove_file(&path)?;
         self.data_table
-            .remove_local_path(hash, &path.as_os_str().to_str().unwrap_or_default())
+            .remove_local_path(hash, path.as_os_str().to_str().unwrap_or_default())
             .await
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
