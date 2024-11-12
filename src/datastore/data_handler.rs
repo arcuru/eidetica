@@ -23,7 +23,7 @@ pub enum DataLocation {
     S3(String),         // Path in an S3 bucket
     LocalPath(PathBuf), // Path on a local filesystem
     Device(uuid::Uuid), // Identifier for a device
-    URL(String),        // Generic URL that we don't control
+    Url(String),        // Generic URL that we don't control
 }
 
 #[allow(dead_code)]
@@ -148,7 +148,7 @@ impl<T: DataTable> DataTableHandler<T> {
                 file.read_to_end(&mut buffer)?;
                 buffer
             }
-            DataLocation::URL(url) => {
+            DataLocation::Url(url) => {
                 // Download the url into a Vec<u8>
                 // TODO: don't unwrap
                 let response = reqwest::get(url).await.unwrap();

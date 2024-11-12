@@ -73,6 +73,6 @@ fn string_to_datalocation(something: &str) -> Result<DataLocation> {
     if pb.exists() {
         Ok(DataLocation::LocalPath(pb))
     } else {
-        Ok(DataLocation::URL(something.to_string()))
+        Ok(DataLocation::Url(something.to_string()))
     }
 }
