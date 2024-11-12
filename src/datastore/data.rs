@@ -1,7 +1,5 @@
-use crate::datastore::{
-    error::{Error, Result},
-    schema::DataEntry,
-};
+use crate::datastore::schema::DataEntry;
+use anyhow::{anyhow, bail, Error, Result};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -66,9 +64,7 @@ pub struct PostgresDataTable {
 impl PostgresDataTable {
     /// Create a new PostgresDataTable instance
     pub async fn new(connection_string: &str) -> Result<Self> {
-        let pool = PgPool::connect(connection_string)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let pool = PgPool::connect(connection_string).await?;
 
         // Ensure table exists
         Self::create_table(&pool).await?;
@@ -118,7 +114,7 @@ impl PostgresDataTable {
             }
         }
 
-        Err(Error::Database(Box::new(last_error.unwrap())))
+        Err(last_error.unwrap().into())
     }
 }
 
@@ -145,8 +141,7 @@ impl DataTable for PostgresDataTable {
         )
         .bind(hash)
         .fetch_one(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         Ok(DataEntry {
             hash: row.get("hash"),
@@ -174,8 +169,7 @@ impl DataTable for PostgresDataTable {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         match row {
             Some(row) => {
@@ -195,11 +189,7 @@ impl DataTable for PostgresDataTable {
 
     async fn create_entry(&mut self, entry: DataEntry) -> Result<()> {
         // Start a transaction
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut tx = self.pool.begin().await?;
 
         // Insert the new entry
         let result = sqlx::query(
@@ -219,23 +209,21 @@ impl DataTable for PostgresDataTable {
         .execute(&mut *tx)
         .await;
 
-        // Check for conflict error specifically
+        // Add context for certain error codes
         if let Err(e) = &result {
             if let Some(db_error) = e.as_database_error() {
                 if db_error.code().as_deref() == Some("23505") {
                     // PostgreSQL unique violation code
-                    return Err(Error::AlreadyExists);
+                    return Err(anyhow!("Entry already exists").context(db_error.to_string()));
                 }
             }
         }
 
         // Handle other potential errors
-        result.map_err(|e| Error::Database(Box::new(e)))?;
+        result?;
 
         // Commit the transaction
-        tx.commit()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        tx.commit().await?;
 
         Ok(())
     }
@@ -253,8 +241,8 @@ impl DataTable for PostgresDataTable {
 
         match result {
             Ok(rows_affected) if rows_affected.rows_affected() == 1 => Ok(()),
-            Ok(_) => Err(Error::NotFound),
-            Err(e) => Err(Error::Database(Box::new(e))),
+            Ok(_) => Err(anyhow!("Record not found")),
+            Err(e) => Err(Error::from(e)),
         }
     }
 
@@ -269,12 +257,11 @@ impl DataTable for PostgresDataTable {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         match row {
             Some(row) => Ok(row.get("ref_count")),
-            None => Err(Error::NotFound),
+            None => Err(anyhow!("Not found")),
         }
     }
 
@@ -289,12 +276,11 @@ impl DataTable for PostgresDataTable {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         match row {
             Some(row) => Ok(row.get("ref_count")),
-            None => Err(Error::NotFound),
+            None => Err(anyhow!("Not found")),
         }
     }
 
@@ -309,12 +295,11 @@ impl DataTable for PostgresDataTable {
         .bind(hash)
         .bind(&data)
         .execute(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         // Verify one row was affected
         if result.rows_affected() != 1 {
-            return Err(Error::NotFound);
+            bail!("Not found")
         }
 
         Ok(())
@@ -330,12 +315,11 @@ impl DataTable for PostgresDataTable {
         )
         .bind(hash)
         .execute(&self.pool)
-        .await
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .await?;
 
         // Verify one row was affected
         if result.rows_affected() != 1 {
-            return Err(Error::NotFound);
+            bail!("Not found")
         }
 
         Ok(())
@@ -403,19 +387,17 @@ impl PostgresDataTable {
             .bind(hash)
             .bind(&value)
             .execute(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .await?;
 
         // If no rows were affected, check if the entry exists
         if result.rows_affected() == 0 {
             let exists = sqlx::query("SELECT 1 FROM data_entries WHERE hash = $1")
                 .bind(hash)
                 .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| Error::Database(Box::new(e)))?;
+                .await?;
 
             if exists.is_none() {
-                return Err(Error::NotFound);
+                bail!("Not found")
             }
         }
 
@@ -447,12 +429,11 @@ impl PostgresDataTable {
             .bind(hash)
             .bind(&value)
             .execute(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .await?;
 
         // Verify one row was affected
         if result.rows_affected() != 1 {
-            return Err(Error::NotFound);
+            bail!("Not found")
         }
 
         Ok(())
@@ -497,8 +478,8 @@ mod tests {
 
         // Test duplicate entry
         match table.create_entry(entry).await {
-            Err(Error::AlreadyExists) => (),
-            other => panic!("Expected AlreadyExists error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
     }
 
@@ -590,8 +571,8 @@ mod tests {
         // Test adding to non-existent entry
         let non_existent = generate_hash("non_existent".as_bytes());
         match table.add_inline_data(&non_existent, vec![1, 2, 3]).await {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
     }
 
@@ -631,21 +612,21 @@ mod tests {
             .add_s3_path(&non_existent, "s3://test".to_string())
             .await
         {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
 
         match table
             .add_local_path(&non_existent, "/tmp/test".to_string())
             .await
         {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
 
         match table.add_device(&non_existent, Uuid::new_v4()).await {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
     }
 
@@ -699,8 +680,8 @@ mod tests {
         // Test removing from non-existent entry
         let non_existent = generate_hash("non_existent".as_bytes());
         match table.remove_inline_data(&non_existent).await {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
 
         // Test removing when already None
@@ -765,8 +746,8 @@ mod tests {
         // Test removing from non-existent entry
         let non_existent = generate_hash("non_existent".as_bytes());
         match table.remove_local_path(&non_existent, "test").await {
-            Err(Error::NotFound) => (),
-            other => panic!("Expected NotFound error, got {:?}", other),
+            Err(_) => (),
+            other => panic!("Expected error, got {:?}", other),
         }
     }
 
@@ -847,11 +828,11 @@ mod tests {
         let non_existent = "b2_nonexistent_hash";
         assert!(matches!(
             table.increase_ref_count(non_existent).await,
-            Err(Error::NotFound)
+            Err(_)
         ));
         assert!(matches!(
             table.decrease_ref_count(non_existent).await,
-            Err(Error::NotFound)
+            Err(_)
         ));
 
         // Test concurrent operations

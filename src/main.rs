@@ -1,9 +1,9 @@
 mod datastore;
 mod utils;
 
+use anyhow::Result;
 use clap::Parser;
 use datastore::data_handler::DataLocation;
-use datastore::error::Result;
 use datastore::store::DataStore;
 use sqlx::postgres::PgPoolOptions;
 use std::env;

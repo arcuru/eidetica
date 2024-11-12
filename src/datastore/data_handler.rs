@@ -1,8 +1,7 @@
 use super::data::DataTable;
-use super::error::Error;
 use super::schema::DataEntry;
-use crate::datastore::error::Result;
 use crate::utils;
+use anyhow::{bail, Result};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -70,7 +69,7 @@ impl<T: DataTable> DataTableHandler<T> {
     pub async fn get_data_locations(&self, hash: &str) -> Result<Vec<DataLocation>> {
         let entry = match self.data_table.get_entry(hash).await? {
             Some(e) => e,
-            None => return Err(Error::NotFound),
+            None => bail!("Not found"),
         };
 
         // We're handling the conversion at this level for now, so we need to

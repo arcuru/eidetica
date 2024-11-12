@@ -1,7 +1,7 @@
 use super::*;
+use anyhow::{Context, Result};
 use data::{DataTable, PostgresDataTable};
 use data_handler::{DataLocation, DataTableHandler};
-use error::{Error, Result};
 use metadata::{MetadataTable, PostgresMetadataTable};
 use schema::MetadataEntry;
 use serde_json::Value;
@@ -128,10 +128,11 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
     /// * `id` - UUID of the entry to archive
     pub async fn archive(&mut self, id: Uuid) -> Result<()> {
         // First check if the entry exists and get its metadata
-        let existing_entry = match self.metadata_table.get_entry(id).await? {
-            Some(entry) => entry,
-            None => return Err(Error::NotFound),
-        };
+        let existing_entry = self
+            .metadata_table
+            .get_entry(id)
+            .await?
+            .context("Not found")?;
 
         // Create a new metadata entry that marks this as archived
         // TODO: I'm not certain this is the right new entry, leaving for now
@@ -195,10 +196,11 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
     /// The various locations where this data can be found
     pub async fn get_data_locations(&self, id: Uuid) -> Result<Vec<DataLocation>> {
         // First get the metadata entry to get the data hash
-        let entry = match self.metadata_table.get_entry(id).await? {
-            Some(e) => e,
-            None => return Err(Error::NotFound),
-        };
+        let entry = self
+            .metadata_table
+            .get_entry(id)
+            .await?
+            .context("Not found")?;
 
         // Use the hash to get the data entry
         self.data_table.get_data_locations(&entry.data_hash).await
@@ -211,10 +213,11 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
     /// * `location` - The new location to add (S3, local path, or device)
     pub async fn add_data_location(&mut self, id: Uuid, location: DataLocation) -> Result<()> {
         // First get the metadata entry to get the data hash
-        let entry = match self.metadata_table.get_entry(id).await? {
-            Some(e) => e,
-            None => return Err(Error::NotFound),
-        };
+        let entry = self
+            .metadata_table
+            .get_entry(id)
+            .await?
+            .context("Not found")?;
         self.data_table
             .add_data_location(&entry.data_hash, location)
             .await

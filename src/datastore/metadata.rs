@@ -1,6 +1,7 @@
-use crate::datastore::{error::Error, schema::MetadataEntry};
+use crate::datastore::schema::MetadataEntry;
+use anyhow::Result;
 use serde_json::Value;
-use sqlx::{PgPool, Row};
+use sqlx::{Error, PgPool, Row};
 use uuid::Uuid;
 
 /// Eidetica Database
@@ -15,37 +16,37 @@ pub trait MetadataTable {
     fn table_name(&self) -> &str;
 
     /// Create a new metadata table with the given name if it doesn't exist
-    async fn create_table(&mut self) -> Result<(), Error>;
+    async fn create_table(&mut self) -> Result<()>;
 
     /// Create a new metadata entry
-    async fn create_entry(&mut self, entry: MetadataEntry) -> Result<(), Error>;
+    async fn create_entry(&mut self, entry: MetadataEntry) -> Result<()>;
 
     /// Retrieve an entry by its ID
-    async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>, Error>;
+    async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>>;
 
     // Set whether an entry's data should be kept locally
-    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<(), Error>;
+    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<()>;
 
     /// Mark an entry as archived
-    async fn archive_entry(&mut self, id: Uuid) -> Result<(), Error>;
+    async fn archive_entry(&mut self, id: Uuid) -> Result<()>;
 
     /// Get full history chain for an entry by following parent_ids
-    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error>;
+    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>>;
 
     /// Get all the children of an entry
-    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error>;
+    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>>;
 
     /// Get all the entries that are not archived
     ///
     /// Be advised that this will return _all_ active entries and may be expensive on large databases.
-    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error>;
+    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>>;
 
     /// Get entries by 1 or more metadata conditions
     async fn get_entries_by_metadata_conditions(
         &self,
         conditions: &Value,
         include_archived: bool,
-    ) -> Result<Vec<MetadataEntry>, Error>;
+    ) -> Result<Vec<MetadataEntry>>;
 }
 
 /// PostgreSQL implementation of the metadata table
@@ -57,10 +58,8 @@ pub struct PostgresMetadataTable {
 #[allow(dead_code)]
 impl PostgresMetadataTable {
     /// Create a new PostgresMetadataTable instance
-    pub async fn new(connection_string: &str, table_name: &str) -> Result<Self, Error> {
-        let pool = PgPool::connect(connection_string)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+    pub async fn new(connection_string: &str, table_name: &str) -> Result<Self> {
+        let pool = PgPool::connect(connection_string).await?;
 
         let mut table = Self {
             table_name: table_name.to_string(),
@@ -71,7 +70,7 @@ impl PostgresMetadataTable {
     }
 
     /// Create a new PostgresMetadataTable from an existing pool connection
-    pub async fn from_pool(pool: PgPool, table_name: &str) -> Result<Self, Error> {
+    pub async fn from_pool(pool: PgPool, table_name: &str) -> Result<Self> {
         let mut table = Self {
             table_name: table_name.to_string(),
             pool,
@@ -86,17 +85,12 @@ impl MetadataTable for PostgresMetadataTable {
         &self.table_name
     }
 
-    async fn create_entry(&mut self, entry: MetadataEntry) -> Result<(), Error> {
+    async fn create_entry(&mut self, entry: MetadataEntry) -> Result<()> {
         // Convert the metadata to a sqlx::types::Json
-        let metadata_json =
-            serde_json::to_value(&entry.metadata).map_err(|_| Error::InvalidData)?;
+        let metadata_json = serde_json::to_value(&entry.metadata)?;
 
         // Start a transaction since we might need to update two rows
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut tx = self.pool.begin().await?;
 
         // Insert the new entry using the table name from the struct
         let query = format!(
@@ -118,15 +112,11 @@ impl MetadataTable for PostgresMetadataTable {
             .bind(metadata_json)
             .bind(entry.data_hash)
             .execute(&mut *tx)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .await?;
 
         // Verify one row was inserted
         if result.rows_affected() != 1 {
-            return Err(Error::Database(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to insert metadata entry",
-            ))));
+            return Err(Error::RowNotFound.into());
         }
 
         // If there's a parent_id, archive it
@@ -138,20 +128,17 @@ impl MetadataTable for PostgresMetadataTable {
             sqlx::query(&update_query)
                 .bind(parent_id)
                 .execute(&mut *tx)
-                .await
-                .map_err(|e| Error::Database(Box::new(e)))?;
+                .await?;
         }
 
         // Commit the transaction
-        tx.commit()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        tx.commit().await?;
 
         Ok(())
     }
 
     /// Create the metadata table if it doesn't exist
-    async fn create_table(&mut self) -> Result<(), Error> {
+    async fn create_table(&mut self) -> Result<()> {
         // This command may fail if we're trying to run this in parallel (as in testing).
         // If postgres is already creating a table it throws an error.
         const MAX_RETRIES: u32 = 3;
@@ -189,11 +176,10 @@ impl MetadataTable for PostgresMetadataTable {
                 }
             }
         }
-
-        Err(Error::Database(Box::new(last_error.unwrap())))
+        Err(last_error.unwrap().into())
     }
 
-    async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>, Error> {
+    async fn get_entry(&self, id: Uuid) -> Result<Option<MetadataEntry>> {
         let query = format!(
             r#"
             SELECT
@@ -213,8 +199,7 @@ impl MetadataTable for PostgresMetadataTable {
         let row = sqlx::query(&query)
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .await?;
 
         match row {
             Some(row) => {
@@ -233,43 +218,38 @@ impl MetadataTable for PostgresMetadataTable {
         }
     }
 
-    async fn archive_entry(&mut self, id: Uuid) -> Result<(), Error> {
+    async fn archive_entry(&mut self, id: Uuid) -> Result<()> {
         let query = format!(
             "UPDATE {} SET archived = TRUE WHERE id = $1",
             self.table_name
         );
 
-        let result = sqlx::query(&query)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let result = sqlx::query(&query).bind(id).execute(&self.pool).await?;
 
         if result.rows_affected() == 0 {
-            return Err(Error::NotFound);
+            return Err(Error::RowNotFound.into());
         }
 
         Ok(())
     }
 
-    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<(), Error> {
+    async fn set_local(&mut self, id: Uuid, local: bool) -> Result<()> {
         let query = format!("UPDATE {} SET local = $1 WHERE id = $2", self.table_name);
 
         let result = sqlx::query(&query)
             .bind(local)
             .bind(id)
             .execute(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .await?;
 
         if result.rows_affected() == 0 {
-            return Err(Error::NotFound);
+            return Err(Error::RowNotFound.into());
         }
 
         Ok(())
     }
 
-    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error> {
+    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>> {
         // Using a WITH RECURSIVE query to follow the parent_id chain
         let query = format!(
             r#"
@@ -294,14 +274,10 @@ impl MetadataTable for PostgresMetadataTable {
             self.table_name, self.table_name
         );
 
-        let rows = sqlx::query(&query)
-            .bind(id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let rows = sqlx::query(&query).bind(id).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
-            return Err(Error::NotFound);
+            return Err(Error::RowNotFound.into());
         }
 
         let entries = rows
@@ -320,7 +296,7 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(entries)
     }
 
-    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>, Error> {
+    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>> {
         let query = format!(
             r#"
             SELECT
@@ -332,11 +308,7 @@ impl MetadataTable for PostgresMetadataTable {
             self.table_name
         );
 
-        let rows = sqlx::query(&query)
-            .bind(id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let rows = sqlx::query(&query).bind(id).fetch_all(&self.pool).await?;
 
         let entries = rows
             .into_iter()
@@ -354,7 +326,7 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(entries)
     }
 
-    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>, Error> {
+    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>> {
         let query = format!(
             r#"
         SELECT
@@ -366,10 +338,7 @@ impl MetadataTable for PostgresMetadataTable {
             self.table_name
         );
 
-        let rows = sqlx::query(&query)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
 
         let entries = rows
             .into_iter()
@@ -392,7 +361,7 @@ impl MetadataTable for PostgresMetadataTable {
         &self,
         conditions: &Value,
         include_archived: bool,
-    ) -> Result<Vec<MetadataEntry>, Error> {
+    ) -> Result<Vec<MetadataEntry>> {
         let archived_clause = if !include_archived {
             "AND archived = FALSE"
         } else {
@@ -431,10 +400,7 @@ impl MetadataTable for PostgresMetadataTable {
             query_builder = query_builder.bind(value);
         }
 
-        let rows = query_builder
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
+        let rows = query_builder.fetch_all(&self.pool).await?;
 
         let entries = rows
             .into_iter()
@@ -616,10 +582,7 @@ mod tests {
         assert!(table.archive_entry(entry.id).await.is_ok());
 
         // Try to archive a non-existent entry
-        assert!(matches!(
-            table.archive_entry(Uuid::new_v4()).await,
-            Err(Error::NotFound)
-        ));
+        assert!(matches!(table.archive_entry(Uuid::new_v4()).await, Err(_)));
     }
 
     #[sqlx::test]
@@ -659,7 +622,7 @@ mod tests {
         // Try to set local on a non-existent entry
         assert!(matches!(
             table.set_local(Uuid::new_v4(), true).await,
-            Err(Error::NotFound)
+            Err(_)
         ));
     }
 
@@ -722,7 +685,7 @@ mod tests {
         // Test getting history for non-existent entry
         assert!(matches!(
             table.get_entry_history(Uuid::new_v4()).await,
-            Err(Error::NotFound)
+            Err(_)
         ));
     }
 

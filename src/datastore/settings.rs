@@ -1,12 +1,12 @@
+use anyhow::{bail, Context, Error, Result};
 use log;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 use crate::datastore::{
-    error::Error,
     metadata::{MetadataTable, PostgresMetadataTable},
     schema::MetadataEntry,
 }; // Import both trait and implementation
@@ -14,7 +14,7 @@ use crate::datastore::{
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Setting {
     /// Unique key identifying this setting
-    #[validate(length(min = 1, max = 255))]
+    #[validate(length(min = 1, max = 255), custom(function = "validate_key_name"))]
     pub key: String,
 
     /// The setting's value stored as arbitrary JSON
@@ -30,6 +30,18 @@ pub struct SettingsTable<T: MetadataTable> {
     // We could comingle this with the normal metadata table and use a root ID
     // To find settings (all the children) or just search in metadata.
     // However I want to keep the separation for now
+}
+
+fn validate_key_name(key: &str) -> std::result::Result<(), ValidationError> {
+    if key.is_empty() {
+        return Err(ValidationError::new("Key can't be empty"));
+    }
+    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(ValidationError::new(
+            "Key must only contain letters, numbers, and '_'",
+        ));
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -205,20 +217,9 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
     async fn set_setting(&mut self, setting: Setting) -> Result<(), Error> {
         // Validate key length
         // Validate the setting against the defined rules
-        if let Err(validation_errors) = setting.validate() {
-            log::error!("Setting validation failed: {:?}", validation_errors);
-            return Err(Error::InvalidData);
-        }
-
-        // Validate key format
-        if setting.key.is_empty()
-            || !setting
-                .key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            return Err(Error::InvalidData);
-        }
+        setting
+            .validate()
+            .context("Setting name validation failed")?;
 
         // Find any existing active setting with this key
         let conditions = serde_json::json!({
@@ -317,7 +318,7 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
         // Get the ID of the existing setting if there is one
         let parent_id = match existing_settings.first() {
             Some(entry) => entry.id,
-            None => return Err(Error::NotFound), // Setting not found
+            None => bail!("Setting not found: {}", key), // Setting not found
         };
 
         // Create a new metadata entry marking this setting as deleted
@@ -506,7 +507,7 @@ mod tests {
                 description: None,
             })
             .await;
-        assert!(matches!(result, Err(Error::InvalidData)));
+        assert!(matches!(result, Err(_)));
 
         // Should fail for invalid characters
         let result = settings
@@ -516,7 +517,7 @@ mod tests {
                 description: None,
             })
             .await;
-        assert!(matches!(result, Err(Error::InvalidData)));
+        assert!(matches!(result, Err(_)));
     }
 
     #[sqlx::test]
