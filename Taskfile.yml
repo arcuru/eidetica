@@ -4,6 +4,7 @@ version: "3"
 
 tasks:
   default:
+    desc: List all tasks
     cmd: task --list
     silent: true
   ci:full:
@@ -29,13 +30,13 @@ tasks:
     cmds:
       - cargo fmt --all
       - alejandra .
-  up:
+  db:up:
     desc: Start the testing database
-    aliases: [db:up, db:start]
+    aliases: [up, db:start]
     cmd: source ./tests/test.sh up
-  down:
+  db:down:
     desc: Stop the testing database
-    aliases: [db:down, db:stop]
+    aliases: [down, db:stop]
     cmd: source ./tests/test.sh down
   test:
     desc: Run all tests
@@ -48,12 +49,16 @@ tasks:
   audit:
     desc: Run cargo security audit
     cmd: cargo audit
-  build:
+  build:debug:
     desc: Build the project
-    aliases: [b]
+    aliases: [b, build]
     cmd: cargo build
+  build:release:
+    desc: Build the project release
+    aliases: [br, release]
+    cmd: cargo build --release
   coverage:
     desc: Generate coverage data
     aliases: [cov]
-    deps: [up]
+    deps: [db:up]
     cmd: cargo tarpaulin --skip-clean --include-tests --output-dir coverage --out lcov
