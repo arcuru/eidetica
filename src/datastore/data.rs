@@ -1,4 +1,7 @@
-use crate::datastore::{error::Error, schema::DataEntry};
+use crate::datastore::{
+    error::{Error, Result},
+    schema::DataEntry,
+};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -12,43 +15,46 @@ use uuid::Uuid;
 #[allow(dead_code, async_fn_in_trait)]
 pub trait DataTable {
     /// Create a new data entry
-    async fn create_entry(&mut self, entry: DataEntry) -> Result<(), Error>;
+    async fn create_entry(&mut self, entry: DataEntry) -> Result<()>;
+
+    // Delete a data entry
+    async fn delete_entry(&mut self, hash: &str) -> Result<()>;
 
     /// Get an entry or insert a new one if it doesn't exist
-    async fn get_or_insert_entry(&mut self, hash: &str) -> Result<DataEntry, Error>;
+    async fn get_or_insert_entry(&mut self, hash: &str) -> Result<DataEntry>;
 
     /// Retrieve an entry by its hash
-    async fn get_entry(&self, hash: &str) -> Result<Option<DataEntry>, Error>;
+    async fn get_entry(&self, hash: &str) -> Result<Option<DataEntry>>;
 
     /// Increase the ref_count
-    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32, Error>;
+    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32>;
 
     /// Decrease the ref_count
-    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32, Error>;
+    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32>;
 
     /// Add a device to the list of devices that have this data
-    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<(), Error>;
+    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<()>;
 
     /// Remove a device from the list of devices that have this data
-    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<(), Error>;
+    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<()>;
 
     /// Add a local path for this data
-    async fn add_local_path(&mut self, hash: &str, path: String) -> Result<(), Error>;
+    async fn add_local_path(&mut self, hash: &str, path: String) -> Result<()>;
 
     /// Remove a local path for this data
-    async fn remove_local_path(&mut self, hash: &str, path: &str) -> Result<(), Error>;
+    async fn remove_local_path(&mut self, hash: &str, path: &str) -> Result<()>;
 
     /// Add an S3 path for this data
-    async fn add_s3_path(&mut self, hash: &str, path: String) -> Result<(), Error>;
+    async fn add_s3_path(&mut self, hash: &str, path: String) -> Result<()>;
 
     /// Remove an S3 path for this data
-    async fn remove_s3_path(&mut self, hash: &str, path: &str) -> Result<(), Error>;
+    async fn remove_s3_path(&mut self, hash: &str, path: &str) -> Result<()>;
 
     /// Add inline data for this entry
-    async fn add_inline_data(&mut self, hash: &str, data: Vec<u8>) -> Result<(), Error>;
+    async fn add_inline_data(&mut self, hash: &str, data: Vec<u8>) -> Result<()>;
 
     /// Remove inline data for this entry
-    async fn remove_inline_data(&mut self, hash: &str) -> Result<(), Error>;
+    async fn remove_inline_data(&mut self, hash: &str) -> Result<()>;
 }
 
 /// PostgreSQL implementation of the data table
@@ -59,7 +65,7 @@ pub struct PostgresDataTable {
 #[allow(dead_code)]
 impl PostgresDataTable {
     /// Create a new PostgresDataTable instance
-    pub async fn new(connection_string: &str) -> Result<Self, Error> {
+    pub async fn new(connection_string: &str) -> Result<Self> {
         let pool = PgPool::connect(connection_string)
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -71,13 +77,13 @@ impl PostgresDataTable {
     }
 
     /// Create a new PostgresDataTable from an existing pool connection
-    pub async fn from_pool(pool: PgPool) -> Result<Self, Error> {
+    pub async fn from_pool(pool: PgPool) -> Result<Self> {
         Self::create_table(&pool).await?;
         Ok(Self { pool })
     }
 
     /// Create the data table if it doesn't exist
-    async fn create_table(pool: &PgPool) -> Result<(), Error> {
+    async fn create_table(pool: &PgPool) -> Result<()> {
         // Retrying here a few times. Postgres will fail if we hit this while creating the same table in a different thread.
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY_MS: u64 = 500;
@@ -117,7 +123,7 @@ impl PostgresDataTable {
 }
 
 impl DataTable for PostgresDataTable {
-    async fn get_or_insert_entry(&mut self, hash: &str) -> Result<DataEntry, Error> {
+    async fn get_or_insert_entry(&mut self, hash: &str) -> Result<DataEntry> {
         // Use a single query that will either insert a new entry or return the existing one
         let row = sqlx::query(
             r#"
@@ -152,7 +158,7 @@ impl DataTable for PostgresDataTable {
         })
     }
 
-    async fn get_entry(&self, hash: &str) -> Result<Option<DataEntry>, Error> {
+    async fn get_entry(&self, hash: &str) -> Result<Option<DataEntry>> {
         let row = sqlx::query(
             r#"
             SELECT
@@ -187,7 +193,7 @@ impl DataTable for PostgresDataTable {
         }
     }
 
-    async fn create_entry(&mut self, entry: DataEntry) -> Result<(), Error> {
+    async fn create_entry(&mut self, entry: DataEntry) -> Result<()> {
         // Start a transaction
         let mut tx = self
             .pool
@@ -234,7 +240,25 @@ impl DataTable for PostgresDataTable {
         Ok(())
     }
 
-    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32, Error> {
+    async fn delete_entry(&mut self, hash: &str) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM data_entries
+            WHERE hash = $1
+            "#,
+        )
+        .bind(hash)
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(rows_affected) if rows_affected.rows_affected() == 1 => Ok(()),
+            Ok(_) => Err(Error::NotFound),
+            Err(e) => Err(Error::Database(Box::new(e))),
+        }
+    }
+
+    async fn increase_ref_count(&mut self, hash: &str) -> Result<i32> {
         let row = sqlx::query(
             r#"
             UPDATE data_entries
@@ -254,7 +278,7 @@ impl DataTable for PostgresDataTable {
         }
     }
 
-    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32, Error> {
+    async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32> {
         let row = sqlx::query(
             r#"
             UPDATE data_entries
@@ -274,7 +298,7 @@ impl DataTable for PostgresDataTable {
         }
     }
 
-    async fn add_inline_data(&mut self, hash: &str, data: Vec<u8>) -> Result<(), Error> {
+    async fn add_inline_data(&mut self, hash: &str, data: Vec<u8>) -> Result<()> {
         let result = sqlx::query(
             r#"
             UPDATE data_entries
@@ -296,7 +320,7 @@ impl DataTable for PostgresDataTable {
         Ok(())
     }
 
-    async fn remove_inline_data(&mut self, hash: &str) -> Result<(), Error> {
+    async fn remove_inline_data(&mut self, hash: &str) -> Result<()> {
         let result = sqlx::query(
             r#"
             UPDATE data_entries
@@ -317,29 +341,29 @@ impl DataTable for PostgresDataTable {
         Ok(())
     }
 
-    async fn add_s3_path(&mut self, hash: &str, path: String) -> Result<(), Error> {
+    async fn add_s3_path(&mut self, hash: &str, path: String) -> Result<()> {
         self.append_to_array(hash, "s3_path", path, "TEXT").await
     }
 
-    async fn add_local_path(&mut self, hash: &str, path: String) -> Result<(), Error> {
+    async fn add_local_path(&mut self, hash: &str, path: String) -> Result<()> {
         self.append_to_array(hash, "local_path", path, "TEXT").await
     }
 
-    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<(), Error> {
+    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<()> {
         self.append_to_array(hash, "devices", device_id, "UUID")
             .await
     }
 
-    async fn remove_s3_path(&mut self, hash: &str, path: &str) -> Result<(), Error> {
+    async fn remove_s3_path(&mut self, hash: &str, path: &str) -> Result<()> {
         self.remove_from_array(hash, "s3_path", path, "TEXT").await
     }
 
-    async fn remove_local_path(&mut self, hash: &str, path: &str) -> Result<(), Error> {
+    async fn remove_local_path(&mut self, hash: &str, path: &str) -> Result<()> {
         self.remove_from_array(hash, "local_path", path, "TEXT")
             .await
     }
 
-    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<(), Error> {
+    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<()> {
         self.remove_from_array(hash, "devices", device_id, "UUID")
             .await
     }
@@ -353,7 +377,7 @@ impl PostgresDataTable {
         column: &str,
         value: T,
         array_type: &str,
-    ) -> Result<(), Error>
+    ) -> Result<()>
     where
         T: sqlx::Type<sqlx::Postgres>,
         for<'r> &'r T: sqlx::Encode<'r, sqlx::Postgres>,
@@ -405,7 +429,7 @@ impl PostgresDataTable {
         column: &str,
         value: T,
         array_type: &str,
-    ) -> Result<(), Error>
+    ) -> Result<()>
     where
         T: sqlx::Type<sqlx::Postgres>,
         for<'r> &'r T: sqlx::Encode<'r, sqlx::Postgres>,
@@ -786,7 +810,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn test_ref_count_operations(pool: PgPool) -> Result<(), Error> {
+    async fn test_ref_count_operations(pool: PgPool) -> Result<()> {
         let mut table = PostgresDataTable::from_pool(pool.clone()).await?;
         let test_hash = "b2_test_hash_ref_count";
 
