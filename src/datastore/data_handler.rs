@@ -17,12 +17,13 @@ pub struct DataTableHandler<T: DataTable> {
 }
 
 /// Represents different types of data storage locations.
-#[allow(dead_code)]
+#[derive(Debug)]
 pub enum DataLocation {
     Inline(Vec<u8>),    // Inlined binary data
     S3(String),         // Path in an S3 bucket
     LocalPath(PathBuf), // Path on a local filesystem
     Device(uuid::Uuid), // Identifier for a device
+    URL(String),        // Generic URL that we don't control
 }
 
 #[allow(dead_code)]
@@ -147,6 +148,13 @@ impl<T: DataTable> DataTableHandler<T> {
                 file.read_to_end(&mut buffer)?;
                 buffer
             }
+            DataLocation::URL(url) => {
+                // Download the url into a Vec<u8>
+                // TODO: don't unwrap
+                let response = reqwest::get(url).await.unwrap();
+                let bytes = response.bytes().await.unwrap();
+                bytes.to_vec()
+            }
             _ => todo!(),
         };
         let hash = utils::generate_hash(&raw_data)?;
@@ -228,6 +236,7 @@ impl<T: DataTable> DataTableHandler<T> {
             DataLocation::Device(device_id) => {
                 self.data_table.add_device(hash, device_id).await?;
             }
+            _ => unimplemented!(),
         }
 
         Ok(())

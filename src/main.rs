@@ -8,6 +8,7 @@ use datastore::store::DataStore;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -17,7 +18,7 @@ struct EideticaArgs {
     config: Option<PathBuf>,
 
     #[arg(short, long)]
-    insert: Option<PathBuf>,
+    insert: Option<String>,
 
     #[arg(short, long)]
     list: bool,
@@ -46,12 +47,11 @@ async fn main() -> Result<()> {
     let mut store = DataStore::from_pool(pool, "cmdfiles", device_id).await?;
 
     if let Some(insertion) = args.insert {
+        let location = string_to_datalocation(&insertion)?;
+        println!("ASDF: {:?}", &location);
+
         let id = store
-            .store_data(
-                DataLocation::LocalPath(insertion),
-                serde_json::Value::Null,
-                None,
-            )
+            .store_data(location, serde_json::Value::Null, None)
             .await?;
         println!("Successfully inserted, UUID: {}", id);
     } else if args.list {
@@ -63,4 +63,16 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Attempts to interpret user input as some kind of data location
+///
+/// Either a path or a url
+fn string_to_datalocation(something: &str) -> Result<DataLocation> {
+    let pb = PathBuf::from_str(something).unwrap();
+    if pb.exists() {
+        Ok(DataLocation::LocalPath(pb))
+    } else {
+        Ok(DataLocation::URL(something.to_string()))
+    }
 }
