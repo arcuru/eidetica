@@ -16,3 +16,7 @@
 
 # Code coverage files. This is the default folder for many tools
 /coverage
+
+# Editor specific folders
+/.vscode
+/.idea
