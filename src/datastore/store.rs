@@ -222,4 +222,14 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
             .add_data_location(&entry.data_hash, location)
             .await
     }
+
+    /// Search the metadata entries for those with matching conditions
+    pub async fn get_entries_by_metadata_conditions(
+        &self,
+        conditions: Value,
+    ) -> Result<Vec<MetadataEntry>> {
+        self.metadata_table
+            .get_entries_by_metadata_conditions(&conditions, false)
+            .await
+    }
 }
