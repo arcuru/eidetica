@@ -94,11 +94,16 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         Ok(id)
     }
 
-    /// Just get a copy of all the active metadata entries.
+    /// Get a copy of all the active metadata entries.
     ///
     /// Not the data, that is queried only individually.
     pub async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>> {
         self.metadata_table.get_active_entries().await
+    }
+
+    /// Get a copy of all the archived metadata entries.
+    pub async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>> {
+        self.metadata_table.get_archived_entries().await
     }
 
     /// Get the history of a piece of data by following its parent chain
@@ -231,5 +236,405 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         self.metadata_table
             .get_entries_by_metadata_conditions(&conditions, false)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    pub type TestResult<T> = std::result::Result<T, sqlx::Error>;
+
+    async fn setup_datastore(pool: PgPool) -> DataStore<PostgresDataTable, PostgresMetadataTable> {
+        let device_id = Uuid::new_v4();
+        DataStore::from_pool(pool, "test", device_id)
+            .await
+            .expect("Failed to create test datastore")
+    }
+
+    #[sqlx::test]
+    async fn test_store_data_basic(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Create test data
+        let data = "Hello world!".as_bytes().to_vec();
+        let metadata = serde_json::json!({
+            "type": "text",
+            "name": "test.txt"
+        });
+
+        // Store the data
+        let id = store
+            .store_data(DataLocation::Inline(data.clone()), metadata.clone(), None)
+            .await
+            .expect("Failed to store data");
+
+        // Verify the entry exists
+        let entries = store
+            .get_active_entries()
+            .await
+            .expect("Failed to get entries");
+        assert_eq!(entries.len(), 1);
+
+        let entry = &entries[0];
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.metadata, metadata);
+        assert!(!entry.archived);
+        assert!(entry.local);
+        assert_eq!(entry.parent_id, None);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_store_data_with_parent(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Store initial version
+        let initial_data = "Initial".as_bytes().to_vec();
+        let initial_id = store
+            .store_data(
+                DataLocation::Inline(initial_data),
+                serde_json::json!({"version": 1}),
+                None,
+            )
+            .await
+            .expect("Failed to store initial data");
+
+        // Store update version
+        let update_data = "Updated".as_bytes().to_vec();
+        let update_id = store
+            .store_data(
+                DataLocation::Inline(update_data),
+                serde_json::json!({"version": 2}),
+                Some(initial_id),
+            )
+            .await
+            .expect("Failed to store updated data");
+
+        // Verify history
+        let history = store
+            .get_history(update_id)
+            .await
+            .expect("Failed to get history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].id, update_id);
+        assert_eq!(history[1].id, initial_id);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_archive_entry(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Store test data
+        let id = store
+            .store_data(
+                DataLocation::Inline("test".as_bytes().to_vec()),
+                serde_json::json!({"test": true}),
+                None,
+            )
+            .await
+            .expect("Failed to store data");
+
+        // Archive it
+        store.archive(id).await.expect("Failed to archive entry");
+
+        // Verify it's not in active entries
+        let active = store
+            .get_active_entries()
+            .await
+            .expect("Failed to get entries");
+        assert!(active.is_empty());
+
+        // But should be found when explicitly querying archived
+        let archived = store
+            .get_archived_entries()
+            .await
+            .expect("Failed to query archived");
+        assert!(!archived.is_empty());
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_query_by_metadata(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Store entries with different metadata
+        let test1_id = store
+            .store_data(
+                DataLocation::Inline("test1".as_bytes().to_vec()),
+                serde_json::json!({"type": "text", "tag": "a"}),
+                None,
+            )
+            .await
+            .expect("Failed to store data 1");
+
+        store
+            .store_data(
+                DataLocation::Inline("test2".as_bytes().to_vec()),
+                serde_json::json!({"type": "text", "tag": "b"}),
+                None,
+            )
+            .await
+            .expect("Failed to store data 2");
+
+        // Query for specific tag
+        let results: Vec<(Uuid, Value)> = store
+            .query_by_metadata(&serde_json::json!({"tag": "a"}), false)
+            .await
+            .expect("Failed to query");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1["tag"], "a");
+        assert_eq!(results[0].0, test1_id);
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_data_locations_management(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Store initial data as inline
+        let data = "Test data".as_bytes().to_vec();
+        let id = store
+            .store_data(
+                DataLocation::Inline(data.clone()),
+                serde_json::json!({"type": "text"}),
+                None,
+            )
+            .await
+            .expect("Failed to store data");
+
+        // Get locations - should have been converted to local path
+        let locations = store
+            .get_data_locations(id)
+            .await
+            .expect("Failed to get locations");
+        assert_eq!(locations.len(), 1);
+        match &locations[0] {
+            DataLocation::LocalPath(path) => {
+                assert!(path.exists());
+                let contents = std::fs::read(path).expect("Failed to read file");
+                assert_eq!(contents, data);
+            }
+            _ => panic!("Expected local path data"),
+        }
+
+        // Add an S3 location
+        let s3_path = "s3://bucket/test.txt".to_string();
+        store
+            .add_data_location(id, DataLocation::S3(s3_path.clone()))
+            .await
+            .expect("Failed to add S3 location");
+
+        // Verify both locations exist
+        let locations = store
+            .get_data_locations(id)
+            .await
+            .expect("Failed to get locations");
+        assert_eq!(locations.len(), 2);
+
+        // Verify local path still exists
+        let has_local = locations
+            .iter()
+            .any(|loc| matches!(loc, DataLocation::LocalPath(_)));
+        assert!(has_local, "Local path not found");
+
+        // Verify S3 location exists
+        let has_s3 = locations.iter().any(|loc| match loc {
+            DataLocation::S3(path) => path == &s3_path,
+            _ => false,
+        });
+        assert!(has_s3, "S3 location not found");
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_data_storage_with_different_types(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+
+        // Test inline data
+        let inline_data = "Inline content".as_bytes().to_vec();
+        let inline_id = store
+            .store_data(
+                DataLocation::Inline(inline_data.clone()),
+                serde_json::json!({"type": "inline"}),
+                None,
+            )
+            .await
+            .expect("Failed to store inline data");
+
+        // Test local file
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "Local file content").expect("Failed to write test file");
+        let file_id = store
+            .store_data(
+                DataLocation::LocalPath(file_path),
+                serde_json::json!({"type": "file"}),
+                None,
+            )
+            .await
+            .expect("Failed to store file");
+
+        // Verify both entries exist and have correct metadata
+        let entries = store
+            .get_active_entries()
+            .await
+            .expect("Failed to get entries");
+        assert_eq!(entries.len(), 2);
+
+        // Verify inline data entry
+        let inline_entry = entries
+            .iter()
+            .find(|e| e.id == inline_id)
+            .expect("Inline entry not found");
+        assert_eq!(inline_entry.metadata["type"], "inline");
+
+        // Verify file entry
+        let file_entry = entries
+            .iter()
+            .find(|e| e.id == file_id)
+            .expect("File entry not found");
+        assert_eq!(file_entry.metadata["type"], "file");
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_data_versioning_and_history(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Create initial version
+        let v1_data = "Version 1".as_bytes().to_vec();
+        let v1_id = store
+            .store_data(
+                DataLocation::Inline(v1_data),
+                serde_json::json!({
+                    "version": 1,
+                    "type": "document"
+                }),
+                None,
+            )
+            .await
+            .expect("Failed to store v1");
+
+        // Create version 2
+        let v2_data = "Version 2".as_bytes().to_vec();
+        let v2_id = store
+            .store_data(
+                DataLocation::Inline(v2_data),
+                serde_json::json!({
+                    "version": 2,
+                    "type": "document"
+                }),
+                Some(v1_id),
+            )
+            .await
+            .expect("Failed to store v2");
+
+        // Create version 3
+        let v3_data = "Version 3".as_bytes().to_vec();
+        let v3_id = store
+            .store_data(
+                DataLocation::Inline(v3_data),
+                serde_json::json!({
+                    "version": 3,
+                    "type": "document"
+                }),
+                Some(v2_id),
+            )
+            .await
+            .expect("Failed to store v3");
+
+        // Get history starting from v3
+        let history = store
+            .get_history(v3_id)
+            .await
+            .expect("Failed to get history");
+
+        // Verify history order and content
+        assert_eq!(history.len(), 3, "Expected 3 versions in history");
+        assert_eq!(history[0].id, v3_id, "Latest version should be first");
+        assert_eq!(history[1].id, v2_id, "Second version should be second");
+        assert_eq!(history[2].id, v1_id, "First version should be last");
+
+        // Verify version numbers in metadata
+        assert_eq!(
+            history[0].metadata["version"], 3,
+            "Latest version should have version 3"
+        );
+        assert_eq!(
+            history[1].metadata["version"], 2,
+            "Second version should have version 2"
+        );
+        assert_eq!(
+            history[2].metadata["version"], 1,
+            "First version should have version 1"
+        );
+
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_metadata_query_complex(pool: PgPool) -> TestResult<()> {
+        let mut store = setup_datastore(pool).await;
+
+        // Store multiple entries with different metadata
+        for i in 1..=3 {
+            store
+                .store_data(
+                    DataLocation::Inline(format!("Data {}", i).as_bytes().to_vec()),
+                    serde_json::json!({
+                        "type": "document",
+                        "category": if i % 2 == 0 { "even" } else { "odd" },
+                        "priority": i
+                    }),
+                    None,
+                )
+                .await
+                .expect("Failed to store data");
+        }
+
+        // Query by category
+        let odd_results = store
+            .query_by_metadata(&serde_json::json!({"category": "odd"}), false)
+            .await
+            .expect("Failed to query odd entries");
+        assert_eq!(odd_results.len(), 2, "Expected 2 odd entries");
+
+        // Query by priority
+        let high_priority = store
+            .query_by_metadata(&serde_json::json!({"priority": 3}), false)
+            .await
+            .expect("Failed to query high priority entries");
+        assert_eq!(high_priority.len(), 1, "Expected 1 high priority entry");
+
+        // Query with multiple conditions
+        let specific_entries = store
+            .query_by_metadata(
+                &serde_json::json!({
+                    "type": "document",
+                    "category": "odd"
+                }),
+                false,
+            )
+            .await
+            .expect("Failed to query specific entries");
+        assert_eq!(
+            specific_entries.len(),
+            2,
+            "Expected 2 entries matching both conditions"
+        );
+
+        Ok(())
     }
 }

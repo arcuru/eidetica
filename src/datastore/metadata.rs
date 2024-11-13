@@ -41,6 +41,9 @@ pub trait MetadataTable {
     /// Be advised that this will return _all_ active entries and may be expensive on large databases.
     async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>>;
 
+    /// Get all the archived entries
+    async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>>;
+
     /// Get entries by 1 or more metadata conditions
     async fn get_entries_by_metadata_conditions(
         &self,
@@ -326,6 +329,25 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(entries)
     }
 
+    async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>> {
+        let query = format!(
+            r#"
+        SELECT
+            id, device_id, archived, local, parent_id, metadata, data_hash
+        FROM {}
+        WHERE archived = TRUE
+        ORDER BY id DESC
+        "#,
+            self.table_name
+        );
+
+        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
+
+        let entries = rows.into_iter().map(MetadataEntry::from).collect();
+
+        Ok(entries)
+    }
+
     /// Query entries by multiple metadata key-value pairs
     async fn get_entries_by_metadata_conditions(
         &self,
@@ -344,8 +366,26 @@ impl MetadataTable for PostgresMetadataTable {
 
         if let Value::Object(map) = conditions {
             for (key, value) in map {
-                condition_parts.push(format!("metadata->>'{}' = ${}", key, bind_values.len() + 1));
-                bind_values.push(value.as_str().unwrap_or_default().to_string());
+                match value {
+                    Value::Number(_) => {
+                        // Cast the parameter to JSONB for proper comparison
+                        condition_parts.push(format!(
+                            "metadata->'{}' = ${}::jsonb",
+                            key,
+                            bind_values.len() + 1
+                        ));
+                        bind_values.push(value.to_string());
+                    }
+                    _ => {
+                        // String comparisons remain the same
+                        condition_parts.push(format!(
+                            "metadata->>'{}' = ${}",
+                            key,
+                            bind_values.len() + 1
+                        ));
+                        bind_values.push(value.as_str().unwrap_or_default().to_string());
+                    }
+                }
             }
         }
 
@@ -786,6 +826,75 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn test_get_archived_entries(pool: PgPool) {
+        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
+            .await
+            .unwrap();
+
+        // Create some test entries, both archived and active
+        let active_entry1 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            local: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "active",
+                "name": "active_entry1"
+            }),
+            data_hash: generate_hash("active_entry1".as_bytes()),
+        };
+
+        let active_entry2 = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: false,
+            local: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "active",
+                "name": "active_entry2"
+            }),
+            data_hash: generate_hash("active_entry2".as_bytes()),
+        };
+
+        let archived_entry = MetadataEntry {
+            id: Uuid::now_v7(),
+            device_id: Uuid::new_v4(),
+            archived: true,
+            local: false,
+            parent_id: None,
+            metadata: serde_json::json!({
+                "type": "archived",
+                "name": "archived_entry"
+            }),
+            data_hash: generate_hash("archived_entry".as_bytes()),
+        };
+
+        // Insert all entries
+        table.create_entry(active_entry1.clone()).await.unwrap();
+        table.create_entry(active_entry2.clone()).await.unwrap();
+        table.create_entry(archived_entry.clone()).await.unwrap();
+
+        // Get archived entries
+        let archived_entries = table.get_archived_entries().await.unwrap();
+
+        // Verify we got the correct number of entries
+        assert_eq!(archived_entries.len(), 1);
+
+        // Verify only archived entry is returned
+        let archived_ids: Vec<Uuid> = archived_entries.iter().map(|e| e.id).collect();
+        assert!(archived_ids.contains(&archived_entry.id));
+        assert!(!archived_ids.contains(&active_entry1.id));
+        assert!(!archived_ids.contains(&active_entry2.id));
+
+        // Verify all returned entries are archived
+        for entry in archived_entries {
+            assert!(entry.archived);
+        }
+    }
+
+    #[sqlx::test]
     async fn test_get_entries_by_metadata_conditions(pool: PgPool) {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
@@ -891,5 +1000,21 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, entry1.id);
+    }
+
+    #[sqlx::test]
+    async fn test_create_table_duplicate(pool: PgPool) {
+        // Test that creating the same table multiple times works
+        let mut table1 = PostgresMetadataTable::from_pool(pool.clone(), "test_duplicate")
+            .await
+            .unwrap();
+
+        let mut table2 = PostgresMetadataTable::from_pool(pool, "test_duplicate")
+            .await
+            .unwrap();
+
+        // Both creations should succeed
+        assert!(table1.create_table().await.is_ok());
+        assert!(table2.create_table().await.is_ok());
     }
 }
