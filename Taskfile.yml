@@ -4,7 +4,6 @@ version: "3"
 
 tasks:
   default:
-    desc: List all tasks
     cmd: task --list
     silent: true
   ci:full:
