@@ -29,6 +29,7 @@ validator = { version = "0.18", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1.0.93"
 reqwest = { version = "0.12", features = ["blocking"] }
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"

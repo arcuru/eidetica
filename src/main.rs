@@ -1,4 +1,5 @@
 mod datastore;
+mod plugins;
 mod utils;
 
 use anyhow::Result;
@@ -14,6 +15,10 @@ use std::str::FromStr;
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct EideticaArgs {
+    /// Plugin
+    #[command(subcommand)]
+    plugin: Option<plugins::PluginArgs>,
+
     /// path to config file
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -61,6 +66,11 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
+
+    // Send out to the plugin
+    if let Some(plugin_args) = args.plugin {
+        return plugins::run(plugin_args, &mut store).await;
+    }
 
     if let Some(insertion) = args.insert {
         let location = string_to_datalocation(&insertion)?;

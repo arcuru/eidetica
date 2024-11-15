@@ -5,7 +5,7 @@ use data_handler::{DataLocation, DataTableHandler};
 use metadata::{MetadataTable, PostgresMetadataTable};
 use schema::MetadataEntry;
 use serde_json::Value;
-use settings::SettingsTable;
+use settings::{Setting, SettingsTable};
 use sqlx::PgPool;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -236,6 +236,16 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         self.metadata_table
             .get_entries_by_metadata_conditions(&conditions, false)
             .await
+    }
+
+    /// Get a setting value by key
+    pub async fn get_setting(&self, name: &str) -> Result<Option<Setting>> {
+        self.settings_table.get_setting(name).await
+    }
+
+    /// Set a setting value by key
+    pub async fn set_setting(&mut self, setting: Setting) -> Result<()> {
+        self.settings_table.set_setting(setting).await
     }
 }
 

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{bail, Context, Result};
 use log;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,68 +45,9 @@ fn validate_key_name(key: &str) -> std::result::Result<(), ValidationError> {
 }
 
 #[allow(dead_code)]
-pub trait Settings {
-    /// Retrieves a setting by its key
-    ///
-    /// # Arguments
-    /// * `key` - The unique identifier for the setting to retrieve
-    ///
-    /// # Returns
-    /// * `Ok(Some(Setting))` - The setting was found and returned
-    /// * `Ok(None)` - No setting exists with the given key
-    /// * `Err(Error)` - A database error occurred
-    async fn get_setting(&self, key: &str) -> Result<Option<Setting>, Error>;
-
-    /// Creates or updates a setting
-    ///
-    /// If a setting with the same key already exists, it will be archived and replaced
-    /// with the new value.
-    ///
-    /// # Arguments
-    /// * `setting` - The setting to create or update
-    ///
-    /// # Returns
-    /// * `Ok(())` - The setting was successfully created/updated
-    /// * `Err(Error)` - Failed to create/update the setting
-    async fn set_setting(&mut self, setting: Setting) -> Result<(), Error>;
-
-    /// Deletes a setting by its key
-    ///
-    /// The setting is marked as deleted by creating a new entry with deleted=true.
-    /// The previous entry is archived.
-    ///
-    /// # Arguments
-    /// * `key` - The unique identifier of the setting to delete
-    ///
-    /// # Returns
-    /// * `Ok(())` - The setting was successfully deleted
-    /// * `Err(Error::NotFound)` - No setting exists with the given key
-    /// * `Err(Error)` - Failed to delete the setting
-    async fn delete_setting(&mut self, key: &str) -> Result<(), Error>;
-
-    /// Returns a list of all active (non-deleted) settings
-    ///
-    /// # Returns
-    /// * `Ok(Vec<Setting>)` - List of all active settings
-    /// * `Err(Error)` - Failed to retrieve the settings
-    async fn list_settings(&self) -> Result<Vec<Setting>, Error>;
-
-    /// Retrieves the history of a setting, including all versions (active and archived)
-    ///
-    /// # Arguments
-    /// * `key` - The unique identifier for the setting to retrieve history for
-    ///
-    /// # Returns
-    /// * `Ok(Vec<(Setting, bool)>)` - List of all versions of the setting in chronological order,
-    ///                                where the bool indicates whether this version is the current active setting
-    /// * `Err(Error)` - Failed to retrieve the setting history
-    async fn get_setting_history(&self, key: &str) -> Result<Vec<(Setting, bool)>, Error>;
-}
-
-#[allow(dead_code)]
 impl<T: MetadataTable> SettingsTable<T> {
     /// Create a new SettingsTable from any MetadataTable implementation
-    pub async fn new(mut table: T, device_id: Uuid) -> Result<Self, Error> {
+    pub async fn new(mut table: T, device_id: Uuid) -> Result<Self> {
         // Ensure the table exists
         table.create_table().await?;
 
@@ -182,14 +123,24 @@ impl<T: MetadataTable> SettingsTable<T> {
 #[allow(dead_code)]
 impl SettingsTable<PostgresMetadataTable> {
     /// Create a new SettingsTable from a Postgres pool
-    pub async fn from_postgres(pool: PgPool, device_id: Uuid) -> Result<Self, Error> {
+    pub async fn from_postgres(pool: PgPool, device_id: Uuid) -> Result<Self> {
         let table = PostgresMetadataTable::from_pool(pool, "settings").await?;
         Self::new(table, device_id).await
     }
 }
 
-impl<T: MetadataTable> Settings for SettingsTable<T> {
-    async fn get_setting(&self, key: &str) -> Result<Option<Setting>, Error> {
+#[allow(dead_code)]
+impl<T: MetadataTable> SettingsTable<T> {
+    /// Retrieves a setting by its key
+    ///
+    /// # Arguments
+    /// * `key` - The unique identifier for the setting to retrieve
+    ///
+    /// # Returns
+    /// * `Ok(Some(Setting))` - The setting was found and returned
+    /// * `Ok(None)` - No setting exists with the given key
+    /// * `Err(Error)` - A database error occurred
+    pub async fn get_setting(&self, key: &str) -> Result<Option<Setting>> {
         let conditions = serde_json::json!({
             "type": "setting",
             "key": key,
@@ -214,7 +165,44 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
         }
     }
 
-    async fn set_setting(&mut self, setting: Setting) -> Result<(), Error> {
+    /// Set a key's value, creating if necessary
+    pub async fn set_value(&mut self, key: &str, value: serde_json::Value) -> Result<()> {
+        let setting = self.get_setting(key).await?;
+        if let Some(mut setting) = setting {
+            // Update the value
+            setting.value = value;
+            self.set_setting(setting).await
+        } else {
+            let setting = Setting {
+                key: key.to_string(),
+                value,
+                description: None,
+            };
+            self.set_setting(setting).await
+        }
+    }
+
+    /// Retrieve the current value. If it's not currently set, we return Null.
+    pub async fn get_value(&mut self, key: &str) -> Result<serde_json::Value> {
+        let setting = self.get_setting(key).await?;
+        match setting {
+            Some(setting) => Ok(setting.value),
+            None => Ok(serde_json::Value::Null),
+        }
+    }
+
+    /// Creates or updates a setting
+    ///
+    /// If a setting with the same key already exists, it will be archived and replaced
+    /// with the new value.
+    ///
+    /// # Arguments
+    /// * `setting` - The setting to create or update
+    ///
+    /// # Returns
+    /// * `Ok(())` - The setting was successfully created/updated
+    /// * `Err(Error)` - Failed to create/update the setting
+    pub async fn set_setting(&mut self, setting: Setting) -> Result<()> {
         // Validate key length
         // Validate the setting against the defined rules
         setting
@@ -258,7 +246,12 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
         Ok(())
     }
 
-    async fn list_settings(&self) -> Result<Vec<Setting>, Error> {
+    /// Returns a list of all active (non-deleted) settings
+    ///
+    /// # Returns
+    /// * `Ok(Vec<Setting>)` - List of all active settings
+    /// * `Err(Error)` - Failed to retrieve the settings
+    pub async fn list_settings(&self) -> Result<Vec<Setting>> {
         let conditions = serde_json::json!({
             "type": "setting"
         });
@@ -277,7 +270,16 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
         Ok(settings)
     }
 
-    async fn get_setting_history(&self, key: &str) -> Result<Vec<(Setting, bool)>, Error> {
+    /// Retrieves the history of a setting, including all versions (active and archived)
+    ///
+    /// # Arguments
+    /// * `key` - The unique identifier for the setting to retrieve history for
+    ///
+    /// # Returns
+    /// * `Ok(Vec<(Setting, bool)>)` - List of all versions of the setting in chronological order,
+    ///                                where the bool indicates whether this version is the current active setting
+    /// * `Err(Error)` - Failed to retrieve the setting history
+    pub async fn get_setting_history(&self, key: &str) -> Result<Vec<(Setting, bool)>> {
         let conditions = serde_json::json!({
             "type": "setting",
             "key": key
@@ -298,7 +300,19 @@ impl<T: MetadataTable> Settings for SettingsTable<T> {
             .collect())
     }
 
-    async fn delete_setting(&mut self, key: &str) -> Result<(), Error> {
+    /// Deletes a setting by its key
+    ///
+    /// The setting is marked as deleted by creating a new entry with deleted=true.
+    /// The previous entry is archived.
+    ///
+    /// # Arguments
+    /// * `key` - The unique identifier of the setting to delete
+    ///
+    /// # Returns
+    /// * `Ok(())` - The setting was successfully deleted
+    /// * `Err(Error::NotFound)` - No setting exists with the given key
+    /// * `Err(Error)` - Failed to delete the setting
+    pub async fn delete_setting(&mut self, key: &str) -> Result<()> {
         // Find the current active setting with this key
         let conditions = serde_json::json!({
                 "type": &"setting",
