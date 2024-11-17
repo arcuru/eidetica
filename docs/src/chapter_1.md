@@ -1,4 +1,4 @@
-# Eidetica Docs
+#  Chapter 1
 
 Docs describe either the current state or the planned design.
 

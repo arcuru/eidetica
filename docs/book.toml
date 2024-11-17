@@ -1,0 +1,6 @@
+[book]
+authors = ["Patrick Jackson"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Eidetica"

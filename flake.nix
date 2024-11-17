@@ -191,6 +191,9 @@
             # Releasing
             release-plz
             git-cliff
+
+            # Documentation
+            mdbook
           ];
 
           # Many tools read this to find the sources for rust stdlib
