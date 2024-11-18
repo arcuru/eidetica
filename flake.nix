@@ -192,6 +192,9 @@
             release-plz
             git-cliff
 
+            # Profiling
+            cargo-flamegraph
+
             # Documentation
             mdbook
           ];
@@ -201,6 +204,9 @@
 
           # Pointer to the testing Database
           DATABASE_URL = "postgresql://postgres:postgres@localhost:55555/postgres";
+
+          # Enable debug symbols in release builds
+          CARGO_PROFILE_RELEASE_DEBUG = true;
         };
       };
     };
