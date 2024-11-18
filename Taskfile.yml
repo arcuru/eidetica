@@ -29,6 +29,7 @@ tasks:
     cmds:
       - cargo fmt --all
       - alejandra .
+      - prettier --write .
   db:up:
     desc: Start the testing database
     aliases: [up, db:start]
