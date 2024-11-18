@@ -38,6 +38,12 @@ tasks:
     desc: Stop the testing database
     aliases: [down, db:stop]
     cmd: source ./tests/test.sh down
+  db:restart:
+    desc: Restart the testing database
+    aliases: [restart, db:rebuild]
+    cmds:
+      - task: db:down
+      - task: db:up
   test:
     desc: Run all tests
     deps: [up]
