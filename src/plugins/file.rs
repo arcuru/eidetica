@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -74,6 +74,13 @@ where
     D: DataTable,
     M: MetadataTable,
 {
+    let path = if path.is_absolute() {
+        path
+    } else {
+        path.canonicalize()
+            .context("Failed to convert path to absolute.")?
+    };
+
     if !path.exists() {
         bail!("File does not exist on the filesystem")
     }
@@ -81,14 +88,7 @@ where
         bail!("Path is not a file")
     }
 
-    let base_path = match store.get_setting("base_path").await? {
-        Some(setting) => setting
-            .value
-            .as_str()
-            .ok_or_else(|| anyhow!("Base path is not a string"))?
-            .to_string(),
-        None => bail!("No base path set"),
-    };
+    let base_path = base_path(store).await?;
 
     // Get path relative to base_path
     let relative_path = path
@@ -180,7 +180,13 @@ where
     M: MetadataTable,
 {
     // We'll either scan everything or scan a specific path if the user has given it
-    let scan_path = args.path.unwrap_or(base_path(store).await?);
+    let base_path = base_path(store).await?;
+    let scan_path = args.path.unwrap_or(base_path.clone());
+
+    // Convert scan_path to an absolute path
+    let scan_path = scan_path
+        .canonicalize()
+        .context("Failed to make the scan path absolute")?;
 
     if !scan_path.exists() {
         bail!("Scan path does not exist");
@@ -199,19 +205,14 @@ where
         .filter_map(|e| e.ok())
     {
         if entry.file_type().is_file() {
-            match scan_file(entry.path().to_path_buf(), store).await {
-                Ok(_) => (),
-                Err(e) => eprintln!("Error scanning file {:?}: {}", entry.path(), e),
-            }
+            scan_file(entry.path().to_path_buf(), store).await?;
         }
     }
 
     // Now we should look at all the active entries that are under this relative path, and see if any have been deleted.
     let relative_path = scan_path
-        .strip_prefix(base_path(store).await?)
+        .strip_prefix(base_path.clone())
         .context("Could not get relative path")?;
-
-    println!("ASDF: relative {}", relative_path.to_str().unwrap());
 
     let conditions = serde_json::json!({
         "path": {
@@ -221,7 +222,6 @@ where
 
     let entries = store.get_entries_by_metadata_conditions(conditions).await?;
     for entry in entries.iter() {
-        println!("ASDF: {}", entry.metadata["path"].as_str().unwrap());
         if !entry.metadata["path"]
             .as_str()
             .context("Path is not a string")?
@@ -235,6 +235,8 @@ where
             .as_str()
             .context("Path is not a string")?
             .into();
+        // Append file_path to base_path
+        let file_path = base_path.join(file_path);
         if !file_path.exists() {
             store
                 .archive(entry.id)
@@ -254,7 +256,10 @@ where
     D: DataTable,
     M: MetadataTable,
 {
-    let path = args.path;
+    let path = args
+        .path
+        .canonicalize()
+        .context("Failed to canonicalize path")?;
 
     let mut path_setting = store.get_setting("base_path").await?.unwrap_or(Setting {
         key: "base_path".to_string(),

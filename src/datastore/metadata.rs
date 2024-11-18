@@ -376,6 +376,15 @@ impl MetadataTable for PostgresMetadataTable {
                         ));
                         bind_values.push(value.to_string());
                     }
+                    Value::Object(obj) if obj.contains_key("$regex") => {
+                        // Handle regex pattern matching
+                        condition_parts.push(format!(
+                            "metadata->>'{}' ~ ${}",
+                            key,
+                            bind_values.len() + 1
+                        ));
+                        bind_values.push(obj["$regex"].as_str().unwrap_or_default().to_string());
+                    }
                     _ => {
                         // String comparisons remain the same
                         condition_parts.push(format!(
