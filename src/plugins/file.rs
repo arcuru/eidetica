@@ -138,7 +138,6 @@ where
 /// Get the base path from the settings
 ///
 /// This is local to this device, and refers to the user accessible location for the files.
-/// TODO: This needs to be an absolute path
 async fn base_path<D, M>(store: &DataStore<D, M>) -> Result<PathBuf>
 where
     D: DataTable,
@@ -173,6 +172,26 @@ where
     Ok(())
 }
 
+/// Scan a full directory for new/changed files.
+///
+/// Will only check files that are under the directory, but will not remove files.
+async fn scan_directory<D, M>(scan_path: PathBuf, store: &mut DataStore<D, M>) -> Result<()>
+where
+    D: DataTable,
+    M: MetadataTable,
+{
+    for entry in WalkDir::new(&scan_path)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            scan_file(entry.path().to_path_buf(), store).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Do a full scan of the stored file system.
 async fn scan<D, M>(args: ScanArgs, store: &mut DataStore<D, M>) -> Result<()>
 where
@@ -188,31 +207,32 @@ where
         .canonicalize()
         .context("Failed to make the scan path absolute")?;
 
-    if !scan_path.exists() {
-        bail!("Scan path does not exist");
+    // Verify scan_path is within base_path
+    if !scan_path.starts_with(&base_path) {
+        bail!("Not a valid path, must be under {:?}", base_path)
     }
 
-    if !scan_path.is_dir() {
+    if !scan_path.exists() {
+        bail!("Path does not exist {:?}", scan_path)
+    }
+
+    if scan_path.is_file() {
         // If it's a single file, just scan it
         scan_file(scan_path, store).await?;
         return Ok(());
     }
 
-    // Walk the directory recursively
-    for entry in WalkDir::new(&scan_path)
-        .follow_links(true)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file() {
-            scan_file(entry.path().to_path_buf(), store).await?;
-        }
+    if !scan_path.is_dir() {
+        bail!("Path is not a file or a directory {:?}", scan_path)
     }
+
+    // It's a directory, so let's scan it
+    scan_directory(scan_path.clone(), store).await?;
 
     // Now we should look at all the active entries that are under this relative path, and see if any have been deleted.
     let relative_path = scan_path
         .strip_prefix(base_path.clone())
-        .context("Could not get relative path")?;
+        .context(format!("Could not get relative path for {:?}", scan_path))?;
 
     let conditions = serde_json::json!({
         "path": {
@@ -224,16 +244,16 @@ where
     for entry in entries.iter() {
         if !entry.metadata["path"]
             .as_str()
-            .context("Path is not a string")?
+            .context("Stored path is not a string")?
             .starts_with(relative_path.to_str().unwrap())
         {
-            eprintln!("Regex is incorrect");
+            eprintln!("Scanned entry does not match the regex");
             continue;
         }
 
         let file_path: PathBuf = entry.metadata["path"]
             .as_str()
-            .context("Path is not a string")?
+            .context("Stored path is not a string")?
             .into();
         // Append file_path to base_path
         let file_path = base_path.join(file_path);
@@ -259,7 +279,7 @@ where
     let path = args
         .path
         .canonicalize()
-        .context("Failed to canonicalize path")?;
+        .context("Failed to get absolute path")?;
 
     let mut path_setting = store.get_setting("base_path").await?.unwrap_or(Setting {
         key: "base_path".to_string(),
@@ -270,14 +290,14 @@ where
     if path_setting.value != serde_json::Value::Null
         && path_setting.value != serde_json::to_value(path.to_str())?
     {
-        bail!("Path already set to {}", path_setting.value)
+        bail!("Base Path already set to {}", path_setting.value)
     }
 
     if !path.exists() {
-        bail!("Path does not exist")
+        bail!("Base Path does not exist")
     }
     if !path.is_dir() {
-        bail!("Path is not a directory")
+        bail!("Base Path must be a directory")
     }
 
     path_setting.value = serde_json::to_value(path.to_str().unwrap())?;
