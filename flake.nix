@@ -207,6 +207,9 @@
 
           # Enable debug symbols in release builds
           CARGO_PROFILE_RELEASE_DEBUG = true;
+
+          # Set the debug level for this crate while developing
+          RUST_LOG = "eidetica=debug";
         };
       };
     };

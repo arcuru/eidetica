@@ -11,6 +11,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tracing::info;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -33,9 +34,25 @@ struct EideticaArgs {
     list: bool,
 }
 
+/// Setup logging with tracing
+fn setup_logging() {
+    use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // tracing_subscriber::fmt::init();
+    setup_logging();
 
     // Read in the config file
     let args = EideticaArgs::parse();
@@ -86,7 +103,7 @@ async fn main() -> Result<()> {
 
     if let Some(insertion) = args.insert {
         let location = string_to_datalocation(&insertion)?;
-        println!("Location: {:?}", &location);
+        info!("Location: {:?}", &location);
 
         let id = store
             .store_data(location, metadata.unwrap_or_default(), None)

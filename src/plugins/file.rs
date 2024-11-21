@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::debug;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -247,7 +248,7 @@ where
             .context("Stored path is not a string")?
             .starts_with(relative_path.to_str().unwrap())
         {
-            eprintln!("Scanned entry does not match the regex");
+            debug!("Scanned entry does not match the regex");
             continue;
         }
 
