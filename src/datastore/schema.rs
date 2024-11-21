@@ -23,7 +23,7 @@ pub struct MetadataEntry {
     pub metadata: Value,
 
     /// Hash of the data with algorithm prefix
-    /// Current format: "b2_" + hex(BLAKE2b-256)
+    /// Current format: "b3_" + hex(BLAKE3)
     /// Allows for future hash algorithms with different prefixes
     pub data_hash: String,
 }
@@ -33,7 +33,7 @@ pub struct MetadataEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataEntry {
     /// Hash entry that is the unique identifier for this data
-    /// Current format: "b2_" + hex(BLAKE2b-256)
+    /// Current format: "b3_" + hex(BLAKE3)
     /// Allows for future hash algorithms with different prefixes
     pub hash: String,
 

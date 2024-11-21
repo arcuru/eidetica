@@ -135,7 +135,7 @@ impl<T: DataTable> DataTableHandler<T> {
     /// Copy a file into the data store
     ///
     /// This will:
-    /// 1. Calculate the Blake2b hash of the file
+    /// 1. Calculate the Blake3 hash of the file
     /// 2. Create an entry in the data table
     /// 3. Move the file to the correct local path
     pub async fn copy_file(&mut self, data: DataLocation) -> std::io::Result<DataEntry> {
@@ -243,45 +243,45 @@ impl<T: DataTable> DataTableHandler<T> {
 
     /// Converts a hash string to a filesystem path.
     ///
-    /// The hash must start with the prefix "b2_". The remaining characters are paired into
+    /// The hash must start with the prefix "b3_". The remaining characters are paired into
     /// directories, with any remaining single character becoming the final component.
     ///
     /// # Arguments
     ///
-    /// * `hash` - A string slice that holds the hash, must start with "b2_"
+    /// * `hash` - A string slice that holds the hash, must start with "b3_"
     ///
     /// # Returns
     ///
     /// * `Ok(PathBuf)` - A path constructed from the local base path and the hash components
-    /// * `Err(())` - If the hash is empty or doesn't start with "b2_"
+    /// * `Err(())` - If the hash is empty or doesn't start with "b3_"
     ///
     /// # Examples
     ///
     /// ```
-    /// let path = handler.hash_to_path("b2_abcd")?;    // Results in "base_path/b2/ab/cd"
-    /// let path = handler.hash_to_path("b2_abcde")?;   // Results in "base_path/b2/ab/cd/e"
+    /// let path = handler.hash_to_path("b3_abcd")?;    // Results in "base_path/b3/ab/cd"
+    /// let path = handler.hash_to_path("b3_abcde")?;   // Results in "base_path/b3/ab/cd/e"
     /// let path = handler.hash_to_path("");            // Returns Err(())
     /// let path = handler.hash_to_path("abcd");        // Returns Err(())
     /// ```
     ///
     /// # Directory Structure
     ///
-    /// * First level is always "b2"
+    /// * First level is always "b3"
     /// * Subsequent characters are paired to form directory names
     /// * Any remaining single character becomes the final component
-    /// * Example: "b2_abcdefg" becomes "base_path/b2/ab/cd/ef/g"
+    /// * Example: "b3_abcdefg" becomes "base_path/b3/ab/cd/ef/g"
     fn hash_to_path(&self, hash: &str) -> std::io::Result<PathBuf> {
         let mut path = self.local_path.clone();
 
-        // Return error if hash is empty or doesn't start with b2_
-        if hash.is_empty() || !hash.starts_with("b2_") {
+        // Return error if hash is empty or doesn't start with b3_
+        if hash.is_empty() || !hash.starts_with("b3_") {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("Incorrect hash formatting: {}", hash),
             ));
         };
 
-        path.push("b2");
+        path.push("b3");
 
         // Get hash part after prefix
         let hash_part = &hash[3..];
@@ -385,9 +385,9 @@ mod tests {
     #[test]
     fn test_hash_to_path_basic() {
         let handler = setup_handler();
-        let result = handler.hash_to_path("b2_abcd");
+        let result = handler.hash_to_path("b3_abcd");
 
-        let expected = PathBuf::from("/test/path").join("b2").join("ab").join("cd");
+        let expected = PathBuf::from("/test/path").join("b3").join("ab").join("cd");
 
         assert_eq!(result.unwrap(), expected);
     }
@@ -395,10 +395,10 @@ mod tests {
     #[test]
     fn test_hash_to_path_odd_length() {
         let handler = setup_handler();
-        let result = handler.hash_to_path("b2_abcde");
+        let result = handler.hash_to_path("b3_abcde");
 
         let expected = PathBuf::from("/test/path")
-            .join("b2")
+            .join("b3")
             .join("ab")
             .join("cd")
             .join("e");
@@ -409,10 +409,10 @@ mod tests {
     #[test]
     fn test_hash_to_path_long_hash() {
         let handler = setup_handler();
-        let result = handler.hash_to_path("b2_abcdefgh");
+        let result = handler.hash_to_path("b3_abcdefgh");
 
         let expected = PathBuf::from("/test/path")
-            .join("b2")
+            .join("b3")
             .join("ab")
             .join("cd")
             .join("ef")

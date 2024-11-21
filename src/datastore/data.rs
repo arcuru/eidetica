@@ -443,29 +443,14 @@ impl PostgresDataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blake2::{digest::consts::U32, Blake2b, Digest};
-    type Blake2b256 = Blake2b<U32>;
-    use hex;
-
-    /// Generate a valid hash to use for testing
-    fn generate_hash(data: &[u8]) -> String {
-        // Create hasher instance
-        let mut hasher = Blake2b256::new();
-
-        // Feed data to hasher
-        hasher.update(data);
-
-        // Get hash bytes and convert to hex string with prefix
-        let hash_bytes = hasher.finalize();
-        format!("b2_{}", hex::encode(hash_bytes))
-    }
+    use crate::utils::generate_hash;
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
 
         let entry = DataEntry {
-            hash: generate_hash("test_data".as_bytes()),
+            hash: generate_hash("test_data".as_bytes()).unwrap(),
             ref_count: 1,
             inline_data: Some(b"test data".to_vec()),
             devices: vec![Uuid::new_v4()],
@@ -488,7 +473,7 @@ mod tests {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
 
         let device_id = Uuid::new_v4();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         let original_entry = DataEntry {
             hash: hash.clone(),
@@ -514,7 +499,7 @@ mod tests {
 
         // Test getting a non-existent entry
         let non_existent = table
-            .get_entry(&generate_hash("non_existent".as_bytes()))
+            .get_entry(&generate_hash("non_existent".as_bytes()).unwrap())
             .await
             .unwrap();
         assert!(non_existent.is_none());
@@ -523,7 +508,7 @@ mod tests {
     #[sqlx::test]
     async fn test_get_or_insert_entry(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // Test inserting a new entry
         let entry = table.get_or_insert_entry(&hash).await.unwrap();
@@ -554,7 +539,7 @@ mod tests {
     #[sqlx::test]
     async fn test_add_inline_data(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // First create an entry without inline data
         let entry = DataEntry::new(&hash);
@@ -569,7 +554,7 @@ mod tests {
         assert_eq!(updated_entry.inline_data, Some(data));
 
         // Test adding to non-existent entry
-        let non_existent = generate_hash("non_existent".as_bytes());
+        let non_existent = generate_hash("non_existent".as_bytes()).unwrap();
         match table.add_inline_data(&non_existent, vec![1, 2, 3]).await {
             Err(_) => (),
             other => panic!("Expected error, got {:?}", other),
@@ -579,7 +564,7 @@ mod tests {
     #[sqlx::test]
     async fn test_add_paths_and_device(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // Create an empty entry
         let entry = DataEntry::new(&hash);
@@ -607,7 +592,7 @@ mod tests {
         assert!(updated_entry.devices.contains(&device_id));
 
         // Test adding to non-existent entry
-        let non_existent = generate_hash("non_existent".as_bytes());
+        let non_existent = generate_hash("non_existent".as_bytes()).unwrap();
         match table
             .add_s3_path(&non_existent, "s3://test".to_string())
             .await
@@ -633,7 +618,7 @@ mod tests {
     #[sqlx::test]
     async fn test_duplicate_additions(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // Create an empty entry
         let entry = DataEntry::new(&hash);
@@ -657,7 +642,7 @@ mod tests {
     #[sqlx::test]
     async fn test_remove_inline_data(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // Create an entry with inline data
         let entry = DataEntry {
@@ -678,7 +663,7 @@ mod tests {
         assert!(updated_entry.inline_data.is_none());
 
         // Test removing from non-existent entry
-        let non_existent = generate_hash("non_existent".as_bytes());
+        let non_existent = generate_hash("non_existent".as_bytes()).unwrap();
         match table.remove_inline_data(&non_existent).await {
             Err(_) => (),
             other => panic!("Expected error, got {:?}", other),
@@ -694,7 +679,7 @@ mod tests {
     #[sqlx::test]
     async fn test_remove_paths_and_device(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
         let device_id = Uuid::new_v4();
 
         // Create an entry with paths and device
@@ -744,7 +729,7 @@ mod tests {
         }
 
         // Test removing from non-existent entry
-        let non_existent = generate_hash("non_existent".as_bytes());
+        let non_existent = generate_hash("non_existent".as_bytes()).unwrap();
         match table.remove_local_path(&non_existent, "test").await {
             Err(_) => (),
             other => panic!("Expected error, got {:?}", other),
@@ -754,7 +739,7 @@ mod tests {
     #[sqlx::test]
     async fn test_multiple_removals(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
-        let hash = generate_hash("test_data".as_bytes());
+        let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         // Create an entry with multiple paths
         let entry = DataEntry {
@@ -793,7 +778,7 @@ mod tests {
     #[sqlx::test]
     async fn test_ref_count_operations(pool: PgPool) -> Result<()> {
         let mut table = PostgresDataTable::from_pool(pool.clone()).await?;
-        let test_hash = "b2_test_hash_ref_count";
+        let test_hash = "b3_test_hash_ref_count";
 
         // Insert initial test entry
         let entry = DataEntry {
@@ -825,7 +810,7 @@ mod tests {
         assert_eq!(count, 0, "ref_count should not go below 0");
 
         // Test operations on non-existent hash
-        let non_existent = "b2_nonexistent_hash";
+        let non_existent = "bg_nonexistent_hash";
         assert!(table.increase_ref_count(non_existent).await.is_err());
         assert!(table.decrease_ref_count(non_existent).await.is_err());
 

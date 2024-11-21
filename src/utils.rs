@@ -1,29 +1,19 @@
-use blake2::{digest::consts::U32, Blake2b, Digest};
 use std::io::Read;
 use std::path::Path;
-
-type Blake2b256 = Blake2b<U32>;
 
 /// Generate a valid hash to use for testing
 #[allow(dead_code)]
 pub fn generate_hash(data: &[u8]) -> std::io::Result<String> {
-    // Create hasher instance
-    let mut hasher = Blake2b256::new();
-
-    // Feed data to hasher
-    hasher.update(data);
-
-    // Get hash bytes and convert to hex string with prefix
-    let hash_bytes = hasher.finalize();
-    Ok(format!("b2_{}", hex::encode(hash_bytes)))
+    let hash = blake3::hash(data);
+    Ok(format!("b3_{}", hash.to_hex()))
 }
 
 /// Generate a hash from a file
 #[allow(dead_code)]
 pub fn generate_hash_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = Blake2b256::new();
-    let mut buffer = [0; 8192];
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 16384];
 
     loop {
         let bytes_read = file.read(&mut buffer)?;
@@ -34,7 +24,7 @@ pub fn generate_hash_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<Strin
     }
 
     let hash_result = hasher.finalize();
-    Ok(format!("b2_{}", hex::encode(hash_result)))
+    Ok(format!("b3_{}", hash_result.to_hex()))
 }
 
 #[cfg(test)]
@@ -49,8 +39,8 @@ mod tests {
         let data = b"Hello, world!";
         let hash = generate_hash(data).unwrap();
 
-        // Hash should start with b2_ prefix
-        assert!(hash.starts_with("b2_"));
+        // Hash should start with b3_ prefix
+        assert!(hash.starts_with("b3_"));
 
         // Same input should produce same hash
         let hash2 = generate_hash(data).unwrap();
@@ -72,8 +62,8 @@ mod tests {
 
         let hash = generate_hash_from_path(&file_path)?;
 
-        // Hash should start with b2_ prefix
-        assert!(hash.starts_with("b2_"));
+        // Hash should start with b3_ prefix
+        assert!(hash.starts_with("b3_"));
 
         // Same file content should produce same hash
         let hash2 = generate_hash_from_path(&file_path)?;
@@ -99,7 +89,7 @@ mod tests {
     #[test]
     fn test_generate_hash_empty_input() {
         let hash = generate_hash(&[]).unwrap();
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
 
         // Empty input should produce consistent hash
         let hash2 = generate_hash(&[]).unwrap();
@@ -111,7 +101,7 @@ mod tests {
         // Test with 1MB of data
         let large_data = vec![0x42; 1024 * 1024];
         let hash = generate_hash(&large_data).unwrap();
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
     }
 
     #[test]
@@ -123,7 +113,7 @@ mod tests {
         File::create(&file_path)?;
 
         let hash = generate_hash_from_path(&file_path)?;
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
 
         // Empty file should produce consistent hash
         let hash2 = generate_hash_from_path(&file_path)?;
@@ -143,7 +133,7 @@ mod tests {
         file.write_all(&data)?;
 
         let hash = generate_hash_from_path(&file_path)?;
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
 
         Ok(())
     }
@@ -159,14 +149,14 @@ mod tests {
     fn test_generate_hash_special_characters() {
         let data = b"Hello\0\n\r\t!";
         let hash = generate_hash(data).unwrap();
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
     }
 
     #[test]
     fn test_generate_hash_unicode() {
         let data = "Hello 🦀 World! 汉字".as_bytes();
         let hash = generate_hash(data).unwrap();
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
     }
 
     #[test]
@@ -182,7 +172,7 @@ mod tests {
         fs::set_permissions(&file_path, perms)?;
 
         let hash = generate_hash_from_path(&file_path)?;
-        assert!(hash.starts_with("b2_"));
+        assert!(hash.starts_with("b3_"));
 
         Ok(())
     }

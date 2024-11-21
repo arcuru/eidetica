@@ -430,23 +430,7 @@ impl MetadataTable for PostgresMetadataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use blake2::{digest::consts::U32, Blake2b, Digest};
-    type Blake2b256 = Blake2b<U32>;
-    use hex;
-
-    /// Generate a valid hash to use for testing
-    fn generate_hash(data: &[u8]) -> String {
-        // Create hasher instance
-        let mut hasher = Blake2b256::new();
-
-        // Feed data to hasher
-        hasher.update(data);
-
-        // Get hash bytes and convert to hex string with prefix
-        let hash_bytes = hasher.finalize();
-        format!("b2_{}", hex::encode(hash_bytes))
-    }
+    use crate::utils::generate_hash;
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
@@ -464,7 +448,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data_hash: generate_hash("entry".as_bytes()),
+            data_hash: generate_hash("entry".as_bytes()).unwrap(),
         };
 
         assert!(table.create_entry(entry).await.is_ok());
@@ -487,7 +471,7 @@ mod tests {
                 "type": "test",
                 "name": "parent_entry"
             }),
-            data_hash: generate_hash("parent_entry".as_bytes()),
+            data_hash: generate_hash("parent_entry".as_bytes()).unwrap(),
         };
 
         // Insert the parent entry
@@ -504,7 +488,7 @@ mod tests {
                 "type": "test",
                 "name": "child_entry"
             }),
-            data_hash: generate_hash("child_entry".as_bytes()),
+            data_hash: generate_hash("child_entry".as_bytes()).unwrap(),
         };
 
         // Insert the child entry
@@ -532,7 +516,7 @@ mod tests {
                 "type": "test",
                 "name": "test_entry"
             }),
-            data_hash: generate_hash("original_entry".as_bytes()),
+            data_hash: generate_hash("original_entry".as_bytes()).unwrap(),
         };
 
         // Insert the entry
@@ -573,7 +557,7 @@ mod tests {
             local: false,
             parent_id: None,
             metadata: serde_json::json!({"test": "data"}),
-            data_hash: generate_hash("entry".as_bytes()),
+            data_hash: generate_hash("entry".as_bytes()).unwrap(),
         };
 
         // Insert the entry
@@ -607,7 +591,7 @@ mod tests {
             local: false,
             parent_id: None,
             metadata: serde_json::json!({"test": "data"}),
-            data_hash: generate_hash("entry".as_bytes()),
+            data_hash: generate_hash("entry".as_bytes()).unwrap(),
         };
 
         // Insert the entry
@@ -645,7 +629,7 @@ mod tests {
             local: false,
             parent_id: None,
             metadata: serde_json::json!({"version": 1}),
-            data_hash: generate_hash("entry1".as_bytes()),
+            data_hash: generate_hash("entry1".as_bytes()).unwrap(),
         };
 
         let entry2 = MetadataEntry {
@@ -655,7 +639,7 @@ mod tests {
             local: false,
             parent_id: Some(entry1.id),
             metadata: serde_json::json!({"version": 2}),
-            data_hash: generate_hash("entry2".as_bytes()),
+            data_hash: generate_hash("entry2".as_bytes()).unwrap(),
         };
 
         let entry3 = MetadataEntry {
@@ -665,7 +649,7 @@ mod tests {
             local: false,
             parent_id: Some(entry2.id),
             metadata: serde_json::json!({"version": 3}),
-            data_hash: generate_hash("entry3".as_bytes()),
+            data_hash: generate_hash("entry3".as_bytes()).unwrap(),
         };
 
         // Insert entries
@@ -710,7 +694,7 @@ mod tests {
                 "type": "parent",
                 "name": "parent_entry"
             }),
-            data_hash: generate_hash("parent_entry".as_bytes()),
+            data_hash: generate_hash("parent_entry".as_bytes()).unwrap(),
         };
 
         // Create child entries
@@ -724,7 +708,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry1"
             }),
-            data_hash: generate_hash("child_entry1".as_bytes()),
+            data_hash: generate_hash("child_entry1".as_bytes()).unwrap(),
         };
 
         let child_entry2 = MetadataEntry {
@@ -737,7 +721,7 @@ mod tests {
                 "type": "child",
                 "name": "child_entry2"
             }),
-            data_hash: generate_hash("child_entry2".as_bytes()),
+            data_hash: generate_hash("child_entry2".as_bytes()).unwrap(),
         };
 
         // Insert the entries
@@ -776,7 +760,7 @@ mod tests {
                 "type": "active",
                 "name": "active_entry1"
             }),
-            data_hash: generate_hash("active_entry1".as_bytes()),
+            data_hash: generate_hash("active_entry1".as_bytes()).unwrap(),
         };
 
         let active_entry2 = MetadataEntry {
@@ -789,7 +773,7 @@ mod tests {
                 "type": "active",
                 "name": "active_entry2"
             }),
-            data_hash: generate_hash("active_entry2".as_bytes()),
+            data_hash: generate_hash("active_entry2".as_bytes()).unwrap(),
         };
 
         let archived_entry = MetadataEntry {
@@ -802,7 +786,7 @@ mod tests {
                 "type": "archived",
                 "name": "archived_entry"
             }),
-            data_hash: generate_hash("archived_entry".as_bytes()),
+            data_hash: generate_hash("archived_entry".as_bytes()).unwrap(),
         };
 
         // Insert all entries
@@ -845,7 +829,7 @@ mod tests {
                 "type": "active",
                 "name": "active_entry1"
             }),
-            data_hash: generate_hash("active_entry1".as_bytes()),
+            data_hash: generate_hash("active_entry1".as_bytes()).unwrap(),
         };
 
         let active_entry2 = MetadataEntry {
@@ -858,7 +842,7 @@ mod tests {
                 "type": "active",
                 "name": "active_entry2"
             }),
-            data_hash: generate_hash("active_entry2".as_bytes()),
+            data_hash: generate_hash("active_entry2".as_bytes()).unwrap(),
         };
 
         let archived_entry = MetadataEntry {
@@ -871,7 +855,7 @@ mod tests {
                 "type": "archived",
                 "name": "archived_entry"
             }),
-            data_hash: generate_hash("archived_entry".as_bytes()),
+            data_hash: generate_hash("archived_entry".as_bytes()).unwrap(),
         };
 
         // Insert all entries
@@ -915,7 +899,7 @@ mod tests {
                 "category": "important",
                 "status": "active"
             }),
-            data_hash: generate_hash("entry1".as_bytes()),
+            data_hash: generate_hash("entry1".as_bytes()).unwrap(),
         };
 
         let entry2 = MetadataEntry {
@@ -929,7 +913,7 @@ mod tests {
                 "category": "normal",
                 "status": "active"
             }),
-            data_hash: generate_hash("entry2".as_bytes()),
+            data_hash: generate_hash("entry2".as_bytes()).unwrap(),
         };
 
         let entry3 = MetadataEntry {
@@ -943,7 +927,7 @@ mod tests {
                 "category": "important",
                 "status": "archived"
             }),
-            data_hash: generate_hash("entry3".as_bytes()),
+            data_hash: generate_hash("entry3".as_bytes()).unwrap(),
         };
 
         // Insert all entries
