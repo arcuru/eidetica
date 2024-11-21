@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use data::{DataTable, PostgresDataTable};
 use data_handler::{DataLocation, DataTableHandler};
 use metadata::{MetadataTable, PostgresMetadataTable};
@@ -10,9 +10,12 @@ use sqlx::PgPool;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Constant key for the local path setting
+const SETTING_LOCAL_PATH: &str = "local_path";
+
 /// Data Store
 ///
-/// This is a logical set of data, with it's own device id, metadata table,
+/// This is a logical set of data, with its own device id, metadata table,
 /// settings table, and either a private or shared data table.
 #[allow(dead_code)]
 pub struct DataStore<D: DataTable, M: MetadataTable> {
@@ -28,18 +31,67 @@ pub struct DataStore<D: DataTable, M: MetadataTable> {
 
 #[allow(dead_code)]
 impl DataStore<PostgresDataTable, PostgresMetadataTable> {
+    /// Initialize the DataStore by setting the local_path in settings.
+    ///
+    /// This function should be called once to set up the initial settings.
+    ///
+    /// # Arguments
+    /// * `pool` - PostgreSQL connection pool
+    /// * `name` - Name of this data store (used as table prefix)
+    /// * `device_id` - Unique identifier for this device
+    /// * `local_path` - The local path to store data
+    pub async fn init(
+        pool: PgPool,
+        name: &str,
+        device_id: Uuid,
+        local_path: PathBuf,
+    ) -> Result<Self> {
+        // Initialize the settings table
+        let mut settings_table = SettingsTable::from_postgres(pool.clone(), device_id).await?;
+
+        // Create the local_path setting
+        let setting = Setting {
+            key: SETTING_LOCAL_PATH.to_string(),
+            value: Value::String(local_path.to_string_lossy().into_owned()),
+            description: Some("Local path for storing data".to_string()),
+        };
+        settings_table
+            .set_setting(setting)
+            .await
+            .context("Failed to set local_path in settings")?;
+
+        // Proceed to create the DataStore using from_pool
+        Self::from_pool(pool, name, device_id).await
+    }
+
     /// Create a new DataStore from a Postgres connection pool
+    ///
+    /// This function requires that the "local_path" is already set in settings.
     ///
     /// # Arguments
     /// * `pool` - PostgreSQL connection pool
     /// * `name` - Name of this data store (used as table prefix)
     /// * `device_id` - Unique identifier for this device
     pub async fn from_pool(pool: PgPool, name: &str, device_id: Uuid) -> Result<Self> {
-        let local_path = PathBuf::from("/tmp/eidetica"); // FIXME: hardcoded
-                                                         // Create the individual tables
+        // Initialize the settings table
+        let settings_table = SettingsTable::from_postgres(pool.clone(), device_id).await?;
+
+        // Retrieve the local_path from settings
+        let local_path_setting = settings_table
+            .get_setting(SETTING_LOCAL_PATH)
+            .await
+            .context("Failed to retrieve local_path from settings")?
+            .ok_or_else(|| anyhow!("DataStore not initialized: 'local_path' not set"))?;
+
+        // Convert the setting value to PathBuf
+        let local_path = match local_path_setting.value {
+            Value::String(s) => PathBuf::from(s),
+            _ => return Err(anyhow!("local_path setting is not a string")),
+        };
+
+        // Create the other tables
         let metadata_table = PostgresMetadataTable::from_pool(pool.clone(), name).await?;
         let data_table = PostgresDataTable::from_pool(pool.clone()).await?;
-        let settings_table = SettingsTable::from_postgres(pool, device_id).await?;
         let data_table = DataTableHandler::new(data_table, local_path);
 
         Ok(Self {
@@ -253,21 +305,38 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
 mod tests {
     use super::*;
     use sqlx::PgPool;
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
     use uuid::Uuid;
+
+    /// TestDataStore struct to hold the temporary directory and the datastore
+    /// This allows us to keep the tempdir around so it's not deleted after setup
+    #[allow(dead_code)]
+    struct TestDataStore {
+        temp_dir: TempDir,
+        datastore: DataStore<PostgresDataTable, PostgresMetadataTable>,
+    }
 
     pub type TestResult<T> = std::result::Result<T, sqlx::Error>;
 
-    async fn setup_datastore(pool: PgPool) -> DataStore<PostgresDataTable, PostgresMetadataTable> {
+    async fn setup_datastore(pool: PgPool) -> TestResult<TestDataStore> {
         let device_id = Uuid::new_v4();
-        DataStore::from_pool(pool, "test", device_id)
-            .await
-            .expect("Failed to create test datastore")
+        // Initialize the datastore with a temporary directory
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let local_path = temp_dir.path().to_path_buf();
+        Ok(TestDataStore {
+            temp_dir,
+            datastore: DataStore::init(pool, "test", device_id, local_path)
+                .await
+                .expect("Failed to initialize test datastore"),
+        })
     }
 
     #[sqlx::test]
     async fn test_store_data_basic(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Create test data
         let data = "Hello world!".as_bytes().to_vec();
@@ -301,7 +370,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_store_data_with_parent(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Store initial version
         let initial_data = "Initial".as_bytes().to_vec();
@@ -339,7 +411,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_archive_entry(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Store test data
         let id = store
@@ -373,7 +448,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_query_by_metadata(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Store entries with different metadata
         let test1_id = store
@@ -409,7 +487,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_data_locations_management(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Store initial data as inline
         let data = "Test data".as_bytes().to_vec();
@@ -469,7 +550,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_data_storage_with_different_types(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
         let temp_dir = tempdir().expect("Failed to create temp dir");
 
         // Test inline data
@@ -521,7 +605,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_data_versioning_and_history(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Create initial version
         let v1_data = "Version 1".as_bytes().to_vec();
@@ -596,7 +683,10 @@ mod tests {
 
     #[sqlx::test]
     async fn test_metadata_query_complex(pool: PgPool) -> TestResult<()> {
-        let mut store = setup_datastore(pool).await;
+        let TestDataStore {
+            datastore: mut store,
+            temp_dir: _,
+        } = setup_datastore(pool).await?;
 
         // Store multiple entries with different metadata
         for i in 1..=3 {

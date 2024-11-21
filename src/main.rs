@@ -53,7 +53,19 @@ async fn main() -> Result<()> {
     // Device ids aren't real yet, so add a dummy
     let device_id = uuid::Builder::nil().into_uuid();
 
-    let mut store = DataStore::from_pool(pool, "cmdfiles", device_id).await?;
+    // Attempt to create store, initializing if needed
+    let mut store = match DataStore::from_pool(pool.clone(), "cmdfiles", device_id).await {
+        Ok(store) => store,
+        Err(_) => {
+            // If it fails lets just try to initialize
+            let local_path = PathBuf::from(
+                env::var("EIDETICA_DATA_DIR").unwrap_or_else(|_| "/tmp/eidetica".to_string()),
+            );
+            std::fs::create_dir_all(&local_path)?;
+
+            DataStore::init(pool, "cmdfiles", device_id, local_path).await?
+        }
+    };
 
     let metadata: Option<Value> = match args.meta {
         Some(meta) =>
