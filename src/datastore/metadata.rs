@@ -590,7 +590,7 @@ mod tests {
         assert!(table.archive_entry(entry.id).await.is_ok());
 
         // Try to archive a non-existent entry
-        assert!(matches!(table.archive_entry(Uuid::new_v4()).await, Err(_)));
+        assert!(table.archive_entry(Uuid::new_v4()).await.is_err());
     }
 
     #[sqlx::test]
@@ -628,10 +628,7 @@ mod tests {
         assert!(!updated_entry.local);
 
         // Try to set local on a non-existent entry
-        assert!(matches!(
-            table.set_local(Uuid::new_v4(), true).await,
-            Err(_)
-        ));
+        assert!(table.set_local(Uuid::new_v4(), true).await.is_err());
     }
 
     #[sqlx::test]
@@ -691,10 +688,7 @@ mod tests {
         assert_eq!(history[2].metadata["version"], 1);
 
         // Test getting history for non-existent entry
-        assert!(matches!(
-            table.get_entry_history(Uuid::new_v4()).await,
-            Err(_)
-        ));
+        assert!(table.get_entry_history(Uuid::new_v4()).await.is_err());
     }
 
     #[sqlx::test]

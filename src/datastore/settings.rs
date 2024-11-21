@@ -521,7 +521,7 @@ mod tests {
                 description: None,
             })
             .await;
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
 
         // Should fail for invalid characters
         let result = settings
@@ -531,7 +531,7 @@ mod tests {
                 description: None,
             })
             .await;
-        assert!(matches!(result, Err(_)));
+        assert!(result.is_err());
     }
 
     #[sqlx::test]

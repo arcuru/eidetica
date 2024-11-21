@@ -23,7 +23,12 @@ tasks:
       - nix build
   clippy:
     desc: Run clippy
-    cmd: cargo clippy
+    cmds:
+      - cargo clippy --all-targets --all-features -- -D warnings
+  clippy:fix:
+    desc: Run clippy fixes
+    cmds:
+      - cargo clippy --fix --allow-dirty --all-targets --all-features -- -D warnings
   fmt:
     desc: Run all formatters
     cmds:

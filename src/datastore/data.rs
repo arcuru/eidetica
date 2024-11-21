@@ -826,14 +826,8 @@ mod tests {
 
         // Test operations on non-existent hash
         let non_existent = "b2_nonexistent_hash";
-        assert!(matches!(
-            table.increase_ref_count(non_existent).await,
-            Err(_)
-        ));
-        assert!(matches!(
-            table.decrease_ref_count(non_existent).await,
-            Err(_)
-        ));
+        assert!(table.increase_ref_count(non_existent).await.is_err());
+        assert!(table.decrease_ref_count(non_existent).await.is_err());
 
         // Test concurrent operations
         let mut handles = vec![];
