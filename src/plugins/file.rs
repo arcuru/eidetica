@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::SystemTime;
+use std::{thread, time::Duration};
 use tracing::debug;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -30,6 +31,9 @@ enum FileCommand {
 
     /// List entries
     List(ListArgs),
+
+    /// Watch directory for changes, scanning periodically
+    Watch(WatchArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -56,6 +60,17 @@ struct ListArgs {
     raw: bool,
 }
 
+#[derive(Parser, Debug)]
+struct WatchArgs {
+    /// Optional path that the watch will be restricted to.
+    #[arg(short, long)]
+    path: Option<PathBuf>,
+
+    /// Interval between scans in seconds (default: 300)
+    #[arg(short, long, default_value = "300")]
+    interval: u64,
+}
+
 pub async fn run<D, M>(args: FileArgs, store: &mut DataStore<D, M>) -> Result<()>
 where
     D: DataTable,
@@ -65,6 +80,7 @@ where
         Some(FileCommand::Scan(args)) => scan(args, store).await?,
         Some(FileCommand::Init(args)) => init(args, store).await?,
         Some(FileCommand::List(args)) => list(args, store).await?,
+        Some(FileCommand::Watch(args)) => watch(args, store).await?,
         None => unimplemented!(),
     }
     Ok(())
@@ -286,6 +302,24 @@ where
     }
 
     Ok(())
+}
+
+/// Watch a directory for changes by scanning periodically
+async fn watch<D, M>(args: WatchArgs, store: &mut DataStore<D, M>) -> Result<()>
+where
+    D: DataTable,
+    M: MetadataTable,
+{
+    println!("Starting file watch with {}s interval...", args.interval);
+    loop {
+        let scan_args = ScanArgs {
+            path: args.path.clone(),
+        };
+        scan(scan_args, store).await?;
+        println!("Scan complete.");
+
+        thread::sleep(Duration::from_secs(args.interval));
+    }
 }
 
 /// Initialize the file plugin to a base directory
