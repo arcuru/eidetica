@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use serde_json::Value;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use tracing::debug;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -10,7 +12,6 @@ use crate::datastore::data_handler::DataLocation;
 use crate::datastore::metadata::MetadataTable;
 use crate::datastore::settings::Setting;
 use crate::datastore::store::DataStore;
-use crate::utils;
 
 #[derive(Parser, Debug)]
 pub struct FileArgs {
@@ -96,6 +97,13 @@ where
         .strip_prefix(base_path)
         .context("Could not get relative path")?;
 
+    let file_metadata = std::fs::metadata(&path).context("Failed to get file metadata")?;
+    let file_modified = file_metadata
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
     let conditions = serde_json::json!({
         "path": relative_path.to_str().unwrap()
     });
@@ -113,17 +121,28 @@ where
         } else if entry.is_empty() {
             serde_json::json!({
                 "path": relative_path.to_str().unwrap(),
+                "size": file_metadata.len(),
+                "modified": file_modified,
             })
         } else {
-            // TODO: Check the filesystem modification time to save on re-hashing
+            // Check the filesystem modification time to save on re-hashing
             let parent = &entry[0];
-            let hash = utils::generate_hash_from_path(&path)?;
-            if hash == parent.data_hash {
+            let parent_modified_time = parent
+                .metadata
+                .get("modified")
+                .and_then(|v| v.as_u64())
+                .context("Failed to get modified time from parent metadata")?;
+
+            if file_modified == parent_modified_time {
                 // No change, so do nothing
                 return Ok(parent.id);
             }
+
             parent_id = Some(parent.id);
-            entry[0].metadata.clone()
+            let mut metadata = parent.metadata.clone();
+            metadata["size"] = Value::from(file_metadata.len());
+            metadata["modified"] = Value::from(file_modified);
+            metadata
         }
     };
 
