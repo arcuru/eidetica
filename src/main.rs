@@ -12,6 +12,7 @@ use std::env;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
+use utils::generate_key;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -67,8 +68,9 @@ async fn main() -> Result<()> {
         .await
         .expect("Error creating PostgreSQL connection pool");
 
-    // Device ids aren't real yet, so add a dummy
-    let device_id = uuid::Builder::nil().into_uuid();
+    // Device ids aren't real yet, so just create a new one
+    let signing_key = generate_key();
+    let device_id = signing_key.verifying_key().to_bytes();
 
     // Attempt to create store, initializing if needed
     let mut store = match DataStore::from_pool(pool.clone(), "cmdfiles", device_id).await {

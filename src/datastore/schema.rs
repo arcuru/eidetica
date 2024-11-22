@@ -1,5 +1,8 @@
+use ed25519_dalek::PUBLIC_KEY_LENGTH;
 use serde_json::Value;
 use uuid::Uuid;
+
+pub type DeviceId = [u8; PUBLIC_KEY_LENGTH];
 
 /// A single entry in the metadata table
 #[derive(Debug, Clone)]
@@ -7,8 +10,8 @@ pub struct MetadataEntry {
     /// UUIDv7 that serves as unique identifier across all devices
     pub id: Uuid,
 
-    /// UUID identifying the device that created this entry
-    pub device_id: Uuid,
+    /// An ed25519 public key used to identify the data stream that wrote this data.
+    pub device_id: DeviceId,
 
     /// Whether this entry has been superseded by a newer version
     pub archived: bool,
@@ -45,7 +48,7 @@ pub struct DataEntry {
     pub inline_data: Option<Vec<u8>>,
 
     /// List of device IDs that _may_ have this data
-    pub devices: Vec<Uuid>,
+    pub devices: Vec<DeviceId>,
 
     /// Local file path to the data
     pub local_path: Vec<String>,

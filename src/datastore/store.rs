@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use data::{DataTable, PostgresDataTable};
 use data_handler::{DataLocation, DataTableHandler};
 use metadata::{MetadataTable, PostgresMetadataTable};
+use schema::DeviceId;
 use schema::MetadataEntry;
 use serde_json::Value;
 use settings::{Setting, SettingsTable};
@@ -19,8 +20,8 @@ const SETTING_LOCAL_PATH: &str = "local_path";
 /// settings table, and either a private or shared data table.
 #[allow(dead_code)]
 pub struct DataStore<D: DataTable, M: MetadataTable> {
-    /// Unique identifier for this device
-    device_id: uuid::Uuid,
+    /// Unique identifier for this store
+    device_id: DeviceId,
     /// Table for storing actual data or references to data
     data_table: DataTableHandler<D>,
     /// Table for storing metadata about the data
@@ -43,7 +44,7 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
     pub async fn init(
         pool: PgPool,
         name: &str,
-        device_id: Uuid,
+        device_id: DeviceId,
         local_path: PathBuf,
     ) -> Result<Self> {
         // Initialize the settings table
@@ -72,7 +73,7 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
     /// * `pool` - PostgreSQL connection pool
     /// * `name` - Name of this data store (used as table prefix)
     /// * `device_id` - Unique identifier for this device
-    pub async fn from_pool(pool: PgPool, name: &str, device_id: Uuid) -> Result<Self> {
+    pub async fn from_pool(pool: PgPool, name: &str, device_id: DeviceId) -> Result<Self> {
         // Initialize the settings table
         let settings_table = SettingsTable::from_postgres(pool.clone(), device_id).await?;
 
@@ -304,6 +305,7 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::generate_key;
     use sqlx::PgPool;
     use tempfile::{tempdir, TempDir};
     use uuid::Uuid;
@@ -318,8 +320,12 @@ mod tests {
 
     pub type TestResult<T> = std::result::Result<T, sqlx::Error>;
 
+    fn generate_test_device_id() -> DeviceId {
+        generate_key().verifying_key().to_bytes()
+    }
+
     async fn setup_datastore(pool: PgPool) -> TestResult<TestDataStore> {
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         // Initialize the datastore with a temporary directory
         let temp_dir = tempdir().expect("Failed to create temp dir");
         let local_path = temp_dir.path().to_path_buf();

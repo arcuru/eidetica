@@ -1,3 +1,4 @@
+use crate::datastore::schema::DeviceId;
 use anyhow::{bail, Context, Result};
 use log;
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ pub struct Setting {
 
 pub struct SettingsTable<T: MetadataTable> {
     table: T,
-    device_id: Uuid,
+    device_id: DeviceId,
     // We could comingle this with the normal metadata table and use a root ID
     // To find settings (all the children) or just search in metadata.
     // However I want to keep the separation for now
@@ -47,7 +48,7 @@ fn validate_key_name(key: &str) -> std::result::Result<(), ValidationError> {
 #[allow(dead_code)]
 impl<T: MetadataTable> SettingsTable<T> {
     /// Create a new SettingsTable from any MetadataTable implementation
-    pub async fn new(mut table: T, device_id: Uuid) -> Result<Self> {
+    pub async fn new(mut table: T, device_id: DeviceId) -> Result<Self> {
         // Ensure the table exists
         table.create_table().await?;
 
@@ -123,7 +124,7 @@ impl<T: MetadataTable> SettingsTable<T> {
 #[allow(dead_code)]
 impl SettingsTable<PostgresMetadataTable> {
     /// Create a new SettingsTable from a Postgres pool
-    pub async fn from_postgres(pool: PgPool, device_id: Uuid) -> Result<Self> {
+    pub async fn from_postgres(pool: PgPool, device_id: DeviceId) -> Result<Self> {
         let table = PostgresMetadataTable::from_pool(pool, "settings").await?;
         Self::new(table, device_id).await
     }
@@ -360,11 +361,17 @@ impl<T: MetadataTable> SettingsTable<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::datastore::schema::DeviceId;
+    use crate::utils::generate_key;
     use serde_json::json;
+
+    fn generate_test_device_id() -> DeviceId {
+        generate_key().verifying_key().to_bytes()
+    }
 
     #[sqlx::test]
     fn test_setting_metadata_conversion(pool: PgPool) {
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         let table = SettingsTable {
             table: PostgresMetadataTable {
                 table_name: "test_settings".to_string(),
@@ -436,7 +443,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_invalid_setting_metadata(pool: PgPool) {
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         let mut settings = SettingsTable::from_postgres(pool, device_id).await.unwrap();
 
         // Test with malformed JSON metadata
@@ -509,7 +516,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_invalid_setting_keys(pool: PgPool) {
-        let mut settings = SettingsTable::from_postgres(pool, Uuid::new_v4())
+        let mut settings = SettingsTable::from_postgres(pool, generate_test_device_id())
             .await
             .unwrap();
 
@@ -539,7 +546,7 @@ mod tests {
         // Test missing required fields
         let invalid_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -559,7 +566,7 @@ mod tests {
         // Test wrong type field
         let wrong_type_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -579,7 +586,7 @@ mod tests {
         // Test invalid value type
         let invalid_value_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -599,7 +606,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_setting(pool: PgPool) {
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         let mut settings = SettingsTable::from_postgres(pool, device_id).await.unwrap();
 
         // Test getting non-existent setting
@@ -649,7 +656,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_setting_history(pool: PgPool) {
-        let mut settings = SettingsTable::from_postgres(pool, Uuid::new_v4())
+        let mut settings = SettingsTable::from_postgres(pool, generate_test_device_id())
             .await
             .unwrap();
 

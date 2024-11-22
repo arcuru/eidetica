@@ -1,5 +1,5 @@
 use super::data::DataTable;
-use super::schema::DataEntry;
+use super::schema::{DataEntry, DeviceId};
 use crate::utils;
 use anyhow::{bail, Result};
 use std::fs::File;
@@ -21,7 +21,7 @@ pub enum DataLocation {
     Inline(Vec<u8>),    // Inlined binary data
     S3(String),         // Path in an S3 bucket
     LocalPath(PathBuf), // Path on a local filesystem
-    Device(uuid::Uuid), // Identifier for a device
+    Device(DeviceId),   // Identifier for a device
     Url(String),        // Generic URL that we don't control
 }
 
@@ -344,11 +344,11 @@ mod tests {
             todo!()
         }
 
-        async fn add_device(&mut self, _: &str, _: uuid::Uuid) -> Result<()> {
+        async fn add_device(&mut self, _: &str, _: DeviceId) -> Result<()> {
             todo!()
         }
 
-        async fn remove_device(&mut self, _: &str, _: uuid::Uuid) -> Result<()> {
+        async fn remove_device(&mut self, _: &str, _: DeviceId) -> Result<()> {
             todo!()
         }
 

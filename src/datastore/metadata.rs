@@ -51,6 +51,7 @@ pub trait MetadataTable {
         include_archived: bool,
     ) -> Result<Vec<MetadataEntry>>;
 }
+// ... existing code ...
 
 impl From<sqlx::postgres::PgRow> for MetadataEntry {
     fn from(row: sqlx::postgres::PgRow) -> Self {
@@ -168,7 +169,7 @@ impl MetadataTable for PostgresMetadataTable {
             r#"
             CREATE TABLE IF NOT EXISTS {} (
                 id UUID PRIMARY KEY,
-                device_id UUID NOT NULL,
+                device_id BYTEA NOT NULL,
                 archived BOOLEAN NOT NULL DEFAULT FALSE,
                 local BOOLEAN NOT NULL DEFAULT FALSE,
                 parent_id UUID,
@@ -430,7 +431,13 @@ impl MetadataTable for PostgresMetadataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::datastore::schema::DeviceId;
     use crate::utils::generate_hash;
+    use crate::utils::generate_key;
+
+    fn generate_test_device_id() -> DeviceId {
+        generate_key().verifying_key().to_bytes()
+    }
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
@@ -440,7 +447,7 @@ mod tests {
 
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -460,10 +467,12 @@ mod tests {
             .await
             .unwrap();
 
+        let device_id = generate_test_device_id();
+
         // Create a parent entry
         let parent_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -480,7 +489,7 @@ mod tests {
         // Create a child entry
         let child_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: Some(parent_entry.id),
@@ -508,7 +517,7 @@ mod tests {
         // Create a test entrySelf
         let original_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -552,7 +561,7 @@ mod tests {
         // Create a test entry
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -586,7 +595,7 @@ mod tests {
         // Create a test entry
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id: generate_test_device_id(),
             archived: false,
             local: false,
             parent_id: None,
@@ -620,11 +629,12 @@ mod tests {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
             .unwrap();
+        let device_id = generate_test_device_id();
 
         // Create a chain of entries
         let entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -634,7 +644,7 @@ mod tests {
 
         let entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: Some(entry1.id),
@@ -644,7 +654,7 @@ mod tests {
 
         let entry3 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: Some(entry2.id),
@@ -681,12 +691,13 @@ mod tests {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
             .unwrap();
+        let device_id = generate_test_device_id();
 
         // Create a parent entry
         let parent_id = Uuid::now_v7();
         let parent_entry = MetadataEntry {
             id: parent_id,
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -700,7 +711,7 @@ mod tests {
         // Create child entries
         let child_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: Some(parent_id),
@@ -713,7 +724,7 @@ mod tests {
 
         let child_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: Some(parent_id),
@@ -748,11 +759,12 @@ mod tests {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
             .unwrap();
+        let device_id = generate_test_device_id();
 
         // Create some test entries, both archived and active
         let active_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -765,7 +777,7 @@ mod tests {
 
         let active_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -778,7 +790,7 @@ mod tests {
 
         let archived_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: true,
             local: false,
             parent_id: None,
@@ -817,11 +829,12 @@ mod tests {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
             .unwrap();
+        let device_id = generate_test_device_id();
 
         // Create some test entries, both archived and active
         let active_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -834,7 +847,7 @@ mod tests {
 
         let active_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -847,7 +860,7 @@ mod tests {
 
         let archived_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: true,
             local: false,
             parent_id: None,
@@ -886,11 +899,12 @@ mod tests {
         let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
             .await
             .unwrap();
+        let device_id = generate_test_device_id();
 
         // Create several test entries with different metadata
         let entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -904,7 +918,7 @@ mod tests {
 
         let entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: false,
             local: false,
             parent_id: None,
@@ -918,7 +932,7 @@ mod tests {
 
         let entry3 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: Uuid::new_v4(),
+            device_id,
             archived: true,
             local: false,
             parent_id: None,

@@ -1,7 +1,6 @@
-use crate::datastore::schema::DataEntry;
+use crate::datastore::schema::{DataEntry, DeviceId};
 use anyhow::{anyhow, bail, Error, Result};
 use sqlx::{PgPool, Row};
-use uuid::Uuid;
 
 /// Data Table
 ///
@@ -31,10 +30,10 @@ pub trait DataTable {
     async fn decrease_ref_count(&mut self, hash: &str) -> Result<i32>;
 
     /// Add a device to the list of devices that have this data
-    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<()>;
+    async fn add_device(&mut self, hash: &str, device_id: DeviceId) -> Result<()>;
 
     /// Remove a device from the list of devices that have this data
-    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<()>;
+    async fn remove_device(&mut self, hash: &str, device_id: DeviceId) -> Result<()>;
 
     /// Add a local path for this data
     async fn add_local_path(&mut self, hash: &str, path: String) -> Result<()>;
@@ -94,7 +93,7 @@ impl PostgresDataTable {
                     hash CHAR(67) PRIMARY KEY,
                     ref_count INT NOT NULL DEFAULT 0,
                     inline_data BYTEA,
-                    devices UUID[] NOT NULL DEFAULT '{}',
+                    devices BYTEA[] NOT NULL DEFAULT '{}',
                     local_path TEXT[] NOT NULL DEFAULT '{}',
                     s3_path TEXT[] NOT NULL DEFAULT '{}',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -126,7 +125,7 @@ impl DataTable for PostgresDataTable {
         INSERT INTO data_entries
             (hash, ref_count, inline_data, devices, local_path, s3_path)
         VALUES
-            ($1, 0, NULL, ARRAY[]::UUID[], ARRAY[]::TEXT[], ARRAY[]::TEXT[])
+            ($1, 0, NULL, ARRAY[]::BYTEA[], ARRAY[]::TEXT[], ARRAY[]::TEXT[])
         ON CONFLICT (hash) DO UPDATE SET
             -- Set hash to itself to trigger the RETURNING clause
             hash = EXCLUDED.hash
@@ -333,8 +332,8 @@ impl DataTable for PostgresDataTable {
         self.append_to_array(hash, "local_path", path, "TEXT").await
     }
 
-    async fn add_device(&mut self, hash: &str, device_id: Uuid) -> Result<()> {
-        self.append_to_array(hash, "devices", device_id, "UUID")
+    async fn add_device(&mut self, hash: &str, device_id: DeviceId) -> Result<()> {
+        self.append_to_array(hash, "devices", device_id, "BYTEA")
             .await
     }
 
@@ -347,8 +346,8 @@ impl DataTable for PostgresDataTable {
             .await
     }
 
-    async fn remove_device(&mut self, hash: &str, device_id: Uuid) -> Result<()> {
-        self.remove_from_array(hash, "devices", device_id, "UUID")
+    async fn remove_device(&mut self, hash: &str, device_id: DeviceId) -> Result<()> {
+        self.remove_from_array(hash, "devices", device_id, "BYTEA")
             .await
     }
 }
@@ -443,7 +442,11 @@ impl PostgresDataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::generate_hash;
+    use crate::utils::{generate_hash, generate_key};
+
+    fn generate_test_device_id() -> DeviceId {
+        generate_key().verifying_key().to_bytes()
+    }
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
@@ -453,7 +456,7 @@ mod tests {
             hash: generate_hash("test_data".as_bytes()).unwrap(),
             ref_count: 1,
             inline_data: Some(b"test data".to_vec()),
-            devices: vec![Uuid::new_v4()],
+            devices: vec![generate_test_device_id()],
             local_path: vec!["local/path/to/file".to_string()],
             s3_path: vec!["s3/path/to/file".to_string()],
         };
@@ -472,7 +475,7 @@ mod tests {
     async fn test_get_entry(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
 
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         let hash = generate_hash("test_data".as_bytes()).unwrap();
 
         let original_entry = DataEntry {
@@ -582,7 +585,7 @@ mod tests {
             .is_ok());
 
         // Test adding device
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         assert!(table.add_device(&hash, device_id).await.is_ok());
 
         // Verify all additions
@@ -609,7 +612,10 @@ mod tests {
             other => panic!("Expected error, got {:?}", other),
         }
 
-        match table.add_device(&non_existent, Uuid::new_v4()).await {
+        match table
+            .add_device(&non_existent, generate_test_device_id())
+            .await
+        {
             Err(_) => (),
             other => panic!("Expected error, got {:?}", other),
         }
@@ -629,7 +635,7 @@ mod tests {
         assert!(table.add_s3_path(&hash, s3_path.clone()).await.is_ok());
         assert!(table.add_s3_path(&hash, s3_path.clone()).await.is_ok());
 
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
         assert!(table.add_device(&hash, device_id).await.is_ok());
         assert!(table.add_device(&hash, device_id).await.is_ok());
 
@@ -680,7 +686,7 @@ mod tests {
     async fn test_remove_paths_and_device(pool: PgPool) {
         let mut table = PostgresDataTable::from_pool(pool).await.unwrap();
         let hash = generate_hash("test_data".as_bytes()).unwrap();
-        let device_id = Uuid::new_v4();
+        let device_id = generate_test_device_id();
 
         // Create an entry with paths and device
         let entry = DataEntry {
@@ -723,7 +729,7 @@ mod tests {
             other => panic!("Expected Ok(()), got {:?}", other),
         }
 
-        match table.remove_device(&hash, Uuid::new_v4()).await {
+        match table.remove_device(&hash, generate_test_device_id()).await {
             Ok(()) => (), // Should succeed even if device doesn't exist
             other => panic!("Expected Ok(()), got {:?}", other),
         }
