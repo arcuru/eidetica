@@ -9,8 +9,10 @@ Remember Everything.
 
 unimplemented!();
 
-I wanted to search my email, so I started by building a distributed database.
+I wanted to search my email, so I started by building a decentralized database.
 It made sense at the time...
+
+[Documentation](https://arcuru.github.io/eidetica/)
 
 ## Contributing
 
