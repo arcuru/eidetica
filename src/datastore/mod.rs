@@ -4,3 +4,4 @@ pub mod metadata;
 pub mod schema;
 pub mod settings;
 pub mod store;
+pub mod stream_table;
