@@ -4,6 +4,79 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+## [0.1.1](https://github.com/arcuru/eidetica/compare/v0.1.0...v0.1.1) - 2024-11-28
+
+### Added
+
+- create a stream table for tracking individual stream data
+- use ed25519 keys for device ids
+- *(file)* add a file watch command
+- store additional metadata with file plugin
+- add ed25519 key generation utility
+- hash using blake3 instead of blake2
+- add file management plugin
+- Add support for archived entries and improve metadata querying
+- adding metadata insertion/retrieval to CLI
+- add support for fetching remote URLs
+- adding the highest level store type and a basic interface
+- add the DataHandler to ingest files
+- add generate_hash utils
+- add ref_count to the Data table
+- adding a 'local' bit to the metadatatable
+- add a settings table on top of metadatatable
+- adding accessor method for searching the metadata
+- adding get_active_entries interface to metadatatable
+- add configurable table name to PostgresMetadataTable
+- add data table for storing file data and tracking file locations
+- Use a blake2b hash instead of data
+- implement SQL database interface for metadata storage
+
+### Fixed
+
+- stop hardcoding the local data path
+- relative/absolute file path bugs
+- copy_file failures
+- remove pre-commit from the Taskfile
+
+### Other
+
+- adding more data organization notes
+- adding link to hosted docs
+- deploy mdbook to Giithub Pages
+- make cargo clippy check tests
+- add logging wth the tracing crate
+- refactor and add better error messages
+- removing reference to custom error file
+- reorganize and add more plans
+- add db:restart helper
+- add deps for profiling
+- improving formatting
+- Move to mdbook + minor updates
+- removing description of default task
+- ignore editor specific folders
+- implement a From trait for MetadataEntry
+- use anyhow for error handling everywhere
+- organize the taskfile
+- changing case of DataLocation::Url
+- fixing clippy warnings
+- refactor DataTableHandler to support multiple data locations
+- slim down error handling
+- run formatters
+- rename database to datastore
+- poking the coverage workflow
+- updating repo badges
+- fixing coverage workflow
+- adding workflows for CI
+- add helper for code coverage
+- removing leftover debug statements
+- add architectural description of encryption scheme
+- update the flake and run formatting
+- move database into a folder module
+- add initial planned architecture
+- ignoring more files
+- fix git cliff generation
+- install and use git-cliff
+
 ### Documentation
 
 - Install and use git-cliff
