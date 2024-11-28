@@ -5,10 +5,13 @@ use data_handler::{DataLocation, DataTableHandler};
 use metadata::{MetadataTable, PostgresMetadataTable};
 use schema::DeviceId;
 use schema::MetadataEntry;
+use schema::StreamType;
 use serde_json::Value;
 use settings::{Setting, SettingsTable};
 use sqlx::PgPool;
 use std::path::PathBuf;
+use stream_table::PostgresStreamTable;
+use stream_table::StreamTable;
 use uuid::Uuid;
 
 /// Constant key for the local path setting
@@ -19,19 +22,33 @@ const SETTING_LOCAL_PATH: &str = "local_path";
 /// This is a logical set of data, with its own device id, metadata table,
 /// settings table, and either a private or shared data table.
 #[allow(dead_code)]
-pub struct DataStore<D: DataTable, M: MetadataTable> {
+pub struct DataStore<D: DataTable, M: MetadataTable, S: StreamTable> {
     /// Unique identifier for this store
-    device_id: DeviceId,
+    store_id: i64,
+
+    /// Underlying Streams comprising the store.
+    ///
+    /// This is assumed to be static for the lifetime of the DataStore object
+    streams: Vec<i64>,
+
+    /// Local stream for inserts
+    local_stream: i64,
+
     /// Table for storing actual data or references to data
     data_table: DataTableHandler<D>,
+
     /// Table for storing metadata about the data
     metadata_table: M,
+
     /// Table for storing settings for this data store
     settings_table: SettingsTable<M>,
+
+    /// Stream Table for translating between the DeviceID keys and their index
+    stream_table: S,
 }
 
 #[allow(dead_code)]
-impl DataStore<PostgresDataTable, PostgresMetadataTable> {
+impl DataStore<PostgresDataTable, PostgresMetadataTable, PostgresStreamTable> {
     /// Initialize the DataStore by setting the local_path in settings.
     ///
     /// This function should be called once to set up the initial settings.
@@ -39,16 +56,23 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
     /// # Arguments
     /// * `pool` - PostgreSQL connection pool
     /// * `name` - Name of this data store (used as table prefix)
-    /// * `device_id` - Unique identifier for this device
+    /// * `store_id` - Store identifier
     /// * `local_path` - The local path to store data
     pub async fn init(
         pool: PgPool,
         name: &str,
-        device_id: DeviceId,
-        local_path: PathBuf,
+        store_id: DeviceId,
+        local_stream: DeviceId,
+        local_path: PathBuf, // TODO: this should be 1 level up at the Instance level
     ) -> Result<Self> {
+        let stream_table = PostgresStreamTable::from_pool(pool.clone()).await?;
+        let store_index = stream_table
+            .get_or_create_entry_by_device_id(&store_id, StreamType::Store, None)
+            .await?
+            .index;
+
         // Initialize the settings table
-        let mut settings_table = SettingsTable::from_postgres(pool.clone(), device_id).await?;
+        let mut settings_table = SettingsTable::from_postgres(pool.clone(), store_index).await?;
 
         // Create the local_path setting
         let setting = Setting {
@@ -62,7 +86,7 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
             .context("Failed to set local_path in settings")?;
 
         // Proceed to create the DataStore using from_pool
-        Self::from_pool(pool, name, device_id).await
+        Self::from_pool(pool, name, store_id, local_stream).await
     }
 
     /// Create a new DataStore from a Postgres connection pool
@@ -73,10 +97,27 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
     /// * `pool` - PostgreSQL connection pool
     /// * `name` - Name of this data store (used as table prefix)
     /// * `device_id` - Unique identifier for this device
-    pub async fn from_pool(pool: PgPool, name: &str, device_id: DeviceId) -> Result<Self> {
-        // Initialize the settings table
-        let settings_table = SettingsTable::from_postgres(pool.clone(), device_id).await?;
+    pub async fn from_pool(
+        pool: PgPool,
+        _name: &str,
+        store_id: DeviceId,
+        local_stream: DeviceId,
+    ) -> Result<Self> {
+        // Create the other tables
+        let metadata_table = PostgresMetadataTable::from_pool(pool.clone()).await?;
+        let data_table = PostgresDataTable::from_pool(pool.clone()).await?;
+        let stream_table = PostgresStreamTable::from_pool(pool.clone()).await?;
+        let store_index = stream_table
+            .get_or_create_entry_by_device_id(&store_id, StreamType::Store, None)
+            .await?
+            .index;
+        let local_index = stream_table
+            .get_or_create_entry_by_device_id(&local_stream, StreamType::Stream, None)
+            .await?
+            .index;
 
+        // Initialize the settings table
+        let settings_table = SettingsTable::from_postgres(pool.clone(), store_index).await?;
         // Retrieve the local_path from settings
         let local_path_setting = settings_table
             .get_setting(SETTING_LOCAL_PATH)
@@ -90,13 +131,13 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
             _ => return Err(anyhow!("local_path setting is not a string")),
         };
 
-        // Create the other tables
-        let metadata_table = PostgresMetadataTable::from_pool(pool.clone(), name).await?;
-        let data_table = PostgresDataTable::from_pool(pool.clone()).await?;
         let data_table = DataTableHandler::new(data_table, local_path);
 
         Ok(Self {
-            device_id,
+            store_id: store_index,
+            local_stream: local_index,
+            stream_table,
+            streams: vec![local_index], // FIXME: needs to be initialized with the underlying IDs
             data_table,
             metadata_table,
             settings_table,
@@ -105,7 +146,7 @@ impl DataStore<PostgresDataTable, PostgresMetadataTable> {
 }
 
 #[allow(dead_code)]
-impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
+impl<D: DataTable, M: MetadataTable, S: StreamTable> DataStore<D, M, S> {
     /// Store a new piece of data
     ///
     /// # Arguments
@@ -128,7 +169,7 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         // Create a MetadataEntry with the generated hash and provided metadata
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: self.device_id,
+            stream: self.local_stream,
             archived: false,
             local: true, // Assuming the data is stored locally on creation
             parent_id,
@@ -151,12 +192,14 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
     ///
     /// Not the data, that is queried only individually.
     pub async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>> {
-        self.metadata_table.get_active_entries().await
+        self.metadata_table.get_active_entries(&self.streams).await
     }
 
     /// Get a copy of all the archived metadata entries.
     pub async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>> {
-        self.metadata_table.get_archived_entries().await
+        self.metadata_table
+            .get_archived_entries(&self.streams)
+            .await
     }
 
     /// Get the history of a piece of data by following its parent chain
@@ -177,7 +220,9 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
     /// Vector of MetadataEntry in descending order (newest to oldest)
     pub async fn get_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>> {
         // Use the metadata table's recursive query capability to get the full history
-        self.metadata_table.get_entry_history(id).await
+        self.metadata_table
+            .get_entry_history(&self.streams, id)
+            .await
     }
 
     /// Mark a piece of data as archived/deleted by creating a new entry that archives the old one
@@ -196,7 +241,7 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         // TODO: I'm not certain this is the right new entry, leaving for now
         let archive_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: self.device_id,
+            stream: self.local_stream,
             // The newly entered entry is _also_ archived...
             archived: true,
             parent_id: Some(id),
@@ -234,7 +279,7 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         // Use the metadata table's query capability
         let entries = self
             .metadata_table
-            .get_entries_by_metadata_conditions(conditions, include_archived)
+            .get_entries_by_metadata_conditions(&self.streams, conditions, include_archived)
             .await?;
 
         // Convert the entries into the simpler (id, metadata) format for the public API
@@ -287,7 +332,7 @@ impl<D: DataTable, M: MetadataTable> DataStore<D, M> {
         conditions: Value,
     ) -> Result<Vec<MetadataEntry>> {
         self.metadata_table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&self.streams, &conditions, false)
             .await
     }
 
@@ -315,7 +360,7 @@ mod tests {
     #[allow(dead_code)]
     struct TestDataStore {
         temp_dir: TempDir,
-        datastore: DataStore<PostgresDataTable, PostgresMetadataTable>,
+        datastore: DataStore<PostgresDataTable, PostgresMetadataTable, PostgresStreamTable>,
     }
 
     pub type TestResult<T> = std::result::Result<T, sqlx::Error>;
@@ -325,13 +370,14 @@ mod tests {
     }
 
     async fn setup_datastore(pool: PgPool) -> TestResult<TestDataStore> {
-        let device_id = generate_test_device_id();
+        let store_id = generate_test_device_id();
+        let local_stream = generate_test_device_id();
         // Initialize the datastore with a temporary directory
         let temp_dir = tempdir().expect("Failed to create temp dir");
         let local_path = temp_dir.path().to_path_buf();
         Ok(TestDataStore {
             temp_dir,
-            datastore: DataStore::init(pool, "test", device_id, local_path)
+            datastore: DataStore::init(pool, "test", store_id, local_stream, local_path)
                 .await
                 .expect("Failed to initialize test datastore"),
         })

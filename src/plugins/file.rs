@@ -13,6 +13,7 @@ use crate::datastore::data_handler::DataLocation;
 use crate::datastore::metadata::MetadataTable;
 use crate::datastore::settings::Setting;
 use crate::datastore::store::DataStore;
+use crate::datastore::stream_table::StreamTable;
 
 #[derive(Parser, Debug)]
 pub struct FileArgs {
@@ -71,10 +72,11 @@ struct WatchArgs {
     interval: u64,
 }
 
-pub async fn run<D, M>(args: FileArgs, store: &mut DataStore<D, M>) -> Result<()>
+pub async fn run<D, M, S>(args: FileArgs, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     match args.command {
         Some(FileCommand::Scan(args)) => scan(args, store).await?,
@@ -87,10 +89,11 @@ where
 }
 
 /// Scan a single file given its current path.
-async fn scan_file<D, M>(path: PathBuf, store: &mut DataStore<D, M>) -> Result<Uuid>
+async fn scan_file<D, M, S>(path: PathBuf, store: &mut DataStore<D, M, S>) -> Result<Uuid>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     let path = if path.is_absolute() {
         path
@@ -174,10 +177,11 @@ where
 /// Get the base path from the settings
 ///
 /// This is local to this device, and refers to the user accessible location for the files.
-async fn base_path<D, M>(store: &DataStore<D, M>) -> Result<PathBuf>
+async fn base_path<D, M, S>(store: &DataStore<D, M, S>) -> Result<PathBuf>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     let path = store
         .get_setting("base_path")
@@ -191,10 +195,11 @@ where
 }
 
 /// List all stored entries
-async fn list<D, M>(_args: ListArgs, store: &mut DataStore<D, M>) -> Result<()>
+async fn list<D, M, S>(_args: ListArgs, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     let entries = store.get_active_entries().await?;
     for entry in entries.iter() {
@@ -211,10 +216,11 @@ where
 /// Scan a full directory for new/changed files.
 ///
 /// Will only check files that are under the directory, but will not remove files.
-async fn scan_directory<D, M>(scan_path: PathBuf, store: &mut DataStore<D, M>) -> Result<()>
+async fn scan_directory<D, M, S>(scan_path: PathBuf, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     for entry in WalkDir::new(&scan_path)
         .follow_links(true)
@@ -229,10 +235,11 @@ where
 }
 
 /// Do a full scan of the stored file system.
-async fn scan<D, M>(args: ScanArgs, store: &mut DataStore<D, M>) -> Result<()>
+async fn scan<D, M, S>(args: ScanArgs, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     // We'll either scan everything or scan a specific path if the user has given it
     let base_path = base_path(store).await?;
@@ -305,10 +312,11 @@ where
 }
 
 /// Watch a directory for changes by scanning periodically
-async fn watch<D, M>(args: WatchArgs, store: &mut DataStore<D, M>) -> Result<()>
+async fn watch<D, M, S>(args: WatchArgs, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     println!("Starting file watch with {}s interval...", args.interval);
     loop {
@@ -325,10 +333,11 @@ where
 /// Initialize the file plugin to a base directory
 ///
 /// The file plugin needs a base path to index all the files.
-async fn init<D, M>(args: InitArgs, store: &mut DataStore<D, M>) -> Result<()>
+async fn init<D, M, S>(args: InitArgs, store: &mut DataStore<D, M, S>) -> Result<()>
 where
     D: DataTable,
     M: MetadataTable,
+    S: StreamTable,
 {
     let path = args
         .path

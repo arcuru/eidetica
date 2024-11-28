@@ -12,7 +12,7 @@ use std::env;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
-use utils::generate_key;
+use utils::generate_key_deterministic;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -68,12 +68,16 @@ async fn main() -> Result<()> {
         .await
         .expect("Error creating PostgreSQL connection pool");
 
-    // Device ids aren't real yet, so just create a new one
-    let signing_key = generate_key();
+    // Device IDs are sort-of real
+    // FIXME: Stop generating this deterministically
+    let signing_key = generate_key_deterministic();
     let device_id = signing_key.verifying_key().to_bytes();
+    let store_key = generate_key_deterministic();
+    let store_id = store_key.verifying_key().to_bytes();
 
     // Attempt to create store, initializing if needed
-    let mut store = match DataStore::from_pool(pool.clone(), "cmdfiles", device_id).await {
+    let mut store = match DataStore::from_pool(pool.clone(), "cmdfiles", store_id, device_id).await
+    {
         Ok(store) => store,
         Err(_) => {
             // If it fails lets just try to initialize
@@ -82,7 +86,7 @@ async fn main() -> Result<()> {
             );
             std::fs::create_dir_all(&local_path)?;
 
-            DataStore::init(pool, "cmdfiles", device_id, local_path).await?
+            DataStore::init(pool, "cmdfiles", store_id, device_id, local_path).await?
         }
     };
 

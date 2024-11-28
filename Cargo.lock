@@ -510,6 +510,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
+ "lazy_static",
  "log",
  "rand",
  "reqwest",

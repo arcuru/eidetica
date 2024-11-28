@@ -9,16 +9,16 @@ pub type PrivateKey = [u8; SECRET_KEY_LENGTH];
 /// A single entry in the metadata table
 #[derive(Debug, Clone)]
 pub struct MetadataEntry {
-    /// UUIDv7 that serves as unique identifier across all devices
+    /// UUIDv7 that serves as a globally unique identifier
     pub id: Uuid,
 
-    /// An ed25519 public key used to identify the data stream that wrote this data.
-    pub device_id: DeviceId,
+    /// The Stream ID, the index into the stream table.
+    pub stream: i64,
 
     /// Whether this entry has been superseded by a newer version
     pub archived: bool,
 
-    /// Whether this entry is configured to sync to the local device
+    /// Whether this entry is configured to sync to the local instance
     pub local: bool,
 
     /// Optional reference to parent entry's UUID

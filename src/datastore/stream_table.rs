@@ -11,7 +11,7 @@ pub trait StreamTable {
     /// Create a new stream entry
     /// Returns the created entry with its assigned index
     async fn create_entry(
-        &mut self,
+        &self,
         device_id: DeviceId,
         stream_type: StreamType,
         secret_key: Option<PrivateKey>,
@@ -33,6 +33,14 @@ pub trait StreamTable {
     /// Delete a stream entry
     /// Returns Error::RowNotFound if the entry doesn't exist
     async fn delete_entry(&mut self, index: i64) -> Result<()>;
+
+    /// Get an entry by device ID, creating it if it doesn't exist
+    async fn get_or_create_entry_by_device_id(
+        &self,
+        device_id: &DeviceId,
+        stream_type: StreamType,
+        secret_key: Option<PrivateKey>,
+    ) -> Result<StreamEntry>;
 }
 
 /// PostgreSQL implementation of the stream table
@@ -96,7 +104,7 @@ impl StreamTable for PostgresStreamTable {
     }
 
     async fn create_entry(
-        &mut self,
+        &self,
         device_id: DeviceId,
         stream_type: StreamType,
         secret_key: Option<PrivateKey>,
@@ -215,6 +223,24 @@ impl StreamTable for PostgresStreamTable {
 
         Ok(())
     }
+
+    async fn get_or_create_entry_by_device_id(
+        &self,
+        device_id: &DeviceId,
+        stream_type: StreamType,
+        secret_key: Option<PrivateKey>,
+    ) -> Result<StreamEntry> {
+        // First try to get the existing entry
+        if let Some(entry) = self.get_entry_by_device_id(device_id).await? {
+            return Ok(entry);
+        }
+
+        // If it doesn't exist, create a new one
+        let entry = self
+            .create_entry(*device_id, stream_type, secret_key)
+            .await?;
+        Ok(entry)
+    }
 }
 
 #[cfg(test)]
@@ -232,7 +258,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
-        let mut table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
         let device_id = generate_test_device_id();
         let secret_key = Some(generate_test_secret_key());
 
@@ -251,7 +277,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry_by_device_id(pool: PgPool) {
-        let mut table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
         let device_id = generate_test_device_id();
 
         // Create entry
@@ -281,7 +307,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry_by_index(pool: PgPool) {
-        let mut table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
         let device_id = generate_test_device_id();
 
         // Create entry
@@ -311,7 +337,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entries_by_type(pool: PgPool) {
-        let mut table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
 
         // Create entries of different types
         let stream_entry = table
@@ -352,7 +378,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_update_entry(pool: PgPool) {
-        let mut table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
         let device_id = generate_test_device_id();
 
         // Create initial entry
@@ -417,5 +443,28 @@ mod tests {
         // Both creations should succeed
         assert!(table1.create_table().await.is_ok());
         assert!(table2.create_table().await.is_ok());
+    }
+
+    #[sqlx::test]
+    async fn test_get_or_create_entry_by_device_id(pool: PgPool) {
+        let table = PostgresStreamTable::from_pool(pool).await.unwrap();
+        let device_id = generate_test_device_id();
+        let secret_key = Some(generate_test_secret_key());
+
+        // First call should create a new entry
+        let entry1 = table
+            .get_or_create_entry_by_device_id(&device_id, StreamType::Store, secret_key)
+            .await
+            .unwrap();
+        assert_eq!(entry1.id, device_id);
+        assert_eq!(entry1.secret_key, secret_key);
+        assert!(matches!(entry1.stream_type, StreamType::Store));
+
+        // Second call should return existing entry
+        let entry2 = table
+            .get_or_create_entry_by_device_id(&device_id, StreamType::Store, None)
+            .await
+            .unwrap();
+        assert_eq!(entry2, entry1);
     }
 }

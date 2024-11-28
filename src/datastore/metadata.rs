@@ -9,12 +9,11 @@ use uuid::Uuid;
 /// This is the interface and implementation of the Metadata Table in the database.
 /// We run on postgresql, and store the blob data as described in the design doc.
 
+const METADATA_TABLE: &str = "metadata_table";
+
 /// Interface for interacting with the metadata table
 #[allow(dead_code, async_fn_in_trait)]
 pub trait MetadataTable {
-    /// Get the name of this metadata table
-    fn table_name(&self) -> &str;
-
     /// Create a new metadata table with the given name if it doesn't exist
     async fn create_table(&mut self) -> Result<()>;
 
@@ -28,36 +27,37 @@ pub trait MetadataTable {
     async fn set_local(&mut self, id: Uuid, local: bool) -> Result<()>;
 
     /// Mark an entry as archived
+    /// FIXME: ...doesn't work with stream views
     async fn archive_entry(&mut self, id: Uuid) -> Result<()>;
 
     /// Get full history chain for an entry by following parent_ids
-    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>>;
+    async fn get_entry_history(&self, streams: &[i64], id: Uuid) -> Result<Vec<MetadataEntry>>;
 
     /// Get all the children of an entry
-    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>>;
+    async fn get_child_entries(&self, streams: &[i64], id: Uuid) -> Result<Vec<MetadataEntry>>;
 
     /// Get all the entries that are not archived
     ///
     /// Be advised that this will return _all_ active entries and may be expensive on large databases.
-    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>>;
+    async fn get_active_entries(&self, streams: &[i64]) -> Result<Vec<MetadataEntry>>;
 
     /// Get all the archived entries
-    async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>>;
+    async fn get_archived_entries(&self, streams: &[i64]) -> Result<Vec<MetadataEntry>>;
 
     /// Get entries by 1 or more metadata conditions
     async fn get_entries_by_metadata_conditions(
         &self,
+        streams: &[i64],
         conditions: &Value,
         include_archived: bool,
     ) -> Result<Vec<MetadataEntry>>;
 }
-// ... existing code ...
 
 impl From<sqlx::postgres::PgRow> for MetadataEntry {
     fn from(row: sqlx::postgres::PgRow) -> Self {
         Self {
             id: row.get("id"),
-            device_id: row.get("device_id"),
+            stream: row.get("stream"),
             archived: row.get("archived"),
             local: row.get("local"),
             parent_id: row.get("parent_id"),
@@ -69,40 +69,29 @@ impl From<sqlx::postgres::PgRow> for MetadataEntry {
 
 /// PostgreSQL implementation of the metadata table
 pub struct PostgresMetadataTable {
-    pub table_name: String,
     pub pool: PgPool,
 }
 
 #[allow(dead_code)]
 impl PostgresMetadataTable {
     /// Create a new PostgresMetadataTable instance
-    pub async fn new(connection_string: &str, table_name: &str) -> Result<Self> {
+    pub async fn new(connection_string: &str) -> Result<Self> {
         let pool = PgPool::connect(connection_string).await?;
 
-        let mut table = Self {
-            table_name: table_name.to_string(),
-            pool,
-        };
+        let mut table = Self { pool };
         table.create_table().await?;
         Ok(table)
     }
 
     /// Create a new PostgresMetadataTable from an existing pool connection
-    pub async fn from_pool(pool: PgPool, table_name: &str) -> Result<Self> {
-        let mut table = Self {
-            table_name: table_name.to_string(),
-            pool,
-        };
+    pub async fn from_pool(pool: PgPool) -> Result<Self> {
+        let mut table = Self { pool };
         table.create_table().await?;
         Ok(table)
     }
 }
 
 impl MetadataTable for PostgresMetadataTable {
-    fn table_name(&self) -> &str {
-        &self.table_name
-    }
-
     async fn create_entry(&mut self, entry: MetadataEntry) -> Result<()> {
         // Convert the metadata to a sqlx::types::Json
         let metadata_json = serde_json::to_value(&entry.metadata)?;
@@ -114,16 +103,16 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
             INSERT INTO {}
-            (id, device_id, archived, local, parent_id, metadata, data_hash)
+            (id, stream, archived, local, parent_id, metadata, data_hash)
         VALUES
             ($1, $2, $3, $4, $5, $6, $7)
         "#,
-            self.table_name
+            METADATA_TABLE
         );
 
         let result = sqlx::query(&query)
             .bind(entry.id)
-            .bind(entry.device_id)
+            .bind(entry.stream)
             .bind(entry.archived)
             .bind(entry.local)
             .bind(entry.parent_id)
@@ -141,7 +130,7 @@ impl MetadataTable for PostgresMetadataTable {
         if let Some(parent_id) = entry.parent_id {
             let update_query = format!(
                 "UPDATE {} SET archived = TRUE WHERE id = $1",
-                self.table_name
+                METADATA_TABLE
             );
             sqlx::query(&update_query)
                 .bind(parent_id)
@@ -169,7 +158,7 @@ impl MetadataTable for PostgresMetadataTable {
             r#"
             CREATE TABLE IF NOT EXISTS {} (
                 id UUID PRIMARY KEY,
-                device_id BYTEA NOT NULL,
+                stream BIGINT NOT NULL,
                 archived BOOLEAN NOT NULL DEFAULT FALSE,
                 local BOOLEAN NOT NULL DEFAULT FALSE,
                 parent_id UUID,
@@ -179,7 +168,7 @@ impl MetadataTable for PostgresMetadataTable {
 
                 FOREIGN KEY (parent_id) REFERENCES {}(id)
             );"#,
-            self.table_name, self.table_name
+            METADATA_TABLE, METADATA_TABLE
         );
 
         while attempts < MAX_RETRIES {
@@ -202,7 +191,7 @@ impl MetadataTable for PostgresMetadataTable {
             r#"
             SELECT
                 id,
-                device_id,
+                stream,
                 archived,
                 local,
                 parent_id,
@@ -211,7 +200,7 @@ impl MetadataTable for PostgresMetadataTable {
             FROM {}
             WHERE id = $1
             "#,
-            self.table_name
+            METADATA_TABLE
         );
 
         let row = sqlx::query(&query)
@@ -228,7 +217,7 @@ impl MetadataTable for PostgresMetadataTable {
     async fn archive_entry(&mut self, id: Uuid) -> Result<()> {
         let query = format!(
             "UPDATE {} SET archived = TRUE WHERE id = $1",
-            self.table_name
+            METADATA_TABLE
         );
 
         let result = sqlx::query(&query).bind(id).execute(&self.pool).await?;
@@ -241,7 +230,7 @@ impl MetadataTable for PostgresMetadataTable {
     }
 
     async fn set_local(&mut self, id: Uuid, local: bool) -> Result<()> {
-        let query = format!("UPDATE {} SET local = $1 WHERE id = $2", self.table_name);
+        let query = format!("UPDATE {} SET local = $1 WHERE id = $2", METADATA_TABLE);
 
         let result = sqlx::query(&query)
             .bind(local)
@@ -256,32 +245,37 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(())
     }
 
-    async fn get_entry_history(&self, id: Uuid) -> Result<Vec<MetadataEntry>> {
+    async fn get_entry_history(&self, streams: &[i64], id: Uuid) -> Result<Vec<MetadataEntry>> {
         // Using a WITH RECURSIVE query to follow the parent_id chain
         let query = format!(
             r#"
             WITH RECURSIVE history AS (
                 -- Base case: start with the entry we want
                 SELECT
-                    id, device_id, archived, local, parent_id, metadata, data_hash
+                    id, stream, archived, local, parent_id, metadata, data_hash
                 FROM {}
-                WHERE id = $1
+                WHERE id = $1 AND stream = ANY($2)
 
                 UNION ALL
 
                 -- Recursive case: join with parent entries
                 SELECT
-                    e.id, e.device_id, e.archived, e.local, e.parent_id, e.metadata, e.data_hash
+                    e.id, e.stream, e.archived, e.local, e.parent_id, e.metadata, e.data_hash
                 FROM {} e
                 INNER JOIN history h ON h.parent_id = e.id
+                WHERE e.stream = ANY($2) 
             )
             SELECT * FROM history
             ORDER BY id DESC
             "#,
-            self.table_name, self.table_name
+            METADATA_TABLE, METADATA_TABLE
         );
 
-        let rows = sqlx::query(&query).bind(id).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&query)
+            .bind(id)
+            .bind(streams)
+            .fetch_all(&self.pool)
+            .await?;
 
         if rows.is_empty() {
             return Err(Error::RowNotFound.into());
@@ -292,57 +286,70 @@ impl MetadataTable for PostgresMetadataTable {
         Ok(entries)
     }
 
-    async fn get_child_entries(&self, id: Uuid) -> Result<Vec<MetadataEntry>> {
+    async fn get_child_entries(&self, streams: &[i64], id: Uuid) -> Result<Vec<MetadataEntry>> {
         let query = format!(
             r#"
             SELECT
-            id, device_id, archived, local, parent_id, metadata, data_hash
+            id, stream, archived, local, parent_id, metadata, data_hash
             FROM {}
-        WHERE parent_id = $1
-        ORDER BY id DESC
-        "#,
-            self.table_name
+            WHERE parent_id = $1 
+            AND stream = ANY($2)
+            ORDER BY id DESC
+            "#,
+            METADATA_TABLE
         );
 
-        let rows = sqlx::query(&query).bind(id).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&query)
+            .bind(id)
+            .bind(streams)
+            .fetch_all(&self.pool)
+            .await?;
 
         let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
 
-    async fn get_active_entries(&self) -> Result<Vec<MetadataEntry>> {
+    async fn get_active_entries(&self, streams: &[i64]) -> Result<Vec<MetadataEntry>> {
         let query = format!(
             r#"
         SELECT
-            id, device_id, archived, local, parent_id, metadata, data_hash
+            id, stream, archived, local, parent_id, metadata, data_hash
         FROM {}
         WHERE archived = FALSE
+        AND stream = ANY($1)
         ORDER BY id DESC
         "#,
-            self.table_name
+            METADATA_TABLE
         );
 
-        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&query)
+            .bind(streams)
+            .fetch_all(&self.pool)
+            .await?;
 
         let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
         Ok(entries)
     }
 
-    async fn get_archived_entries(&self) -> Result<Vec<MetadataEntry>> {
+    async fn get_archived_entries(&self, streams: &[i64]) -> Result<Vec<MetadataEntry>> {
         let query = format!(
             r#"
         SELECT
-            id, device_id, archived, local, parent_id, metadata, data_hash
+            id, stream, archived, local, parent_id, metadata, data_hash
         FROM {}
         WHERE archived = TRUE
+        AND stream = ANY($1)
         ORDER BY id DESC
         "#,
-            self.table_name
+            METADATA_TABLE
         );
 
-        let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&query)
+            .bind(streams)
+            .fetch_all(&self.pool)
+            .await?;
 
         let entries = rows.into_iter().map(MetadataEntry::from).collect();
 
@@ -352,6 +359,7 @@ impl MetadataTable for PostgresMetadataTable {
     /// Query entries by multiple metadata key-value pairs
     async fn get_entries_by_metadata_conditions(
         &self,
+        streams: &[i64],
         conditions: &Value,
         include_archived: bool,
     ) -> Result<Vec<MetadataEntry>> {
@@ -373,7 +381,7 @@ impl MetadataTable for PostgresMetadataTable {
                         condition_parts.push(format!(
                             "metadata->'{}' = ${}::jsonb",
                             key,
-                            bind_values.len() + 1
+                            bind_values.len() + 2
                         ));
                         bind_values.push(value.to_string());
                     }
@@ -382,7 +390,7 @@ impl MetadataTable for PostgresMetadataTable {
                         condition_parts.push(format!(
                             "metadata->>'{}' ~ ${}",
                             key,
-                            bind_values.len() + 1
+                            bind_values.len() + 2
                         ));
                         bind_values.push(obj["$regex"].as_str().unwrap_or_default().to_string());
                     }
@@ -391,7 +399,7 @@ impl MetadataTable for PostgresMetadataTable {
                         condition_parts.push(format!(
                             "metadata->>'{}' = ${}",
                             key,
-                            bind_values.len() + 1
+                            bind_values.len() + 2
                         ));
                         bind_values.push(value.as_str().unwrap_or_default().to_string());
                     }
@@ -402,18 +410,22 @@ impl MetadataTable for PostgresMetadataTable {
         let query = format!(
             r#"
             SELECT
-                id, device_id, archived, local, parent_id, metadata, data_hash
+                id, stream, archived, local, parent_id, metadata, data_hash
             FROM {}
             WHERE {}
+            AND stream = ANY($1)
             {}
             ORDER BY id DESC
             "#,
-            self.table_name,
+            METADATA_TABLE,
             condition_parts.join(" AND "),
             archived_clause
         );
 
         let mut query_builder = sqlx::query(&query);
+
+        // Bind the stream list
+        query_builder = query_builder.bind(streams);
 
         // Bind all values in order
         for value in bind_values {
@@ -431,23 +443,19 @@ impl MetadataTable for PostgresMetadataTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datastore::schema::DeviceId;
     use crate::utils::generate_hash;
-    use crate::utils::generate_key;
 
-    fn generate_test_device_id() -> DeviceId {
-        generate_key().verifying_key().to_bytes()
+    fn generate_test_stream() -> i64 {
+        rand::random()
     }
 
     #[sqlx::test]
     async fn test_create_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -463,16 +471,14 @@ mod tests {
 
     #[sqlx::test]
     async fn test_create_entry_archives_parent(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
-        let device_id = generate_test_device_id();
+        let stream = generate_test_stream();
 
         // Create a parent entry
         let parent_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -489,7 +495,7 @@ mod tests {
         // Create a child entry
         let child_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: Some(parent_entry.id),
@@ -510,14 +516,12 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
         // Create a test entrySelf
         let original_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -540,7 +544,7 @@ mod tests {
 
         // Verify the fields match
         assert_eq!(retrieved_entry.id, original_entry.id);
-        assert_eq!(retrieved_entry.device_id, original_entry.device_id);
+        assert_eq!(retrieved_entry.stream, original_entry.stream);
         assert_eq!(retrieved_entry.archived, original_entry.archived);
         assert_eq!(retrieved_entry.local, original_entry.local);
         assert_eq!(retrieved_entry.parent_id, original_entry.parent_id);
@@ -554,14 +558,12 @@ mod tests {
 
     #[sqlx::test]
     async fn test_archive_entry(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
         // Create a test entry
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -588,14 +590,12 @@ mod tests {
 
     #[sqlx::test]
     async fn test_set_local(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
         // Create a test entry
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -626,15 +626,14 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entry_history(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
-        let device_id = generate_test_device_id();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let stream = generate_test_stream();
+        let streams = vec![stream];
 
         // Create a chain of entries
         let entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -644,7 +643,7 @@ mod tests {
 
         let entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: Some(entry1.id),
@@ -654,7 +653,7 @@ mod tests {
 
         let entry3 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: Some(entry2.id),
@@ -668,7 +667,7 @@ mod tests {
         table.create_entry(entry3.clone()).await.unwrap();
 
         // Get history starting from entry3
-        let history = table.get_entry_history(entry3.id).await.unwrap();
+        let history = table.get_entry_history(&streams, entry3.id).await.unwrap();
 
         // Verify history
         assert_eq!(history.len(), 3);
@@ -682,22 +681,24 @@ mod tests {
         assert_eq!(history[2].metadata["version"], 1);
 
         // Test getting history for non-existent entry
-        assert!(table.get_entry_history(Uuid::new_v4()).await.is_err());
+        assert!(table
+            .get_entry_history(&streams, Uuid::new_v4())
+            .await
+            .is_err());
     }
 
     #[sqlx::test]
     async fn test_get_child_entries(pool: PgPool) {
         // Create table instance directly with the injected pool
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
-        let device_id = generate_test_device_id();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let stream = generate_test_stream();
+        let streams = vec![stream];
 
         // Create a parent entry
         let parent_id = Uuid::now_v7();
         let parent_entry = MetadataEntry {
             id: parent_id,
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -711,7 +712,7 @@ mod tests {
         // Create child entries
         let child_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: Some(parent_id),
@@ -724,7 +725,7 @@ mod tests {
 
         let child_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: Some(parent_id),
@@ -741,7 +742,7 @@ mod tests {
         assert!(table.create_entry(child_entry2.clone()).await.is_ok());
 
         // Test getting child entries
-        let children = table.get_child_entries(parent_id).await.unwrap();
+        let children = table.get_child_entries(&streams, parent_id).await.unwrap();
         assert_eq!(children.len(), 2);
 
         // Verify the children are the ones we created
@@ -750,21 +751,23 @@ mod tests {
         assert!(child_ids.contains(&child_entry2.id));
 
         // Test getting children of an entry with no children
-        let no_children = table.get_child_entries(Uuid::new_v4()).await.unwrap();
+        let no_children = table
+            .get_child_entries(&streams, Uuid::new_v4())
+            .await
+            .unwrap();
         assert!(no_children.is_empty());
     }
 
     #[sqlx::test]
     async fn test_get_active_entries(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
-        let device_id = generate_test_device_id();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let stream = generate_test_stream();
+        let streams = vec![stream];
 
         // Create some test entries, both archived and active
         let active_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -777,7 +780,7 @@ mod tests {
 
         let active_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -790,7 +793,7 @@ mod tests {
 
         let archived_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: true,
             local: false,
             parent_id: None,
@@ -807,7 +810,7 @@ mod tests {
         table.create_entry(archived_entry.clone()).await.unwrap();
 
         // Get active entries
-        let active_entries = table.get_active_entries().await.unwrap();
+        let active_entries = table.get_active_entries(&streams).await.unwrap();
 
         // Verify we got the correct number of entries
         assert_eq!(active_entries.len(), 2);
@@ -826,15 +829,14 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_archived_entries(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
-        let device_id = generate_test_device_id();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let stream = generate_test_stream();
+        let streams = vec![stream];
 
         // Create some test entries, both archived and active
         let active_entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -847,7 +849,7 @@ mod tests {
 
         let active_entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -860,7 +862,7 @@ mod tests {
 
         let archived_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: true,
             local: false,
             parent_id: None,
@@ -877,7 +879,7 @@ mod tests {
         table.create_entry(archived_entry.clone()).await.unwrap();
 
         // Get archived entries
-        let archived_entries = table.get_archived_entries().await.unwrap();
+        let archived_entries = table.get_archived_entries(&streams).await.unwrap();
 
         // Verify we got the correct number of entries
         assert_eq!(archived_entries.len(), 1);
@@ -896,15 +898,14 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_entries_by_metadata_conditions(pool: PgPool) {
-        let mut table = PostgresMetadataTable::from_pool(pool, "test_data")
-            .await
-            .unwrap();
-        let device_id = generate_test_device_id();
+        let mut table = PostgresMetadataTable::from_pool(pool).await.unwrap();
+        let stream = generate_test_stream();
+        let streams = vec![stream];
 
         // Create several test entries with different metadata
         let entry1 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -918,7 +919,7 @@ mod tests {
 
         let entry2 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -932,7 +933,7 @@ mod tests {
 
         let entry3 = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: true,
             local: false,
             parent_id: None,
@@ -954,7 +955,7 @@ mod tests {
             "type": "document"
         });
         let results = table
-            .get_entries_by_metadata_conditions(&conditions, true)
+            .get_entries_by_metadata_conditions(&streams, &conditions, true)
             .await
             .unwrap();
         assert_eq!(results.len(), 3);
@@ -965,7 +966,7 @@ mod tests {
             "category": "important"
         });
         let results = table
-            .get_entries_by_metadata_conditions(&conditions, true)
+            .get_entries_by_metadata_conditions(&streams, &conditions, true)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -974,7 +975,7 @@ mod tests {
             "category": "important"
         });
         let results = table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&streams, &conditions, false)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -985,7 +986,7 @@ mod tests {
             "category": "nonexistent"
         });
         let results = table
-            .get_entries_by_metadata_conditions(&conditions, true)
+            .get_entries_by_metadata_conditions(&streams, &conditions, true)
             .await
             .unwrap();
         assert!(results.is_empty());
@@ -996,7 +997,7 @@ mod tests {
             "status": "active"
         });
         let results = table
-            .get_entries_by_metadata_conditions(&conditions, true)
+            .get_entries_by_metadata_conditions(&streams, &conditions, true)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1006,13 +1007,11 @@ mod tests {
     #[sqlx::test]
     async fn test_create_table_duplicate(pool: PgPool) {
         // Test that creating the same table multiple times works
-        let mut table1 = PostgresMetadataTable::from_pool(pool.clone(), "test_duplicate")
+        let mut table1 = PostgresMetadataTable::from_pool(pool.clone())
             .await
             .unwrap();
 
-        let mut table2 = PostgresMetadataTable::from_pool(pool, "test_duplicate")
-            .await
-            .unwrap();
+        let mut table2 = PostgresMetadataTable::from_pool(pool).await.unwrap();
 
         // Both creations should succeed
         assert!(table1.create_table().await.is_ok());

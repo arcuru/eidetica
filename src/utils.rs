@@ -1,5 +1,6 @@
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use rand::SeedableRng;
 use std::io::Read;
 use std::path::Path;
 
@@ -34,6 +35,22 @@ pub fn generate_hash_from_path<P: AsRef<Path>>(path: P) -> std::io::Result<Strin
 pub fn generate_key() -> SigningKey {
     let mut csprng = OsRng;
     SigningKey::generate(&mut csprng)
+}
+
+/// Generate a key deterministically for testing
+/// FIXME: Delete this once we have mechanisms for reloading keys
+#[allow(dead_code)]
+pub fn generate_key_deterministic() -> SigningKey {
+    use lazy_static::lazy_static;
+    use std::sync::Mutex;
+
+    lazy_static! {
+        static ref RNG: Mutex<rand::rngs::StdRng> =
+            Mutex::new(rand::rngs::StdRng::from_seed([42; 32]));
+    }
+
+    let mut rng = RNG.lock().unwrap();
+    SigningKey::generate(&mut *rng)
 }
 
 #[cfg(test)]

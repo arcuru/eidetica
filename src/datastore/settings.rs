@@ -1,4 +1,3 @@
-use crate::datastore::schema::DeviceId;
 use anyhow::{bail, Context, Result};
 use log;
 use serde::{Deserialize, Serialize};
@@ -27,7 +26,8 @@ pub struct Setting {
 
 pub struct SettingsTable<T: MetadataTable> {
     table: T,
-    device_id: DeviceId,
+    /// Stream index that this table is editing
+    stream: i64,
     // We could comingle this with the normal metadata table and use a root ID
     // To find settings (all the children) or just search in metadata.
     // However I want to keep the separation for now
@@ -48,11 +48,11 @@ fn validate_key_name(key: &str) -> std::result::Result<(), ValidationError> {
 #[allow(dead_code)]
 impl<T: MetadataTable> SettingsTable<T> {
     /// Create a new SettingsTable from any MetadataTable implementation
-    pub async fn new(mut table: T, device_id: DeviceId) -> Result<Self> {
+    pub async fn new(mut table: T, stream: i64) -> Result<Self> {
         // Ensure the table exists
         table.create_table().await?;
 
-        Ok(Self { table, device_id })
+        Ok(Self { table, stream })
     }
 
     /// Convert a Setting field into a MetadataEntry for storing
@@ -74,7 +74,7 @@ impl<T: MetadataTable> SettingsTable<T> {
 
         MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: self.device_id,
+            stream: self.stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -124,9 +124,9 @@ impl<T: MetadataTable> SettingsTable<T> {
 #[allow(dead_code)]
 impl SettingsTable<PostgresMetadataTable> {
     /// Create a new SettingsTable from a Postgres pool
-    pub async fn from_postgres(pool: PgPool, device_id: DeviceId) -> Result<Self> {
-        let table = PostgresMetadataTable::from_pool(pool, "settings").await?;
-        Self::new(table, device_id).await
+    pub async fn from_postgres(pool: PgPool, stream: i64) -> Result<Self> {
+        let table = PostgresMetadataTable::from_pool(pool).await?;
+        Self::new(table, stream).await
     }
 }
 
@@ -150,7 +150,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Get only active entries
         let entries = self
             .table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&[self.stream], &conditions, false)
             .await?;
 
         // Print an error if multiple
@@ -219,7 +219,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Get any existing active settings with this key
         let existing_settings = self
             .table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&[self.stream], &conditions, false)
             .await?;
 
         // Get the ID of the existing setting if there is one
@@ -228,7 +228,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Convert the setting to a metadata entry with the parent ID
         let metadata_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: self.device_id,
+            stream: self.stream,
             archived: false,
             local: false, // No data to download
             parent_id,
@@ -259,7 +259,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Get only active settings
         let entries = self
             .table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&[self.stream], &conditions, false)
             .await?;
 
         // Convert entries to settings
@@ -289,7 +289,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Get all versions including archived
         let entries = self
             .table
-            .get_entries_by_metadata_conditions(&conditions, true)
+            .get_entries_by_metadata_conditions(&[self.stream], &conditions, true)
             .await?;
 
         // Convert entries to settings, including the archived status
@@ -323,7 +323,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Get any existing active settings with this key
         let existing_settings = self
             .table
-            .get_entries_by_metadata_conditions(&conditions, false)
+            .get_entries_by_metadata_conditions(&[self.stream], &conditions, false)
             .await?;
 
         if existing_settings.len() > 1 {
@@ -339,7 +339,7 @@ impl<T: MetadataTable> SettingsTable<T> {
         // Create a new metadata entry marking this setting as deleted
         let metadata_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id: self.device_id,
+            stream: self.stream,
             archived: false,
             local: false,
             parent_id: Some(parent_id),
@@ -361,23 +361,18 @@ impl<T: MetadataTable> SettingsTable<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datastore::schema::DeviceId;
-    use crate::utils::generate_key;
     use serde_json::json;
 
-    fn generate_test_device_id() -> DeviceId {
-        generate_key().verifying_key().to_bytes()
+    fn generate_test_stream() -> i64 {
+        rand::random()
     }
 
     #[sqlx::test]
     fn test_setting_metadata_conversion(pool: PgPool) {
-        let device_id = generate_test_device_id();
+        let stream = generate_test_stream();
         let table = SettingsTable {
-            table: PostgresMetadataTable {
-                table_name: "test_settings".to_string(),
-                pool,
-            },
-            device_id,
+            table: PostgresMetadataTable { pool },
+            stream,
         };
 
         // Test simple setting
@@ -390,7 +385,7 @@ mod tests {
         let metadata_entry = table.setting_to_metadata_entry(&simple_setting);
 
         // Verify metadata entry fields
-        assert_eq!(metadata_entry.device_id, device_id);
+        assert_eq!(metadata_entry.stream, stream);
         assert!(!metadata_entry.archived);
         assert!(!metadata_entry.local);
         assert_eq!(metadata_entry.parent_id, None);
@@ -423,7 +418,7 @@ mod tests {
         let metadata_entry = table.setting_to_metadata_entry(&complex_setting);
 
         // Verify metadata entry fields for complex setting
-        assert_eq!(metadata_entry.device_id, device_id);
+        assert_eq!(metadata_entry.stream, stream);
         assert!(!metadata_entry.archived);
         assert!(!metadata_entry.local);
         assert_eq!(metadata_entry.parent_id, None);
@@ -443,13 +438,13 @@ mod tests {
 
     #[sqlx::test]
     async fn test_invalid_setting_metadata(pool: PgPool) {
-        let device_id = generate_test_device_id();
-        let mut settings = SettingsTable::from_postgres(pool, device_id).await.unwrap();
+        let stream = generate_test_stream();
+        let mut settings = SettingsTable::from_postgres(pool, stream).await.unwrap();
 
         // Test with malformed JSON metadata
         let entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -471,7 +466,7 @@ mod tests {
         // Test with invalid type field
         let entry_wrong_type = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -493,7 +488,7 @@ mod tests {
         // Test with null value
         let entry_null_value = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -516,7 +511,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_invalid_setting_keys(pool: PgPool) {
-        let mut settings = SettingsTable::from_postgres(pool, generate_test_device_id())
+        let mut settings = SettingsTable::from_postgres(pool, generate_test_stream())
             .await
             .unwrap();
 
@@ -546,7 +541,7 @@ mod tests {
         // Test missing required fields
         let invalid_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -566,7 +561,7 @@ mod tests {
         // Test wrong type field
         let wrong_type_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -586,7 +581,7 @@ mod tests {
         // Test invalid value type
         let invalid_value_entry = MetadataEntry {
             id: Uuid::new_v4(),
-            device_id: generate_test_device_id(),
+            stream: generate_test_stream(),
             archived: false,
             local: false,
             parent_id: None,
@@ -606,8 +601,8 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_setting(pool: PgPool) {
-        let device_id = generate_test_device_id();
-        let mut settings = SettingsTable::from_postgres(pool, device_id).await.unwrap();
+        let stream = generate_test_stream();
+        let mut settings = SettingsTable::from_postgres(pool, stream).await.unwrap();
 
         // Test getting non-existent setting
         let result = settings.get_setting("nonexistent").await.unwrap();
@@ -633,7 +628,7 @@ mod tests {
         // This simulates a corrupted state that shouldn't happen in normal operation
         let metadata_entry = MetadataEntry {
             id: Uuid::now_v7(),
-            device_id,
+            stream,
             archived: false,
             local: false,
             parent_id: None,
@@ -656,7 +651,7 @@ mod tests {
 
     #[sqlx::test]
     async fn test_get_setting_history(pool: PgPool) {
-        let mut settings = SettingsTable::from_postgres(pool, generate_test_device_id())
+        let mut settings = SettingsTable::from_postgres(pool, generate_test_stream())
             .await
             .unwrap();
 
