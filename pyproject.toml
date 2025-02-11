@@ -1,0 +1,22 @@
+[project]
+name = "eidetica"
+version = "0.1.0"
+description = "Remember everything."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+license = "LicenseRef-FSL-1.1-MIT"
+license-files = ["LICENSE.md"]
+authors = [
+    { name = "Patrick Jackson", email = "patrick@jackson.dev" },
+]
+
+[project.scripts]
+eidetica = "src.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
