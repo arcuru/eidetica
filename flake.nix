@@ -78,6 +78,9 @@
             # Releasing
             git-cliff
           ];
+
+          # Database location for local development
+          DATABASE_URL = "sqlite:///.cache/eidetica.db";
         };
       };
     };
