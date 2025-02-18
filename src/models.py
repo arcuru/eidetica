@@ -1,6 +1,7 @@
 from datetime import datetime
 import bcrypt
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
@@ -32,6 +33,20 @@ def get_engine(database_url):
 def get_session(engine):
     Session = sessionmaker(bind=engine)
     return Session()
+
+
+class Folder(Base):
+    __tablename__ = "folders"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="folders")
+
+
+User.folders = relationship("Folder", order_by=Folder.id, back_populates="user")
 
 
 def init_db(engine):
