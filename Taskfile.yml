@@ -1,0 +1,42 @@
+# https://taskfile.dev
+
+version: "3"
+
+tasks:
+  default:
+    cmd: task --list
+    silent: true
+  ci:full:
+    desc: Run CI locally in containers
+    cmd: act
+  ci:local:
+    desc: Run CI locally
+    aliases: [ci]
+    deps: [audit, doc, fmt, test, nix:check, nix:build, clippy, build]
+  nix:check:
+    desc: Run Nix CI checks
+    cmds:
+      - nix flake check
+  nix:build:
+    desc: Run Nix Build
+    cmds:
+      - nix build
+  fmt:
+    desc: Run all formatters
+    cmds:
+      - alejandra .
+      - prettier --write .
+  db:up:
+    desc: Start the testing database
+    aliases: [up, db:start]
+    cmd: source ./tests/test.sh up
+  db:down:
+    desc: Stop the testing database
+    aliases: [down, db:stop]
+    cmd: source ./tests/test.sh down
+  db:restart:
+    desc: Restart the testing database
+    aliases: [restart, db:rebuild]
+    cmds:
+      - task: db:down
+      - task: db:up

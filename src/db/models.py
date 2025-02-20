@@ -29,6 +29,18 @@ class User(Base):
         return bcrypt.checkpw(password_bytes, hash_bytes)
 
 
+class Database(Base):
+    __tablename__ = "databases"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    username = Column(String, nullable=False)
+    password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    folder_id = Column(Integer, ForeignKey("folders.id"), nullable=False)
+    folder = relationship("Folder", back_populates="databases")
+
+
 class Folder(Base):
     __tablename__ = "folders"
 
@@ -37,6 +49,9 @@ class Folder(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     user = relationship("User", back_populates="folders")
+    databases = relationship(
+        "Database", back_populates="folder", cascade="all, delete-orphan"
+    )
 
 
 def get_engine(database_url):

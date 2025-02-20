@@ -55,4 +55,14 @@ def setup_argparse():
     )
     rename_folder_parser.add_argument("new_name", help="New name for the folder")
 
+    # Database creation command
+    create_db_parser = folder_subparsers.add_parser(
+        "create-db", help="Create a database in a folder"
+    )
+    create_db_parser.add_argument("username", help="Username to create database for")
+    create_db_parser.add_argument(
+        "folder_id", type=int, help="ID of folder to create database in"
+    )
+    create_db_parser.add_argument("name", help="Name of the database to create")
+
     return parser.parse_args()

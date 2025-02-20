@@ -81,6 +81,9 @@
 
           # Database location for local development
           DATABASE_URL = "sqlite:///.cache/eidetica.db";
+
+          # Postgres location for testing
+          POSTGRES_URL = "postgresql://postgres:postgres@localhost:55556";
         };
       };
     };

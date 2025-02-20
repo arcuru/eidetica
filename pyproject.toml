@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "bcrypt>=4.2.1",
+    "psycopg2-binary>=2.9.10",
     "sqlalchemy>=2.0",
 ]
 license = "LicenseRef-FSL-1.1-MIT"
