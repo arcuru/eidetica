@@ -1,5 +1,9 @@
 from src.cli import setup_argparse
-from src.commands import handle_user_commands, handle_folder_commands
+from src.commands import (
+    handle_user_commands,
+    handle_folder_commands,
+    handle_database_commands,
+)
 from src.db import setup_database
 
 
@@ -8,10 +12,12 @@ def main():
     session = setup_database()
 
     try:
-        if args.command in ["check", "create", "login"]:
+        if args.command == "users":
             handle_user_commands(args, session)
         elif args.command == "folders":
             handle_folder_commands(args, session)
+        elif args.command == "databases":
+            handle_database_commands(args, session)
     finally:
         session.close()
 
