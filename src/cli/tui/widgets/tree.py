@@ -122,6 +122,7 @@ class DataTree(Tree[dict]):
                                             "name": db.name,
                                             "created_at": db.created_at,
                                             "username": db.username,
+                                            "password": db.password,
                                         },
                                     )
                             except Exception as e:
@@ -192,6 +193,44 @@ class DataTree(Tree[dict]):
         """Collapse the currently selected node."""
         if self.cursor_node and self.cursor_node.is_expanded:
             self.cursor_node.collapse()
+
+    def find_node(self, label: str) -> Optional[TreeNode]:
+        """Find a node by its label.
+
+        Args:
+            label: The label to search for
+
+        Returns:
+            The found node or None
+        """
+
+        def search_nodes(node: TreeNode) -> Optional[TreeNode]:
+            if node.label == label:
+                return node
+            for child in node.children:
+                result = search_nodes(child)
+                if result:
+                    return result
+            return None
+
+        return search_nodes(self.root)
+
+    def select_node(self, node: TreeNode) -> None:
+        """Select a specific node in the tree.
+
+        Args:
+            node: The node to select
+        """
+        if node:
+            # Expand parent nodes
+            current = node.parent
+            while current and current != self.root:
+                current.expand()
+                current = current.parent
+
+            # Select the node
+            self.select_node(node)
+            self.scroll_to_node(node)
 
     CSS = """
     DataTree {

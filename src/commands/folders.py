@@ -93,11 +93,12 @@ def delete_folder(
 
     session.delete(folder)
     session.commit()
-    print(colored(f"Folder '{name}' deleted successfully", "green"))
     return True
 
 
-def search_folders(user_id: int, query: str, session, format: str = "plain") -> None:
+def search_folders(
+    user_id: int, query: str, session, format: str = "plain"
+) -> list[Folder]:
     """Search folders by name"""
     folders = (
         session.query(Folder)
@@ -105,14 +106,21 @@ def search_folders(user_id: int, query: str, session, format: str = "plain") -> 
         .all()
     )
 
-    if not folders:
-        print(colored("No matching folders found", "yellow"))
-        return
+    if format != "plain":
+        if not folders:
+            print(colored("No matching folders found", "yellow"))
+        else:
+            data = {
+                f.id: {
+                    "name": f.name,
+                    "created_at": f.created_at,
+                    "description": f.description,
+                }
+                for f in folders
+            }
+            print(format_output(data, format))
 
-    data = {
-        f.id: {"name": f.name, "created_at": f.created_at, "description": f.description}
-        for f in folders
-    }
+    return folders
     print(format_output(data, format))
 
 

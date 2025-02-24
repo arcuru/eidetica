@@ -5,6 +5,9 @@ from textual.binding import Binding
 
 from .screens.login import LoginScreen
 from .screens.main import MainScreen
+from .screens.dialogs import ConfirmDialog, HelpDialog
+from .screens.forms import FolderForm, DatabaseForm
+from .screens.search import SearchScreen
 
 
 class EideticaApp(App[None]):
@@ -25,6 +28,13 @@ class EideticaApp(App[None]):
     SCREENS = {
         "login": LoginScreen,
         "main": MainScreen,
+        "confirm_dialog": ConfirmDialog,
+        "help_dialog": HelpDialog,
+        "create_folder": FolderForm,
+        "edit_folder": FolderForm,
+        "create_database": DatabaseForm,
+        "edit_database": DatabaseForm,
+        "search": SearchScreen,
     }
 
     def __init__(self):
@@ -37,7 +47,32 @@ class EideticaApp(App[None]):
         """Handle application mount."""
         self.push_screen("login")
 
+    def push_screen_with_args(self, screen_name: str, **kwargs) -> None:
+        """Push a screen with arguments.
+
+        Args:
+            screen_name: Name of the screen to push
+            **kwargs: Arguments to pass to the screen
+        """
+        screen_class = self.SCREENS[screen_name]
+        screen = screen_class(**kwargs)
+        self.push_screen(screen)
+
+    async def push_screen_wait(self, screen_name: str, **kwargs) -> bool:
+        """Push a screen and wait for its result.
+
+        Args:
+            screen_name: Name of the screen to push
+            **kwargs: Arguments to pass to the screen
+
+        Returns:
+            The result from the screen
+        """
+        screen_class = self.SCREENS[screen_name]
+        screen = screen_class(**kwargs)
+        return await self.push_screen(screen)
+
     def action_refresh(self) -> None:
         """Refresh the current screen."""
         if isinstance(self.screen, MainScreen):
-            self.screen.refresh()
+            self.screen.action_refresh()

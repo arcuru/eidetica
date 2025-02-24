@@ -118,12 +118,12 @@ def create_database(folder_name: str, dbname: str, user_id: int, session) -> boo
 
 def get_database_info(
     dbname: str, user_id: int, session, format: str = "plain"
-) -> None:
+) -> Optional[dict]:
     """Get database connection info"""
     database = get_database_by_name(user_id, dbname, session)
     if not database:
         print(colored(f"Database '{dbname}' not found", "red"))
-        return
+        return None
 
     data = {
         "name": database.name,
@@ -131,9 +131,9 @@ def get_database_info(
         "password": database.password,
         "connection_url": f"postgresql://{database.username}:{database.password}@localhost/{database.name}",
         "created_at": database.created_at,
-        "size": database.size,
     }
     print(format_output(data, format))
+    return data
 
 
 def reset_database_password(
@@ -205,6 +205,105 @@ def delete_database(
         return True
 
     try:
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write(f"[DEBUG] Starting PostgreSQL operations for database deletion\n")
+            f.write(f"[DEBUG] Database name: {dbname}\n")
+            f.write(f"[DEBUG] Database username: {database.username}\n")
+
+        db_url = getenv("POSTGRES_URL")
+        if not db_url:
+            with open("/tmp/eidetica_debug.log", "a") as f:
+                f.write("[ERROR] POSTGRES_URL environment variable not set\n")
+            raise ValueError("POSTGRES_URL environment variable is not set")
+
+        # Connect to postgres database to avoid being connected to the db we're dropping
+        conn = psycopg2.connect(db_url + "/postgres")
+        conn.autocommit = True
+        cursor = conn.cursor()
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write(
+                "[DEBUG] Connected to PostgreSQL (postgres db), attempting DROP DATABASE\n"
+            )
+
+        # Terminate any existing connections to the database
+        cursor.execute(
+            sql.SQL(
+                """
+                SELECT pg_terminate_backend(pg_stat_activity.pid)
+                FROM pg_stat_activity
+                WHERE pg_stat_activity.datname = %s
+                AND pid <> pg_backend_pid()
+            """
+            ),
+            [dbname],
+        )
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write("[DEBUG] Terminated existing connections\n")
+
+        # Now drop the database
+        cursor.execute(
+            sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(dbname))
+        )
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write("[DEBUG] Database dropped successfully, attempting DROP USER\n")
+
+        cursor.execute(
+            sql.SQL("DROP USER {}").format(sql.Identifier(database.username))
+        )
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write("[DEBUG] User dropped successfully\n")
+
+        cursor.close()
+        conn.close()
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write("[DEBUG] PostgreSQL connection closed\n")
+            f.write("[DEBUG] Deleting database record from local DB\n")
+
+        session.delete(database)
+        session.commit()
+
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write("[DEBUG] Database deletion completed successfully\n")
+
+        return True
+
+    except Exception as e:
+        with open("/tmp/eidetica_debug.log", "a") as f:
+            f.write(f"[ERROR] Exception during database deletion: {str(e)}\n")
+        print(colored(f"Error deleting database: {e}", "red"))
+        return False
+
+
+def update_database(
+    old_name: str,
+    new_name: str,
+    username: str,
+    folder_name: str,
+    session,
+) -> bool:
+    """Update a database's name and metadata"""
+    try:
+        # Get the database record
+        database = (
+            session.query(Database)
+            .join(Folder)
+            .filter(Database.name == old_name, Folder.name == folder_name)
+            .first()
+        )
+        if not database:
+            print(
+                colored(
+                    f"Database '{old_name}' not found in folder '{folder_name}'", "red"
+                )
+            )
+            return False
+
+        # Update PostgreSQL database name
         db_url = getenv("POSTGRES_URL")
         if not db_url:
             raise ValueError("POSTGRES_URL environment variable is not set")
@@ -213,22 +312,50 @@ def delete_database(
         conn.autocommit = True
         cursor = conn.cursor()
 
-        cursor.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(dbname)))
         cursor.execute(
-            sql.SQL("DROP USER {}").format(sql.Identifier(database.username))
+            sql.SQL("ALTER DATABASE {} RENAME TO {}").format(
+                sql.Identifier(old_name), sql.Identifier(new_name)
+            )
         )
 
         cursor.close()
         conn.close()
+
+        # Update local database record
+        database.name = new_name
+        database.username = username
+        session.commit()
+
+        print(colored(f"Database '{old_name}' updated to '{new_name}'", "green"))
+        return True
+
     except Exception as e:
-        print(colored(f"Error deleting database: {e}", "red"))
+        print(colored(f"Error updating database: {e}", "red"))
         return False
 
-    session.delete(database)
-    session.commit()
 
-    print(colored(f"Database '{dbname}' deleted successfully", "green"))
-    return True
+def search_databases(
+    user_id: int, query: str, session, format: str = "plain"
+) -> List[Database]:
+    """Search databases by name across all folders"""
+    databases = (
+        session.query(Database)
+        .join(Folder)
+        .filter(Folder.user_id == user_id, Database.name.ilike(f"%{query}%"))
+        .all()
+    )
+
+    if format != "plain":
+        if not databases:
+            print(colored("No matching databases found", "yellow"))
+        else:
+            data = {
+                db.id: {"name": db.name, "created_at": db.created_at}
+                for db in databases
+            }
+            print(format_output(data, format))
+
+    return databases
 
 
 def handle_database_commands(args, session):
