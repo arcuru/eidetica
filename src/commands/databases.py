@@ -2,6 +2,7 @@ from typing import Optional
 from src.db import User, Folder, Database
 from src.db.session import SessionLocal, get_db
 from termcolor import colored
+from src.commands.utils import confirm_action, format_output
 import sys
 import secrets
 import string
@@ -42,10 +43,7 @@ def list_databases(
         print(colored("No databases found", "yellow"))
         return
 
-    data = {
-        db.id: {"name": db.name, "created_at": db.created_at, "size": db.size}
-        for db in databases
-    }
+    data = {db.id: {"name": db.name, "created_at": db.created_at} for db in databases}
     print(format_output(data, format))
 
 

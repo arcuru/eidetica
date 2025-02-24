@@ -2,26 +2,8 @@ from typing import Optional
 from src.db import User, Folder, Database
 from src.db.session import SessionLocal, get_db
 from termcolor import colored
+from src.commands.utils import confirm_action, format_output
 import sys
-
-
-def confirm_action(prompt: str) -> bool:
-    """Prompt user for confirmation"""
-    response = input(f"{prompt} [y/N] ").lower()
-    return response == "y"
-
-
-def format_output(data: dict, format: str = "plain") -> str:
-    """Format output based on selected format"""
-    if format == "json":
-        import json
-
-        return json.dumps(data, indent=2)
-    elif format == "table":
-        from tabulate import tabulate
-
-        return tabulate(data.items(), tablefmt="pretty")
-    return "\n".join(f"{k}: {v}" for k, v in data.items())
 
 
 def get_folder_by_name(user_id: int, name: str, session) -> Optional[Folder]:

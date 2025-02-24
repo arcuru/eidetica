@@ -128,6 +128,7 @@ def setup_argparse():
 
     # Databases command group
     databases_parser = subparsers.add_parser("databases", help="Manage databases")
+    databases_parser.add_argument("username", help="Username to manage databases for")
     databases_subparsers = databases_parser.add_subparsers(
         dest="database_command", required=True
     )
