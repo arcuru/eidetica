@@ -158,7 +158,7 @@ class MainScreen(Screen):
         else:
             self.notify("Cannot create item here", severity="error")
 
-    async def action_delete_item(self) -> None:
+    def action_delete_item(self) -> None:
         """Delete the selected item."""
         with open("/tmp/eidetica_debug.log", "a") as f:
             f.write("[DEBUG] action_delete_item called\n")
@@ -185,131 +185,37 @@ class MainScreen(Screen):
             with open("/tmp/eidetica_debug.log", "a") as f:
                 f.write("[DEBUG] Starting folder deletion flow\n")
 
-            try:
-                confirmed = await self.app.push_screen_wait(
-                    "confirm_dialog", message=f"Delete folder '{node.data['name']}'?"
-                )
-                with open("/tmp/eidetica_debug.log", "a") as f:
-                    f.write(f"[DEBUG] Folder deletion confirmed: {confirmed}\n")
-
-                if confirmed:
-                    from src.commands.folders import delete_folder
-
-                    try:
-                        user = (
-                            self.app.session.query(User)
-                            .filter_by(username=self.app.username)
-                            .first()
-                        )
-                        if not user:
-                            raise Exception(f"User '{self.app.username}' not found")
-
-                        result = delete_folder(
-                            user.id, node.data["name"], self.app.session, force=True
-                        )
-                        if result:
-                            self.notify(f"Folder '{node.data['name']}' deleted")
-                            tree.load_user_data()
-                        else:
-                            self.notify("Failed to delete folder", severity="error")
-                    except Exception as e:
-                        self.notify(
-                            f"Error deleting folder: {str(e)}", severity="error"
-                        )
-
-            except Exception as e:
-                with open("/tmp/eidetica_debug.log", "a") as f:
-                    f.write(f"[ERROR] Exception in folder deletion flow: {str(e)}\n")
-                self.notify(f"Error in deletion flow: {str(e)}", severity="error")
+            # Push the delete item screen for folder
+            self.app.push_screen_with_args(
+                "delete_item", item_type="folder", item_name=node.data["name"]
+            )
 
         elif node_type == "database":
             with open("/tmp/eidetica_debug.log", "a") as f:
                 f.write("[DEBUG] Starting database deletion flow\n")
 
-            try:
-                # Get parent folder node
-                folder_node = node.parent
-                if (
-                    not folder_node
-                    or not folder_node.data
-                    or folder_node.data.get("type") != "folder"
-                ):
-                    with open("/tmp/eidetica_debug.log", "a") as f:
-                        f.write("[ERROR] Cannot determine parent folder\n")
-                    self.notify("Cannot determine parent folder", severity="error")
-                    return
-
+            # Get parent folder node
+            folder_node = node.parent
+            if (
+                not folder_node
+                or not folder_node.data
+                or folder_node.data.get("type") != "folder"
+            ):
                 with open("/tmp/eidetica_debug.log", "a") as f:
-                    f.write(f"[DEBUG] Parent folder: {folder_node.data['name']}\n")
+                    f.write("[ERROR] Cannot determine parent folder\n")
+                self.notify("Cannot determine parent folder", severity="error")
+                return
 
-                # Handle confirmation the same way as folder deletion
-                result = await self.app.push_screen_wait(
-                    "confirm_dialog",
-                    message=f"Delete database '{node.data['name']}' from folder '{folder_node.data['name']}'?",
-                )
+            with open("/tmp/eidetica_debug.log", "a") as f:
+                f.write(f"[DEBUG] Parent folder: {folder_node.data['name']}\n")
 
-                with open("/tmp/eidetica_debug.log", "a") as f:
-                    f.write(f"[DEBUG] Raw dialog result: {result}\n")
-
-                # Convert to bool explicitly like folder deletion
-                if bool(result):
-                    with open("/tmp/eidetica_debug.log", "a") as f:
-                        f.write(
-                            "[DEBUG] Confirmation successful, proceeding with deletion\n"
-                        )
-                    from src.commands.databases import delete_database
-
-                    try:
-                        user = (
-                            self.app.session.query(User)
-                            .filter_by(username=self.app.username)
-                            .first()
-                        )
-                        if not user:
-                            with open("/tmp/eidetica_debug.log", "a") as f:
-                                f.write(
-                                    f"[ERROR] User not found: {self.app.username}\n"
-                                )
-                            raise Exception(f"User '{self.app.username}' not found")
-
-                        with open("/tmp/eidetica_debug.log", "a") as f:
-                            f.write(f"[DEBUG] Found user ID: {user.id}\n")
-                            f.write("[DEBUG] Calling delete_database\n")
-
-                        success = delete_database(
-                            node.data["name"], user.id, self.app.session, force=True
-                        )
-
-                        with open("/tmp/eidetica_debug.log", "a") as f:
-                            f.write(f"[DEBUG] Delete database result: {success}\n")
-
-                        if not success:
-                            with open("/tmp/eidetica_debug.log", "a") as f:
-                                f.write("[ERROR] Database deletion failed\n")
-                            self.notify("Failed to delete database", severity="error")
-                            return
-
-                        with open("/tmp/eidetica_debug.log", "a") as f:
-                            f.write(f"[INFO] Database deleted successfully\n")
-                        self.notify(
-                            f"Database '{node.data['name']}' deleted successfully"
-                        )
-
-                        tree.load_user_data()
-                        with open("/tmp/eidetica_debug.log", "a") as f:
-                            f.write("[DEBUG] Tree view refreshed\n")
-
-                    except Exception as e:
-                        with open("/tmp/eidetica_debug.log", "a") as f:
-                            f.write(f"[ERROR] Exception during deletion: {str(e)}\n")
-                        self.notify(
-                            f"Error deleting database: {str(e)}", severity="error"
-                        )
-
-            except Exception as e:
-                with open("/tmp/eidetica_debug.log", "a") as f:
-                    f.write(f"[ERROR] Exception in database deletion flow: {str(e)}\n")
-                self.notify(f"Error in deletion flow: {str(e)}", severity="error")
+            # Push the delete item screen for database
+            self.app.push_screen_with_args(
+                "delete_item",
+                item_type="database",
+                item_name=node.data["name"],
+                folder_name=folder_node.data["name"],
+            )
 
         else:
             with open("/tmp/eidetica_debug.log", "a") as f:

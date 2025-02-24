@@ -6,7 +6,7 @@ from textual.binding import Binding
 from .screens.login import LoginScreen
 from .screens.main import MainScreen
 from .screens.dialogs import ConfirmDialog, HelpDialog
-from .screens.forms import FolderForm, DatabaseForm
+from .screens.forms import FolderForm, DatabaseForm, DeleteItemScreen
 from .screens.search import SearchScreen
 
 
@@ -34,6 +34,7 @@ class EideticaApp(App[None]):
         "edit_folder": FolderForm,
         "create_database": DatabaseForm,
         "edit_database": DatabaseForm,
+        "delete_item": DeleteItemScreen,
         "search": SearchScreen,
     }
 

@@ -41,10 +41,12 @@ class DataTree(Tree[dict]):
         """Load user data into the tree."""
         try:
             # Clear existing nodes
+            self.debug_log("[DEBUG] Starting tree refresh - removing existing nodes")
             self.root.remove_children()
 
             try:
                 # Get user ID and create user node
+                self.debug_log(f"[DEBUG] Querying for user: {self.username}")
                 user = (
                     self.session.query(User).filter_by(username=self.username).first()
                 )
@@ -62,6 +64,10 @@ class DataTree(Tree[dict]):
 
                 # Load folders
                 try:
+                    self.debug_log(f"[DEBUG] Listing folders for user ID: {user.id}")
+                    # Force a fresh query from the database
+                    self.session.expire_all()
+
                     user_folders = folders.list_folders(
                         user.id, self.session, format="plain"
                     )
@@ -95,6 +101,9 @@ class DataTree(Tree[dict]):
                                 self.debug_log(
                                     f"[DEBUG] Loading databases for folder: {folder.name}"
                                 )
+                                # Force a fresh query from the database
+                                self.session.expire_all()
+
                                 folder_dbs = databases.list_databases(
                                     folder.name,  # Corrected argument order
                                     user.id,  # Using user ID instead of username
