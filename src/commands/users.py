@@ -88,6 +88,14 @@ def delete_user(username: str, session, force: bool = False) -> bool:
     return True
 
 
+def login_user(session, username: str, password: str) -> bool:
+    """Authenticate a user"""
+    user = session.query(User).filter_by(username=username).first()
+    if user and user.check_password(password):
+        return True
+    return False
+
+
 def handle_user_commands(args, session):
     """Handle user commands"""
     try:
@@ -105,8 +113,7 @@ def handle_user_commands(args, session):
             print(f"User '{args.username}' exists: {exists}")
         elif args.user_command == "login":
             password = args.password or getpass.getpass("Enter password: ")
-            user = session.query(User).filter_by(username=args.username).first()
-            if user and user.check_password(password):
+            if login_user(session, args.username, password):
                 print(colored(f"Login successful for user '{args.username}'", "green"))
             else:
                 print(colored("Invalid username or password", "red"))

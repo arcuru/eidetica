@@ -183,4 +183,7 @@ def setup_argparse():
         help="Show what would be deleted without actually deleting",
     )
 
+    # TUI command
+    tui_parser = subparsers.add_parser("tui", help="Launch terminal user interface")
+
     return parser.parse_args()

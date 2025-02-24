@@ -17,18 +17,23 @@ def validate_name_uniqueness(user_id: int, name: str, session) -> bool:
     return existing is None
 
 
-def list_folders(user_id: int, session, format: str = "plain") -> None:
+def list_folders(user_id: int, session, format: str = "plain") -> list[Folder]:
     """List all folders for a user"""
     folders = session.query(Folder).filter_by(user_id=user_id).all()
+    if format == "plain":
+        return folders
+
+    # For CLI usage, print formatted output
     if not folders:
         print(colored("No folders found", "yellow"))
-        return
+        return []
 
     data = {
         f.id: {"name": f.name, "created_at": f.created_at, "description": f.description}
         for f in folders
     }
     print(format_output(data, format))
+    return folders
 
 
 def create_folder(

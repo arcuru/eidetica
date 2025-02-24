@@ -9,6 +9,7 @@ dependencies = [
     "psycopg2-binary>=2.9.10",
     "sqlalchemy>=2.0",
     "termcolor>=2.5.0",
+    "textual>=0.54.2",
 ]
 license = "LicenseRef-FSL-1.1-MIT"
 license-files = ["LICENSE.md"]

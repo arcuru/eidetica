@@ -1,4 +1,6 @@
-from typing import Optional
+"""Database management commands."""
+
+from typing import Optional, List
 from src.db import User, Folder, Database
 from src.db.session import SessionLocal, get_db
 from termcolor import colored
@@ -31,20 +33,25 @@ def validate_dbname_uniqueness(folder_id: int, dbname: str, session) -> bool:
 
 def list_databases(
     folder_name: str, user_id: int, session, format: str = "plain"
-) -> None:
+) -> List[Database]:
     """List databases in a folder"""
     folder = session.query(Folder).filter_by(user_id=user_id, name=folder_name).first()
     if not folder:
         print(colored(f"Folder '{folder_name}' not found", "red"))
-        return
+        return []
 
     databases = folder.databases
     if not databases:
         print(colored("No databases found", "yellow"))
-        return
+        return []
 
-    data = {db.id: {"name": db.name, "created_at": db.created_at} for db in databases}
-    print(format_output(data, format))
+    if format != "plain":
+        data = {
+            db.id: {"name": db.name, "created_at": db.created_at} for db in databases
+        }
+        print(format_output(data, format))
+
+    return list(databases)  # Convert to list to ensure it's not a SQLAlchemy collection
 
 
 def create_database(folder_name: str, dbname: str, user_id: int, session) -> bool:
@@ -233,7 +240,13 @@ def handle_database_commands(args, session):
 
     try:
         if args.database_command == "list":
-            list_databases(args.folder, user.id, session, args.format)
+            databases = list_databases(args.folder, user.id, session, args.format)
+            if args.format == "plain" and databases:
+                # Print in plain format if not already printed in another format
+                for db in databases:
+                    print(f"Name: {db.name}")
+                    print(f"Created: {db.created_at}")
+                    print("---")
         elif args.database_command == "create":
             create_database(args.folder, args.dbname, user.id, session)
         elif args.database_command == "info":

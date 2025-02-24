@@ -5,6 +5,7 @@ from src.commands import (
     handle_database_commands,
 )
 from src.db import setup_database
+from src.cli.tui import EideticaApp
 
 
 def main():
@@ -12,7 +13,11 @@ def main():
     session = setup_database()
 
     try:
-        if args.command == "users":
+        if args.command == "tui":
+            # Launch TUI application
+            app = EideticaApp()
+            app.run()
+        elif args.command == "users":
             handle_user_commands(args, session)
         elif args.command == "folders":
             handle_folder_commands(args, session)
