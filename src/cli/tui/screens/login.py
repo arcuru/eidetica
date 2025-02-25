@@ -10,9 +10,17 @@ from textual import on
 from src.commands.users import login_user
 from src.db.session import setup_database
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+# Configure logging - redirect to file instead of console to avoid TUI interference
+logging.basicConfig(
+    level=logging.DEBUG,
+    filename="/tmp/eidetica_debug.log",  # Log to file instead of console
+    filemode="a",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+# Ensure debug messages are logged
+logging.getLogger().setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class LoginScreen(Screen):
@@ -42,6 +50,8 @@ class LoginScreen(Screen):
     def on_mount(self) -> None:
         """Handle screen mount event."""
         self.query_one("#username").focus()
+        # Hide error message initially
+        self.query_one("#error-message").add_class("hidden")
 
     @on(Button.Pressed, "#login")
     def handle_login(self) -> None:
@@ -61,7 +71,11 @@ class LoginScreen(Screen):
         if not username or not password:
             error_msg = "Please enter both username and password"
             logger.debug(f"Login validation error: {error_msg}")
+            # Make sure error message is visible and properly updated
             error_label.update(error_msg)
+            error_label.remove_class("hidden")
+            error_label.styles.color = "red"  # Explicitly set color
+            self.refresh()
             return
 
         try:
@@ -77,12 +91,25 @@ class LoginScreen(Screen):
             else:
                 error_msg = "Invalid username or password"
                 logger.debug(f"Login failed: {error_msg}")
+                logger.debug(f"Updating error label with message: {error_msg}")
+                # Make sure error message is visible and properly updated
                 error_label.update(error_msg)
+                logger.debug(f"Error label text after update: {error_label.renderable}")
+                error_label.remove_class("hidden")
+                logger.debug(
+                    f"Error label classes after removal: {error_label.classes}"
+                )
+                error_label.styles.color = "red"  # Explicitly set color
+                logger.debug(f"Error label styles after update: {error_label.styles}")
+                self.refresh()
         except Exception as e:
             error_msg = f"Login error: {str(e)}"
             logger.error(f"Login exception: {error_msg}")
+            # Make sure error message is visible and properly updated
             error_label.update(error_msg)
-            error_label.refresh()
+            error_label.remove_class("hidden")
+            error_label.styles.color = "red"  # Explicitly set color
+            self.refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission."""
@@ -92,6 +119,15 @@ class LoginScreen(Screen):
         elif event.input.id == "password":
             # Trigger login
             self.try_login()
+
+    @on(Input.Changed)
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Hide error message when user starts typing."""
+        if event.input.id in ("username", "password"):
+            # Hide error message when user starts typing
+            error_label = self.query_one("#error-message")
+            if not error_label.has_class("hidden"):
+                error_label.add_class("hidden")
 
     CSS = """
     Screen {
@@ -139,11 +175,19 @@ class LoginScreen(Screen):
 
     #error-message {
         color: $error;
-        text-style: italic;
-        height: 1;
+        text-style: bold italic;
+        height: auto;
+        min-height: 2;
         margin: 1 0;
+        padding: 1;
         width: 100%;
         text-align: center;
+        background: $error 10%;
+        border: tall $error;
+    }
+
+    .hidden {
+        display: none;
     }
 
     Button {
