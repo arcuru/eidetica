@@ -1,0 +1,11 @@
+[book]
+authors = ["Patrick Jackson"]
+title = "EideticaDB Documentation"
+language = "en"
+
+[output.html]
+default-theme = "light"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

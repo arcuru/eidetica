@@ -139,7 +139,13 @@
           projectRootFile = "flake.nix";
           programs = {
             alejandra.enable = true;
-            prettier.enable = true;
+            prettier = {
+              enable = true;
+              excludes = [
+                "docs/mermaid.min.js"
+                "docs/book/\\.html"
+              ];
+            };
             rustfmt = {
               enable = true;
               package = toolChain;
@@ -193,6 +199,7 @@
 
             # Documentation
             mdbook
+            mdbook-mermaid
           ];
 
           # Many tools read this to find the sources for rust stdlib

@@ -23,3 +23,6 @@ target
 
 # Ignore the saved in-memory database files
 **/*.json
+
+# mdbook files
+docs/book
