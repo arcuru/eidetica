@@ -3,6 +3,7 @@ use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
 use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::KVStore;
+use eideticadb::Error;
 
 #[test]
 fn test_new_db_and_tree() {
@@ -151,4 +152,50 @@ fn test_basic_subtree_modification() {
         Err(eideticadb::Error::NotFound) => (),
         other => panic!("Expected NotFound error, got {:?}", other),
     }
+}
+
+#[test]
+fn test_find_tree() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Tree 1: No name
+    let settings1 = KVOverWrite::new();
+    db.new_tree(settings1).expect("Failed to create tree 1");
+
+    // Tree 2: Name "Tree2"
+    let mut settings2 = KVOverWrite::new();
+    settings2.set("name".to_string(), "Tree2".to_string());
+    db.new_tree(settings2).expect("Failed to create tree 2");
+
+    // Tree 3: Name "Tree3"
+    let mut settings3 = KVOverWrite::new();
+    settings3.set("name".to_string(), "Tree3".to_string());
+    db.new_tree(settings3).expect("Failed to create tree 3");
+
+    // Tree 4: Name "Tree3" (duplicate name)
+    let mut settings4 = KVOverWrite::new();
+    settings4.set("name".to_string(), "Tree3".to_string());
+    db.new_tree(settings4).expect("Failed to create tree 4");
+
+    // Test: Find non-existent name
+    let found_none_result = db.find_tree("NonExistent");
+    assert!(matches!(found_none_result, Err(Error::NotFound)));
+
+    // Test: Find unique name
+    let found_tree2 = db.find_tree("Tree2").expect("find_tree failed");
+    assert_eq!(found_tree2.len(), 1);
+    assert_eq!(found_tree2[0].get_name().unwrap(), "Tree2");
+
+    // Test: Find duplicate name
+    let found_tree3 = db.find_tree("Tree3").expect("find_tree failed");
+    assert_eq!(found_tree3.len(), 2);
+    // Check if both found trees have the name "Tree3"
+    assert!(found_tree3.iter().all(|t| t.get_name().unwrap() == "Tree3"));
+
+    // Test: Find when no trees exist
+    let empty_backend = Box::new(InMemoryBackend::new());
+    let empty_db = BaseDB::new(empty_backend);
+    let found_empty_result = empty_db.find_tree("AnyName");
+    assert!(matches!(found_empty_result, Err(Error::NotFound)));
 }

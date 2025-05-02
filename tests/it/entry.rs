@@ -1,4 +1,4 @@
-use eideticadb::entry::Entry;
+use eideticadb::entry::{Entry, ID};
 
 #[test]
 fn test_entry_creation() {
@@ -271,4 +271,102 @@ fn test_entry_remove_empty_subtrees() {
         .unwrap();
     assert!(entry_all_empty.remove_empty_subtrees().is_ok());
     assert!(entry_all_empty.subtrees().is_empty());
+}
+
+#[test]
+fn test_add_subtree_success() {
+    let mut entry = Entry::new("root_id".to_string(), "{}".to_string());
+    let result = entry.set_subtree_data("my_subtree".to_string(), "{}".to_string());
+    assert!(result.is_ok());
+    assert!(entry.in_subtree("my_subtree"));
+    assert_eq!(entry.subtrees().len(), 1);
+}
+
+#[test]
+fn test_add_subtree_duplicate() {
+    let mut entry = Entry::new("root_id".to_string(), "{}".to_string());
+    entry
+        .set_subtree_data(
+            "my_subtree".to_string(),
+            "{\"initial\":\"data\"}".to_string(),
+        )
+        .expect("First add should succeed");
+    let parents: Vec<ID> = vec!["parent1".to_string(), "parent2".to_string()];
+    entry.set_subtree_parents("my_subtree", parents.clone());
+
+    assert_eq!(entry.subtrees().len(), 1);
+    assert_eq!(
+        entry.data("my_subtree").unwrap(),
+        &"{\"initial\":\"data\"}".to_string()
+    );
+    assert_eq!(entry.subtree_parents("my_subtree").unwrap(), parents);
+
+    let result = entry.set_subtree_data(
+        "my_subtree".to_string(),
+        "{\"updated\":\"data\"}".to_string(),
+    );
+    assert!(
+        result.is_ok(),
+        "Adding duplicate subtree should succeed with overwrite behavior"
+    );
+    assert_eq!(entry.subtrees().len(), 1);
+    assert_eq!(
+        entry.data("my_subtree").unwrap(),
+        &"{\"updated\":\"data\"}".to_string()
+    );
+    assert_eq!(entry.subtree_parents("my_subtree").unwrap(), parents);
+}
+
+#[test]
+fn test_subtrees_are_sorted() {
+    let mut entry = Entry::new("root_id".to_string(), "{}".to_string());
+    entry
+        .set_subtree_data("z_subtree".to_string(), "{}".to_string())
+        .unwrap();
+    entry
+        .set_subtree_data("a_subtree".to_string(), "{}".to_string())
+        .unwrap();
+    entry
+        .set_subtree_data("m_subtree".to_string(), "{}".to_string())
+        .unwrap();
+
+    let sorted_subtree_names = entry.subtrees();
+    assert_eq!(sorted_subtree_names.len(), 3);
+    assert_eq!(
+        sorted_subtree_names,
+        vec!["a_subtree", "m_subtree", "z_subtree"]
+    );
+}
+
+#[test]
+fn test_parents_are_sorted() {
+    let mut entry = Entry::new("root_id".to_string(), "{}".to_string());
+    entry.set_parents(vec![
+        "z_parent".to_string(),
+        "a_parent".to_string(),
+        "m_parent".to_string(),
+    ]);
+
+    let parents = entry.parents().unwrap();
+    assert_eq!(parents.len(), 3);
+    assert_eq!(parents, vec!["a_parent", "m_parent", "z_parent"]);
+
+    entry
+        .set_subtree_data("test_subtree".to_string(), "{}".to_string())
+        .unwrap();
+    entry.set_subtree_parents(
+        "test_subtree",
+        vec![
+            "z_subparent".to_string(),
+            "a_subparent".to_string(),
+            "m_subparent".to_string(),
+        ],
+    );
+
+    let subtree_parents = entry.subtree_parents("test_subtree").unwrap();
+    assert_eq!(subtree_parents.len(), 3);
+    assert_eq!(
+        subtree_parents,
+        vec!["a_subparent", "m_subparent", "z_subparent"]
+    );
 }

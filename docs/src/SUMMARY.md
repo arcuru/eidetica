@@ -25,6 +25,7 @@
   - [CRDT System](internal/core_components/crdt.md)
 - [Data Flow](internal/data_flow.md)
 - [CRDT Principles & Merging](internal/crdt_principles.md)
+- [Testing Architecture](internal/testing.md)
 - [Performance Considerations](internal/performance.md)
 - [Error Handling](internal/error_handling.md)
 - [Future Development](internal/future_development.md)

@@ -1,4 +1,5 @@
 use eideticadb::data::{KVOverWrite, CRDT};
+use std::collections::HashMap;
 
 #[test]
 fn test_kvoverwrite_basic_operations() {
@@ -188,4 +189,59 @@ fn test_kvoverwrite_serialization_roundtrip_with_merge() {
     assert_eq!(merged_with_empty.get("key1"), Some(&"value1".to_string()));
     assert_eq!(merged_with_empty.get("key2"), Some(&"updated2".to_string()));
     assert_eq!(merged_with_empty.get("key3"), Some(&"value3".to_string()));
+}
+
+#[test]
+fn test_kvoverwrite_new() {
+    // Test creation of a new KVOverWrite
+    let kv = KVOverWrite::new();
+    assert_eq!(kv.as_hashmap().len(), 0);
+}
+
+#[test]
+fn test_kvoverwrite_from_hashmap() {
+    // Test creation from an existing HashMap
+    let mut data = HashMap::new();
+    data.insert("key1".to_string(), "value1".to_string());
+    data.insert("key2".to_string(), "value2".to_string());
+
+    let kv = KVOverWrite::from_hashmap(data.clone());
+    assert_eq!(kv.as_hashmap().len(), 2);
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
+}
+
+#[test]
+fn test_kvoverwrite_remove() {
+    // Test removing values
+    let mut kv = KVOverWrite::new();
+
+    // Add a value then remove it
+    kv.set("key1".to_string(), "value1".to_string());
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+
+    let removed = kv.remove("key1");
+    assert_eq!(removed, Some("value1".to_string()));
+    assert_eq!(kv.get("key1"), None);
+
+    // Try removing a non-existent key
+    let removed = kv.remove("nonexistent");
+    assert_eq!(removed, None);
+}
+
+#[test]
+fn test_kvoverwrite_as_hashmap_mut() {
+    // Test mutable access to the underlying HashMap
+    let mut kv = KVOverWrite::new();
+
+    // Modify through the KVOverWrite methods
+    kv.set("key1".to_string(), "value1".to_string());
+
+    // Modify through the mutable HashMap reference
+    kv.as_hashmap_mut()
+        .insert("key2".to_string(), "value2".to_string());
+
+    // Verify both modifications worked
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
 }
