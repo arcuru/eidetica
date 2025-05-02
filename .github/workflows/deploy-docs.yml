@@ -5,8 +5,8 @@ on:
     branches:
       - main
     paths:
-      - 'docs/**'
-      - '.github/workflows/deploy-docs.yml'
+      - "docs/**"
+      - ".github/workflows/deploy-docs.yml"
   workflow_dispatch: # Allows manual triggering
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # Upload the contents of the 'docs/book' directory
-          path: 'docs/book'
+          path: "docs/book"
 
   deploy:
     environment:
