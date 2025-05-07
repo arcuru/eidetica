@@ -1,4 +1,6 @@
-use eideticadb::data::{KVOverWrite, CRDT};
+use eideticadb::data::KVOverWrite;
+use eideticadb::data::CRDT;
+use eideticadb::entry::Entry;
 use std::collections::HashMap;
 
 #[test]
@@ -57,15 +59,13 @@ fn test_kvoverwrite_serialization() {
 
 #[test]
 fn test_kvoverwrite_from_entry() {
-    use eideticadb::entry::Entry;
-
     // Create an entry with KVOverWrite data
     let mut kv = KVOverWrite::new();
     kv.set("key1".to_string(), "value1".to_string());
     kv.set("key2".to_string(), "value2".to_string());
 
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
-    let entry = Entry::new_top_level(serialized);
+    let entry = Entry::root_builder(serialized).build();
 
     // Extract KVOverWrite from entry
     let data = entry.get_settings().expect("Failed to get settings");
@@ -244,4 +244,25 @@ fn test_kvoverwrite_as_hashmap_mut() {
     // Verify both modifications worked
     assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
     assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
+}
+
+#[test]
+fn test_kvowrite_to_entry() {
+    let mut kvstore = KVOverWrite::default();
+    kvstore.set("key1".to_string(), "value1".to_string());
+    kvstore.set("key2".to_string(), "value2".to_string());
+
+    // Serialize the KVOverwrite to a string
+    let serialized = serde_json::to_string(&kvstore).unwrap();
+
+    // Create an entry with this data
+    let entry = Entry::root_builder(serialized).build();
+
+    // Ensure the entry data matches the serialized KVOverwrite
+    let entry_data = entry.get_settings().unwrap();
+    let deserialized: KVOverWrite = serde_json::from_str(&entry_data).unwrap();
+
+    // Verify the deserialized data matches the original KVOverwrite
+    assert_eq!(deserialized.get("key1").unwrap(), "value1");
+    assert_eq!(deserialized.get("key2").unwrap(), "value2");
 }

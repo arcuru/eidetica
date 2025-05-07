@@ -11,7 +11,7 @@ fn test_in_memory_backend_basic_operations() {
 
     // Create and insert a test entry
     let data = "test_data".to_string();
-    let entry = Entry::new_top_level(data);
+    let entry = Entry::root_builder(data).build();
     let id = entry.id();
 
     // Put the entry
@@ -38,20 +38,22 @@ fn test_in_memory_backend_tree_operations() {
 
     // Create a root entry
     let root_data = "root_data".to_string();
-    let root_entry = Entry::new_top_level(root_data);
+    let root_entry = Entry::root_builder(root_data).build();
     let root_id = root_entry.id();
     backend.put(root_entry).unwrap();
 
     // Create child entries
     let child1_data = "child1_data".to_string();
-    let mut child1_entry = Entry::new(root_id.clone(), child1_data);
-    child1_entry.set_parents(vec![root_id.clone()]);
+    let child1_entry = Entry::builder(root_id.clone(), child1_data)
+        .add_parent(root_id.clone())
+        .build();
     let child1_id = child1_entry.id();
     backend.put(child1_entry).unwrap();
 
     let child2_data = "child2_data".to_string();
-    let mut child2_entry = Entry::new(root_id.clone(), child2_data);
-    child2_entry.set_parents(vec![child1_id.clone()]);
+    let child2_entry = Entry::builder(root_id.clone(), child2_data)
+        .add_parent(child1_id.clone())
+        .build();
     let child2_id = child2_entry.id();
     backend.put(child2_entry).unwrap();
 
@@ -60,7 +62,7 @@ fn test_in_memory_backend_tree_operations() {
     assert!(tips_result.is_ok());
     let tips = tips_result.unwrap();
     assert_eq!(tips.len(), 1);
-    assert_eq!(tips[0], child2_id);
+    assert!(tips.contains(&child2_id));
 
     // Test get_tree
     let tree_result = backend.get_tree(&root_id);
@@ -81,34 +83,31 @@ fn test_in_memory_backend_subtree_operations() {
 
     // Create a root entry with a subtree
     let root_data = "root_data".to_string();
-    let mut root_entry = Entry::new_top_level(root_data);
-    let subtree_name = "subtree1";
-    root_entry
-        .set_subtree_data(subtree_name.to_string(), "subtree_data".to_string())
-        .unwrap();
+    let root_entry = Entry::root_builder(root_data)
+        .set_subtree_data("subtree1".to_string(), "root_subtree1_data".to_string())
+        .build();
     let root_id = root_entry.id();
     backend.put(root_entry).unwrap();
 
     // Create child entry with subtree
     let child_data = "child_data".to_string();
-    let mut child_entry = Entry::new(root_id.clone(), child_data);
-    child_entry.set_parents(vec![root_id.clone()]);
-    child_entry
-        .set_subtree_data(subtree_name.to_string(), "child_subtree_data".to_string())
-        .unwrap();
-    child_entry.set_subtree_parents(subtree_name, vec![root_id.clone()]);
+    let child_entry = Entry::builder(root_id.clone(), child_data)
+        .add_parent(root_id.clone())
+        .set_subtree_data("subtree1".to_string(), "child_subtree1_data".to_string())
+        .add_subtree_parent("subtree1", root_id.clone())
+        .build();
     let child_id = child_entry.id();
     backend.put(child_entry).unwrap();
 
     // Test get_subtree_tips
-    let subtree_tips_result = backend.get_subtree_tips(&root_id, subtree_name);
+    let subtree_tips_result = backend.get_subtree_tips(&root_id, "subtree1");
     assert!(subtree_tips_result.is_ok());
     let subtree_tips = subtree_tips_result.unwrap();
     assert_eq!(subtree_tips.len(), 1);
     assert_eq!(subtree_tips[0], child_id);
 
     // Test get_subtree
-    let subtree_result = backend.get_subtree(&root_id, subtree_name);
+    let subtree_result = backend.get_subtree(&root_id, "subtree1");
     assert!(subtree_result.is_ok());
     let subtree = subtree_result.unwrap();
     assert_eq!(subtree.len(), 2); // root + child
@@ -123,7 +122,7 @@ fn test_in_memory_backend_save_and_load() {
     // Setup: Create a backend with some data
     {
         let mut backend = InMemoryBackend::new();
-        let entry = Entry::new_top_level("test_data".to_string());
+        let entry = Entry::root_builder("test_data".to_string()).build();
         backend.put(entry).unwrap();
 
         // Save to file
@@ -159,7 +158,7 @@ fn test_in_memory_backend_error_handling() {
     // For some backend implementations like InMemoryBackend, get_tips might return
     // an empty vector instead of an error when the tree doesn't exist
     // Let's verify it returns either an error or an empty vector
-    // FIXME: Code smell, backends should be consistent.
+    // FIXME: Code smell, backends should be consistent. Update this test once the API is defined.
     let tips_result = backend.get_tips(&non_existent_id);
     if let Ok(tips) = tips_result {
         // If it returns Ok, it should be an empty vector
@@ -192,28 +191,32 @@ fn test_in_memory_backend_complex_tree_structure() {
 
     // Create a root entry
     let root_data = "root_data".to_string();
-    let root_entry = Entry::new_top_level(root_data);
+    let root_entry = Entry::root_builder(root_data).build();
     let root_id = root_entry.id();
     backend.put(root_entry).unwrap();
 
     // Create a diamond pattern: root -> A, B -> C
     // First level children
     let a_data = "a_data".to_string();
-    let mut a_entry = Entry::new(root_id.clone(), a_data);
-    a_entry.set_parents(vec![root_id.clone()]);
+    let a_entry = Entry::builder(root_id.clone(), a_data)
+        .add_parent(root_id.clone())
+        .build();
     let a_id = a_entry.id();
     backend.put(a_entry).unwrap();
 
     let b_data = "b_data".to_string();
-    let mut b_entry = Entry::new(root_id.clone(), b_data);
-    b_entry.set_parents(vec![root_id.clone()]);
+    let b_entry = Entry::builder(root_id.clone(), b_data)
+        .add_parent(root_id.clone())
+        .build();
     let b_id = b_entry.id();
     backend.put(b_entry).unwrap();
 
     // Second level: one child with two parents
     let c_data = "c_data".to_string();
-    let mut c_entry = Entry::new(root_id.clone(), c_data);
-    c_entry.set_parents(vec![a_id.clone(), b_id.clone()]);
+    let c_entry = Entry::builder(root_id.clone(), c_data)
+        .add_parent(a_id.clone())
+        .add_parent(b_id.clone())
+        .build();
     let c_id = c_entry.id();
     backend.put(c_entry).unwrap();
 
@@ -244,8 +247,9 @@ fn test_in_memory_backend_complex_tree_structure() {
 
     // Now test a new entry: add D which has C as a parent
     let d_data = "d_data".to_string();
-    let mut d_entry = Entry::new(root_id.clone(), d_data);
-    d_entry.set_parents(vec![c_id.clone()]);
+    let d_entry = Entry::builder(root_id.clone(), d_data)
+        .add_parent(c_id.clone())
+        .build();
     let d_id = d_entry.id();
     backend.put(d_entry).unwrap();
 
@@ -261,24 +265,29 @@ fn test_backend_get_tree_from_tips() {
     let root_id = "tree_root".to_string();
 
     // Create entries: root -> e1 -> e2a, e2b
-    let entry_root = Entry::new(root_id.clone(), "root_data".to_string());
-    let root_entry_id = entry_root.id();
-    backend.put(entry_root).unwrap();
+    let root_entry = Entry::builder(root_id.clone(), "root_data".to_string())
+        .add_parent(root_id.clone())
+        .build();
+    let root_entry_id = root_entry.id();
+    backend.put(root_entry).unwrap();
 
-    let mut e1 = Entry::new(root_id.clone(), "e1_data".to_string());
-    e1.set_parents(vec![root_entry_id.clone()]);
-    let e1_id = e1.id();
-    backend.put(e1).unwrap();
+    let e1_entry = Entry::builder(root_id.clone(), "e1_data".to_string())
+        .add_parent(root_entry_id.clone())
+        .build();
+    let e1_id = e1_entry.id();
+    backend.put(e1_entry).unwrap();
 
-    let mut e2a = Entry::new(root_id.clone(), "e2a_data".to_string());
-    e2a.set_parents(vec![e1_id.clone()]);
-    let e2a_id = e2a.id();
-    backend.put(e2a).unwrap();
+    let e2a_entry = Entry::builder(root_id.clone(), "e2a_data".to_string())
+        .add_parent(e1_id.clone())
+        .build();
+    let e2a_id = e2a_entry.id();
+    backend.put(e2a_entry).unwrap();
 
-    let mut e2b = Entry::new(root_id.clone(), "e2b_data".to_string());
-    e2b.set_parents(vec![e1_id.clone()]);
-    let e2b_id = e2b.id();
-    backend.put(e2b).unwrap();
+    let e2b_entry = Entry::builder(root_id.clone(), "e2b_data".to_string())
+        .add_parent(e1_id.clone())
+        .build();
+    let e2b_id = e2b_entry.id();
+    backend.put(e2b_entry).unwrap();
 
     // --- Test with single tip e2a ---
     let tree_e2a = backend
@@ -342,7 +351,6 @@ fn test_backend_get_tree_from_tips() {
 #[test]
 fn test_backend_get_subtree_from_tips() {
     let mut backend = InMemoryBackend::new();
-    let root_id_string = "tree_root".to_string();
     let subtree_name_string = "my_subtree".to_string();
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -351,37 +359,37 @@ fn test_backend_get_subtree_from_tips() {
     // e2a: has subtree
     // e2b: has subtree
 
-    let mut entry_root = Entry::new(root_id_string.clone(), "root_data".to_string());
-    entry_root
+    let entry_root = Entry::root_builder("root_data".to_string())
         .set_subtree_data(subtree_name_string.clone(), "root_sub_data".to_string())
-        .unwrap();
+        .build();
     let root_entry_id = entry_root.id();
     backend.put(entry_root).unwrap();
 
-    let mut e1 = Entry::new(root_id_string.clone(), "e1_data".to_string()); // No subtree
-    e1.set_parents(vec![root_entry_id.clone()]);
+    let e1 = Entry::builder(root_entry_id.clone(), "e1_data".to_string())
+        .add_parent(root_entry_id.clone())
+        .build();
     let e1_id = e1.id();
     backend.put(e1).unwrap();
 
-    let mut e2a = Entry::new(root_id_string.clone(), "e2a_data".to_string());
-    e2a.set_parents(vec![e1_id.clone()]);
-    e2a.set_subtree_data(subtree_name_string.clone(), "e2a_sub_data".to_string())
-        .unwrap();
-    e2a.set_subtree_parents(&subtree_name_string, vec![root_entry_id.clone()]);
+    let e2a = Entry::builder(root_entry_id.clone(), "e2a_data".to_string())
+        .add_parent(e1_id.clone())
+        .set_subtree_data(subtree_name_string.clone(), "e2a_sub_data".to_string())
+        .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
+        .build();
     let e2a_id = e2a.id();
     backend.put(e2a).unwrap();
 
-    let mut e2b = Entry::new(root_id_string.clone(), "e2b_data".to_string());
-    e2b.set_parents(vec![e1_id.clone()]);
-    e2b.set_subtree_data(subtree_name_string.clone(), "e2b_sub_data".to_string())
-        .unwrap();
-    e2b.set_subtree_parents(&subtree_name_string, vec![root_entry_id.clone()]);
+    let e2b = Entry::builder(root_entry_id.clone(), "e2b_data".to_string())
+        .add_parent(e1_id.clone())
+        .set_subtree_data(subtree_name_string.clone(), "e2b_sub_data".to_string())
+        .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
+        .build();
     let e2b_id = e2b.id();
     backend.put(e2b).unwrap();
 
     // --- Test with single tip e2a ---
     let subtree_e2a = backend
-        .get_subtree_from_tips(&root_id_string, &subtree_name_string, &[e2a_id.clone()])
+        .get_subtree_from_tips(&root_entry_id, &subtree_name_string, &[e2a_id.clone()])
         .expect("Failed to get subtree from tip e2a");
     // Should contain root and e2a (which have the subtree), but not e1 (no subtree) or e2b (not in history of tip e2a)
     assert_eq!(
@@ -402,7 +410,7 @@ fn test_backend_get_subtree_from_tips() {
     // --- Test with both tips e2a and e2b ---
     let subtree_both = backend
         .get_subtree_from_tips(
-            &root_id_string,
+            &root_entry_id,
             &subtree_name_string,
             &[e2a_id.clone(), e2b_id.clone()],
         )
@@ -428,7 +436,7 @@ fn test_backend_get_subtree_from_tips() {
     // --- Test with non-existent subtree name ---
     let bad_name_string = "bad_name".to_string();
     let subtree_bad_name =
-        backend.get_subtree_from_tips(&root_id_string, &bad_name_string, &[e2a_id.clone()]);
+        backend.get_subtree_from_tips(&root_entry_id, &bad_name_string, &[e2a_id.clone()]);
     assert!(
         subtree_bad_name.is_ok(),
         "Getting subtree with bad name should be ok..."
@@ -440,7 +448,7 @@ fn test_backend_get_subtree_from_tips() {
     // --- Test with non-existent tip ---
     let subtree_bad_tip = backend
         .get_subtree_from_tips(
-            &root_id_string,
+            &root_entry_id,
             &subtree_name_string,
             &["bad_tip_id".to_string()],
         )
@@ -470,41 +478,48 @@ fn test_calculate_entry_height() {
     //    \                -> D
     //     \-> E -> F --->/
 
-    let root = Entry::new_top_level("{\"name\":\"root\"}".to_string());
+    let root = Entry::root_builder("{\"name\":\"root\"}".to_string()).build();
     let root_id = root.id();
 
-    let mut entry_a = Entry::new(root_id.clone(), "{\"name\":\"A\"}".to_string());
-    entry_a.set_parents(vec![root_id.clone()]);
+    let entry_a = Entry::builder(root_id.clone(), "{\"name\":\"A\"}".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let id_a = entry_a.id();
 
-    let mut entry_b = Entry::new(root_id.clone(), "{\"name\":\"B\"}".to_string());
-    entry_b.set_parents(vec![id_a.clone()]);
+    let entry_b = Entry::builder(root_id.clone(), "{\"name\":\"B\"}".to_string())
+        .add_parent(id_a.clone())
+        .build();
     let id_b = entry_b.id();
 
-    let mut entry_c = Entry::new(root_id.clone(), "{\"name\":\"C\"}".to_string());
-    entry_c.set_parents(vec![id_b.clone()]);
+    let entry_c = Entry::builder(root_id.clone(), "{\"name\":\"C\"}".to_string())
+        .add_parent(id_b.clone())
+        .build();
     let id_c = entry_c.id();
 
-    let mut entry_e = Entry::new(root_id.clone(), "{\"name\":\"E\"}".to_string());
-    entry_e.set_parents(vec![root_id.clone()]);
+    let entry_e = Entry::builder(root_id.clone(), "{\"name\":\"E\"}".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let id_e = entry_e.id();
 
-    let mut entry_f = Entry::new(root_id.clone(), "{\"name\":\"F\"}".to_string());
-    entry_f.set_parents(vec![id_e.clone()]);
+    let entry_f = Entry::builder(root_id.clone(), "{\"name\":\"F\"}".to_string())
+        .add_parent(id_e.clone())
+        .build();
     let id_f = entry_f.id();
 
-    let mut entry_d = Entry::new(root_id.clone(), "{\"name\":\"D\"}".to_string());
-    entry_d.set_parents(vec![id_c.clone(), id_f.clone()]);
+    let entry_d = Entry::builder(root_id.clone(), "{\"name\":\"D\"}".to_string())
+        .add_parent(id_c.clone())
+        .add_parent(id_f.clone())
+        .build();
     let id_d = entry_d.id();
 
     // Insert all entries
-    backend.put(root.clone()).unwrap();
-    backend.put(entry_a.clone()).unwrap();
-    backend.put(entry_b.clone()).unwrap();
-    backend.put(entry_c.clone()).unwrap();
-    backend.put(entry_d.clone()).unwrap();
-    backend.put(entry_e.clone()).unwrap();
-    backend.put(entry_f.clone()).unwrap();
+    backend.put(root).unwrap();
+    backend.put(entry_a).unwrap();
+    backend.put(entry_b).unwrap();
+    backend.put(entry_c).unwrap();
+    backend.put(entry_d).unwrap();
+    backend.put(entry_e).unwrap();
+    backend.put(entry_f).unwrap();
 
     // Check that the tree was created correctly
     // by verifying the tip is entry D
@@ -547,10 +562,10 @@ fn test_load_non_existent_file() {
     let _ = fs::remove_file(&path); // Ignore error if it doesn't exist
 
     // Load
-    let backend = InMemoryBackend::load_from_file(&path).unwrap();
+    let backend = InMemoryBackend::load_from_file(&path);
 
     // Verify it's empty
-    assert_eq!(backend.all_roots().unwrap().len(), 0);
+    assert_eq!(backend.unwrap().all_roots().unwrap().len(), 0);
 }
 
 #[test]
@@ -587,34 +602,35 @@ fn test_save_load_with_various_entries() {
     let mut backend = InMemoryBackend::new();
 
     // Top-level root
-    let root_entry = Entry::new_top_level("root_data".to_string());
+    let root_entry = Entry::root_builder("root_data".to_string()).build();
     let root_id = root_entry.id();
     backend.put(root_entry).unwrap();
 
     // Child 1
-    let mut child1 = Entry::new(root_id.clone(), "child1_data".to_string());
-    child1.set_parents(vec![root_id.clone()]);
+    let child1 = Entry::builder(root_id.clone(), "child1_data".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let child1_id = child1.id();
     backend.put(child1).unwrap();
 
     // Child 2
-    let mut child2 = Entry::new(root_id.clone(), "child2_data".to_string());
-    child2.set_parents(vec![root_id.clone()]);
+    let child2 = Entry::builder(root_id.clone(), "child2_data".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let child2_id = child2.id();
     backend.put(child2).unwrap();
 
     // Grandchild (child of child1)
-    let mut grandchild = Entry::new(root_id.clone(), "grandchild_data".to_string());
-    grandchild.set_parents(vec![child1_id.clone()]);
+    let grandchild = Entry::builder(root_id.clone(), "grandchild_data".to_string())
+        .add_parent(child1_id.clone())
+        .build();
     let grandchild_id = grandchild.id();
     backend.put(grandchild).unwrap();
 
     // Entry with subtree
-    let mut entry_with_subtree = Entry::new(root_id.clone(), "entry_with_subtree_data".to_string());
-    entry_with_subtree.set_parents(vec![child2_id.clone()]);
-    entry_with_subtree
+    let entry_with_subtree = Entry::builder(root_id.clone(), "entry_with_subtree_data".to_string())
         .set_subtree_data("subtree1".to_string(), "subtree_data".to_string())
-        .unwrap();
+        .build();
     let entry_with_subtree_id = entry_with_subtree.id();
     backend.put(entry_with_subtree).unwrap();
 
@@ -653,10 +669,11 @@ fn test_save_load_with_various_entries() {
     let loaded_tips = loaded_backend.get_tips(&root_id).unwrap();
     assert_eq!(orig_tips.len(), loaded_tips.len());
 
-    // Should have 2 tips (grandchild and entry_with_subtree)
-    assert_eq!(loaded_tips.len(), 2);
+    // Should have 3 tips (grandchild, entry_with_subtree, and child2)
+    assert_eq!(loaded_tips.len(), 3);
     assert!(loaded_tips.contains(&grandchild_id));
     assert!(loaded_tips.contains(&entry_with_subtree_id));
+    assert!(loaded_tips.contains(&child2_id));
 
     // Cleanup
     fs::remove_file(file_path).unwrap();
@@ -667,19 +684,22 @@ fn test_sort_entries() {
     let mut backend = InMemoryBackend::new();
 
     // Create a simple tree with mixed order
-    let root = Entry::new_top_level("{}".to_string());
+    let root = Entry::root_builder("{}".to_string()).build();
     let root_id = root.id();
 
-    let mut entry_a = Entry::new(root_id.clone(), "{}".to_string());
-    entry_a.set_parents(vec![root_id.clone()]);
+    let entry_a = Entry::builder(root_id.clone(), "{}".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let id_a = entry_a.id();
 
-    let mut entry_b = Entry::new(root_id.clone(), "{}".to_string());
-    entry_b.set_parents(vec![id_a.clone()]);
+    let entry_b = Entry::builder(root_id.clone(), "{}".to_string())
+        .add_parent(id_a.clone())
+        .build();
     let id_b = entry_b.id();
 
-    let mut entry_c = Entry::new(root_id.clone(), "{}".to_string());
-    entry_c.set_parents(vec![id_b.clone()]);
+    let entry_c = Entry::builder(root_id.clone(), "{}".to_string())
+        .add_parent(id_b.clone())
+        .build();
 
     // Store all entries in backend
     backend.put(root.clone()).unwrap();
@@ -721,8 +741,8 @@ fn test_save_load_in_memory_backend() {
     let path = test_dir.join("test_save_load.json");
 
     let mut backend1 = InMemoryBackend::new();
-    let entry1 = Entry::new_top_level("{\"key\":\"value1\"}".to_string());
-    let entry2 = Entry::new_top_level("{\"key\":\"value2\"}".to_string());
+    let entry1 = Entry::root_builder("{\"key\":\"value1\"}".to_string()).build();
+    let entry2 = Entry::root_builder("{\"key\":\"value2\"}".to_string()).build();
 
     let id1 = entry1.id();
     let id2 = entry2.id();
@@ -752,11 +772,11 @@ fn test_all_roots() {
     assert!(backend.all_roots().unwrap().is_empty());
 
     // Add a simple top-level entry (a root)
-    let root1 = Entry::new_top_level("root1 data".to_string());
+    let root1 = Entry::root_builder("root1 data".to_string()).build();
     let root1_id = root1.id();
     backend.put(root1).unwrap();
 
-    let root2 = Entry::new_top_level("root2 data".to_string());
+    let root2 = Entry::root_builder("root2 data".to_string()).build();
     let root2_id = root2.id();
     backend.put(root2).unwrap();
 
@@ -767,8 +787,9 @@ fn test_all_roots() {
     assert!(roots.contains(&root2_id));
 
     // Add a child under root1
-    let mut child = Entry::new(root1_id.clone(), "child data".to_string());
-    child.set_parents(vec![root1_id.clone()]);
+    let child = Entry::builder(root1_id.clone(), "child data".to_string())
+        .add_parent(root1_id.clone())
+        .build();
     backend.put(child).unwrap();
 
     // Should still have only the two roots
@@ -779,11 +800,66 @@ fn test_all_roots() {
 }
 
 #[test]
+fn test_get_tips() {
+    let mut backend = InMemoryBackend::new();
+
+    // Create a simple tree structure:
+    // Root -> A -> B
+    //    \-> C
+
+    let root = Entry::root_builder("root".to_string()).build();
+    let root_id = root.id();
+    backend.put(root.clone()).unwrap();
+
+    // Initially, root is the only tip
+    let tips = backend.get_tips(&root_id).unwrap();
+    assert_eq!(tips.len(), 1);
+    assert_eq!(tips[0], root_id);
+
+    // Add child A
+    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+        .add_parent(root_id.clone())
+        .build();
+    let id_a = entry_a.id();
+    backend.put(entry_a.clone()).unwrap();
+
+    // Now A should be the only tip
+    let tips = backend.get_tips(&root_id).unwrap();
+    assert_eq!(tips.len(), 1);
+    assert_eq!(tips[0], id_a);
+
+    // Add child B from A
+    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+        .add_parent(id_a.clone())
+        .build();
+    let id_b = entry_b.id();
+    backend.put(entry_b.clone()).unwrap();
+
+    // Now B should be the only tip from that branch
+    let tips = backend.get_tips(&root_id).unwrap();
+    assert_eq!(tips.len(), 1);
+    assert_eq!(tips[0], id_b);
+
+    // Add child C directly from Root (creates a branch)
+    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+        .add_parent(root_id.clone())
+        .build();
+    let id_c = entry_c.id();
+    backend.put(entry_c.clone()).unwrap();
+
+    // Now should have 2 tips: B and C
+    let tips = backend.get_tips(&root_id).unwrap();
+    assert_eq!(tips.len(), 2);
+    assert!(tips.contains(&id_b));
+    assert!(tips.contains(&id_c));
+}
+
+#[test]
 fn test_put_get_entry() {
     let mut backend = InMemoryBackend::new();
 
     // Test putting and getting an entry
-    let entry = Entry::new_top_level("test data".to_string());
+    let entry = Entry::root_builder("test data".to_string()).build();
     let id = entry.id();
 
     // Put
@@ -803,72 +879,19 @@ fn test_put_get_entry() {
 }
 
 #[test]
-fn test_get_tips() {
-    let mut backend = InMemoryBackend::new();
-
-    // Create a simple tree structure:
-    // Root -> A -> B
-    //    \-> C
-
-    let root = Entry::new_top_level("root".to_string());
-    let root_id = root.id();
-    backend.put(root.clone()).unwrap();
-
-    // Initially, root is the only tip
-    let tips = backend.get_tips(&root_id).unwrap();
-    assert_eq!(tips.len(), 1);
-    assert_eq!(tips[0], root_id);
-
-    // Add child A
-    let mut entry_a = Entry::new(root_id.clone(), "A".to_string());
-    entry_a.set_parents(vec![root_id.clone()]);
-    let id_a = entry_a.id();
-    backend.put(entry_a.clone()).unwrap();
-
-    // Now A should be the only tip
-    let tips = backend.get_tips(&root_id).unwrap();
-    assert_eq!(tips.len(), 1);
-    assert_eq!(tips[0], id_a);
-
-    // Add child B from A
-    let mut entry_b = Entry::new(root_id.clone(), "B".to_string());
-    entry_b.set_parents(vec![id_a.clone()]);
-    let id_b = entry_b.id();
-    backend.put(entry_b.clone()).unwrap();
-
-    // Now B should be the only tip from that branch
-    let tips = backend.get_tips(&root_id).unwrap();
-    assert_eq!(tips.len(), 1);
-    assert_eq!(tips[0], id_b);
-
-    // Add child C directly from Root (creates a branch)
-    let mut entry_c = Entry::new(root_id.clone(), "C".to_string());
-    entry_c.set_parents(vec![root_id.clone()]);
-    let id_c = entry_c.id();
-    backend.put(entry_c.clone()).unwrap();
-
-    // Now should have 2 tips: B and C
-    let tips = backend.get_tips(&root_id).unwrap();
-    assert_eq!(tips.len(), 2);
-    assert!(tips.contains(&id_b));
-    assert!(tips.contains(&id_c));
-}
-
-#[test]
 fn test_get_subtree_tips() {
     let mut backend = InMemoryBackend::new();
 
     // Create a tree with subtrees
-    let root = Entry::new_top_level("root data".to_string());
+    let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
     // Add entry A with subtree "sub1"
-    let mut entry_a = Entry::new(root_id.clone(), "A".to_string());
-    entry_a.set_parents(vec![root_id.clone()]);
-    entry_a
-        .set_subtree_data(String::from("sub1"), "A sub1 data".to_string())
-        .unwrap();
+    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+        .add_parent(root_id.clone())
+        .set_subtree_data("sub1".to_string(), "A sub1 data".to_string())
+        .build();
     let id_a = entry_a.id();
     backend.put(entry_a).unwrap();
 
@@ -878,12 +901,11 @@ fn test_get_subtree_tips() {
     assert_eq!(sub1_tips[0], id_a);
 
     // Add entry B with subtree "sub1" as child of A
-    let mut entry_b = Entry::new(root_id.clone(), "B".to_string());
-    entry_b.set_parents(vec![id_a.clone()]);
-    entry_b
-        .set_subtree_data(String::from("sub1"), "B sub1 data".to_string())
-        .unwrap();
-    entry_b.set_subtree_parents("sub1", vec![id_a.clone()]);
+    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+        .add_parent(id_a.clone())
+        .set_subtree_data("sub1".to_string(), "B sub1 data".to_string())
+        .add_subtree_parent("sub1", id_a.clone())
+        .build();
     let id_b = entry_b.id();
     backend.put(entry_b).unwrap();
 
@@ -893,11 +915,10 @@ fn test_get_subtree_tips() {
     assert_eq!(sub1_tips[0], id_b);
 
     // Add entry C with subtree "sub2" (different subtree)
-    let mut entry_c = Entry::new(root_id.clone(), "C".to_string());
-    entry_c.set_parents(vec![root_id.clone()]);
-    entry_c
-        .set_subtree_data(String::from("sub2"), "C sub2 data".to_string())
-        .unwrap();
+    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+        .add_parent(root_id.clone())
+        .set_subtree_data("sub2".to_string(), "C sub2 data".to_string())
+        .build();
     let id_c = entry_c.id();
     backend.put(entry_c).unwrap();
 
@@ -912,16 +933,14 @@ fn test_get_subtree_tips() {
     assert_eq!(sub2_tips[0], id_c);
 
     // Add entry D with both subtrees "sub1" and "sub2"
-    let mut entry_d = Entry::new(root_id.clone(), "D".to_string());
-    entry_d.set_parents(vec![id_b.clone(), id_c.clone()]);
-    entry_d
-        .set_subtree_data(String::from("sub1"), "D sub1 data".to_string())
-        .unwrap();
-    entry_d.set_subtree_parents("sub1", vec![id_b.clone()]);
-    entry_d
-        .set_subtree_data(String::from("sub2"), "D sub2 data".to_string())
-        .unwrap();
-    entry_d.set_subtree_parents("sub2", vec![id_c.clone()]);
+    let entry_d = Entry::builder(root_id.clone(), "D".to_string())
+        .add_parent(id_b.clone())
+        .add_parent(id_c.clone())
+        .set_subtree_data("sub1".to_string(), "D sub1 data".to_string())
+        .add_subtree_parent("sub1", id_b.clone())
+        .set_subtree_data("sub2".to_string(), "D sub2 data".to_string())
+        .add_subtree_parent("sub2", id_c.clone())
+        .build();
     let id_d = entry_d.id();
     backend.put(entry_d).unwrap();
 
@@ -940,17 +959,19 @@ fn test_get_tree() {
     let mut backend = InMemoryBackend::new();
 
     // Create a simple tree with three entries
-    let root = Entry::new_top_level("root".to_string());
+    let root = Entry::root_builder("root".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
-    let mut child = Entry::new(root_id.clone(), "child".to_string());
-    child.set_parents(vec![root_id.clone()]);
+    let child = Entry::builder(root_id.clone(), "child".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let child_id = child.id();
     backend.put(child.clone()).unwrap();
 
-    let mut grandchild = Entry::new(root_id.clone(), "grandchild".to_string());
-    grandchild.set_parents(vec![child_id.clone()]);
+    let grandchild = Entry::builder(root_id.clone(), "grandchild".to_string())
+        .add_parent(child_id.clone())
+        .build();
     backend.put(grandchild.clone()).unwrap();
 
     // Get the full tree
@@ -974,43 +995,42 @@ fn test_get_subtree() {
     let mut backend = InMemoryBackend::new();
 
     // Create a tree with a subtree
-    let root = Entry::new_top_level("root".to_string());
+    let root = Entry::root_builder("root".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
     // Create children with and without subtree data
 
     // Child 1 - with subtree
-    let mut child1 = Entry::new(root_id.clone(), "child1".to_string());
-    child1.set_parents(vec![root_id.clone()]);
-    child1
-        .set_subtree_data(String::from("subtree1"), "child1 data".to_string())
-        .unwrap();
+    let child1 = Entry::builder(root_id.clone(), "child1".to_string())
+        .add_parent(root_id.clone())
+        .set_subtree_data("subtree1".to_string(), "child1 data".to_string())
+        .build();
     let child1_id = child1.id();
     backend.put(child1.clone()).unwrap();
 
     // Child 2 - without subtree
-    let mut child2 = Entry::new(root_id.clone(), "child2".to_string());
-    child2.set_parents(vec![root_id.clone()]);
+    let child2 = Entry::builder(root_id.clone(), "child2".to_string())
+        .add_parent(root_id.clone())
+        .build();
     let child2_id = child2.id();
     backend.put(child2.clone()).unwrap();
 
     // Grandchild 1 - with subtree, child of child1
-    let mut grandchild1 = Entry::new(root_id.clone(), "grandchild1".to_string());
-    grandchild1.set_parents(vec![child1_id.clone()]);
-    grandchild1
-        .set_subtree_data(String::from("subtree1"), "grandchild1 data".to_string())
-        .unwrap();
-    grandchild1.set_subtree_parents("subtree1", vec![child1_id.clone()]);
+    let grandchild1 = Entry::builder(root_id.clone(), "grandchild1".to_string())
+        .add_parent(child1_id.clone())
+        .set_subtree_data("subtree1".to_string(), "grandchild1 data".to_string())
+        .add_subtree_parent("subtree1", child1_id.clone())
+        .build();
     let gc1_id = grandchild1.id();
     backend.put(grandchild1.clone()).unwrap();
 
     // Grandchild 2 - with subtree, but from different parent (child2)
-    let mut grandchild2 = Entry::new(root_id.clone(), "grandchild2".to_string());
-    grandchild2.set_parents(vec![child2_id.clone()]);
-    grandchild2
-        .set_subtree_data(String::from("subtree1"), "grandchild2 data".to_string())
-        .unwrap();
+    let grandchild2 = Entry::builder(root_id.clone(), "grandchild2".to_string())
+        .add_parent(child2_id.clone())
+        .set_subtree_data("subtree1".to_string(), "grandchild2 data".to_string())
+        .build();
+    let grandchild2_id = grandchild2.id();
     // No subtree parent set, so it starts a new subtree branch
     backend.put(grandchild2.clone()).unwrap();
 
@@ -1024,7 +1044,7 @@ fn test_get_subtree() {
     let entry_ids: Vec<String> = subtree.iter().map(|e| e.id().clone()).collect();
     assert!(entry_ids.contains(&child1_id));
     assert!(entry_ids.contains(&gc1_id));
-    assert!(entry_ids.contains(&grandchild2.id()));
+    assert!(entry_ids.contains(&grandchild2_id));
 
     // Child2 shouldn't be in the subtree (no subtree data)
     assert!(!entry_ids.contains(&child2_id));
@@ -1035,38 +1055,35 @@ fn test_calculate_subtree_height() {
     let mut backend = InMemoryBackend::new();
 
     // Create a tree with a subtree that has a different structure
-    let root = Entry::new_top_level("root".to_string());
+    let root = Entry::root_builder("root".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
     // A
-    let mut entry_a = Entry::new(root_id.clone(), "A".to_string());
-    entry_a.set_parents(vec![root_id.clone()]);
-    entry_a
-        .set_subtree_data(String::from("sub1"), "A_sub1".to_string())
-        .unwrap();
+    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+        .add_parent(root_id.clone())
+        .set_subtree_data("sub1".to_string(), "A_sub1".to_string())
+        .build();
     let id_a = entry_a.id();
     backend.put(entry_a.clone()).unwrap();
 
     // B (after A in main tree)
-    let mut entry_b = Entry::new(root_id.clone(), "B".to_string());
-    entry_b.set_parents(vec![id_a.clone()]);
-    entry_b
-        .set_subtree_data(String::from("sub1"), "B_sub1".to_string())
-        .unwrap();
+    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+        .add_parent(id_a.clone())
+        .set_subtree_data("sub1".to_string(), "B_sub1".to_string())
+        .build();
     // B is directly under root in subtree (not under A)
     // So we don't set subtree parents
     let id_b = entry_b.id();
     backend.put(entry_b.clone()).unwrap();
 
     // C (after B in main tree)
-    let mut entry_c = Entry::new(root_id.clone(), "C".to_string());
-    entry_c.set_parents(vec![id_b.clone()]);
-    entry_c
-        .set_subtree_data(String::from("sub1"), "C_sub1".to_string())
-        .unwrap();
-    // In subtree, C is a child of both A and B
-    entry_c.set_subtree_parents("sub1", vec![id_a.clone(), id_b.clone()]);
+    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+        .add_parent(id_b.clone())
+        .set_subtree_data("sub1".to_string(), "C_sub1".to_string())
+        .add_subtree_parent("sub1", id_a.clone())
+        .add_subtree_parent("sub1", id_b.clone())
+        .build();
     let id_c = entry_c.id();
     backend.put(entry_c.clone()).unwrap();
 
@@ -1074,10 +1091,10 @@ fn test_calculate_subtree_height() {
     let main_heights = backend.calculate_heights(&root_id, None).unwrap();
 
     // Main tree: root -> A -> B -> C
-    assert_eq!(main_heights.get(&root_id).unwrap(), &0);
-    assert_eq!(main_heights.get(&id_a).unwrap(), &1);
-    assert_eq!(main_heights.get(&id_b).unwrap(), &2);
-    assert_eq!(main_heights.get(&id_c).unwrap(), &3);
+    assert_eq!(main_heights.get(&root_id).unwrap_or(&9999), &0);
+    assert_eq!(main_heights.get(&id_a).unwrap_or(&9999), &1);
+    assert_eq!(main_heights.get(&id_b).unwrap_or(&9999), &2);
+    assert_eq!(main_heights.get(&id_c).unwrap_or(&9999), &3);
 
     // Calculate heights for subtree
     let sub_heights = backend.calculate_heights(&root_id, Some("sub1")).unwrap();

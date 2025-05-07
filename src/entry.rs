@@ -45,20 +45,57 @@ struct SubTreeNode {
     pub data: RawData,
 }
 
-/// The fundamental unit of data in EideticaDB.
+/// The fundamental unit of data in EideticaDB, representing a finalized, immutable Database Entry.
 ///
 /// An `Entry` represents a snapshot of data within a `Tree` and potentially one or more named `SubTree`s.
 /// It is content-addressable, meaning its `ID` is a cryptographic hash of its contents.
 /// Entries form a Merkle-DAG (Directed Acyclic Graph) structure through parent references.
 ///
-/// Internal consistency is maintained by automatically sorting parent ID vectors and the
-/// `subtrees` vector (by subtree name). This ensures deterministic hashing for content addressing.
-#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// # Immutability
+///
+/// `Entry` instances are designed to be immutable once created. To create or modify entries,
+/// use the `EntryBuilder` struct, which provides a mutable API for constructing entries.
+/// Once an entry is built, its content cannot be changed, and its ID is deterministic
+/// based on its content.
+///
+/// # Example
+///
+/// ```
+/// # use eideticadb::entry::Entry;
+///
+/// // Create a new entry using Entry::builder()
+/// let entry = Entry::builder("tree_root".to_string(), r#"{"settings":true}"#.to_string())
+///     .set_subtree_data("users".to_string(), r#"{"user1":"data"}"#.to_string())
+///     .build();
+///
+/// // Access entry data
+/// let id = entry.id(); // Calculate content-addressable ID
+/// let settings = entry.get_settings().unwrap();
+/// let user_data = entry.data("users").unwrap();
+/// ```
+///
+/// # Builders
+///
+/// To create an `Entry`, use the associated `EntryBuilder`.
+/// The preferred way to get an `EntryBuilder` is via the static methods
+/// `Entry::builder()` for regular entries or `Entry::root_builder()` for new top-level tree roots.
+///
+/// ```
+/// # use eideticadb::entry::{Entry, RawData};
+/// # let root_id: String = "some_root_id".to_string();
+/// # let data: RawData = "{}".to_string();
+/// // For a regular entry:
+/// let builder = Entry::builder(root_id, data);
+///
+/// // For a new top-level tree root:
+/// let root_builder = Entry::root_builder("initial_settings_data".to_string());
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
     /// The main tree node data, including the root ID, parents in the main tree, and associated data.
     tree: TreeNode,
     /// A collection of named subtrees this entry contains data for.
-    /// The vector is kept sorted alphabetically by subtree name.
+    /// The vector is kept sorted alphabetically by subtree name during the build process.
     subtrees: Vec<SubTreeNode>,
     // TODO: Security
     // The ID of the key that was used to sign the entry.
@@ -69,84 +106,38 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Create a new entry associated with a specific tree root.
+    /// Creates a new `EntryBuilder` for an entry associated with a specific tree root.
+    /// This is a convenience method and preferred over calling `EntryBuilder::new()` directly.
     ///
     /// # Arguments
-    /// * `root` - The `ID` of the root `Entry` of the tree this entry belongs to.
+    /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
     /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
-    pub fn new(root: String, data: RawData) -> Self {
-        let mut entry = Entry::default();
-        entry.tree.root = root;
-        entry.tree.data = data;
-        entry
+    pub fn builder(root: String, data: RawData) -> EntryBuilder {
+        EntryBuilder::new(root, data)
     }
 
-    /// Creates a new top-level (root) entry for a new tree.
+    /// Creates a new `EntryBuilder` for a top-level (root) entry for a new tree.
+    /// This is a convenience method and preferred over calling `EntryBuilder::new_top_level()` directly.
     ///
     /// Root entries have an empty string as their `root` ID and include a special "root" subtree marker.
+    /// This method is typically used when creating a new tree.
     ///
     /// # Arguments
     /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    pub fn new_top_level(data: RawData) -> Self {
-        let mut entry = Entry::default();
-        entry.tree.root = "".to_string();
-        entry.tree.data = data;
-        // Add a subtree with the name "root" to mark this as a root entry
-        entry
-            .set_subtree_data("root".to_string(), "{}".to_string())
-            .unwrap();
-        entry
+    pub fn root_builder(data: RawData) -> EntryBuilder {
+        EntryBuilder::new_top_level(data)
     }
 
-    /// Sort the subtrees vector by subtree name to ensure consistent ordering.
-    /// This is called internally whenever the subtrees collection is modified.
-    fn sort_subtrees(&mut self) {
-        self.subtrees.sort_by(|a, b| a.name.cmp(&b.name));
-    }
-
-    /// Sort parent IDs to ensure consistent ordering.
-    /// This is called internally whenever parent vectors are modified.
-    fn sort_parents(parents: &mut [ID]) {
-        parents.sort();
-    }
-
-    /// Sets data for a named subtree to this entry, creating it if it doesn't exist.
+    /// Get the content-addressable ID of the entry.
     ///
-    /// If an entry contributes data to a specific domain or table, it's added via a `SubTreeNode`.
-    /// Subtrees are automatically kept sorted by name.
-    ///
-    /// # Arguments
-    /// * `name` - The name of the subtree (e.g., "users", "products").
-    /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
-    pub fn set_subtree_data(&mut self, name: String, data: RawData) -> Result<()> {
-        if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            // Update data in existing SubTreeNode while preserving parents
-            node.data = data;
-        } else {
-            // Create new SubTreeNode if it doesn't exist
-            self.subtrees.push(SubTreeNode {
-                name,
-                data,
-                parents: vec![],
-            });
-            // Sort subtrees by name
-            self.sort_subtrees();
-        }
-        Ok(())
-    }
+    /// The ID is calculated on demand by hashing the serialized JSON representation of the entry.
+    /// Because entries are immutable once created and their contents are deterministically
+    /// serialized, this ensures that identical entries will always have the same ID.
+    pub fn id(&self) -> ID {
+        // Entry itself derives Serialize and contains tree and subtrees.
+        // These are kept sorted and finalized by the EntryBuilder before Entry creation.
+        let json = serde_json::to_string(self).expect("Failed to serialize entry for hashing");
 
-    /// Calculate the content-addressable ID (SHA-256 hash) of the entry.
-    ///
-    /// The hash includes the root ID, main tree data, and data from all subtrees.
-    /// Parent vectors and the subtree vector are implicitly sorted before serialization for hashing,
-    /// ensuring that any change to the entry results in a different ID and that the ID is deterministic
-    /// regardless of the order parents or subtrees were added.
-    pub fn id(&self) -> String {
-        // Convert the entry to JSON. Serde will serialize fields in the order they are defined.
-        // Since `parents` within TreeNode and SubTreeNode, and `subtrees` within Entry are kept sorted,
-        // the resulting JSON string is deterministic.
-        let json = serde_json::to_string(self).unwrap();
-        // hash the json
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         // convert the hash to a string
@@ -164,7 +155,6 @@ impl Entry {
     ///
     /// Determined by the presence of a special "root" subtree.
     pub fn is_root(&self) -> bool {
-        // TODO: Roots are a case that requires special handling.
         self.subtrees.iter().any(|node| node.name == "root")
     }
 
@@ -174,14 +164,14 @@ impl Entry {
     }
 
     /// Check if this entry contains data for a specific named subtree.
-    pub fn in_subtree(&self, subtree: &str) -> bool {
-        self.subtrees.iter().any(|node| node.name == subtree)
+    pub fn in_subtree(&self, subtree_name: &str) -> bool {
+        self.subtrees.iter().any(|node| node.name == subtree_name)
     }
 
     /// Check if this entry belongs to a specific tree, identified by its root ID.
-    pub fn in_tree(&self, tree: &str) -> bool {
+    pub fn in_tree(&self, tree_id: &str) -> bool {
         // Entries that are roots exist in both trees
-        self.root() == tree || (self.is_root() && (self.id() == tree))
+        self.root() == tree_id || (self.id() == tree_id)
     }
 
     /// Get the names of all subtrees this entry contains data for.
@@ -193,23 +183,17 @@ impl Entry {
             .collect()
     }
 
-    /// Remove subtrees that do not have any data.
-    pub fn remove_empty_subtrees(&mut self) -> Result<()> {
-        self.subtrees.retain(|subtree| !subtree.data.is_empty());
-        Ok(())
-    }
-
     /// Get the `RawData` associated with the main tree node (`tree.data`).
-    /// This is not the same as the "settings" subtree data.
+    /// This is not the same as the "settings" subtree data (which might be in a "settings" subtree).
     pub fn get_settings(&self) -> Result<RawData> {
         Ok(self.tree.data.clone())
     }
 
     /// Get the `RawData` for a specific named subtree within this entry.
-    pub fn data(&self, subtree: &str) -> Result<&RawData> {
+    pub fn data(&self, subtree_name: &str) -> Result<&RawData> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree)
+            .find(|node| node.name == subtree_name)
             .map(|node| &node.data)
             .ok_or(Error::NotFound)
     }
@@ -222,36 +206,380 @@ impl Entry {
 
     /// Get the IDs of the parent entries specific to a named subtree's history.
     /// The parent IDs are returned in alphabetical order.
-    pub fn subtree_parents(&self, subtree: &str) -> Result<Vec<ID>> {
+    pub fn subtree_parents(&self, subtree_name: &str) -> Result<Vec<ID>> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree)
+            .find(|node| node.name == subtree_name)
+            .map(|node| node.parents.clone())
+            .ok_or(Error::NotFound)
+    }
+}
+
+/// A builder for creating `Entry` instances.
+///
+/// `EntryBuilder` allows mutable construction of an entry's content.
+/// Once finalized with the `build()` method, it produces an immutable `Entry`
+/// with a deterministically calculated ID.
+///
+/// # Mutable Construction
+///
+/// The builder provides two patterns for construction:
+/// 1. Ownership chaining: Each method returns `self` for chained calls.
+///    ```
+///    # use eideticadb::entry::Entry;
+///    # let root = "tree_root".to_string();
+///    # let data = "{\"data\":\"value\"}".to_string();
+///    # let parent1 = "parent1".to_string();
+///    # let parent2 = "parent2".to_string();
+///    let entry = Entry::builder(root, data)
+///        .set_parents(vec![parent1, parent2])
+///        .set_subtree_data("subtree".to_string(), "data".to_string())
+///        .build();
+///    ```
+///
+/// 2. Mutable reference: Methods suffixed with `_mut` modify the builder in place and return a reference.
+///    ```
+///    # use eideticadb::entry::Entry;
+///    # let root = "tree_root".to_string();
+///    # let data = "{\"data\":\"value\"}".to_string();
+///    # let parent1 = "parent1".to_string();
+///    # let parent2 = "parent2".to_string();
+///    let mut builder = Entry::builder(root, data);
+///    builder.set_parents_mut(vec![parent1, parent2]);
+///    builder.set_subtree_data_mut("subtree".to_string(), "data".to_string());
+///    let entry = builder.build();
+///    ```
+///
+/// Both patterns allow you to construct the same `Entry`, but the mutable reference
+/// pattern is useful when you need to retain the builder for multiple operations or
+/// conditional modifications.
+///
+/// The preferred way to obtain an `EntryBuilder` is via `Entry::builder()` or `Entry::root_builder()`.
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntryBuilder {
+    tree: TreeNode,
+    subtrees: Vec<SubTreeNode>,
+}
+
+impl EntryBuilder {
+    /// Create a new `EntryBuilder` for an entry associated with a specific tree root.
+    ///
+    /// Consider using `Entry::builder()` as the preferred way to obtain a builder for regular entries.
+    ///
+    /// # Arguments
+    /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
+    /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
+    pub fn new(root: String, data: RawData) -> Self {
+        EntryBuilder::default().set_root(root).set_data(data)
+    }
+
+    /// Creates a new `EntryBuilder` for a top-level (root) entry for a new tree.
+    ///
+    /// Consider using `Entry::root_builder()` as the preferred way to obtain a builder for root entries.
+    ///
+    /// Root entries have an empty string as their `root` ID and include a special "root" subtree marker.
+    /// This method is typically used when creating a new tree.
+    ///
+    /// # Arguments
+    /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
+    pub fn new_top_level(data: RawData) -> Self {
+        EntryBuilder::default()
+            .set_root("".to_string())
+            .set_data(data)
+            .set_subtree_data("root".to_string(), "{}".to_string())
+    }
+
+    /// Get the names of all subtrees this entry builder contains data for.
+    /// The names are returned in alphabetical order.
+    pub fn subtrees(&self) -> Vec<String> {
+        self.subtrees
+            .iter()
+            .map(|subtree| subtree.name.clone())
+            .collect()
+    }
+
+    /// Get the `RawData` for a specific named subtree within this entry builder.
+    pub fn data(&self, subtree_name: &str) -> Result<&RawData> {
+        self.subtrees
+            .iter()
+            .find(|node| node.name == subtree_name)
+            .map(|node| &node.data)
+            .ok_or(Error::NotFound)
+    }
+
+    /// Get the IDs of the parent entries specific to a named subtree's history.
+    /// The parent IDs are returned in alphabetical order.
+    pub fn subtree_parents(&self, subtree_name: &str) -> Result<Vec<ID>> {
+        self.subtrees
+            .iter()
+            .find(|node| node.name == subtree_name)
             .map(|node| node.parents.clone())
             .ok_or(Error::NotFound)
     }
 
+    /// Sort parent IDs alphabetically.
+    fn sort_parents_list(parents: &mut [ID]) {
+        parents.sort();
+    }
+
+    /// Sort the subtrees vector by subtree name to ensure consistent ordering.
+    fn sort_subtrees_list(&mut self) {
+        self.subtrees.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
+    /// Sets data for a named subtree, creating it if it doesn't exist.
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the subtree (e.g., "users", "products").
+    /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
+    pub fn set_subtree_data(mut self, name: String, data: RawData) -> Self {
+        if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
+            node.data = data;
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name,
+                data,
+                parents: vec![],
+            });
+        }
+        self
+    }
+
+    /// Mutable reference version of set_subtree_data.
+    /// Sets data for a named subtree, creating it if it doesn't exist.
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the subtree (e.g., "users", "products").
+    /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
+    pub fn set_subtree_data_mut(&mut self, name: String, data: RawData) -> &mut Self {
+        if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
+            node.data = data;
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name,
+                data,
+                parents: vec![],
+            });
+        }
+        self
+    }
+
+    /// Removes subtrees that do not have any data or have data "{}".
+    /// This is useful for cleaning up entries before building.
+    pub fn remove_empty_subtrees(mut self) -> Self {
+        self.subtrees
+            .retain(|subtree| !subtree.data.is_empty() && subtree.data != "{}");
+        self
+    }
+
+    /// Mutable reference version of remove_empty_subtrees.
+    /// Removes subtrees that do not have any data or have data "{}".
+    /// This is useful for cleaning up entries before building.
+    pub fn remove_empty_subtrees_mut(&mut self) -> &mut Self {
+        self.subtrees
+            .retain(|subtree| !subtree.data.is_empty() && subtree.data != "{}");
+        self
+    }
+
     /// Set the root ID for this entry.
-    /// Typically used internally by `Tree::insert`.
-    pub fn set_root(&mut self, root: ID) {
+    ///
+    /// # Arguments
+    /// * `root` - The ID of the root `Entry` of the tree this entry will belong to.
+    ///
+    /// # Returns
+    /// A mutable reference to self for method chaining.
+    pub fn set_root(mut self, root: ID) -> Self {
         self.tree.root = root;
+        self
+    }
+
+    /// Mutable reference version of set_root.
+    /// Set the root ID for this entry.
+    ///
+    /// # Arguments
+    /// * `root` - The ID of the root `Entry` of the tree this entry will belong to.
+    ///
+    /// # Returns
+    /// A mutable reference to self for method chaining.
+    pub fn set_root_mut(&mut self, root: ID) -> &mut Self {
+        self.tree.root = root;
+        self
+    }
+
+    /// Set the main data for this entry's tree node.
+    ///
+    /// # Arguments
+    /// * `data` - `RawData` (serialized string) for the main tree node.
+    ///
+    /// # Returns
+    /// A mutable reference to self for method chaining.
+    pub fn set_data(mut self, data: RawData) -> Self {
+        self.tree.data = data;
+        self
+    }
+
+    /// Mutable reference version of set_data.
+    /// Set the main data for this entry's tree node.
+    ///
+    /// # Arguments
+    /// * `data` - `RawData` (serialized string) for the main tree node.
+    ///
+    /// # Returns
+    /// A mutable reference to self for method chaining.
+    pub fn set_data_mut(&mut self, data: RawData) -> &mut Self {
+        self.tree.data = data;
+        self
     }
 
     /// Set the parent IDs for the main tree history.
-    /// The provided vector will be sorted alphabetically internally.
-    /// Typically used internally by `Tree::insert`.
-    pub fn set_parents(&mut self, parents: Vec<ID>) {
+    /// The provided vector will be sorted alphabetically during the `build()` process.
+    pub fn set_parents(mut self, parents: Vec<ID>) -> Self {
         self.tree.parents = parents;
-        Self::sort_parents(&mut self.tree.parents);
+        self
+    }
+
+    /// Mutable reference version of set_parents.
+    /// Set the parent IDs for the main tree history.
+    /// The provided vector will be sorted alphabetically during the `build()` process.
+    pub fn set_parents_mut(&mut self, parents: Vec<ID>) -> &mut Self {
+        self.tree.parents = parents;
+        self
+    }
+
+    /// Add a single parent ID to the main tree history.
+    /// Parents will be sorted and duplicates handled during the `build()` process.
+    pub fn add_parent(mut self, parent_id: ID) -> Self {
+        self.tree.parents.push(parent_id);
+        self
+    }
+
+    /// Mutable reference version of add_parent.
+    /// Add a single parent ID to the main tree history.
+    /// Parents will be sorted and duplicates handled during the `build()` process.
+    pub fn add_parent_mut(&mut self, parent_id: ID) -> &mut Self {
+        self.tree.parents.push(parent_id);
+        self
     }
 
     /// Set the parent IDs for a specific named subtree's history.
-    /// The provided vector will be sorted alphabetically internally.
-    /// If the subtree does not exist, this operation has no effect.
-    /// Typically used internally by `Tree::insert`.
-    pub fn set_subtree_parents(&mut self, subtree: &str, parents: Vec<ID>) {
-        if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == subtree) {
+    /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
+    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    pub fn set_subtree_parents(mut self, subtree_name: &str, parents: Vec<ID>) -> Self {
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
             node.parents = parents;
-            Self::sort_parents(&mut node.parents);
+        } else {
+            // Create new SubTreeNode if it doesn't exist, then set parents
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name.to_string(),
+                data: "{}".to_string(), // Default data if creating subtree just for parents
+                parents,
+            });
+        }
+        self
+    }
+
+    /// Mutable reference version of set_subtree_parents.
+    /// Set the parent IDs for a specific named subtree's history.
+    /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
+    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    pub fn set_subtree_parents_mut(&mut self, subtree_name: &str, parents: Vec<ID>) -> &mut Self {
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
+            node.parents = parents;
+        } else {
+            // Create new SubTreeNode if it doesn't exist, then set parents
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name.to_string(),
+                data: "{}".to_string(), // Default data if creating subtree just for parents
+                parents,
+            });
+        }
+        self
+    }
+
+    /// Add a single parent ID to a specific named subtree's history.
+    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// Parent IDs will be sorted and de-duplicated during the `build()` process.
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    pub fn add_subtree_parent(mut self, subtree_name: &str, parent_id: ID) -> Self {
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
+            node.parents.push(parent_id);
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name.to_string(),
+                data: "{}".to_string(),
+                parents: vec![parent_id],
+            });
+        }
+        self
+    }
+
+    /// Mutable reference version of add_subtree_parent.
+    /// Add a single parent ID to a specific named subtree's history.
+    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// Parent IDs will be sorted and de-duplicated during the `build()` process.
+    /// The list of subtrees will be sorted by name when `build()` is called.
+    pub fn add_subtree_parent_mut(&mut self, subtree_name: &str, parent_id: ID) -> &mut Self {
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
+            node.parents.push(parent_id);
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name.to_string(),
+                data: "{}".to_string(),
+                parents: vec![parent_id],
+            });
+        }
+        self
+    }
+
+    /// Build and return the final immutable `Entry`.
+    ///
+    /// This method:
+    /// 1. Sorts all parent lists in both the main tree and subtrees
+    /// 2. Sorts the subtrees list by name
+    /// 3. Removes any empty subtrees
+    /// 4. Creates and returns the immutable `Entry`
+    ///
+    /// After calling this method, the builder is consumed and cannot be used again.
+    /// The returned `Entry` is immutable and its parts cannot be modified.
+    pub fn build(mut self) -> Entry {
+        // Sort parent lists (if any)
+        Self::sort_parents_list(&mut self.tree.parents);
+        for subtree in &mut self.subtrees {
+            Self::sort_parents_list(&mut subtree.parents);
+        }
+
+        // Deduplicate parents
+        self.tree.parents.dedup();
+        for subtree in &mut self.subtrees {
+            subtree.parents.dedup();
+        }
+
+        // Sort subtrees
+        self.sort_subtrees_list();
+
+        Entry {
+            tree: self.tree,
+            subtrees: self.subtrees,
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::data::CRDT;
 use crate::entry::Entry;
-use crate::entry::ID;
+use crate::entry::{EntryBuilder, ID};
 use crate::subtree::SubTree;
 use crate::tree::Tree;
 use crate::Error;
@@ -10,21 +10,23 @@ use std::rc::Rc;
 
 /// Represents a single, atomic transaction for modifying a `Tree`.
 ///
-/// An `AtomicOp` encapsulates a new `Entry` being constructed. Users interact with
+/// An `AtomicOp` encapsulates a mutable `EntryBuilder` being constructed. Users interact with
 /// specific `SubTree` instances obtained via `AtomicOp::get_subtree` to stage changes.
 /// All staged changes across different subtrees within the operation are recorded
-/// in the internal `Entry`.
+/// in the internal `EntryBuilder`.
 ///
-/// Calling `commit()` finalizes the operation, calculates the new entry's ID,
-/// sets the correct parent links based on the tree's state when the operation began,
-/// removes any subtrees that didn't have data staged, and persists the resulting
-/// `Entry` to the backend.
+/// When `commit()` is called, the operation:
+/// 1. Finalizes the `EntryBuilder` by building an immutable `Entry`
+/// 2. Calculates the entry's content-addressable ID
+/// 3. Ensures the correct parent links are set based on the tree's state
+/// 4. Removes any empty subtrees that didn't have data staged
+/// 5. Persists the resulting immutable `Entry` to the backend
 ///
 /// `AtomicOp` instances are typically created via `Tree::new_operation()`.
 #[derive(Clone)]
 pub struct AtomicOp {
-    /// The entry being modified, wrapped in Option to support consuming on commit
-    entry: Rc<RefCell<Option<Entry>>>,
+    /// The entry builder being modified, wrapped in Option to support consuming on commit
+    entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
     /// The tree this operation belongs to
     tree: Tree,
 }
@@ -32,7 +34,7 @@ pub struct AtomicOp {
 impl AtomicOp {
     /// Creates a new atomic operation for a specific `Tree`.
     ///
-    /// Initializes an internal `Entry` with its main parent pointers set to the
+    /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
     /// current tips of the target `Tree`. This captures the state upon which
     /// the operation builds.
     ///
@@ -41,18 +43,19 @@ impl AtomicOp {
     /// # Arguments
     /// * `tree` - The `Tree` this operation will modify.
     pub(crate) fn new(tree: &Tree) -> Result<Self> {
-        // Create a new entry
-        let mut entry = Entry::new(tree.root_id().clone(), "".to_string());
+        // Start with a basic entry linked to the tree's root.
+        // Data and parents will be filled based on the operation type.
+        let mut builder = Entry::builder(tree.root_id().clone(), "".to_string());
 
         // Get current tree tips
         let tree_tips = {
             let backend_guard = tree.lock_backend()?;
             backend_guard.get_tips(tree.root_id())?
         };
-        entry.set_parents(tree_tips);
+        builder.set_parents_mut(tree_tips);
 
         Ok(Self {
-            entry: Rc::new(RefCell::new(Some(entry))),
+            entry_builder: Rc::new(RefCell::new(Some(builder))),
             tree: tree.clone(),
         })
     }
@@ -61,7 +64,7 @@ impl AtomicOp {
     ///
     /// This method is primarily intended for internal use by `SubTree` implementations
     /// (like `KVStore::set`). It records the serialized `data` for the given `subtree`
-    /// name within the operation's internal `Entry`.
+    /// name within the operation's internal `EntryBuilder`.
     ///
     /// If this is the first modification to the named subtree within this operation,
     /// it also fetches and records the current tips of that subtree from the backend
@@ -74,8 +77,8 @@ impl AtomicOp {
     /// # Returns
     /// A `Result<()>` indicating success or an error.
     pub(crate) fn update_subtree(&self, subtree: &str, data: &str) -> Result<()> {
-        let mut entry_ref = self.entry.borrow_mut();
-        let entry = entry_ref.as_mut().ok_or_else(|| {
+        let mut builder_ref = self.entry_builder.borrow_mut();
+        let builder = builder_ref.as_mut().ok_or_else(|| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Operation has already been committed",
@@ -83,15 +86,15 @@ impl AtomicOp {
         })?;
 
         // If we haven't cached the tips for this subtree yet, get them now
-        if !entry.subtrees().contains(&subtree.to_string()) {
+        let subtrees = builder.subtrees();
+        if !subtrees.contains(&subtree.to_string()) {
             let backend_guard = self.tree.lock_backend()?;
             // FIXME: we should get the subtree tips while still using the parent pointers
             let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree)?;
-            entry.set_subtree_data(subtree.to_string(), data.to_string())?;
-            entry.set_subtree_parents(subtree, tips);
+            builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
+            builder.set_subtree_parents_mut(subtree, tips);
         } else {
-            // Add/Update the subtree with the data
-            entry.set_subtree_data(subtree.to_string(), data.to_string())?;
+            builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
         }
 
         Ok(())
@@ -120,8 +123,8 @@ impl AtomicOp {
         T: SubTree,
     {
         {
-            let mut entry_ref = self.entry.borrow_mut();
-            let entry = entry_ref.as_mut().ok_or_else(|| {
+            let mut builder_ref = self.entry_builder.borrow_mut();
+            let builder = builder_ref.as_mut().ok_or_else(|| {
                 Error::Io(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Operation has already been committed",
@@ -129,12 +132,13 @@ impl AtomicOp {
             })?;
 
             // If we haven't cached the tips for this subtree yet, get them now
-            if !entry.subtrees().contains(&subtree_name.to_string()) {
+            let subtrees = builder.subtrees();
+            if !subtrees.contains(&subtree_name.to_string()) {
                 let backend_guard = self.tree.lock_backend()?;
                 // FIXME: we should get the subtree tips while still using the parent pointers
                 let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?;
-                entry.set_subtree_data(subtree_name.to_string(), "".to_string())?;
-                entry.set_subtree_parents(subtree_name, tips);
+                builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
+                builder.set_subtree_parents_mut(subtree_name, tips);
             }
         }
 
@@ -161,15 +165,15 @@ impl AtomicOp {
     where
         T: serde::de::DeserializeOwned + Default,
     {
-        let entry_ref = self.entry.borrow();
-        let entry = entry_ref.as_ref().ok_or_else(|| {
+        let builder_ref = self.entry_builder.borrow();
+        let builder = builder_ref.as_ref().ok_or_else(|| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Operation has already been committed",
             ))
         })?;
 
-        if let Ok(data) = entry.data(subtree_name) {
+        if let Ok(data) = builder.data(subtree_name) {
             serde_json::from_str(data).map_err(Error::from)
         } else {
             // If subtree doesn't exist or has no data, return default
@@ -201,9 +205,9 @@ impl AtomicOp {
     where
         T: CRDT,
     {
-        // Get the entry to get parent pointers
-        let mut entry_ref = self.entry.borrow_mut();
-        let entry = entry_ref.as_mut().ok_or_else(|| {
+        // Get the entry builder to get parent pointers
+        let mut builder_ref = self.entry_builder.borrow_mut();
+        let builder = builder_ref.as_mut().ok_or_else(|| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Operation has already been committed",
@@ -211,16 +215,17 @@ impl AtomicOp {
         })?;
 
         // If we haven't cached the tips for this subtree yet, get them now
-        if !entry.subtrees().contains(&subtree_name.to_string()) {
+        let subtrees = builder.subtrees();
+        if !subtrees.contains(&subtree_name.to_string()) {
             let backend_guard = self.tree.lock_backend()?;
             // FIXME: we should get the subtree tips while still using the parent pointers
             let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?;
-            entry.set_subtree_data(subtree_name.to_string(), "".to_string())?;
-            entry.set_subtree_parents(subtree_name, tips);
+            builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
+            builder.set_subtree_parents_mut(subtree_name, tips);
         }
 
         // Get the parent pointers for this subtree
-        let parents = entry.subtree_parents(subtree_name).unwrap_or_default();
+        let parents = builder.subtree_parents(subtree_name).unwrap_or_default();
 
         // If there are no parents, return a default
         if parents.is_empty() {
@@ -244,38 +249,41 @@ impl AtomicOp {
         Ok(result)
     }
 
-    /// Commits the atomic operation, persisting the staged changes as a new `Entry`.
+    /// Commits the operation, finalizing and persisting the entry to the backend.
     ///
-    /// This finalizes the transaction:
-    /// 1. Takes ownership of the internal `Entry` being built.
-    /// 2. Removes any subtrees from the entry that had no data staged during the operation.
-    /// 3. Calculates the final content-addressable ID of the new `Entry`.
-    /// 4. Inserts the finalized `Entry` into the backend.
+    /// This method:
+    /// 1. Takes ownership of the `EntryBuilder` from the internal `Option`
+    /// 2. Removes any empty subtrees
+    /// 3. Builds the immutable `Entry` using `EntryBuilder::build()`
+    /// 4. Calculates the entry's content-addressable ID
+    /// 5. Persists the entry to the backend
+    /// 6. Returns the ID of the newly created entry
     ///
-    /// This operation consumes the `AtomicOp` instance.
+    /// After commit, the operation cannot be used again, as the internal
+    /// `EntryBuilder` has been consumed.
     ///
     /// # Returns
-    /// A `Result<ID>` containing the `ID` of the newly committed `Entry`.
-    /// Returns an error if the operation has already been committed or if there's a backend error.
+    /// A `Result<ID>` containing the ID of the committed entry.
     pub fn commit(self) -> Result<ID> {
-        // Take the entry out of the RefCell, consuming it
-        let mut entry = match self.entry.borrow_mut().take() {
-            Some(entry) => entry,
-            None => {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Operation has already been committed",
-                )))
-            }
-        };
+        // Get the entry out of the RefCell, consuming self in the process
+        let builder_cell = self.entry_builder.borrow_mut();
+        let builder = builder_cell.as_ref().ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Operation has already been committed",
+            ))
+        })?;
 
-        // Remove subtrees that do not have any data
-        entry.remove_empty_subtrees()?;
+        // Clone the builder since we can't easily take ownership
+        let builder = builder.clone();
 
-        // Calculate the entry ID
+        // Remove empty subtrees and build the final immutable Entry
+        let entry = builder.remove_empty_subtrees().build();
+
+        // Get the entry's ID
         let id = entry.id();
 
-        // Insert the entry into the backend
+        // Store in the backend
         let mut backend_guard = self.tree.lock_backend()?;
         backend_guard.put(entry)?;
 

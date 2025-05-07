@@ -4,7 +4,7 @@ This section illustrates a typical sequence of interactions between the user and
 
 1. User creates a BaseDB with a specific backend implementation
 2. User creates one or more Trees within the database
-3. Operations on the database result in new Entries being added to the appropriate Tree
+3. Operations on the database involve an `EntryBuilder` to construct new, immutable `Entry` objects, which are then added to the appropriate Tree.
 4. Each new Entry references its parent entries, forming a directed acyclic graph
 5. Entries are stored and retrieved through the Backend interface
 
@@ -14,6 +14,7 @@ sequenceDiagram
     participant BaseDB
     participant Tree
     participant Operation
+    participant EntryBuilder
     participant RowStore_Todo_
     participant Backend
 
@@ -28,7 +29,8 @@ sequenceDiagram
     Backend->>RowStore_Todo_: Return entries/data
     User->>Operation: (via RowStore handle) insert(Todo{title:"Buy Milk"})
     Operation->>RowStore_Todo_: Serialize Todo, generate ID
-    Operation->>Backend: Prepare new Entry with updated RowStore data & parents
+    Operation->>EntryBuilder: Initialize with updated RowStore data & parents
+    EntryBuilder->>Operation: Return built Entry
     User->>Operation: commit()
     Operation->>Backend: Store new Entry
     User->>Tree: List Todos

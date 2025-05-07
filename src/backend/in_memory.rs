@@ -288,10 +288,18 @@ impl InMemoryBackend {
         Ok(heights)
     }
 
-    /// Sorts a slice of entries topologically based on their height within the main tree.
+    /// Sorts entries by their height (longest path from a root) within a tree.
     ///
-    /// Uses `calculate_heights` internally. Sorts primarily by height (ascending)
-    /// and secondarily by ID (lexicographically) for tie-breaking.
+    /// Entries with lower height (closer to a root) appear before entries with higher height.
+    /// Entries with the same height are then sorted by their ID for determinism.
+    /// Entries without any parents (root nodes) have a height of 0 and appear first.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree context.
+    /// * `entries` - The vector of entries to be sorted in place.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error if height calculation fails.
     pub fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) -> Result<()> {
         let heights = self.calculate_heights(tree, None)?;
 
@@ -303,10 +311,19 @@ impl InMemoryBackend {
         Ok(())
     }
 
-    /// Sorts a slice of entries topologically based on their height within a specific subtree.
+    /// Sorts entries by their height within a specific subtree context.
     ///
-    /// Uses `calculate_heights` internally. Sorts primarily by height (ascending)
-    /// within the subtree and secondarily by ID (lexicographically).
+    /// Entries with lower height (closer to a root) appear before entries with higher height.
+    /// Entries with the same height are then sorted by their ID for determinism.
+    /// Entries without any subtree parents have a height of 0 and appear first.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree context.
+    /// * `subtree` - The name of the subtree context.
+    /// * `entries` - The vector of entries to be sorted in place.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error if height calculation fails.
     pub fn sort_entries_by_subtree_height(
         &self,
         tree: &ID,
@@ -381,8 +398,13 @@ impl Backend for InMemoryBackend {
         self
     }
 
-    /// Retrieves all entries belonging to the specified tree, sorted topologically.
-    /// Collects relevant entries and then uses `sort_entries_by_height`.
+    /// Get all entries within a specific tree.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree to fetch.
+    ///
+    /// # Returns
+    /// A `Result` containing a `Vec<Entry>` of all entries belonging to the tree.
     fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
         // Fill this tree vec with all entries in the tree
         let mut entries = Vec::new();
@@ -398,8 +420,15 @@ impl Backend for InMemoryBackend {
         Ok(entries)
     }
 
-    /// Retrieves all entries belonging to the specified subtree, sorted topologically.
-    /// Collects relevant entries and then uses `sort_entries_by_subtree_height`.
+    /// Get all entries in a specific subtree within a tree.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree containing the subtree.
+    /// * `subtree` - The name of the subtree to fetch.
+    ///
+    /// # Returns
+    /// A `Result` containing a `Vec<Entry>` of all entries belonging to both the tree and the subtree.
+    /// Entries that belong to the tree but not the subtree are excluded.
     fn get_subtree(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         for entry in self.entries.values() {
@@ -414,86 +443,125 @@ impl Backend for InMemoryBackend {
         Ok(entries)
     }
 
-    /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
+    /// Get entries in a specific tree starting from the given tip IDs.
     ///
-    /// This implementation collects all ancestors of the provided tips that are part of the specified tree,
-    /// then sorts them topologically.
+    /// This method traverses the Directed Acyclic Graph (DAG) structure of the tree,
+    /// starting from the specified tip entries and walking backwards through parent
+    /// references to collect all relevant entries.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree containing the entries.
+    /// * `tips` - The IDs of the tip entries to start the traversal from.
+    ///
+    /// # Returns
+    /// A `Result` containing a `Vec<Entry>` of all entries reachable from the tips
+    /// within the specified tree, sorted in topological order (parents before children).
     fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        // If no tips provided, return empty result
-        if tips.is_empty() {
-            return Ok(Vec::new());
-        }
+        let mut result = Vec::new();
+        let mut to_process = VecDeque::new();
+        let mut processed = HashSet::new();
 
-        // Collect all ancestors of the provided tips
-        let mut entries_to_include = HashMap::new();
-        let mut to_process = tips.to_vec();
-
-        while let Some(current_id) = to_process.pop() {
-            // Skip if we've already processed this ID
-            if entries_to_include.contains_key(&current_id) {
-                continue;
-            }
-
-            // Get the entry
-            if let Some(entry) = self.entries.get(&current_id) {
-                // Only include if it's part of the specified tree
+        // Initialize with tips
+        for tip in tips {
+            if let Some(entry) = self.entries.get(tip) {
+                // Only include entries that are part of the specified tree
                 if entry.in_tree(tree) {
-                    // Add to our result set
-                    entries_to_include.insert(current_id.clone(), entry.clone());
-
-                    // Add its parents to the processing queue
-                    if let Ok(parents) = entry.parents() {
-                        to_process.extend(parents);
-                    }
+                    to_process.push_back(tip.clone());
                 }
             }
         }
 
-        // Convert to vector and sort topologically
-        let mut result: Vec<Entry> = entries_to_include.values().cloned().collect();
-        self.sort_entries_by_height(tree, &mut result)?;
+        // Process entries in breadth-first order
+        while let Some(current_id) = to_process.pop_front() {
+            // Skip if already processed
+            if processed.contains(&current_id) {
+                continue;
+            }
+
+            if let Some(entry) = self.entries.get(&current_id) {
+                // Entry must be in the specified tree to be included
+                if entry.in_tree(tree) {
+                    // Add parents to be processed
+                    if let Ok(parents) = entry.parents() {
+                        for parent in parents {
+                            if !processed.contains(&parent) {
+                                to_process.push_back(parent);
+                            }
+                        }
+                    }
+
+                    // Include this entry in the result
+                    result.push(entry.clone());
+                    processed.insert(current_id);
+                }
+            }
+        }
+
+        // Sort the result by height within the tree context
+        if !result.is_empty() {
+            self.sort_entries_by_height(tree, &mut result)?;
+        }
 
         Ok(result)
     }
 
-    /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips,
-    /// sorted topologically.
+    /// Get entries in a specific subtree within a tree, starting from the given tip IDs.
     ///
-    /// This implementation collects all ancestors of the provided subtree tips that are part of
-    /// the specified subtree, then sorts them topologically by subtree height.
+    /// This method traverses the Directed Acyclic Graph (DAG) structure of the subtree,
+    /// starting from the specified tip entries and walking backwards through parent
+    /// references to collect all relevant entries.
+    ///
+    /// # Arguments
+    /// * `tree` - The ID of the tree containing the subtree.
+    /// * `subtree` - The name of the subtree to fetch.
+    /// * `tips` - The IDs of the tip entries to start the traversal from.
+    ///
+    /// # Returns
+    /// A `Result` containing a `Vec<Entry>` of all entries reachable from the tips
+    /// that belong to both the specified tree and subtree, sorted in topological order.
+    /// Entries that don't contain data for the specified subtree are excluded even if
+    /// they're part of the tree.
     fn get_subtree_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        // If no tips provided, return empty result
-        if tips.is_empty() {
-            return Ok(Vec::new());
-        }
+        let mut result = Vec::new();
+        let mut to_process = VecDeque::new();
+        let mut processed = HashSet::new();
 
-        // Collect all ancestors of the provided tips within the subtree
-        let mut entries_to_include = HashMap::new();
-        let mut to_process = tips.to_vec();
-
-        while let Some(current_id) = to_process.pop() {
-            // Skip if we've already processed this ID
-            if entries_to_include.contains_key(&current_id) {
-                continue;
-            }
-
-            // Get the entry
-            if let Some(entry) = self.entries.get(&current_id) {
-                // Only include if it's part of the specified tree and subtree
+        // Initialize with tips
+        for tip in tips {
+            if let Some(entry) = self.entries.get(tip) {
+                // Only include entries that are part of both the tree and the subtree
                 if entry.in_tree(tree) && entry.in_subtree(subtree) {
-                    // Add to our result set
-                    entries_to_include.insert(current_id.clone(), entry.clone());
-
-                    // Add its subtree parents to the processing queue
-                    if let Ok(subtree_parents) = entry.subtree_parents(subtree) {
-                        to_process.extend(subtree_parents);
-                    }
+                    to_process.push_back(tip.clone());
                 }
             }
         }
 
-        // Convert to vector and sort topologically by subtree height
-        let mut result: Vec<Entry> = entries_to_include.values().cloned().collect();
+        // Process entries in breadth-first order
+        while let Some(current_id) = to_process.pop_front() {
+            // Skip if already processed
+            if processed.contains(&current_id) {
+                continue;
+            }
+
+            if let Some(entry) = self.entries.get(&current_id) {
+                // Strict inclusion criteria: entry must be in BOTH the specific tree AND subtree
+                if entry.in_subtree(subtree) && entry.in_tree(tree) {
+                    // Get subtree parents to process, if available
+                    if let Ok(subtree_parents) = entry.subtree_parents(subtree) {
+                        for parent in subtree_parents {
+                            if !processed.contains(&parent) {
+                                to_process.push_back(parent);
+                            }
+                        }
+                    }
+
+                    // Include this entry in the result
+                    result.push(entry.clone());
+                    processed.insert(current_id);
+                }
+            }
+        }
+
         self.sort_entries_by_subtree_height(tree, subtree, &mut result)?;
 
         Ok(result)
