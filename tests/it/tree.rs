@@ -1,5 +1,6 @@
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
+use eideticadb::constants::SETTINGS;
 use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::KVStore;
 
@@ -170,7 +171,7 @@ fn test_get_name_from_settings() {
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let settings_store = op
-            .get_subtree::<KVStore>("settings")
+            .get_subtree::<KVStore>(SETTINGS)
             .expect("Failed to get settings store in op");
         settings_store
             .set("name", "UpdatedTreeName")

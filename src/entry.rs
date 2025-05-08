@@ -5,6 +5,7 @@
 //! representing a snapshot of data in the main tree and potentially multiple named subtrees.
 //! This module also defines the `ID` type and `RawData` type.
 
+use crate::constants::ROOT;
 use crate::Error;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -127,7 +128,7 @@ impl Entry {
     /// Creates a new `EntryBuilder` for a top-level (root) entry for a new tree.
     /// This is a convenience method and preferred over calling `EntryBuilder::new_top_level()` directly.
     ///
-    /// Root entries have an empty string as their `root` ID and include a special "root" subtree marker.
+    /// Root entries have an empty string as their `root` ID and include a special ROOT subtree marker.
     /// This method is typically used when creating a new tree.
     ///
     /// # Arguments
@@ -161,9 +162,9 @@ impl Entry {
 
     /// Check if this entry is a root entry of a tree.
     ///
-    /// Determined by the presence of a special "root" subtree.
+    /// Determined by the presence of a special ROOT subtree.
     pub fn is_root(&self) -> bool {
-        self.subtrees.iter().any(|node| node.name == "root")
+        self.subtrees.iter().any(|node| node.name == ROOT)
     }
 
     /// Check if this entry is the absolute top-level root entry (has no parent tree).
@@ -247,35 +248,42 @@ impl Entry {
 /// 1. Ownership chaining: Each method returns `self` for chained calls.
 ///    ```
 ///    # use eideticadb::entry::Entry;
-///    # let root = "tree_root".to_string();
-///    # let data = "{\"data\":\"value\"}".to_string();
-///    # let parent1 = "parent1".to_string();
-///    # let parent2 = "parent2".to_string();
-///    let entry = Entry::builder(root, data)
-///        .set_parents(vec![parent1, parent2])
-///        .set_subtree_data("subtree".to_string(), "data".to_string())
+///    # let root_id = "root_id".to_string();
+///    # let data = "data".to_string();
+///    let entry = Entry::builder(root_id, data)
+///        .set_subtree_data("users".to_string(), "user_data".to_string())
+///        .add_parent("parent_id".to_string())
 ///        .build();
 ///    ```
 ///
-/// 2. Mutable reference: Methods suffixed with `_mut` modify the builder in place and return a reference.
+/// 2. Mutable reference: Methods ending in `_mut` modify the builder in place.
 ///    ```
 ///    # use eideticadb::entry::Entry;
-///    # let root = "tree_root".to_string();
-///    # let data = "{\"data\":\"value\"}".to_string();
-///    # let parent1 = "parent1".to_string();
-///    # let parent2 = "parent2".to_string();
-///    let mut builder = Entry::builder(root, data);
-///    builder.set_parents_mut(vec![parent1, parent2]);
-///    builder.set_subtree_data_mut("subtree".to_string(), "data".to_string());
+///    # let root_id = "root_id".to_string();
+///    # let data = "data".to_string();
+///    let mut builder = Entry::builder(root_id, data);
+///    builder.set_subtree_data_mut("users".to_string(), "user_data".to_string());
+///    builder.add_parent_mut("parent_id".to_string());
 ///    let entry = builder.build();
 ///    ```
 ///
-/// Both patterns allow you to construct the same `Entry`, but the mutable reference
-/// pattern is useful when you need to retain the builder for multiple operations or
-/// conditional modifications.
+/// # Example
 ///
-/// The preferred way to obtain an `EntryBuilder` is via `Entry::builder()` or `Entry::root_builder()`.
-#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// ```
+/// use eideticadb::entry::Entry;
+///
+/// // Create a builder for a regular entry
+/// let entry = Entry::builder("root_id".to_string(), "main_data".to_string())
+///     .add_parent("parent1".to_string())
+///     .set_subtree_data("users".to_string(), "user_data".to_string())
+///     .build();
+///
+/// // Create a builder for a top-level root entry
+/// let root_entry = Entry::root_builder("settings_data".to_string())
+///     .set_subtree_data("users".to_string(), "initial_user_data".to_string())
+///     .build();
+/// ```
+#[derive(Clone)]
 pub struct EntryBuilder {
     tree: TreeNode,
     subtrees: Vec<SubTreeNode>,
@@ -284,29 +292,39 @@ pub struct EntryBuilder {
 impl EntryBuilder {
     /// Creates a new `EntryBuilder` for an entry associated with a specific tree root.
     ///
-    /// Consider using `Entry::builder()` as the preferred way to obtain a builder for regular entries.
-    ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
     /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
+    ///
+    /// Note: It's generally preferred to use the static `Entry::builder()` method
+    /// instead of calling this constructor directly.
     pub fn new(root: impl Into<String>, data: RawData) -> Self {
-        EntryBuilder::default().set_root(root).set_data(data)
+        Self {
+            tree: TreeNode {
+                root: root.into(),
+                parents: Vec::new(),
+                data,
+                metadata: None,
+            },
+            subtrees: Vec::new(),
+        }
     }
 
     /// Creates a new `EntryBuilder` for a top-level (root) entry for a new tree.
     ///
-    /// Consider using `Entry::root_builder()` as the preferred way to obtain a builder for root entries.
-    ///
-    /// Root entries have an empty string as their `root` ID and include a special "root" subtree marker.
+    /// Root entries have an empty string as their `root` ID and include a special ROOT subtree marker.
     /// This method is typically used when creating a new tree.
     ///
     /// # Arguments
     /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
+    ///
+    /// Note: It's generally preferred to use the static `Entry::root_builder()` method
+    /// instead of calling this constructor directly.
     pub fn new_top_level(data: impl Into<String>) -> Self {
-        EntryBuilder::default()
-            .set_root("".to_string())
-            .set_data(data)
-            .set_subtree_data("root".to_string(), "{}".to_string())
+        let mut builder = Self::new("".to_string(), data.into());
+        // Add a special subtree that identifies this as a root entry
+        builder.set_subtree_data_mut(ROOT.to_string(), "".to_string());
+        builder
     }
 
     /// Get the names of all subtrees this entry builder contains data for.
@@ -337,12 +355,14 @@ impl EntryBuilder {
             .ok_or(Error::NotFound)
     }
 
-    /// Sort parent IDs alphabetically.
+    /// Sort a list of parent IDs in alphabetical order.
     fn sort_parents_list(parents: &mut [ID]) {
         parents.sort();
     }
 
-    /// Sort the subtrees vector by subtree name to ensure consistent ordering.
+    /// Sort the list of subtrees in alphabetical order by name.
+    ///
+    /// This is important for ensuring entries with the same content have the same ID.
     fn sort_subtrees_list(&mut self) {
         self.subtrees.sort_by(|a, b| a.name.cmp(&b.name));
     }

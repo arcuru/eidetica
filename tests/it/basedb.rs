@@ -1,6 +1,7 @@
 use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
+use eideticadb::constants::SETTINGS;
 use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::KVStore;
 use eideticadb::Error;
@@ -75,7 +76,7 @@ fn test_create_tree_with_initial_settings() {
     let tree = db.new_tree(settings).expect("Failed to create tree");
 
     let settings_viewer = tree
-        .get_subtree_viewer::<KVStore>("settings")
+        .get_subtree_viewer::<KVStore>(SETTINGS)
         .expect("Failed to get settings viewer");
 
     assert_eq!(

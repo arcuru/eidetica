@@ -1,3 +1,4 @@
+use eideticadb::constants::ROOT;
 use eideticadb::entry::Entry;
 
 #[test]
@@ -21,7 +22,7 @@ fn test_entry_toplevel_creation() {
     assert!(entry.root().is_empty());
     assert!(entry.is_root());
     assert_eq!(entry.get_settings().unwrap(), data); // Use get_settings() to access the main data
-    assert!(entry.in_subtree("root")); // Top-level entries have a "root" subtree
+    assert!(entry.in_subtree(ROOT)); // Top-level entries have a "root" subtree
 }
 
 #[test]
@@ -455,7 +456,7 @@ fn test_entrybuilder_parent_deduplication() {
     // Test that duplicate parent IDs are handled correctly
 
     // Create an entry with duplicate parents in both main tree and subtree
-    let entry = Entry::builder("root".to_string(), "data".to_string())
+    let entry = Entry::builder("test_root".to_string(), "data".to_string())
         .set_parents(vec![
             "parent1".to_string(),
             "parent2".to_string(),
@@ -490,7 +491,7 @@ fn test_entrybuilder_id_stability() {
     // Test that Entry IDs are consistent regardless of insertion order
 
     // First entry with parents and subtrees added in one order
-    let entry1 = Entry::builder("root".to_string(), "data".to_string())
+    let entry1 = Entry::builder("test_root".to_string(), "data".to_string())
         .set_parents(vec!["parent1".to_string(), "parent2".to_string()])
         .set_subtree_data("subtree1".to_string(), "data1".to_string())
         .set_subtree_data("subtree2".to_string(), "data2".to_string())
@@ -498,7 +499,7 @@ fn test_entrybuilder_id_stability() {
         .build();
 
     // Second entry with identical content but added in reverse order
-    let entry2 = Entry::builder("root".to_string(), "data".to_string())
+    let entry2 = Entry::builder("test_root".to_string(), "data".to_string())
         .set_parents(vec!["parent2".to_string(), "parent1".to_string()]) // Reversed
         .set_subtree_data("subtree2".to_string(), "data2".to_string()) // Reversed
         .set_subtree_data("subtree1".to_string(), "data1".to_string())
@@ -506,7 +507,7 @@ fn test_entrybuilder_id_stability() {
         .build();
 
     // Third entry with the same content but subtree parents set after subtree data
-    let entry3 = Entry::builder("root".to_string(), "data".to_string())
+    let entry3 = Entry::builder("test_root".to_string(), "data".to_string())
         .set_subtree_data("subtree1".to_string(), "data1".to_string())
         .set_subtree_data("subtree2".to_string(), "data2".to_string())
         .set_parents(vec!["parent1".to_string(), "parent2".to_string()])
@@ -530,7 +531,7 @@ fn test_entrybuilder_edge_cases() {
     assert!(empty_entry.subtrees().is_empty()); // No subtrees
 
     // Builder with empty subtree names
-    let entry_with_empty_subtree = Entry::builder("root".to_string(), "data".to_string())
+    let entry_with_empty_subtree = Entry::builder("test_root".to_string(), "data".to_string())
         .set_subtree_data("".to_string(), "empty_subtree_data".to_string())
         .build();
 
@@ -542,17 +543,14 @@ fn test_entrybuilder_edge_cases() {
     );
 
     // Builder with a subtree overriding the root ID
-    let root_override = Entry::builder("root".to_string(), "data".to_string())
-        .set_subtree_data("root".to_string(), "root_data".to_string())
+    let root_override = Entry::builder("test_root".to_string(), "data".to_string())
+        .set_subtree_data(ROOT.to_string(), "root_data".to_string())
         .build();
 
-    // This should create a subtree named "root", not change the root ID
-    assert!(root_override.in_subtree("root"));
-    assert_eq!(
-        root_override.data("root").unwrap(),
-        &"root_data".to_string()
-    );
-    assert_eq!(root_override.root(), "root"); // Root ID is still "root"
+    // This should create a subtree named ROOT, not change the root ID
+    assert!(root_override.in_subtree(ROOT));
+    assert_eq!(root_override.data(ROOT).unwrap(), &"root_data".to_string());
+    assert_eq!(root_override.root(), "test_root"); // Root ID is still "test_root"
 }
 
 #[test]
@@ -560,7 +558,7 @@ fn test_entrybuilder_add_parent_methods() {
     // Test the add_parent and add_parent_mut methods
 
     // Start with no parents
-    let mut builder = Entry::builder("root".to_string(), "data".to_string());
+    let mut builder = Entry::builder("test_root".to_string(), "data".to_string());
 
     // Add first parent with mutable method
     builder.add_parent_mut("parent1".to_string());
@@ -578,7 +576,7 @@ fn test_entrybuilder_add_parent_methods() {
     assert!(parents.contains(&"parent2".to_string()));
 
     // Also test adding to an existing list of parents
-    let entry2 = Entry::builder("root".to_string(), "data".to_string())
+    let entry2 = Entry::builder("test_root".to_string(), "data".to_string())
         .set_parents(vec!["parent1".to_string(), "parent2".to_string()])
         .add_parent("parent3".to_string())
         .build();
@@ -593,7 +591,7 @@ fn test_entrybuilder_subtree_parent_methods() {
     // Test the add_subtree_parent and add_subtree_parent_mut methods
 
     // Create a builder with a subtree
-    let mut builder = Entry::builder("root".to_string(), "data".to_string())
+    let mut builder = Entry::builder("test_root".to_string(), "data".to_string())
         .set_subtree_data("subtree1".to_string(), "data1".to_string());
 
     // Add first subtree parent with mutable method
@@ -612,7 +610,7 @@ fn test_entrybuilder_subtree_parent_methods() {
     assert!(subtree_parents.contains(&"sp2".to_string()));
 
     // Also test adding to an existing list of subtree parents
-    let entry2 = Entry::builder("root".to_string(), "data".to_string())
+    let entry2 = Entry::builder("test_root".to_string(), "data".to_string())
         .set_subtree_data("subtree1".to_string(), "data1".to_string())
         .set_subtree_parents("subtree1", vec!["sp1".to_string(), "sp2".to_string()])
         .add_subtree_parent("subtree1", "sp3".to_string())
@@ -623,7 +621,7 @@ fn test_entrybuilder_subtree_parent_methods() {
     assert!(subtree_parents2.contains(&"sp3".to_string()));
 
     // Test adding a parent to a non-existent subtree (should create the subtree)
-    let entry3 = Entry::builder("root".to_string(), "data".to_string())
+    let entry3 = Entry::builder("test_root".to_string(), "data".to_string())
         .add_subtree_parent("new_subtree", "sp1".to_string())
         .build();
 

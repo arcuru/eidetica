@@ -13,9 +13,9 @@ The entry structure enables efficient validation of data integrity and forms the
 
 Entries may contain optional metadata that is not part of the main data model and is not merged between entries. This metadata is used to improve operation efficiency and for experimentation purposes.
 
-Currently, entries that don't modify the "settings" subtree include metadata containing references to the current settings subtree tips. This allows for efficient verification of settings in sparse checkout scenarios without requiring traversal of the entire history graph.
+Currently, entries that don't modify the reserved `_settings` subtree (identified by `constants::SETTINGS`) include metadata containing references to the current settings subtree tips. This allows for efficient verification of settings in sparse checkout scenarios without requiring traversal of the entire history graph.
 
-Metadata is serialized as a `KVOverWrite` CRDT with a "settings" key containing the JSON string of the settings subtree tips.
+Metadata is serialized as a `KVOverWrite` CRDT with the reserved `_settings` key (from `constants::SETTINGS`) containing the JSON string of the settings subtree tips.
 
 ```mermaid
 classDiagram

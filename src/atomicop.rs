@@ -1,3 +1,4 @@
+use crate::constants::SETTINGS;
 use crate::data::KVOverWrite;
 use crate::data::CRDT;
 use crate::entry::Entry;
@@ -280,7 +281,7 @@ impl AtomicOp {
         let mut builder = builder.clone();
 
         // Check if this is a settings subtree update
-        let has_settings_update = builder.subtrees().contains(&"settings".to_string());
+        let has_settings_update = builder.subtrees().contains(&SETTINGS.to_string());
 
         // If this is not a settings update, add metadata with settings tips
         if !has_settings_update {
@@ -289,7 +290,7 @@ impl AtomicOp {
             // rather than the current tips of the tree. This ensures the metadata accurately reflects
             // the settings at the point this entry was created, even in concurrent modification scenarios.
             let backend_guard = self.tree.lock_backend()?;
-            let settings_tips = backend_guard.get_subtree_tips(self.tree.root_id(), "settings")?;
+            let settings_tips = backend_guard.get_subtree_tips(self.tree.root_id(), SETTINGS)?;
 
             if !settings_tips.is_empty() {
                 // Create a KVOverWrite with settings tips
@@ -297,7 +298,7 @@ impl AtomicOp {
 
                 // Convert the tips vector to a JSON string
                 let tips_json = serde_json::to_string(&settings_tips)?;
-                metadata.set("settings".to_string(), tips_json);
+                metadata.set(SETTINGS.to_string(), tips_json);
 
                 // Serialize the metadata
                 let metadata_json = serde_json::to_string(&metadata)?;

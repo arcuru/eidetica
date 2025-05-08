@@ -19,6 +19,7 @@
 pub mod atomicop;
 pub mod backend;
 pub mod basedb;
+pub mod constants;
 pub mod data;
 pub mod entry;
 pub mod subtree;

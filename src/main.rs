@@ -1,5 +1,6 @@
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
+use eideticadb::constants::SETTINGS;
 use eideticadb::data::KVOverWrite;
 use eideticadb::entry::Entry;
 use eideticadb::Tree;
@@ -141,7 +142,7 @@ fn main() -> io::Result<()> {
                 let settings_str = args[2..].join(" ");
                 // Create a map for the initial settings and serialize it to JSON
                 let mut settings_map = HashMap::new();
-                settings_map.insert("settings".to_string(), settings_str);
+                settings_map.insert(SETTINGS.to_string(), settings_str);
                 settings_map.insert("name".to_string(), name.to_string());
 
                 let settings = KVOverWrite::from_hashmap(settings_map);

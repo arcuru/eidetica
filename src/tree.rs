@@ -6,6 +6,7 @@
 
 use crate::atomicop::AtomicOp;
 use crate::backend::Backend;
+use crate::constants::{ROOT, SETTINGS};
 use crate::data::KVOverWrite;
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
@@ -46,8 +47,8 @@ impl Tree {
 
         // Use an operation on the dummy tree to add the settings
         let op = dummy_tree.new_operation()?;
-        op.update_subtree("settings", &serde_json::to_string(&settings)?)?;
-        op.update_subtree("root", &serde_json::to_string(&"".to_string())?)?;
+        op.update_subtree(SETTINGS, &serde_json::to_string(&settings)?)?;
+        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?;
         let root_id = op.commit()?;
 
         // Now create the real tree with the root ID
@@ -105,7 +106,7 @@ impl Tree {
     /// # Returns
     /// A `Result` containing the `KVStore` for settings or an error.
     pub fn get_settings(&self) -> Result<KVStore> {
-        self.get_subtree_viewer::<KVStore>("settings")
+        self.get_subtree_viewer::<KVStore>(SETTINGS)
     }
 
     /// Get the name of the tree from its settings subtree

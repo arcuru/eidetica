@@ -807,7 +807,7 @@ fn test_get_tips() {
     // Root -> A -> B
     //    \-> C
 
-    let root = Entry::root_builder("root".to_string()).build();
+    let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
@@ -959,7 +959,7 @@ fn test_get_tree() {
     let mut backend = InMemoryBackend::new();
 
     // Create a simple tree with three entries
-    let root = Entry::root_builder("root".to_string()).build();
+    let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
@@ -995,7 +995,7 @@ fn test_get_subtree() {
     let mut backend = InMemoryBackend::new();
 
     // Create a tree with a subtree
-    let root = Entry::root_builder("root".to_string()).build();
+    let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 
@@ -1055,7 +1055,7 @@ fn test_calculate_subtree_height() {
     let mut backend = InMemoryBackend::new();
 
     // Create a tree with a subtree that has a different structure
-    let root = Entry::root_builder("root".to_string()).build();
+    let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
     backend.put(root.clone()).unwrap();
 

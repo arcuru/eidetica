@@ -1,5 +1,6 @@
 use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
+use eideticadb::constants::SETTINGS;
 use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::{KVStore, SubTree};
 use eideticadb::tree::Tree;
@@ -176,7 +177,7 @@ fn test_metadata_for_settings_entries() {
 
     // Create a settings update
     let settings_op = tree.new_operation().unwrap();
-    let settings_subtree = settings_op.get_subtree::<KVStore>("settings").unwrap();
+    let settings_subtree = settings_op.get_subtree::<KVStore>(SETTINGS).unwrap();
     settings_subtree.set("version", "1.0").unwrap();
     let settings_id = settings_op.commit().unwrap();
 
@@ -197,7 +198,7 @@ fn test_metadata_for_settings_entries() {
     // Verify data entry has metadata with settings tips
     let metadata = data_entry.get_metadata().unwrap();
     let metadata_value: KVOverWrite = serde_json::from_str(metadata).unwrap();
-    let settings_tips_json = metadata_value.get("settings").unwrap();
+    let settings_tips_json = metadata_value.get(SETTINGS).unwrap();
     let settings_tips: Vec<String> = serde_json::from_str(settings_tips_json).unwrap();
 
     // Verify settings tips include our settings entry
