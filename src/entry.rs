@@ -112,7 +112,7 @@ impl Entry {
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
     /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
-    pub fn builder(root: String, data: RawData) -> EntryBuilder {
+    pub fn builder(root: impl Into<String>, data: RawData) -> EntryBuilder {
         EntryBuilder::new(root, data)
     }
 
@@ -124,8 +124,8 @@ impl Entry {
     ///
     /// # Arguments
     /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    pub fn root_builder(data: RawData) -> EntryBuilder {
-        EntryBuilder::new_top_level(data)
+    pub fn root_builder(data: impl Into<String>) -> EntryBuilder {
+        EntryBuilder::new_top_level(data.into())
     }
 
     /// Get the content-addressable ID of the entry.
@@ -262,14 +262,14 @@ pub struct EntryBuilder {
 }
 
 impl EntryBuilder {
-    /// Create a new `EntryBuilder` for an entry associated with a specific tree root.
+    /// Creates a new `EntryBuilder` for an entry associated with a specific tree root.
     ///
     /// Consider using `Entry::builder()` as the preferred way to obtain a builder for regular entries.
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
     /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
-    pub fn new(root: String, data: RawData) -> Self {
+    pub fn new(root: impl Into<String>, data: RawData) -> Self {
         EntryBuilder::default().set_root(root).set_data(data)
     }
 
@@ -282,7 +282,7 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    pub fn new_top_level(data: RawData) -> Self {
+    pub fn new_top_level(data: impl Into<String>) -> Self {
         EntryBuilder::default()
             .set_root("".to_string())
             .set_data(data)
@@ -333,7 +333,8 @@ impl EntryBuilder {
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
     /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
-    pub fn set_subtree_data(mut self, name: String, data: RawData) -> Self {
+    pub fn set_subtree_data(mut self, name: impl Into<String>, data: RawData) -> Self {
+        let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
             node.data = data;
         } else {
@@ -353,7 +354,8 @@ impl EntryBuilder {
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
     /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
-    pub fn set_subtree_data_mut(&mut self, name: String, data: RawData) -> &mut Self {
+    pub fn set_subtree_data_mut(&mut self, name: impl Into<String>, data: RawData) -> &mut Self {
+        let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
             node.data = data;
         } else {
@@ -390,8 +392,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_root(mut self, root: ID) -> Self {
-        self.tree.root = root;
+    pub fn set_root(mut self, root: impl Into<String>) -> Self {
+        self.tree.root = root.into();
         self
     }
 
@@ -403,8 +405,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_root_mut(&mut self, root: ID) -> &mut Self {
-        self.tree.root = root;
+    pub fn set_root_mut(&mut self, root: impl Into<String>) -> &mut Self {
+        self.tree.root = root.into();
         self
     }
 
@@ -415,8 +417,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_data(mut self, data: RawData) -> Self {
-        self.tree.data = data;
+    pub fn set_data(mut self, data: impl Into<String>) -> Self {
+        self.tree.data = data.into();
         self
     }
 
@@ -428,8 +430,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_data_mut(&mut self, data: RawData) -> &mut Self {
-        self.tree.data = data;
+    pub fn set_data_mut(&mut self, data: impl Into<String>) -> &mut Self {
+        self.tree.data = data.into();
         self
     }
 
@@ -450,16 +452,16 @@ impl EntryBuilder {
 
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
-    pub fn add_parent(mut self, parent_id: ID) -> Self {
-        self.tree.parents.push(parent_id);
+    pub fn add_parent(mut self, parent_id: impl Into<String>) -> Self {
+        self.tree.parents.push(parent_id.into());
         self
     }
 
     /// Mutable reference version of add_parent.
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
-    pub fn add_parent_mut(&mut self, parent_id: ID) -> &mut Self {
-        self.tree.parents.push(parent_id);
+    pub fn add_parent_mut(&mut self, parent_id: impl Into<String>) -> &mut Self {
+        self.tree.parents.push(parent_id.into());
         self
     }
 
@@ -467,7 +469,12 @@ impl EntryBuilder {
     /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
     /// If the subtree does not exist, it will be created with empty data ("{}").
     /// The list of subtrees will be sorted by name when `build()` is called.
-    pub fn set_subtree_parents(mut self, subtree_name: &str, parents: Vec<ID>) -> Self {
+    pub fn set_subtree_parents(
+        mut self,
+        subtree_name: impl Into<String>,
+        parents: Vec<ID>,
+    ) -> Self {
+        let subtree_name = subtree_name.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
@@ -477,7 +484,7 @@ impl EntryBuilder {
         } else {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
-                name: subtree_name.to_string(),
+                name: subtree_name,
                 data: "{}".to_string(), // Default data if creating subtree just for parents
                 parents,
             });
@@ -490,7 +497,12 @@ impl EntryBuilder {
     /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
     /// If the subtree does not exist, it will be created with empty data ("{}").
     /// The list of subtrees will be sorted by name when `build()` is called.
-    pub fn set_subtree_parents_mut(&mut self, subtree_name: &str, parents: Vec<ID>) -> &mut Self {
+    pub fn set_subtree_parents_mut(
+        &mut self,
+        subtree_name: impl Into<String>,
+        parents: Vec<ID>,
+    ) -> &mut Self {
+        let subtree_name = subtree_name.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
@@ -500,7 +512,7 @@ impl EntryBuilder {
         } else {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
-                name: subtree_name.to_string(),
+                name: subtree_name,
                 data: "{}".to_string(), // Default data if creating subtree just for parents
                 parents,
             });
@@ -512,7 +524,13 @@ impl EntryBuilder {
     /// If the subtree does not exist, it will be created with empty data ("{}").
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
-    pub fn add_subtree_parent(mut self, subtree_name: &str, parent_id: ID) -> Self {
+    pub fn add_subtree_parent(
+        mut self,
+        subtree_name: impl Into<String>,
+        parent_id: impl Into<String>,
+    ) -> Self {
+        let subtree_name = subtree_name.into();
+        let parent_id = parent_id.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
@@ -521,7 +539,7 @@ impl EntryBuilder {
             node.parents.push(parent_id);
         } else {
             self.subtrees.push(SubTreeNode {
-                name: subtree_name.to_string(),
+                name: subtree_name,
                 data: "{}".to_string(),
                 parents: vec![parent_id],
             });
@@ -534,7 +552,13 @@ impl EntryBuilder {
     /// If the subtree does not exist, it will be created with empty data ("{}").
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
-    pub fn add_subtree_parent_mut(&mut self, subtree_name: &str, parent_id: ID) -> &mut Self {
+    pub fn add_subtree_parent_mut(
+        &mut self,
+        subtree_name: impl Into<String>,
+        parent_id: impl Into<String>,
+    ) -> &mut Self {
+        let subtree_name = subtree_name.into();
+        let parent_id = parent_id.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
@@ -543,7 +567,7 @@ impl EntryBuilder {
             node.parents.push(parent_id);
         } else {
             self.subtrees.push(SubTreeNode {
-                name: subtree_name.to_string(),
+                name: subtree_name,
                 data: "{}".to_string(),
                 parents: vec![parent_id],
             });
