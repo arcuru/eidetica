@@ -1,3 +1,4 @@
+use crate::data::KVOverWrite;
 use crate::data::CRDT;
 use crate::entry::Entry;
 use crate::entry::{EntryBuilder, ID};
@@ -254,10 +255,11 @@ impl AtomicOp {
     /// This method:
     /// 1. Takes ownership of the `EntryBuilder` from the internal `Option`
     /// 2. Removes any empty subtrees
-    /// 3. Builds the immutable `Entry` using `EntryBuilder::build()`
-    /// 4. Calculates the entry's content-addressable ID
-    /// 5. Persists the entry to the backend
-    /// 6. Returns the ID of the newly created entry
+    /// 3. Adds metadata if appropriate
+    /// 4. Builds the immutable `Entry` using `EntryBuilder::build()`
+    /// 5. Calculates the entry's content-addressable ID
+    /// 6. Persists the entry to the backend
+    /// 7. Returns the ID of the newly created entry
     ///
     /// After commit, the operation cannot be used again, as the internal
     /// `EntryBuilder` has been consumed.
@@ -275,7 +277,35 @@ impl AtomicOp {
         })?;
 
         // Clone the builder since we can't easily take ownership
-        let builder = builder.clone();
+        let mut builder = builder.clone();
+
+        // Check if this is a settings subtree update
+        let has_settings_update = builder.subtrees().contains(&"settings".to_string());
+
+        // If this is not a settings update, add metadata with settings tips
+        if !has_settings_update {
+            // Get the backend to access settings tips
+            // FIXME: We should get the subtree tips relative to the parent pointers of this entry
+            // rather than the current tips of the tree. This ensures the metadata accurately reflects
+            // the settings at the point this entry was created, even in concurrent modification scenarios.
+            let backend_guard = self.tree.lock_backend()?;
+            let settings_tips = backend_guard.get_subtree_tips(self.tree.root_id(), "settings")?;
+
+            if !settings_tips.is_empty() {
+                // Create a KVOverWrite with settings tips
+                let mut metadata = KVOverWrite::new();
+
+                // Convert the tips vector to a JSON string
+                let tips_json = serde_json::to_string(&settings_tips)?;
+                metadata.set("settings".to_string(), tips_json);
+
+                // Serialize the metadata
+                let metadata_json = serde_json::to_string(&metadata)?;
+
+                // Add metadata to the entry builder
+                builder.set_metadata_mut(metadata_json);
+            }
+        }
 
         // Remove empty subtrees and build the final immutable Entry
         let entry = builder.remove_empty_subtrees().build();

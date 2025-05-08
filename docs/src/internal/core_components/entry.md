@@ -2,12 +2,20 @@
 
 Entries are the fundamental unit of data in EideticaDB. Once created, an `Entry` is immutable. Entries are constructed using the `EntryBuilder`. Each entry contains:
 
-- **Tree**: Contains the root ID, parent references, and tree metadata
+- **Tree**: Contains the root ID, parent references, tree metadata, and optional entry metadata
 - **Subtrees**: Vector of named subtrees (equivalent to tables), each with their own parents and data
 
 Entries are identified by their **ID**: A unique content-addressable identifier.
 
 The entry structure enables efficient validation of data integrity and forms the basis of the Merkle tree structure.
+
+#### Entry Metadata
+
+Entries may contain optional metadata that is not part of the main data model and is not merged between entries. This metadata is used to improve operation efficiency and for experimentation purposes.
+
+Currently, entries that don't modify the "settings" subtree include metadata containing references to the current settings subtree tips. This allows for efficient verification of settings in sparse checkout scenarios without requiring traversal of the entire history graph.
+
+Metadata is serialized as a `KVOverWrite` CRDT with a "settings" key containing the JSON string of the settings subtree tips.
 
 ```mermaid
 classDiagram
@@ -18,6 +26,7 @@ classDiagram
         +set_root(root: ID) EntryBuilder
         +set_parents(parents: Vec<ID>) EntryBuilder
         +set_subtree_parents(subtree: &str, parents: Vec<ID>) EntryBuilder
+        +set_metadata(metadata: String) EntryBuilder
         +build() Entry
     }
 
@@ -35,12 +44,14 @@ classDiagram
         +data(subtree: &str) Result<&RawData>
         +parents() Result<Vec<ID>>
         +subtree_parents(subtree: &str) Result<Vec<ID>>
+        +get_metadata() Option<&RawData>
     }
 
     class TreeNode {
         +ID root
         +Vec<ID> parents
         +RawData data
+        +Option<RawData> metadata
     }
 
     class SubTreeNode {

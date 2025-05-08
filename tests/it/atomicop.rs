@@ -1,3 +1,4 @@
+use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::{KVStore, SubTree};
@@ -159,4 +160,46 @@ fn test_atomicop_double_commit_error() {
     // test this with catch_unwind due to interior mutability issues.
     // Instead, we'll just note this as a comment and rely on the general
     // behavior tested elsewhere.
+}
+
+#[test]
+fn test_metadata_for_settings_entries() {
+    // Create a new in-memory backend
+    let backend = Arc::new(Mutex::new(
+        Box::new(InMemoryBackend::new()) as Box<dyn Backend>
+    ));
+
+    // Create a new tree with some settings
+    let mut settings = KVOverWrite::new();
+    settings.set("name".to_string(), "test_tree".to_string());
+    let tree = Tree::new(settings, backend.clone()).unwrap();
+
+    // Create a settings update
+    let settings_op = tree.new_operation().unwrap();
+    let settings_subtree = settings_op.get_subtree::<KVStore>("settings").unwrap();
+    settings_subtree.set("version", "1.0").unwrap();
+    let settings_id = settings_op.commit().unwrap();
+
+    // Now create a data entry (not touching settings)
+    let data_op = tree.new_operation().unwrap();
+    let data_subtree = data_op.get_subtree::<KVStore>("data").unwrap();
+    data_subtree.set("key1", "value1").unwrap();
+    let data_id = data_op.commit().unwrap();
+
+    // Get both entries from the backend
+    let backend_guard = backend.lock().unwrap();
+    let settings_entry = backend_guard.get(&settings_id).unwrap();
+    let data_entry = backend_guard.get(&data_id).unwrap();
+
+    // Verify settings entry has no metadata (as it's a settings update)
+    assert!(settings_entry.get_metadata().is_none());
+
+    // Verify data entry has metadata with settings tips
+    let metadata = data_entry.get_metadata().unwrap();
+    let metadata_value: KVOverWrite = serde_json::from_str(metadata).unwrap();
+    let settings_tips_json = metadata_value.get("settings").unwrap();
+    let settings_tips: Vec<String> = serde_json::from_str(settings_tips_json).unwrap();
+
+    // Verify settings tips include our settings entry
+    assert!(settings_tips.contains(&settings_id));
 }

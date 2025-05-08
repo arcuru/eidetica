@@ -13,3 +13,4 @@ Based on comments in the code and potential architectural needs, future developm
 - **Replication & Networking**: Designing and implementing protocols for peer-to-peer replication and synchronization between nodes.
 - **Indexing**: Adding indexing mechanisms to speed up lookups and queries, especially for large datasets.
 - **Concurrency Improvements**: Investigating and potentially implementing alternative concurrency control mechanisms to improve performance under high load (see [Performance Considerations](../performance.md)).
+- **Entry Metadata Enhancements**: Expanding the metadata capabilities for entries to include more performance-enhancing information, such as additional subtree references, bloom filters for content detection, or other data that can improve sparse checkout and query operations.

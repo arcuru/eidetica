@@ -30,6 +30,14 @@ struct TreeNode {
     pub parents: Vec<ID>,
     /// Serialized data associated with this `Entry` in the main tree.
     pub data: RawData,
+    /// Serialized metadata associated with this `Entry` in the main tree.
+    /// This data is metadata about this specific entry only and is not merged with other entries.
+    ///
+    /// Metadata is used to improve the efficiency of certain operations and for experimentation.
+    ///
+    /// Metadata is optional and may not be present in all entries. Future versions
+    /// may extend metadata to include additional information.
+    pub metadata: Option<RawData>,
 }
 
 /// Internal representation of a named subtree node within an `Entry`.
@@ -212,6 +220,18 @@ impl Entry {
             .find(|node| node.name == subtree_name)
             .map(|node| node.parents.clone())
             .ok_or(Error::NotFound)
+    }
+
+    /// Get the metadata for this entry's tree node.
+    ///
+    /// Metadata is optional information attached to an entry that is not part of the
+    /// main data model and is not merged between entries. It is used to improve efficiency
+    /// of certain operations (like sparse checkouts) and for experimentation.
+    ///
+    /// # Returns
+    /// An `Option<&RawData>` containing the metadata if present, or `None` if no metadata was set.
+    pub fn get_metadata(&self) -> Option<&RawData> {
+        self.tree.metadata.as_ref()
     }
 }
 
@@ -572,6 +592,45 @@ impl EntryBuilder {
                 parents: vec![parent_id],
             });
         }
+        self
+    }
+
+    /// Set the metadata for this entry's tree node.
+    ///
+    /// Metadata is optional information attached to an entry that is not part of the
+    /// main data model and is not merged between entries. It's used primarily for
+    /// improving efficiency of operations and for experimentation.
+    ///
+    /// For example, metadata can contain references to the current tips of the settings
+    /// subtree, allowing for efficient verification in sparse checkout scenarios.
+    ///
+    /// # Arguments
+    /// * `metadata` - `RawData` (serialized string) for the main tree node metadata.
+    ///
+    /// # Returns
+    /// Self for method chaining.
+    pub fn set_metadata(mut self, metadata: impl Into<String>) -> Self {
+        self.tree.metadata = Some(metadata.into());
+        self
+    }
+
+    /// Mutable reference version of set_metadata.
+    /// Set the metadata for this entry's tree node.
+    ///
+    /// Metadata is optional information attached to an entry that is not part of the
+    /// main data model and is not merged between entries. It's used primarily for
+    /// improving efficiency of operations and for experimentation.
+    ///
+    /// For example, metadata can contain references to the current tips of the settings
+    /// subtree, allowing for efficient verification in sparse checkout scenarios.
+    ///
+    /// # Arguments
+    /// * `metadata` - `RawData` (serialized string) for the main tree node metadata.
+    ///
+    /// # Returns
+    /// A mutable reference to self for method chaining.
+    pub fn set_metadata_mut(&mut self, metadata: impl Into<String>) -> &mut Self {
+        self.tree.metadata = Some(metadata.into());
         self
     }
 
