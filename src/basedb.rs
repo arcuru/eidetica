@@ -5,7 +5,7 @@
 //! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
 
 use crate::backend::Backend;
-use crate::data::KVOverWrite;
+use crate::data::KVNested;
 use crate::entry::ID;
 use crate::tree::Tree;
 use crate::{Error, Result};
@@ -49,15 +49,20 @@ impl BaseDB {
     /// Create a new tree in the database.
     ///
     /// A `Tree` represents a collection of related entries, analogous to a table.
-    /// It is initialized with settings defined by a `KVOverWrite` CRDT.
+    /// It is initialized with settings defined by a `KVNested` CRDT.
     ///
     /// # Arguments
     /// * `settings` - The initial settings for the tree, typically including metadata like a name.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: KVOverWrite) -> Result<Tree> {
+    pub fn new_tree(&self, settings: KVNested) -> Result<Tree> {
         Tree::new(settings, Arc::clone(&self.backend))
+    }
+
+    /// Create a new tree with default empty settings
+    pub fn new_tree_default(&self) -> Result<Tree> {
+        self.new_tree(KVNested::new())
     }
 
     /// Load an existing tree from the database by its root ID.
@@ -124,6 +129,7 @@ impl BaseDB {
         for tree in all_trees {
             // Attempt to get the name from the tree's settings
             if let Ok(tree_name) = tree.get_name() {
+                println!("tree_name: {}", tree_name);
                 if tree_name == name {
                     matching_trees.push(tree);
                 }

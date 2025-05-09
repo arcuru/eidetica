@@ -7,7 +7,7 @@
 use crate::atomicop::AtomicOp;
 use crate::backend::Backend;
 use crate::constants::{ROOT, SETTINGS};
-use crate::data::KVOverWrite;
+use crate::data::KVNested;
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
 use crate::{Error, Result};
@@ -32,12 +32,12 @@ impl Tree {
     /// and storing it in the backend.
     ///
     /// # Arguments
-    /// * `settings` - A `KVOverWrite` CRDT containing the initial settings for the tree.
+    /// * `settings` - A `KVNested` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
-    pub fn new(settings: KVOverWrite, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
+    pub fn new(settings: KVNested, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
         // Create a dummy tree pointing to the root of all roots
         // FIXME: This should use a None for the root ID
         let dummy_tree = Self {
@@ -115,7 +115,7 @@ impl Tree {
         let settings = self.get_settings()?;
 
         // Get the name from the settings
-        settings.get("name")
+        settings.get_string("name")
     }
 
     /// Create a new atomic operation on this tree

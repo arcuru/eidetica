@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
+use eideticadb::data::KVNested;
 use eideticadb::subtree::RowStore;
 use eideticadb::Error;
 use eideticadb::Tree;
@@ -130,8 +131,8 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(Error::NotFound) => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eideticadb::data::KVOverWrite::new();
-            settings.set("name".to_string(), tree_name.clone());
+            let mut settings = KVNested::new();
+            settings.set_string("name".to_string(), tree_name.clone());
 
             let tree = db.new_tree(settings)?;
 

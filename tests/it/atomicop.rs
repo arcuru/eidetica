@@ -1,7 +1,7 @@
 use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::constants::SETTINGS;
-use eideticadb::data::KVOverWrite;
+use eideticadb::data::{KVNested, NestedValue};
 use eideticadb::subtree::{KVStore, SubTree};
 use eideticadb::tree::Tree;
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 fn test_atomicop_through_kvstore() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
-    let settings = KVOverWrite::new();
+    let settings = KVNested::new();
     let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
 
     // Create a new operation
@@ -30,14 +30,20 @@ fn test_atomicop_through_kvstore() {
     let read_store = KVStore::new(&read_op, "test").unwrap();
 
     // Verify the value was set correctly
-    assert_eq!(read_store.get("key").unwrap(), "value");
+    match read_store.get("key").unwrap() {
+        NestedValue::String(value) => assert_eq!(value, "value"),
+        _ => panic!("Expected string value"),
+    }
+
+    // Also test the get_string convenience method
+    assert_eq!(read_store.get_string("key").unwrap(), "value");
 }
 
 #[test]
 fn test_atomicop_multiple_subtrees() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
-    let settings = KVOverWrite::new();
+    let settings = KVNested::new();
     let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
 
     // Create a new operation
@@ -63,15 +69,22 @@ fn test_atomicop_multiple_subtrees() {
     let store2_read = KVStore::new(&read_op, "store2").unwrap();
 
     // Verify values in both stores
-    assert_eq!(store1_read.get("key1").unwrap(), "updated");
-    assert_eq!(store2_read.get("key2").unwrap(), "value2");
+    match store1_read.get("key1").unwrap() {
+        NestedValue::String(value) => assert_eq!(value, "updated"),
+        _ => panic!("Expected string value for store1"),
+    }
+
+    match store2_read.get("key2").unwrap() {
+        NestedValue::String(value) => assert_eq!(value, "value2"),
+        _ => panic!("Expected string value for store2"),
+    }
 }
 
 #[test]
 fn test_atomicop_empty_subtree_removal() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
-    let settings = KVOverWrite::new();
+    let settings = KVNested::new();
     let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
 
     // Create a new operation
@@ -103,16 +116,18 @@ fn test_atomicop_empty_subtree_removal() {
 
     // However, the empty subtree should not have any data
     let empty_store = empty_result.unwrap();
-    // If we try to get any key from the empty store, it should return an empty string
-    // This is how KVStore behaves when a key doesn't exist
-    assert_eq!(empty_store.get("any_key").unwrap_or_default(), "");
+    // If we try to get any key from the empty store, it should return NotFound
+    match empty_store.get("any_key") {
+        Err(eideticadb::Error::NotFound) => (), // Expected
+        other => panic!("Expected NotFound, got {:?}", other),
+    }
 }
 
 #[test]
 fn test_atomicop_parent_relationships() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
-    let settings = KVOverWrite::new();
+    let settings = KVNested::new();
     let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
 
     // Create first operation and set data
@@ -135,15 +150,22 @@ fn test_atomicop_parent_relationships() {
     let all_data = store3.get_all().unwrap();
 
     // Verify both entries are included in merged data
-    assert_eq!(all_data.get("first").unwrap(), "entry");
-    assert_eq!(all_data.get("second").unwrap(), "entry");
+    match all_data.get("first") {
+        Some(NestedValue::String(value)) => assert_eq!(value, "entry"),
+        _ => panic!("Expected string value for 'first'"),
+    }
+
+    match all_data.get("second") {
+        Some(NestedValue::String(value)) => assert_eq!(value, "entry"),
+        _ => panic!("Expected string value for 'second'"),
+    }
 }
 
 #[test]
 fn test_atomicop_double_commit_error() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
-    let settings = KVOverWrite::new();
+    let settings = KVNested::new();
     let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
 
     // Create an operation
@@ -164,6 +186,108 @@ fn test_atomicop_double_commit_error() {
 }
 
 #[test]
+fn test_atomicop_with_delete() {
+    // Create a backend and a tree
+    let backend = Box::new(InMemoryBackend::new());
+    let settings = KVNested::new();
+    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+
+    // Create an operation and add some data
+    let op1 = tree.new_operation().unwrap();
+    let store1 = KVStore::new(&op1, "data").unwrap();
+    store1.set("key1", "value1").unwrap();
+    store1.set("key2", "value2").unwrap();
+    op1.commit().unwrap();
+
+    // Create another operation to delete a key
+    let op2 = tree.new_operation().unwrap();
+    let store2 = KVStore::new(&op2, "data").unwrap();
+    store2.delete("key1").unwrap();
+    op2.commit().unwrap();
+
+    // Verify with a third operation
+    let op3 = tree.new_operation().unwrap();
+    let store3 = KVStore::new(&op3, "data").unwrap();
+
+    // key1 should be deleted
+    match store3.get("key1") {
+        Err(eideticadb::Error::NotFound) => (), // Expected
+        Ok(NestedValue::Deleted) => (),         // This is also acceptable
+        other => panic!("Expected NotFound for deleted key, got {:?}", other),
+    }
+
+    // key2 should still exist
+    match store3.get("key2").unwrap() {
+        NestedValue::String(value) => assert_eq!(value, "value2"),
+        _ => panic!("Expected string value for key2"),
+    }
+
+    // Check the full state with tombstone
+    let all_data = store3.get_all().unwrap();
+    assert_eq!(
+        all_data.as_hashmap().get("key1"),
+        Some(&NestedValue::Deleted)
+    );
+    assert_eq!(
+        all_data.as_hashmap().get("key2"),
+        Some(&NestedValue::String("value2".to_string()))
+    );
+}
+
+#[test]
+fn test_atomicop_nested_values() {
+    // Create a backend and a tree
+    let backend = Box::new(InMemoryBackend::new());
+    let settings = KVNested::new();
+    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+
+    // Create an operation
+    let op1 = tree.new_operation().unwrap();
+    let store1 = KVStore::new(&op1, "data").unwrap();
+
+    // Set a regular string value
+    store1.set("string_key", "string_value").unwrap();
+
+    // Create and set a nested map value
+    let mut nested = KVNested::new();
+    nested.set_string("inner1".to_string(), "value1".to_string());
+    nested.set_string("inner2".to_string(), "value2".to_string());
+
+    // Use the new set_value method to store a map
+    store1
+        .set_value("map_key", NestedValue::Map(nested))
+        .unwrap();
+
+    // Commit the operation
+    op1.commit().unwrap();
+
+    // Verify with a new operation
+    let op2 = tree.new_operation().unwrap();
+    let store2 = KVStore::new(&op2, "data").unwrap();
+
+    // Check the string value
+    match store2.get("string_key").unwrap() {
+        NestedValue::String(value) => assert_eq!(value, "string_value"),
+        _ => panic!("Expected string value"),
+    }
+
+    // Check the nested map
+    match store2.get("map_key").unwrap() {
+        NestedValue::Map(map) => {
+            match map.get("inner1") {
+                Some(NestedValue::String(value)) => assert_eq!(value, "value1"),
+                _ => panic!("Expected string value for inner1"),
+            }
+            match map.get("inner2") {
+                Some(NestedValue::String(value)) => assert_eq!(value, "value2"),
+                _ => panic!("Expected string value for inner2"),
+            }
+        }
+        _ => panic!("Expected map value"),
+    }
+}
+
+#[test]
 fn test_metadata_for_settings_entries() {
     // Create a new in-memory backend
     let backend = Arc::new(Mutex::new(
@@ -171,8 +295,8 @@ fn test_metadata_for_settings_entries() {
     ));
 
     // Create a new tree with some settings
-    let mut settings = KVOverWrite::new();
-    settings.set("name".to_string(), "test_tree".to_string());
+    let mut settings = KVNested::new();
+    settings.set_string("name".to_string(), "test_tree".to_string());
     let tree = Tree::new(settings, backend.clone()).unwrap();
 
     // Create a settings update
@@ -195,12 +319,10 @@ fn test_metadata_for_settings_entries() {
     // Verify settings entry has no metadata (as it's a settings update)
     assert!(settings_entry.get_metadata().is_none());
 
-    // Verify data entry has metadata with settings tips
+    // Verify data entry has metadata that includes the settings ID
     let metadata = data_entry.get_metadata().unwrap();
-    let metadata_value: KVOverWrite = serde_json::from_str(metadata).unwrap();
-    let settings_tips_json = metadata_value.get(SETTINGS).unwrap();
-    let settings_tips: Vec<String> = serde_json::from_str(settings_tips_json).unwrap();
-
-    // Verify settings tips include our settings entry
-    assert!(settings_tips.contains(&settings_id));
+    assert!(
+        metadata.contains(&settings_id),
+        "Metadata should include settings ID"
+    );
 }

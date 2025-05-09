@@ -7,7 +7,8 @@ classDiagram
     class BaseDB {
         -Arc<Mutex<Box<dyn Backend>>> backend
         +new(backend: Box<dyn Backend>) BaseDB
-        +new_tree(settings: KVOverWrite) Result<Tree>
+        +new_tree(settings: KVNested) Result<Tree>
+        +new_tree_default() Result<Tree>
         +load_tree(root_id: &ID) Result<Tree>
         +all_trees() Result<Vec<Tree>>
         +backend() &Arc<Mutex<Box<dyn Backend>>>
@@ -16,13 +17,13 @@ classDiagram
     class Tree {
         -ID root
         -Arc<Mutex<Box<dyn Backend>>> backend
-        +new(settings: KVOverWrite, backend: Arc<Mutex<Box<dyn Backend>>>) Result<Tree>
+        +new(settings: KVNested, backend: Arc<Mutex<Box<dyn Backend>>>) Result<Tree>
         +root_id() &ID
         +get_root() Result<Entry>
         +get_name() Result<String>
         +insert(entry: Entry) Result<ID>
         +get_tip_entries() Result<Vec<Entry>>
-        +get_settings() Result<KVOverWrite>
+        +get_settings() Result<KVNested>
         +new_operation() Result<Operation>
     }
 
@@ -39,7 +40,7 @@ classDiagram
     Operation --> Backend : uses
 ```
 
-A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `KVOverWrite` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings.
+A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `KVNested` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings. Alternatively, `new_tree_default()` creates a tree with empty default settings.
 
 **Tree Operations:** Interactions with a `Tree` (reading and writing data, especially subtrees) are typically performed through an `Operation` object obtained via `Tree::new_operation()`. This pattern facilitates atomic updates (multiple subtree changes within one commit) and provides access to typed [Subtree Implementations](subtrees.md).
 

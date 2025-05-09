@@ -166,8 +166,11 @@ EideticaDB is under active development, and some features mentioned in this docu
 - Core Entry and Tree structure
 - In-memory backend with file persistence
 - KVStore and RowStore subtree implementations
-- Basic CRDT functionality with KVOverWrite
+- CRDT functionality:
+  - KVOverWrite (simple key-value with tombstone support for deletions)
+  - KVNested (hierarchical nested key-value structure with recursive merging)
 - Atomic operations across subtrees
+- Tombstone support for proper deletion handling in distributed environments
 
 ### Planned Features
 

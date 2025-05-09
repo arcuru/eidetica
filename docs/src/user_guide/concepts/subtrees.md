@@ -27,7 +27,7 @@ Subtrees offer several advantages:
 
 ### KVStore (Key-Value Store)
 
-The `KVStore` subtree implements a simple key-value store, similar to a dictionary or map:
+The `KVStore` subtree implements a simple key-value store, similar to a dictionary or map. It uses the `KVOverWrite` CRDT implementation internally, which includes support for tombstones to properly track deletions:
 
 ```rust
 // Get a KVStore subtree
@@ -42,7 +42,9 @@ config.set("max_connections", "100")?;
 let url = config.get("api_url")?; // Returns a String
 
 // Remove values
-config.remove("temporary_setting")?;
+config.remove("temporary_setting")?; // Creates a tombstone
+// Even if temporary_setting doesn't exist, it will be marked as deleted
+// This ensures the deletion propagates during synchronization
 
 op.commit()?;
 ```
@@ -135,7 +137,8 @@ While EideticaDB uses Merkle-DAGs for overall history, the way data _within_ a S
 
 Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
 
-- **`KVStore`**: Implements a **Last-Writer-Wins (LWW)** strategy. When merging concurrent writes to the _same key_, the write associated with the later (higher Lamport timestamp, implicitly derived from entry height/ID) `Entry` "wins", and its value is kept. Writes to different keys are simply combined.
+- **`KVStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using `KVOverWrite`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
+
 - **`RowStore<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 
 **Note:** The CRDT merge logic happens internally when an `Operation` loads the initial state of a Subtree or when a `SubtreeViewer` is created. You typically don't invoke merge logic directly.

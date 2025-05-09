@@ -6,4 +6,4 @@
 //! simple last-write-wins key-value store implementation.
 
 mod types;
-pub use types::{Data, KVOverWrite, CRDT};
+pub use types::{Data, KVNested, KVOverWrite, NestedValue, CRDT};

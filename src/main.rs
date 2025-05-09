@@ -1,7 +1,5 @@
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
-use eideticadb::constants::SETTINGS;
-use eideticadb::data::KVOverWrite;
 use eideticadb::entry::Entry;
 use eideticadb::Tree;
 use signal_hook::flag as signal_flag;
@@ -134,20 +132,13 @@ fn main() -> io::Result<()> {
             }
             "create-tree" => {
                 if args.len() < 3 {
-                    println!("Usage: create-tree <name> <settings>");
+                    println!("Usage: create-tree <name>");
                     continue;
                 }
 
                 let name = args[1];
-                let settings_str = args[2..].join(" ");
-                // Create a map for the initial settings and serialize it to JSON
-                let mut settings_map = HashMap::new();
-                settings_map.insert(SETTINGS.to_string(), settings_str);
-                settings_map.insert("name".to_string(), name.to_string());
 
-                let settings = KVOverWrite::from_hashmap(settings_map);
-
-                match db.new_tree(settings) {
+                match db.new_tree_default() {
                     Ok(tree) => {
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         trees.insert(name.to_string(), tree);

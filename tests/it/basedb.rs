@@ -2,7 +2,6 @@ use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
 use eideticadb::constants::SETTINGS;
-use eideticadb::data::KVOverWrite;
 use eideticadb::subtree::KVStore;
 use eideticadb::Error;
 
@@ -10,8 +9,7 @@ use eideticadb::Error;
 fn test_new_db_and_tree() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree_result = db.new_tree(settings);
+    let tree_result = db.new_tree_default();
     assert!(tree_result.is_ok());
 }
 
@@ -19,8 +17,7 @@ fn test_new_db_and_tree() {
 fn test_load_tree() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
     let root_id = tree.root_id().clone();
 
     // Drop the original tree instance
@@ -38,14 +35,23 @@ fn test_all_trees() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
 
-    let settings1 = KVOverWrite::new();
-    let tree1 = db.new_tree(settings1).expect("Failed to create tree 1");
+    let tree1 = db.new_tree_default().expect("Failed to create tree 1");
     let root_id1 = tree1.root_id().clone();
 
-    let mut settings2 = KVOverWrite::new();
-    settings2.set("name".to_string(), "Tree2".to_string());
-    let tree2 = db.new_tree(settings2).expect("Failed to create tree 2");
+    let tree2 = db.new_tree_default().expect("Failed to create tree 2");
     let root_id2 = tree2.root_id().clone();
+
+    // Set the tree name through the Tree API
+    let op = tree2.new_operation().expect("Failed to start operation");
+    {
+        let settings = op
+            .get_subtree::<KVStore>(SETTINGS)
+            .expect("Failed to get settings subtree");
+        settings
+            .set("name", "Tree2")
+            .expect("Failed to set tree name");
+    }
+    op.commit().expect("Failed to commit");
 
     let trees = db.all_trees().expect("Failed to get all trees");
     assert_eq!(trees.len(), 2);
@@ -69,11 +75,24 @@ fn test_create_tree_with_initial_settings() {
     let backend: Box<dyn Backend> = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
 
-    let mut settings = KVOverWrite::new();
-    settings.set("name".to_string(), "My Settings Tree".to_string());
-    settings.set("version".to_string(), "1.0".to_string());
+    // Create an empty tree first
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    // Then set the settings through operations
+    let op = tree.new_operation().expect("Failed to start operation");
+    {
+        let settings = op
+            .get_subtree::<KVStore>(SETTINGS)
+            .expect("Failed to get settings subtree");
+
+        settings
+            .set("name", "My Settings Tree")
+            .expect("Failed to set name setting");
+        settings
+            .set("version", "1.0")
+            .expect("Failed to set version setting");
+    }
+    op.commit().expect("Failed to commit settings");
 
     let settings_viewer = tree
         .get_subtree_viewer::<KVStore>(SETTINGS)
@@ -81,13 +100,13 @@ fn test_create_tree_with_initial_settings() {
 
     assert_eq!(
         settings_viewer
-            .get("name")
+            .get_string("name")
             .expect("Failed to get name setting"),
         "My Settings Tree"
     );
     assert_eq!(
         settings_viewer
-            .get("version")
+            .get_string("version")
             .expect("Failed to get version setting"),
         "1.0"
     );
@@ -102,8 +121,7 @@ fn test_create_tree_with_initial_settings() {
 fn test_basic_subtree_modification() {
     let backend: Box<dyn Backend> = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
     let op = tree.new_operation().expect("Failed to start operation");
     {
@@ -138,13 +156,13 @@ fn test_basic_subtree_modification() {
 
     assert_eq!(
         data_viewer
-            .get("user_id")
+            .get_string("user_id")
             .expect("Failed to get user_id after commit"),
         "alice"
     );
     assert_eq!(
         data_viewer
-            .get("email")
+            .get_string("email")
             .expect("Failed to get email after commit"),
         "alice@example.com"
     );
@@ -161,23 +179,46 @@ fn test_find_tree() {
     let db = BaseDB::new(backend);
 
     // Tree 1: No name
-    let settings1 = KVOverWrite::new();
-    db.new_tree(settings1).expect("Failed to create tree 1");
+    db.new_tree_default().expect("Failed to create tree 1");
 
     // Tree 2: Name "Tree2"
-    let mut settings2 = KVOverWrite::new();
-    settings2.set("name".to_string(), "Tree2".to_string());
-    db.new_tree(settings2).expect("Failed to create tree 2");
+    let tree2 = db.new_tree_default().expect("Failed to create tree 2");
+    let op2 = tree2.new_operation().expect("Failed to start operation");
+    {
+        let settings = op2
+            .get_subtree::<KVStore>(SETTINGS)
+            .expect("Failed to get settings subtree");
+        settings
+            .set("name", "Tree2")
+            .expect("Failed to set tree name");
+    }
+    op2.commit().expect("Failed to commit");
 
     // Tree 3: Name "Tree3"
-    let mut settings3 = KVOverWrite::new();
-    settings3.set("name".to_string(), "Tree3".to_string());
-    db.new_tree(settings3).expect("Failed to create tree 3");
+    let tree3 = db.new_tree_default().expect("Failed to create tree 3");
+    let op3 = tree3.new_operation().expect("Failed to start operation");
+    {
+        let settings = op3
+            .get_subtree::<KVStore>(SETTINGS)
+            .expect("Failed to get settings subtree");
+        settings
+            .set("name", "Tree3")
+            .expect("Failed to set tree name");
+    }
+    op3.commit().expect("Failed to commit");
 
     // Tree 4: Name "Tree3" (duplicate name)
-    let mut settings4 = KVOverWrite::new();
-    settings4.set("name".to_string(), "Tree3".to_string());
-    db.new_tree(settings4).expect("Failed to create tree 4");
+    let tree4 = db.new_tree_default().expect("Failed to create tree 4");
+    let op4 = tree4.new_operation().expect("Failed to start operation");
+    {
+        let settings = op4
+            .get_subtree::<KVStore>(SETTINGS)
+            .expect("Failed to get settings subtree");
+        settings
+            .set("name", "Tree3")
+            .expect("Failed to set tree name");
+    }
+    op4.commit().expect("Failed to commit");
 
     // Test: Find non-existent name
     let found_none_result = db.find_tree("NonExistent");

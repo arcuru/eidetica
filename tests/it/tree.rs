@@ -1,15 +1,14 @@
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
 use eideticadb::constants::SETTINGS;
-use eideticadb::data::KVOverWrite;
+use eideticadb::data::KVNested;
 use eideticadb::subtree::KVStore;
 
 #[test]
 fn test_insert_into_tree() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
     // Create and commit first entry using an atomic operation
     let op1 = tree.new_operation().expect("Failed to create operation");
@@ -40,18 +39,20 @@ fn test_insert_into_tree() {
 fn test_get_settings() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let mut settings = KVOverWrite::new();
+
+    // Set up the tree with initial settings
+    let mut settings = KVNested::new();
     let key = "setting_key";
     let value = "setting_value";
-    settings.set(key.to_string(), value.to_string());
+    settings.set_string(key.to_string(), value.to_string());
 
-    let tree = db
-        .new_tree(settings.clone())
-        .expect("Failed to create tree");
+    let tree = db.new_tree(settings).expect("Failed to create tree");
     let retrieved_settings = tree.get_settings().expect("Failed to get settings");
 
     assert_eq!(
-        retrieved_settings.get(key).expect("Failed to get setting"),
+        retrieved_settings
+            .get_string(key)
+            .expect("Failed to get setting"),
         value.to_string()
     );
 }
@@ -60,8 +61,7 @@ fn test_get_settings() {
 fn test_subtree_operations() {
     let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
     // Create a new operation with two subtrees
     let op1 = tree.new_operation().expect("Failed to create operation");
@@ -95,7 +95,7 @@ fn test_subtree_operations() {
         .expect("Failed to get users viewer (1)");
     assert_eq!(
         users_viewer1
-            .get("user1.name")
+            .get_string("user1.name")
             .expect("Failed to get user1.name (1)"),
         "Alice"
     );
@@ -104,7 +104,7 @@ fn test_subtree_operations() {
         .expect("Failed to get posts viewer (1)");
     assert_eq!(
         posts_viewer1
-            .get("post1.title")
+            .get_string("post1.title")
             .expect("Failed to get post1.title (1)"),
         "First Post"
     );
@@ -129,13 +129,13 @@ fn test_subtree_operations() {
         .expect("Failed to get users viewer (2)");
     assert_eq!(
         users_viewer2
-            .get("user1.name")
+            .get_string("user1.name")
             .expect("Failed to get user1.name (2)"),
         "Alice"
     ); // Should still exist
     assert_eq!(
         users_viewer2
-            .get("user2.name")
+            .get_string("user2.name")
             .expect("Failed to get user2.name (2)"),
         "Bob"
     ); // New user should exist
@@ -145,7 +145,7 @@ fn test_subtree_operations() {
         .expect("Failed to get posts viewer (2)");
     assert_eq!(
         posts_viewer2
-            .get("post1.title")
+            .get_string("post1.title")
             .expect("Failed to get post1.title (2)"),
         "First Post"
     ); // Post should be unchanged
@@ -157,8 +157,8 @@ fn test_get_name_from_settings() {
     let db = BaseDB::new(backend);
 
     // Create initial settings
-    let mut settings = KVOverWrite::new();
-    settings.set("name".to_string(), "TestTree".to_string());
+    let mut settings = KVNested::new();
+    settings.set_string("name".to_string(), "TestTree".to_string());
 
     // Create tree with settings
     let tree = db.new_tree(settings).expect("Failed to create tree");
@@ -188,8 +188,7 @@ fn test_get_name_from_settings() {
 fn test_atomic_op_scenarios() {
     let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
     // --- 1. Modify multiple subtrees in one op and read staged data ---
     let op1 = tree.new_operation().expect("Op1: Failed to start");
@@ -207,11 +206,15 @@ fn test_atomic_op_scenarios() {
 
         // Read staged data within the op
         assert_eq!(
-            store_a.get("key_a").expect("Op1: Failed read staged A"),
+            store_a
+                .get_string("key_a")
+                .expect("Op1: Failed read staged A"),
             "val_a1"
         );
         assert_eq!(
-            store_b.get("key_b").expect("Op1: Failed read staged B"),
+            store_b
+                .get_string("key_b")
+                .expect("Op1: Failed read staged B"),
             "val_b1"
         );
 
@@ -229,11 +232,17 @@ fn test_atomic_op_scenarios() {
     let viewer_a1 = tree
         .get_subtree_viewer::<KVStore>("sub_a")
         .expect("Viewer A1");
-    assert_eq!(viewer_a1.get("key_a").expect("Viewer A1 get"), "val_a1");
+    assert_eq!(
+        viewer_a1.get_string("key_a").expect("Viewer A1 get"),
+        "val_a1"
+    );
     let viewer_b1 = tree
         .get_subtree_viewer::<KVStore>("sub_b")
         .expect("Viewer B1");
-    assert_eq!(viewer_b1.get("key_b").expect("Viewer B1 get"), "val_b1");
+    assert_eq!(
+        viewer_b1.get_string("key_b").expect("Viewer B1 get"),
+        "val_b1"
+    );
 
     // --- 2. Commit an empty operation ---
     let op_empty = tree.new_operation().expect("OpEmpty: Failed to start");
@@ -264,8 +273,7 @@ fn test_atomic_op_scenarios() {
 fn test_get_subtree_viewer() {
     let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let settings = KVOverWrite::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db.new_tree_default().expect("Failed to create tree");
 
     // --- Initial state ---
     let op1 = tree.new_operation().expect("Op1: Failed start");
@@ -282,7 +290,9 @@ fn test_get_subtree_viewer() {
         .get_subtree_viewer::<KVStore>("my_data")
         .expect("Viewer1: Failed get");
     assert_eq!(
-        viewer1.get("key1").expect("Viewer1: Failed read key1"),
+        viewer1
+            .get_string("key1")
+            .expect("Viewer1: Failed read key1"),
         "value1"
     );
     assert!(
@@ -308,18 +318,22 @@ fn test_get_subtree_viewer() {
         .get_subtree_viewer::<KVStore>("my_data")
         .expect("Viewer2: Failed get");
     assert_eq!(
-        viewer2.get("key1").expect("Viewer2: Failed read key1"),
+        viewer2
+            .get_string("key1")
+            .expect("Viewer2: Failed read key1"),
         "value1_updated"
     );
     assert_eq!(
-        viewer2.get("key2").expect("Viewer2: Failed read key2"),
+        viewer2
+            .get_string("key2")
+            .expect("Viewer2: Failed read key2"),
         "value2"
     );
 
     // --- Verify viewer 1 still sees the old state ---
     assert_eq!(
         viewer1
-            .get("key1")
+            .get_string("key1")
             .expect("Viewer1 (post-commit): Failed read key1"),
         "value1"
     );

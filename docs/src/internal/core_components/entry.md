@@ -15,8 +15,6 @@ Entries may contain optional metadata that is not part of the main data model an
 
 Currently, entries that don't modify the reserved `_settings` subtree (identified by `constants::SETTINGS`) include metadata containing references to the current settings subtree tips. This allows for efficient verification of settings in sparse checkout scenarios without requiring traversal of the entire history graph.
 
-Metadata is serialized as a `KVOverWrite` CRDT with the reserved `_settings` key (from `constants::SETTINGS`) containing the JSON string of the settings subtree tips.
-
 ```mermaid
 classDiagram
     class EntryBuilder {
@@ -66,6 +64,6 @@ classDiagram
 ```
 
 - **`RawData`**: Defined as `type RawData = String;`. It holds serialized data (typically intended to be JSON, but not enforced) provided by the user.
-- **CRDT Handling**: While the design aims for CRDT principles, the `Entry` itself stores serialized data as `RawData`. Specific CRDT logic (like merging) is handled by types that implement the `CRDT` trait (e.g., `KVOverWrite` used for settings in `BaseDB`), which are then serialized into/deserialized from `RawData`. This data is provided to the `EntryBuilder` during construction.
+- **CRDT Handling**: While the design aims for CRDT principles, the `Entry` itself stores serialized data as `RawData`. Specific CRDT logic (like merging) is handled by types that implement the `CRDT` trait (e.g., `KVNested` or `KVOverWrite` used for settings in `BaseDB`), which are then serialized into/deserialized from `RawData`. This data is provided to the `EntryBuilder` during construction.
 - **ID Generation**: Entry IDs are deterministic based upon thee data stored in `Entry`. The entire `Entry` struct (including the `tree: TreeNode` and `subtrees: Vec<SubTreeNode>`) is serialized to a JSON string using `serde_json`. Before serialization, the `parents` vectors within `tree` and each `SubTreeNode`, along with the `subtrees` vector itself (all configured via the `EntryBuilder`), are sorted alphabetically. This ensures the JSON string is canonical regardless of insertion order. The canonical JSON string is then hashed using SHA-256, and the resulting hash bytes are formatted as a hexadecimal string to produce the final `ID`. See [`EntryBuilder::build()`](../../src/entry.rs) and [`Entry::id()`](../../src/entry.rs) (you might need to adjust the link paths based on your source layout).
 - **Parent References**: Each entry maintains parent references (`Vec<ID>`) for both the main tree (`tree.parents`) and optionally for each subtree (`SubTreeNode::parents`). These are set using the `EntryBuilder` (e.g., `EntryBuilder::set_parents()`, `EntryBuilder::set_subtree_parents()`) before the `Entry` is built. These lists are always kept sorted alphabetically by the builder. When a new entry is typically created (e.g., via an `AtomicOp` commit, which uses an `EntryBuilder`), the parents are usually set to the ID(s) of the current tip(s) of the tree/subtree being modified. This forms the links in the DAG.

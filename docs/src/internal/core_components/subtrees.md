@@ -4,7 +4,7 @@ While [Entries](entry.md) store subtree data as raw serialized strings (`RawData
 
 **Note on Naming:** Subtree names beginning with an underscore (e.g., `_settings`, `_root`) are reserved for internal EideticaDB use. Avoid using this prefix for user-defined subtrees to prevent conflicts.
 
-Currently, the main specialized implementation is `RowStore<T>`.
+Currently, the main specialized implementations are `RowStore<T>` and `KVStore`.
 
 <!-- TODO: Add a section on the `SubtreeType` trait and how new types can be created. -->
 
@@ -56,5 +56,65 @@ Internally, `RowStore<T>` manages its state (likely a map of IDs to `T` instance
 <!-- TODO: Confirm the exact internal representation and serialization format. -->
 
 `RowStore` is suitable for scenarios like managing a list of users, tasks (as in the Todo example), or any collection where individual items need to be addressed by a persistent ID.
+
+#### KVStore
+
+`KVStore` is a key-value store implementation that uses the `KVNested` CRDT to provide nested data structures and reliable deletion tracking across distributed systems.
+
+```mermaid
+classDiagram
+    class KVStore {
+        <<SubtreeType>>
+        +get(key: &str) Result<NestedValue>
+        +get_string(key: &str) Result<String>
+        +set(key: &str, value: &str) Result<()>
+        +set_value(key: &str, value: NestedValue) Result<()>
+        +delete(key: &str) Result<()>
+        +get_all() Result<KVNested>
+    }
+```
+
+**Features:**
+
+- **Flexible Data Structure**: Based on `KVNested`, which allows storing both simple string values and nested map structures.
+- **Tombstone Support**: When a key is deleted, a tombstone is created to ensure the deletion propagates correctly during synchronization, even if the value doesn't exist in some replicas.
+- **Key Operations**:
+
+  - `get`: Returns the value for a key as a `NestedValue` (String, Map, or error if deleted)
+  - `get_string`: Convenience method that returns a string value (errors if the value is a map)
+  - `set`: Sets a simple string value for a key
+  - `set_value`: Sets any valid `NestedValue` (String, Map, or Deleted) for a key
+  - `delete`: Marks a key as deleted by creating a tombstone
+  - `get_all`: Returns the entire store as a `KVNested` structure, including tombstones
+
+- **Merge Strategy**: When merging two KVStore states:
+  - If both have string values for a key, the newer one wins
+  - If both have map values, the maps are recursively merged
+  - If types differ (map vs string) or one side has a tombstone, the newer value wins
+  - Tombstones are preserved during merges to ensure proper deletion propagation
+
+`KVStore` is ideal for configuration data, metadata, and hierarchical data structures that benefit from nested organization. The tombstone mechanism ensures consistent behavior in distributed environments where deletions need to propagate reliably.
+
+Example usage:
+
+```rust
+let op = tree.new_operation()?;
+let kv = op.get_subtree::<KVStore>("config")?;
+
+// Set simple string values
+kv.set("username", "alice")?;
+
+// Create nested structures
+let mut preferences = KVNested::new();
+preferences.set_string("theme".to_string(), "dark".to_string());
+preferences.set_string("language".to_string(), "en".to_string());
+kv.set_value("user_prefs", NestedValue::Map(preferences))?;
+
+// Delete keys (creating tombstones)
+kv.delete("old_setting")?;
+
+// Commit changes
+op.commit()?;
+```
 
 Other subtree types can be implemented, particularly those adhering to the [CRDT System](crdt.md).
