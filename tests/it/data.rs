@@ -1,7 +1,12 @@
+use eideticadb::atomicop::AtomicOp;
+use eideticadb::backend::InMemoryBackend;
+use eideticadb::basedb::BaseDB;
 use eideticadb::data::KVOverWrite;
 use eideticadb::data::CRDT;
 use eideticadb::data::{KVNested, NestedValue};
 use eideticadb::entry::Entry;
+use eideticadb::subtree::KVStore;
+use eideticadb::Error;
 use std::collections::HashMap;
 
 #[test]
@@ -980,4 +985,673 @@ fn test_kvnested_merge_dual_tombstones() {
         Some(NestedValue::String(s)) => assert_eq!(s, "i_existed"),
         _ => panic!("Expected value to overwrite tombstone"),
     }
+}
+
+fn setup_kvstore_for_editor_tests(_db: &BaseDB, op: &AtomicOp) -> eideticadb::Result<KVStore> {
+    op.get_subtree::<KVStore>("my_editor_test_kv_store")
+}
+
+#[test]
+fn test_value_editor_set_and_get_string_at_root() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    let editor = store.get_value_mut("user");
+    editor.set(NestedValue::String("alice".to_string()))?;
+
+    let retrieved_value = editor.get()?;
+    assert_eq!(retrieved_value, NestedValue::String("alice".to_string()));
+
+    // Verify directly from store as well
+    assert_eq!(store.get_string("user")?, "alice");
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_set_and_get_nested_string() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    // Set user.profile.name = "bob"
+    let user_editor = store.get_value_mut("user");
+    let profile_editor = user_editor.get_value_mut("profile");
+    // Get an editor for user.profile.name and set its value
+    let name_editor = profile_editor.get_value_mut("name");
+    name_editor.set(NestedValue::String("bob".to_string()))?;
+
+    // Get user.profile.name
+    let retrieved_name = profile_editor.get_value("name")?;
+    assert_eq!(retrieved_name, NestedValue::String("bob".to_string()));
+
+    // Get user.profile (should be a map)
+    let profile_map_value = user_editor.get_value("profile")?;
+    if let NestedValue::Map(profile_map) = profile_map_value {
+        assert_eq!(
+            profile_map.get("name"),
+            Some(&NestedValue::String("bob".to_string()))
+        );
+    } else {
+        panic!("Expected user.profile to be a map");
+    }
+
+    // Get the whole user object
+    let user_data = store.get("user")?;
+    if let NestedValue::Map(user_map) = user_data {
+        if let Some(NestedValue::Map(profile_map)) = user_map.get("profile") {
+            assert_eq!(
+                profile_map.get("name"),
+                Some(&NestedValue::String("bob".to_string()))
+            );
+        } else {
+            panic!("Expected user.profile (nested) to be a map");
+        }
+    } else {
+        panic!("Expected user to be a map");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_overwrite_non_map_with_map() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    // Set user = "string_value"
+    store.set("user", "string_value")?;
+
+    // Now try to set user.profile.name = "charlie" through editor
+    let user_editor = store.get_value_mut("user");
+    let profile_editor = user_editor.get_value_mut("profile");
+    // Get an editor for user.profile.name and set its value
+    let name_editor = profile_editor.get_value_mut("name");
+    name_editor.set(NestedValue::String("charlie".to_string()))?;
+
+    // Verify user.profile.name
+    // profile_editor.get() should now return the map at "user.profile"
+    let profile_value_after_set = profile_editor.get()?;
+    if let NestedValue::Map(profile_map_direct) = profile_value_after_set {
+        assert_eq!(
+            profile_map_direct.get("name"),
+            Some(&NestedValue::String("charlie".to_string()))
+        );
+    } else {
+        panic!("Expected profile_editor.get() to be a map");
+    }
+
+    let retrieved_name = profile_editor.get_value("name")?;
+    assert_eq!(retrieved_name, NestedValue::String("charlie".to_string()));
+
+    // Verify that 'user' is now a map
+    let user_data = store.get("user")?;
+    assert!(matches!(user_data, NestedValue::Map(_)));
+    if let NestedValue::Map(user_map) = user_data {
+        if let Some(NestedValue::Map(profile_map)) = user_map.get("profile") {
+            assert_eq!(
+                profile_map.get("name"),
+                Some(&NestedValue::String("charlie".to_string()))
+            );
+        } else {
+            panic!("Expected user.profile to be a map after overwrite");
+        }
+    } else {
+        panic!("Expected user to be a map after overwrite");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_get_non_existent_path() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    let editor = store.get_value_mut("nonexistent");
+    let result = editor.get();
+    assert!(matches!(result, Err(Error::NotFound)));
+
+    let nested_editor = editor.get_value_mut("child");
+    let nested_result = nested_editor.get();
+    assert!(matches!(nested_result, Err(Error::NotFound)));
+
+    let get_val_result = nested_editor.get_value("grandchild");
+    assert!(matches!(get_val_result, Err(Error::NotFound)));
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_set_deeply_nested_creates_path() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    let editor = store
+        .get_value_mut("a")
+        .get_value_mut("b")
+        .get_value_mut("c");
+    editor.set(NestedValue::String("deep_value".to_string()))?;
+
+    // Verify a.b.c = "deep_value"
+    let retrieved_value = editor.get()?;
+    assert_eq!(
+        retrieved_value,
+        NestedValue::String("deep_value".to_string())
+    );
+
+    let a_val = store.get("a")?;
+    if let NestedValue::Map(a_map) = a_val {
+        if let Some(NestedValue::Map(b_map)) = a_map.get("b") {
+            if let Some(NestedValue::String(c_val)) = b_map.get("c") {
+                assert_eq!(c_val, "deep_value");
+            } else {
+                panic!("Expected a.b.c to be a string");
+            }
+        } else {
+            panic!("Expected a.b to be a map");
+        }
+    } else {
+        panic!("Expected a to be a map");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_set_string_on_editor_path() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    let user_editor = store.get_value_mut("user");
+    // At this point, user_editor points to ["user"].
+    // To make the value at ["user"] be Map({"name": "dave"}), we get an editor for "name" field and set it.
+    let name_within_user_editor = user_editor.get_value_mut("name");
+    name_within_user_editor.set(NestedValue::String("dave".to_string()))?;
+
+    let user_data = store.get("user")?;
+    if let NestedValue::Map(user_map) = user_data {
+        assert_eq!(
+            user_map.get("name"),
+            Some(&NestedValue::String("dave".to_string()))
+        );
+    } else {
+        panic!("Expected user to be a map with name field");
+    }
+
+    // Further nesting: user_editor still points to ["user"].
+    let profile_editor = user_editor.get_value_mut("profile");
+    // profile_editor points to ["user", "profile"].
+    // To make value at ["user", "profile"] be Map({"email": ...}), get editor for "email" and set it.
+    let email_within_profile_editor = profile_editor.get_value_mut("email");
+    email_within_profile_editor.set(NestedValue::String("dave@example.com".to_string()))?;
+
+    let user_data_updated = store.get("user")?;
+    if let NestedValue::Map(user_map_updated) = user_data_updated {
+        if let Some(NestedValue::Map(profile_map_updated)) = user_map_updated.get("profile") {
+            assert_eq!(
+                profile_map_updated.get("email"),
+                Some(&NestedValue::String("dave@example.com".to_string()))
+            );
+        } else {
+            panic!("Expected user.profile to be a map with email field");
+        }
+        // Check that "user.name" is still there
+        assert_eq!(
+            user_map_updated.get("name"),
+            Some(&NestedValue::String("dave".to_string()))
+        );
+    } else {
+        panic!("Expected user to be a map after profile update");
+    }
+
+    Ok(())
+}
+
+// KVStore::get_at_path and KVStore::set_at_path tests
+
+fn setup_kvstore_for_path_tests(op: &AtomicOp) -> eideticadb::Result<KVStore> {
+    op.get_subtree::<KVStore>("my_path_test_kv_store")
+}
+
+#[test]
+fn test_kvstore_set_at_path_and_get_at_path_simple() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path = vec!["simple_key".to_string()];
+    let value = NestedValue::String("simple_value".to_string());
+
+    store.set_at_path(&path, value.clone())?;
+    let retrieved = store.get_at_path(&path)?;
+    assert_eq!(retrieved, value);
+
+    // Verify with regular get as well
+    assert_eq!(store.get("simple_key")?, value);
+
+    op.commit()?;
+
+    // Verify after commit
+    let viewer_op = tree.new_operation()?;
+    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    assert_eq!(viewer_store.get_at_path(&path)?, value);
+    assert_eq!(viewer_store.get("simple_key")?, value);
+
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_set_at_path_and_get_at_path_nested() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path = vec![
+        "user".to_string(),
+        "profile".to_string(),
+        "email".to_string(),
+    ];
+    let value = NestedValue::String("test@example.com".to_string());
+
+    store.set_at_path(&path, value.clone())?;
+    let retrieved = store.get_at_path(&path)?;
+    assert_eq!(retrieved, value);
+
+    // Verify intermediate map structure
+    let profile_path = vec!["user".to_string(), "profile".to_string()];
+    match store.get_at_path(&profile_path)? {
+        NestedValue::Map(profile_map) => {
+            assert_eq!(profile_map.get("email"), Some(&value));
+        }
+        _ => panic!("Expected user.profile to be a map"),
+    }
+
+    op.commit()?;
+
+    // Verify after commit
+    let viewer_op = tree.new_operation()?;
+    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    assert_eq!(viewer_store.get_at_path(&path)?, value);
+
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_set_at_path_creates_intermediate_maps() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let value = NestedValue::String("deep_value".to_string());
+    store.set_at_path(&path, value.clone())?;
+
+    assert_eq!(store.get_at_path(&path)?, value);
+    match store.get_at_path(&["a".to_string(), "b".to_string()])? {
+        NestedValue::Map(_) => (),
+        _ => panic!("Expected a.b to be a map"),
+    }
+    match store.get_at_path(&["a".to_string()])? {
+        NestedValue::Map(_) => (),
+        _ => panic!("Expected a to be a map"),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_set_at_path_overwrites_non_map() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    // Set user.profile = "string_value"
+    store.set_at_path(
+        &["user".to_string(), "profile".to_string()],
+        NestedValue::String("string_value".to_string()),
+    )?;
+
+    // Now try to set user.profile.name = "charlie"
+    let new_path = vec![
+        "user".to_string(),
+        "profile".to_string(),
+        "name".to_string(),
+    ];
+    let new_value = NestedValue::String("charlie".to_string());
+    store.set_at_path(&new_path, new_value.clone())?;
+
+    assert_eq!(store.get_at_path(&new_path)?, new_value);
+
+    // Verify that 'user.profile' is now a map
+    match store.get_at_path(&["user".to_string(), "profile".to_string()])? {
+        NestedValue::Map(profile_map) => {
+            assert_eq!(profile_map.get("name"), Some(&new_value));
+        }
+        _ => panic!("Expected user.profile to be a map after overwrite"),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_get_at_path_not_found() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path = vec!["non".to_string(), "existent".to_string(), "key".to_string()];
+    match store.get_at_path(&path) {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound, got {:?}", v),
+        Err(e) => panic!("Expected NotFound, got error {:?}", e),
+    }
+
+    // Test path where an intermediate key segment does not exist within a valid map.
+    // Set up: existing_root -> some_child_map (empty map)
+    let child_map = KVNested::new();
+    store.set_at_path(
+        &["existing_root_map".to_string()],
+        NestedValue::Map(child_map),
+    )?;
+
+    let path_intermediate_missing = vec![
+        "existing_root_map".to_string(),
+        "non_existent_child_in_map".to_string(),
+        "key".to_string(),
+    ];
+    match store.get_at_path(&path_intermediate_missing) {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!(
+            "Expected NotFound for intermediate missing key in map, got {:?}",
+            v
+        ),
+        Err(e) => panic!(
+            "Expected NotFound for intermediate missing key in map, got error {:?}",
+            e
+        ),
+    }
+
+    // Test path leading to a tombstone
+    let tombstone_path = vec!["deleted".to_string(), "item".to_string()];
+    store.set_at_path(&tombstone_path, NestedValue::String("temp".to_string()))?;
+    store.set_at_path(&tombstone_path, NestedValue::Deleted)?;
+    match store.get_at_path(&tombstone_path) {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound for tombstone path, got {:?}", v),
+        Err(e) => panic!("Expected NotFound for tombstone path, got error {:?}", e),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_get_at_path_invalid_intermediate_type() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    // Set a.b = "string" (not a map)
+    store.set_at_path(
+        &["a".to_string(), "b".to_string()],
+        NestedValue::String("i_am_not_a_map".to_string()),
+    )?;
+
+    // Try to get a.b.c
+    let path = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    match store.get_at_path(&path) {
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData => (),
+        Ok(v) => panic!("Expected Io(InvalidData), got {:?}", v),
+        Err(e) => panic!("Expected Io(InvalidData), got error {:?}", e),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_set_at_path_empty_path() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path: Vec<String> = vec![];
+
+    // Setting a non-map value at the root should fail
+    match store.set_at_path(&path, NestedValue::String("test".to_string())) {
+        Err(Error::InvalidOperation(_)) => (),
+        Ok(_) => panic!("Expected InvalidOperation when setting a non-map at root"),
+        Err(e) => panic!("Expected InvalidOperation, got error {:?}", e),
+    }
+
+    // Setting a map value at the root should succeed
+    let nested_map = KVNested::new();
+    match store.set_at_path(&path, NestedValue::Map(nested_map)) {
+        Ok(_) => (),
+        Err(e) => panic!(
+            "Expected success when setting map at root, got error {:?}",
+            e
+        ),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_kvstore_get_at_path_empty_path() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    let path: Vec<String> = vec![];
+
+    // Getting the root should return a map (the entire KVStore contents)
+    match store.get_at_path(&path) {
+        Ok(NestedValue::Map(_)) => (),
+        Ok(v) => panic!("Expected Map for root path, got {:?}", v),
+        Err(e) => panic!("Expected success for root path, got error {:?}", e),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_root_operations() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    // Set some values at the top level
+    store.set("key1", "value1")?;
+    store.set("key2", "value2")?;
+
+    // Get a root editor
+    let root_editor = store.get_root_mut();
+
+    // We should be able to get values via the root editor
+    match root_editor.get()? {
+        NestedValue::Map(map) => {
+            let entries = map.as_hashmap();
+            assert!(entries.contains_key("key1"));
+            assert!(entries.contains_key("key2"));
+        }
+        _ => panic!("Expected root editor to get a map"),
+    }
+
+    // Get values directly from the top level
+    match root_editor.get_value("key1")? {
+        NestedValue::String(s) => assert_eq!(s, "value1"),
+        _ => panic!("Expected string value"),
+    }
+
+    // Create a new nested map at root level
+    let mut nested = KVNested::new();
+    nested.set_string("nested_key".to_string(), "nested_value".to_string());
+    root_editor
+        .get_value_mut("nested")
+        .set(NestedValue::Map(nested))?;
+
+    // Verify the nested structure
+    match root_editor.get_value("nested")? {
+        NestedValue::Map(map) => {
+            let entries = map.as_hashmap();
+            assert!(entries.contains_key("nested_key"));
+        }
+        _ => panic!("Expected nested map"),
+    }
+
+    // Delete a value at root level
+    root_editor.delete_child("key1")?;
+
+    // Verify deletion
+    match root_editor.get_value("key1") {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound after deletion, got {:?}", v),
+        Err(e) => panic!("Expected NotFound after deletion, got error {:?}", e),
+    }
+
+    op.commit()?;
+
+    // Verify after commit
+    let viewer_op = tree.new_operation()?;
+    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    match viewer_store.get("key1") {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound after commit, got {:?}", v),
+        Err(e) => panic!("Expected NotFound after commit, got error {:?}", e),
+    }
+
+    assert_eq!(viewer_store.get_string("key2")?, "value2");
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_delete_methods() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+
+    // Set up a nested structure
+    let mut user_profile = KVNested::new();
+    user_profile.set_string("name".to_string(), "Alice".to_string());
+    user_profile.set_string("email".to_string(), "alice@example.com".to_string());
+
+    let mut user_data = KVNested::new();
+    user_data.set("profile".to_string(), NestedValue::Map(user_profile));
+    user_data.set_string("role".to_string(), "admin".to_string());
+
+    store.set_value("user", NestedValue::Map(user_data))?;
+
+    // Get an editor for the user object
+    let user_editor = store.get_value_mut("user");
+
+    // Test delete_child method
+    user_editor.delete_child("role")?;
+
+    // Verify the role is deleted
+    match user_editor.get_value("role") {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound after delete_child, got {:?}", v),
+        Err(e) => panic!("Expected NotFound after delete_child, got error {:?}", e),
+    }
+
+    // The profile should still exist
+    match user_editor.get_value("profile")? {
+        NestedValue::Map(_) => (),
+        _ => panic!("Expected profile map to still exist"),
+    }
+
+    // Get editor for profile
+    let profile_editor = user_editor.get_value_mut("profile");
+
+    // Test delete_self method
+    profile_editor.delete_self()?;
+
+    // Verify the profile is deleted
+    match user_editor.get_value("profile") {
+        Err(Error::NotFound) => (),
+        Ok(v) => panic!("Expected NotFound after delete_self, got {:?}", v),
+        Err(e) => panic!("Expected NotFound after delete_self, got error {:?}", e),
+    }
+
+    // But the parent object (user) should still exist
+    match store.get("user")? {
+        NestedValue::Map(_) => (),
+        _ => panic!("Expected user map to still exist"),
+    }
+
+    op.commit()?;
+
+    // Verify after commit
+    let viewer_op = tree.new_operation()?;
+    let viewer_store = setup_kvstore_for_editor_tests(&db, &viewer_op)?;
+
+    // User exists but has no role or profile
+    match viewer_store.get("user")? {
+        NestedValue::Map(map) => {
+            let entries = map.as_hashmap();
+
+            // Check that the entries are properly marked as deleted (tombstones)
+            match entries.get("role") {
+                Some(NestedValue::Deleted) => (),
+                Some(other) => panic!("Expected role to be deleted, got {:?}", other),
+                None => panic!("Expected role key with tombstone to exist"),
+            }
+
+            match entries.get("profile") {
+                Some(NestedValue::Deleted) => (),
+                Some(other) => panic!("Expected profile to be deleted, got {:?}", other),
+                None => panic!("Expected profile key with tombstone to exist"),
+            }
+        }
+        _ => panic!("Expected user to be a map after commit"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_value_editor_set_non_map_to_root() -> eideticadb::Result<()> {
+    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let tree = db.new_tree_default()?;
+    let op = tree.new_operation()?;
+    let store = setup_kvstore_for_path_tests(&op)?;
+
+    // Get a root editor
+    let root_editor = store.get_root_mut();
+
+    // Attempting to set a non-map value at root should fail
+    let result = root_editor.set(NestedValue::String("test string".to_string()));
+
+    // Check that we get an InvalidOperation error
+    match result {
+        Err(Error::InvalidOperation(_)) => (),
+        Ok(_) => panic!("Expected InvalidOperation error when setting non-map at root"),
+        Err(e) => panic!("Expected InvalidOperation, got error: {:?}", e),
+    }
+
+    // Setting a map value should succeed
+    let mut map = KVNested::new();
+    map.set_string("key".to_string(), "value".to_string());
+    let map_result = root_editor.set(NestedValue::Map(map));
+    assert!(map_result.is_ok());
+
+    Ok(())
 }

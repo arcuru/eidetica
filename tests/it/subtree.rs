@@ -340,3 +340,78 @@ fn test_subtree_basic() {
         other => panic!("Expected NotFound for non-existent key, got {:?}", other),
     }
 }
+
+#[test]
+fn test_kvstore_update_nested_value() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    {
+        let kv_store = op
+            .get_subtree::<KVStore>("my_kv")
+            .expect("Failed to get KVStore");
+
+        // Initial nested structure: { "level1": { "level2_str": "initial_str" } }
+        let mut l1_map = KVNested::new();
+        l1_map.set_string("level2_str".to_string(), "initial_str".to_string());
+        kv_store
+            .set_value("level1", NestedValue::Map(l1_map.clone()))
+            .expect("Failed to set initial nested map");
+
+        // Update: { "level1": { "level2_map": { "deep_key": "deep_value" } } }
+        // This should overwrite the existing "level1" map
+        // TODO: Consider whether this interface should perform a merge instead of overwriting
+        let mut l2_map = KVNested::new();
+        l2_map.set_string("deep_key".to_string(), "deep_value".to_string());
+
+        let mut new_l1_map = KVNested::new(); // Create a new map for level1
+        new_l1_map.set_map("level2_map".to_string(), l2_map); // Add the new level2 map to it
+
+        kv_store
+            .set_value("level1", NestedValue::Map(new_l1_map.clone()))
+            .expect("Failed to set updated nested map");
+
+        // Verify the update within the same operation
+        match kv_store.get("level1").expect("Failed to get level1") {
+            NestedValue::Map(retrieved_l1_map) => {
+                // "level2_str" should be gone
+                assert!(retrieved_l1_map.get("level2_str").is_none());
+
+                // "level2_map" should exist
+                match retrieved_l1_map.get("level2_map") {
+                    Some(NestedValue::Map(retrieved_l2_map)) => {
+                        match retrieved_l2_map.get("deep_key") {
+                            Some(NestedValue::String(val)) => assert_eq!(val, "deep_value"),
+                            _ => panic!("Expected string 'deep_value' at deep_key"),
+                        }
+                    }
+                    _ => panic!("Expected 'level2_map' to be a map"),
+                }
+            }
+            _ => panic!("Expected 'level1' to be a map"),
+        }
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Verify after commit
+    let viewer = tree
+        .get_subtree_viewer::<KVStore>("my_kv")
+        .expect("Failed to get viewer");
+
+    match viewer.get("level1").expect("Viewer: Failed to get level1") {
+        NestedValue::Map(retrieved_l1_map) => {
+            assert!(retrieved_l1_map.get("level2_str").is_none());
+            match retrieved_l1_map.get("level2_map") {
+                Some(NestedValue::Map(retrieved_l2_map)) => {
+                    match retrieved_l2_map.get("deep_key") {
+                        Some(NestedValue::String(val)) => assert_eq!(val, "deep_value"),
+                        _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
+                    }
+                }
+                _ => panic!("Viewer: Expected 'level2_map' to be a map"),
+            }
+        }
+        _ => panic!("Viewer: Expected 'level1' to be a map"),
+    }
+}

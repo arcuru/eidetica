@@ -213,4 +213,247 @@ impl KVStore {
 
         Ok(data)
     }
+
+    /// Gets a mutable editor for a value associated with the given key.
+    ///
+    /// If the key does not exist, the editor will be initialized with an empty map,
+    /// allowing immediate use of map-modifying methods. The type can be changed
+    /// later using `ValueEditor::set()`.
+    ///
+    /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `KVStore`'s backend.
+    pub fn get_value_mut<'a>(&'a self, key: &str) -> ValueEditor<'a> {
+        ValueEditor::new(self, vec![key.to_string()])
+    }
+
+    /// Gets a mutable editor for the root of this KVStore's subtree.
+    ///
+    /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `KVStore`'s backend.
+    pub fn get_root_mut(&self) -> ValueEditor<'_> {
+        ValueEditor::new(self, Vec::new())
+    }
+
+    /// Retrieves a `NestedValue` from the KVStore using a specified path.
+    ///
+    /// The path is a slice of strings, where each string is a key in the
+    /// nested map structure. If the path is empty, it retrieves the entire
+    /// content of this KVStore's named subtree as a `NestedValue::Map`.
+    ///
+    /// This method operates on the fully merged view of the KVStore's data,
+    /// including any local changes from the current `AtomicOp` layered on top
+    /// of the backend state.
+    ///
+    /// # Arguments
+    ///
+    /// * `path`: A slice of `String` representing the path to the desired value.
+    ///
+    /// # Errors
+    ///
+    /// * `Error::NotFound` if any segment of the path does not exist (for non-empty paths),
+    ///   or if the final value or an intermediate value is a `NestedValue::Deleted` (tombstone).
+    /// * `Error::Io` with `ErrorKind::InvalidData` if a non-map value is
+    ///   encountered during path traversal where a map was expected.
+    pub fn get_at_path(&self, path: &[String]) -> Result<NestedValue> {
+        if path.is_empty() {
+            // Requesting the root of this KVStore's named subtree
+            return Ok(NestedValue::Map(self.get_all()?));
+        }
+
+        let mut current_value_view = NestedValue::Map(self.get_all()?);
+
+        for key_segment in path.iter() {
+            match current_value_view {
+                NestedValue::Map(map_data) => match map_data.get(key_segment) {
+                    Some(next_value) => {
+                        current_value_view = next_value.clone();
+                    }
+                    None => return Err(Error::NotFound),
+                },
+                NestedValue::Deleted => {
+                    // A tombstone encountered in the path means the path doesn't lead to a value.
+                    return Err(Error::NotFound);
+                }
+                _ => {
+                    // Expected a map to continue traversal, but found something else.
+                    return Err(Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Path traversal failed: expected a map at segment before '{}', but found a non-map value.",
+                            key_segment
+                        ),
+                    )));
+                }
+            }
+        }
+
+        // Check if the final resolved value is a tombstone.
+        match current_value_view {
+            NestedValue::Deleted => Err(Error::NotFound),
+            _ => Ok(current_value_view),
+        }
+    }
+
+    /// Sets a `NestedValue` at a specified path within the `KVStore`'s `AtomicOp`.
+    ///
+    /// The path is a slice of strings, where each string is a key in the
+    /// nested map structure.
+    ///
+    /// This method modifies the local data associated with the `AtomicOp`. The changes
+    /// are not persisted to the backend until `AtomicOp::commit()` is called.
+    /// If the path does not exist, it will be created. Intermediate non-map values
+    /// in the path will be overwritten by maps as needed to complete the path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path`: A slice of `String` representing the path where the value should be set.
+    /// * `value`: The `NestedValue` to set at the specified path.
+    ///
+    /// # Errors
+    ///
+    /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `NestedValue::Map`.
+    /// * `Error::Serialize` if the updated subtree data cannot be serialized to JSON.
+    /// * Potentially other errors from `AtomicOp::update_subtree`.
+    pub fn set_at_path(&self, path: &[String], value: NestedValue) -> Result<()> {
+        if path.is_empty() {
+            // Setting the root of this KVStore's named subtree.
+            // The value must be a map.
+            if let NestedValue::Map(map_data) = value {
+                let serialized_data = serde_json::to_string(&map_data)?;
+                return self.atomic_op.update_subtree(&self.name, &serialized_data);
+            } else {
+                return Err(Error::InvalidOperation(
+                    "Cannot set root of KVStore subtree: value must be a NestedValue::Map"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let mut subtree_data = self
+            .atomic_op
+            .get_local_data::<KVNested>(&self.name)
+            .unwrap_or_default();
+
+        let mut current_map_mut = &mut subtree_data;
+
+        // Traverse or create path segments up to the parent of the target key.
+        for key_segment in path.iter().take(path.len() - 1) {
+            let entry = current_map_mut.as_hashmap_mut().entry(key_segment.clone());
+            current_map_mut = match entry.or_insert_with(|| NestedValue::Map(KVNested::default())) {
+                NestedValue::Map(ref mut map) => map,
+                non_map_val => {
+                    // If a non-map value exists at an intermediate path segment,
+                    // overwrite it with a map to continue.
+                    *non_map_val = NestedValue::Map(KVNested::default());
+                    if let NestedValue::Map(ref mut map) = non_map_val {
+                        map
+                    } else {
+                        // This unreachable!() is safe because we just assigned NestedValue::Map.
+                        unreachable!("Just assigned a map, should be a map variant");
+                    }
+                }
+            };
+        }
+
+        // Set the value at the final key in the path.
+        if let Some(last_key) = path.last() {
+            current_map_mut.set(last_key.clone(), value);
+        } else {
+            // This case should be prevented by the initial path.is_empty() check.
+            // Given the check, this is technically unreachable if path is not empty.
+            return Err(Error::InvalidOperation(
+                "Path became empty unexpectedly during set_at_path".to_string(),
+            ));
+        }
+
+        let serialized_data = serde_json::to_string(&subtree_data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized_data)
+    }
+}
+
+/// An editor for a `NestedValue` obtained from a `KVStore`.
+///
+/// This provides a mutable lens into a value, allowing modifications
+/// to be staged and then saved back to the KVStore.
+pub struct ValueEditor<'a> {
+    kv_store: &'a KVStore,
+    keys: Vec<String>,
+}
+
+impl<'a> ValueEditor<'a> {
+    pub fn new(kv_store: &'a KVStore, keys: Vec<String>) -> Self {
+        Self { kv_store, keys }
+    }
+
+    /// Uses the stored keys to traverse the nested data structure and retrieve the value.
+    ///
+    /// This method starts from the fully merged view of the KVStore's subtree (local
+    /// AtomicOp changes layered on top of backend state) and navigates using the path
+    /// specified by `self.keys`. If `self.keys` is empty, it retrieves the root
+    /// of the KVStore's subtree.
+    ///
+    /// Returns `Error::NotFound` if any part of the path does not exist, or if the
+    /// final value is a tombstone (`NestedValue::Deleted`).
+    /// Returns `Error::Io` with `ErrorKind::InvalidData` if a non-map value is encountered
+    /// during path traversal where a map was expected.
+    pub fn get(&self) -> Result<NestedValue> {
+        self.kv_store.get_at_path(&self.keys)
+    }
+
+    /// Sets a `NestedValue` at the path specified by `self.keys` within the `KVStore`'s `AtomicOp`.
+    ///
+    /// This method modifies the local data associated with the `AtomicOp`. The changes
+    /// are not persisted to the backend until `AtomicOp::commit()` is called.
+    /// If the path specified by `self.keys` does not exist, it will be created.
+    /// Intermediate non-map values in the path will be overwritten by maps as needed.
+    /// If `self.keys` is empty (editor points to root), the provided `value` must
+    /// be a `NestedValue::Map`.
+    ///
+    /// Returns `Error::InvalidOperation` if setting the root and `value` is not a map.
+    pub fn set(&self, value: NestedValue) -> Result<()> {
+        self.kv_store.set_at_path(&self.keys, value)
+    }
+
+    /// Returns a nested value by appending `key` to the current editor's path.
+    ///
+    /// This is a convenience method that uses `self.get()` to find the map at the current
+    /// editor's path, and then retrieves `key` from that map.
+    pub fn get_value(&self, key: &str) -> Result<NestedValue> {
+        if self.keys.is_empty() {
+            // If the base path is empty, trying to get a sub-key implies trying to get a top-level key.
+            return self.kv_store.get_at_path(&[key.to_string()]);
+        }
+
+        let mut path_to_value = self.keys.clone();
+        path_to_value.push(key.to_string());
+        self.kv_store.get_at_path(&path_to_value)
+    }
+
+    /// Constructs a new `ValueEditor` for a path one level deeper.
+    ///
+    /// The new editor's path will be `self.keys` with `key` appended.
+    pub fn get_value_mut(&self, key: &str) -> ValueEditor<'a> {
+        let mut new_keys = self.keys.clone();
+        new_keys.push(key.to_string());
+        ValueEditor::new(self.kv_store, new_keys)
+    }
+
+    /// Marks the value at the editor's current path as deleted.
+    /// This is achieved by setting its value to `NestedValue::Deleted`.
+    /// The change is staged in the `AtomicOp` and needs to be committed.
+    pub fn delete_self(&self) -> Result<()> {
+        self.set(NestedValue::Deleted)
+    }
+
+    /// Marks the value at the specified child `key` (relative to the editor's current path) as deleted.
+    /// This is achieved by setting its value to `NestedValue::Deleted`.
+    /// The change is staged in the `AtomicOp` and needs to be committed.
+    ///
+    /// If the editor points to the root (empty path), this will delete the top-level `key`.
+    pub fn delete_child(&self, key: &str) -> Result<()> {
+        let mut path_to_delete = self.keys.clone();
+        path_to_delete.push(key.to_string());
+        self.kv_store
+            .set_at_path(&path_to_delete, NestedValue::Deleted)
+    }
 }

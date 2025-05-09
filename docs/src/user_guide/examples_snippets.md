@@ -199,7 +199,123 @@ match tasks_viewer.iter() {
 }
 ```
 
-## 7. Saving the Database (InMemoryBackend)
+## 7. Working with Nested Data (ValueEditor)
+
+```rust
+use eideticadb::subtree::{KVStore, NestedValue, KVNested};
+
+let tree: Tree = /* obtained from step 2 */;
+
+// Start an operation
+let op = tree.new_operation()?;
+
+// Get the KVStore subtree handle
+let user_store = op.get_subtree::<KVStore>("users")?;
+
+// Using ValueEditor to create and modify nested structures
+{
+    // Get an editor for a specific user
+    let user_editor = user_store.get_value_mut("user123");
+
+    // Set profile information with method chaining - creates paths as needed
+    user_editor
+        .get_value_mut("profile")
+        .get_value_mut("name")
+        .set(NestedValue::String("Jane Doe".to_string()))?;
+
+    user_editor
+        .get_value_mut("profile")
+        .get_value_mut("email")
+        .set(NestedValue::String("jane@example.com".to_string()))?;
+
+    // Set preferences as a map
+    let mut preferences = KVNested::new();
+    preferences.set_string("theme".to_string(), "dark".to_string());
+    preferences.set_string("notifications".to_string(), "enabled".to_string());
+
+    user_editor
+        .get_value_mut("preferences")
+        .set(NestedValue::Map(preferences))?;
+
+    // Add to preferences using the editor
+    user_editor
+        .get_value_mut("preferences")
+        .get_value_mut("language")
+        .set(NestedValue::String("en".to_string()))?;
+
+    // Delete a specific preference
+    user_editor
+        .get_value_mut("preferences")
+        .delete_child("notifications")?;
+}
+
+// Commit the changes
+let entry_id = op.commit()?;
+println!("ValueEditor changes committed in entry: {}", entry_id);
+
+// Read back the nested data
+let viewer_op = tree.new_operation()?;
+let viewer_store = viewer_op.get_subtree::<KVStore>("users")?;
+
+// Get the user data and navigate through it
+if let Ok(user_data) = viewer_store.get("user123") {
+    if let NestedValue::Map(user_map) = user_data {
+        // Access profile
+        if let Some(NestedValue::Map(profile)) = user_map.get("profile") {
+            if let Some(NestedValue::String(name)) = profile.get("name") {
+                println!("User name: {}", name);
+            }
+        }
+
+        // Access preferences
+        if let Some(NestedValue::Map(prefs)) = user_map.get("preferences") {
+            println!("User preferences:");
+            for (key, value) in prefs.as_hashmap() {
+                match value {
+                    NestedValue::String(val) => println!("  {}: {}", key, val),
+                    NestedValue::Deleted => println!("  {}: [deleted]", key),
+                    _ => println!("  {}: [complex value]", key),
+                }
+            }
+        }
+    }
+}
+
+// Using ValueEditor to read nested data (alternative to manual navigation)
+{
+    let editor = viewer_store.get_value_mut("user123");
+
+    // Get profile name
+    match editor.get_value_mut("profile").get_value("name") {
+        Ok(NestedValue::String(name)) => println!("User name (via editor): {}", name),
+        _ => println!("Name not found or not a string"),
+    }
+
+    // Check if a preference exists
+    match editor.get_value_mut("preferences").get_value("notifications") {
+        Ok(_) => println!("Notifications setting exists"),
+        Err(Error::NotFound) => println!("Notifications setting was deleted"),
+        Err(_) => println!("Error accessing notifications setting"),
+    }
+}
+
+// Using get_root_mut to access the entire store
+{
+    let root_editor = viewer_store.get_root_mut();
+    println!("\nAll users in store:");
+
+    match root_editor.get() {
+        Ok(NestedValue::Map(users)) => {
+            for (user_id, _) in users.as_hashmap() {
+                println!("  User ID: {}", user_id);
+            }
+        },
+        _ => println!("No users found or error accessing store"),
+    }
+}
+```
+
+## 8. Saving the Database (InMemoryBackend)
 
 ```rust
 use eideticadb::backend::InMemoryBackend;

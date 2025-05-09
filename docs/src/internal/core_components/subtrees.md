@@ -71,7 +71,23 @@ classDiagram
         +set_value(key: &str, value: NestedValue) Result<()>
         +delete(key: &str) Result<()>
         +get_all() Result<KVNested>
+        +get_value_mut(key: &str) ValueEditor
+        +get_root_mut() ValueEditor
+        +get_at_path(path: &[String]) Result<NestedValue>
+        +set_at_path(path: &[String], value: NestedValue) Result<()>
     }
+
+    class ValueEditor {
+        +new(kv_store: &KVStore, keys: Vec<String>) Self
+        +get() Result<NestedValue>
+        +set(value: NestedValue) Result<()>
+        +get_value(key: &str) Result<NestedValue>
+        +get_value_mut(key: &str) ValueEditor
+        +delete_self() Result<()>
+        +delete_child(key: &str) Result<()>
+    }
+
+    KVStore --> ValueEditor : creates
 ```
 
 **Features:**
@@ -86,6 +102,16 @@ classDiagram
   - `set_value`: Sets any valid `NestedValue` (String, Map, or Deleted) for a key
   - `delete`: Marks a key as deleted by creating a tombstone
   - `get_all`: Returns the entire store as a `KVNested` structure, including tombstones
+  - `get_value_mut`: Returns a `ValueEditor` for modifying values at a specific key path
+  - `get_root_mut`: Returns a `ValueEditor` for the root of the KVStore's subtree
+  - `get_at_path`: Retrieves a value at a specific nested path
+  - `set_at_path`: Sets a value at a specific nested path
+
+- **ValueEditor**: Provides a fluent API for navigating and modifying nested structures in the KVStore:
+
+  - Allows traversing into nested maps through method chaining
+  - Supports reading, writing, and deleting values at any level of nesting
+  - Changes made via ValueEditor are staged in the AtomicOp and must be committed to persist
 
 - **Merge Strategy**: When merging two KVStore states:
   - If both have string values for a key, the newer one wins
@@ -110,8 +136,15 @@ preferences.set_string("theme".to_string(), "dark".to_string());
 preferences.set_string("language".to_string(), "en".to_string());
 kv.set_value("user_prefs", NestedValue::Map(preferences))?;
 
+// Using ValueEditor to modify nested structures
+let editor = kv.get_value_mut("user_prefs");
+editor.get_value_mut("theme").set(NestedValue::String("light".to_string()))?;
+editor.get_value_mut("notifications").set(NestedValue::String("enabled".to_string()))?;
+
 // Delete keys (creating tombstones)
 kv.delete("old_setting")?;
+// Or using ValueEditor
+editor.delete_child("deprecated_setting")?;
 
 // Commit changes
 op.commit()?;

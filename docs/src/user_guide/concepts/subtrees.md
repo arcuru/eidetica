@@ -27,34 +27,127 @@ Subtrees offer several advantages:
 
 ### KVStore (Key-Value Store)
 
-The `KVStore` subtree implements a simple key-value store, similar to a dictionary or map. It uses the `KVOverWrite` CRDT implementation internally, which includes support for tombstones to properly track deletions:
+The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `KVNested` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
+
+#### Basic Usage
 
 ```rust
 // Get a KVStore subtree
 let op = tree.new_operation()?;
 let config = op.get_subtree::<KVStore>("config")?;
 
-// Set values
+// Set simple string values
 config.set("api_url", "https://api.example.com")?;
 config.set("max_connections", "100")?;
 
 // Get values
-let url = config.get("api_url")?; // Returns a String
+let url = config.get("api_url")?; // Returns a NestedValue
+let url_string = config.get_string("api_url")?; // Returns a String directly
 
 // Remove values
-config.remove("temporary_setting")?; // Creates a tombstone
+config.delete("temporary_setting")?; // Creates a tombstone
 // Even if temporary_setting doesn't exist, it will be marked as deleted
 // This ensures the deletion propagates during synchronization
 
 op.commit()?;
 ```
 
+#### Working with Nested Structures
+
+`KVStore` can handle nested map structures, allowing you to build hierarchical data:
+
+```rust
+// Create nested structures
+let mut preferences = KVNested::new();
+preferences.set_string("theme".to_string(), "dark".to_string());
+preferences.set_string("language".to_string(), "en".to_string());
+
+// Set this map as a value in the KVStore
+config.set_value("user_prefs", NestedValue::Map(preferences))?;
+
+// Later retrieve and modify the nested data
+if let NestedValue::Map(mut prefs) = config.get("user_prefs")? {
+    // Modify the map
+    prefs.set_string("theme".to_string(), "light".to_string());
+
+    // Update the value in the store
+    config.set_value("user_prefs", NestedValue::Map(prefs))?;
+}
+```
+
+#### Using ValueEditor for Fluent API
+
+The `ValueEditor` provides a more ergonomic way to work with nested data structures in `KVStore`. It allows you to navigate and modify nested values without having to manually extract and reinsert the intermediate maps:
+
+```rust
+// Get an editor for a specific key
+let prefs_editor = config.get_value_mut("user_prefs");
+
+// Read nested values
+match prefs_editor.get_value("theme")? {
+    NestedValue::String(theme) => println!("Current theme: {}", theme),
+    _ => println!("Theme not found or not a string"),
+}
+
+// Set nested values directly
+prefs_editor
+    .get_value_mut("theme")
+    .set(NestedValue::String("light".to_string()))?;
+
+// Navigate deep structures with method chaining
+config
+    .get_value_mut("user")
+    .get_value_mut("profile")
+    .get_value_mut("display_name")
+    .set(NestedValue::String("Alice Smith".to_string()))?;
+
+// Even if intermediate paths don't exist yet, they'll be created automatically
+// The line above will work even if "user", "profile", or "display_name" don't exist
+
+// Delete operations
+prefs_editor.delete_child("deprecated_setting")?; // Delete a child key
+prefs_editor.delete_self()?; // Delete the entire user_prefs object
+
+// Working with the root of the subtree
+let root_editor = config.get_root_mut();
+match root_editor.get()? {
+    NestedValue::Map(root_map) => {
+        // Access all top-level keys
+        for (key, value) in root_map.as_hashmap() {
+            println!("Key: {}, Value type: {}", key, value.type_name());
+        }
+    },
+    _ => unreachable!("Root should always be a map"),
+}
+
+// Don't forget to commit changes!
+op.commit()?;
+```
+
+#### Path-Based Operations
+
+`KVStore` also provides direct path-based access, which the `ValueEditor` uses internally:
+
+```rust
+// Set a value using a path array
+config.set_at_path(
+    &["user".to_string(), "settings".to_string(), "notifications".to_string()],
+    NestedValue::String("enabled".to_string())
+)?;
+
+// Get a value using a path array
+let notification_setting = config.get_at_path(
+    &["user".to_string(), "settings".to_string(), "notifications".to_string()]
+)?;
+```
+
 Use cases for `KVStore`:
 
 - Configuration settings
-- Simple metadata
+- User preferences
+- Hierarchical metadata
+- Structured document storage
 - Application state
-- Tree settings (internally used for the "settings" subtree)
 
 ### RowStore
 

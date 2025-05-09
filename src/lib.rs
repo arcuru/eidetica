@@ -45,4 +45,7 @@ pub enum Error {
 
     #[error("Serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
 }
