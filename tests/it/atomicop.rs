@@ -1,3 +1,4 @@
+use crate::helpers::*;
 use eideticadb::backend::Backend;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::constants::SETTINGS;
@@ -9,9 +10,7 @@ use std::sync::{Arc, Mutex};
 #[test]
 fn test_atomicop_through_kvstore() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create a new operation
     let operation = tree.new_operation().unwrap();
@@ -30,10 +29,7 @@ fn test_atomicop_through_kvstore() {
     let read_store = KVStore::new(&read_op, "test").unwrap();
 
     // Verify the value was set correctly
-    match read_store.get("key").unwrap() {
-        NestedValue::String(value) => assert_eq!(value, "value"),
-        _ => panic!("Expected string value"),
-    }
+    assert_kvstore_value(&read_store, "key", "value");
 
     // Also test the get_string convenience method
     assert_eq!(read_store.get_string("key").unwrap(), "value");
@@ -42,9 +38,7 @@ fn test_atomicop_through_kvstore() {
 #[test]
 fn test_atomicop_multiple_subtrees() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create a new operation
     let operation = tree.new_operation().unwrap();
@@ -69,23 +63,14 @@ fn test_atomicop_multiple_subtrees() {
     let store2_read = KVStore::new(&read_op, "store2").unwrap();
 
     // Verify values in both stores
-    match store1_read.get("key1").unwrap() {
-        NestedValue::String(value) => assert_eq!(value, "updated"),
-        _ => panic!("Expected string value for store1"),
-    }
-
-    match store2_read.get("key2").unwrap() {
-        NestedValue::String(value) => assert_eq!(value, "value2"),
-        _ => panic!("Expected string value for store2"),
-    }
+    assert_kvstore_value(&store1_read, "key1", "updated");
+    assert_kvstore_value(&store2_read, "key2", "value2");
 }
 
 #[test]
 fn test_atomicop_empty_subtree_removal() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create a new operation
     let operation = tree.new_operation().unwrap();
@@ -117,18 +102,13 @@ fn test_atomicop_empty_subtree_removal() {
     // However, the empty subtree should not have any data
     let empty_store = empty_result.unwrap();
     // If we try to get any key from the empty store, it should return NotFound
-    match empty_store.get("any_key") {
-        Err(eideticadb::Error::NotFound) => (), // Expected
-        other => panic!("Expected NotFound, got {:?}", other),
-    }
+    assert_key_not_found(empty_store.get("any_key"));
 }
 
 #[test]
 fn test_atomicop_parent_relationships() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create first operation and set data
     let op1 = tree.new_operation().unwrap();
@@ -164,9 +144,7 @@ fn test_atomicop_parent_relationships() {
 #[test]
 fn test_atomicop_double_commit_error() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create an operation
     let operation = tree.new_operation().unwrap();
@@ -188,9 +166,7 @@ fn test_atomicop_double_commit_error() {
 #[test]
 fn test_atomicop_with_delete() {
     // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = setup_tree();
 
     // Create an operation and add some data
     let op1 = tree.new_operation().unwrap();
@@ -210,17 +186,10 @@ fn test_atomicop_with_delete() {
     let store3 = KVStore::new(&op3, "data").unwrap();
 
     // key1 should be deleted
-    match store3.get("key1") {
-        Err(eideticadb::Error::NotFound) => (), // Expected
-        Ok(NestedValue::Deleted) => (),         // This is also acceptable
-        other => panic!("Expected NotFound for deleted key, got {:?}", other),
-    }
+    assert_key_not_found(store3.get("key1"));
 
     // key2 should still exist
-    match store3.get("key2").unwrap() {
-        NestedValue::String(value) => assert_eq!(value, "value2"),
-        _ => panic!("Expected string value for key2"),
-    }
+    assert_kvstore_value(&store3, "key2", "value2");
 
     // Check the full state with tombstone
     let all_data = store3.get_all().unwrap();

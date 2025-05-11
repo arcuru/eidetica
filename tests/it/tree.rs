@@ -1,14 +1,10 @@
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
+use crate::helpers::*;
 use eideticadb::constants::SETTINGS;
-use eideticadb::data::KVNested;
 use eideticadb::subtree::KVStore;
 
 #[test]
 fn test_insert_into_tree() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let tree = setup_tree();
 
     // Create and commit first entry using an atomic operation
     let op1 = tree.new_operation().expect("Failed to create operation");
@@ -37,56 +33,43 @@ fn test_insert_into_tree() {
 
 #[test]
 fn test_get_settings() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
     // Set up the tree with initial settings
-    let mut settings = KVNested::new();
-    let key = "setting_key";
-    let value = "setting_value";
-    settings.set_string(key.to_string(), value.to_string());
-
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let settings = [("setting_key", "setting_value")];
+    let tree = setup_tree_with_settings(&settings);
     let retrieved_settings = tree.get_settings().expect("Failed to get settings");
 
     assert_eq!(
         retrieved_settings
-            .get_string(key)
+            .get_string("setting_key")
             .expect("Failed to get setting"),
-        value.to_string()
+        "setting_value"
     );
 }
 
 #[test]
 fn test_subtree_operations() {
-    let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    // Create a fresh tree
+    let tree = setup_tree();
 
-    // Create a new operation with two subtrees
+    // Create and commit the initial data with operation
     let op1 = tree.new_operation().expect("Failed to create operation");
-
     {
-        // Get handles to subtrees within a scope
         let users_store = op1
             .get_subtree::<KVStore>("users")
             .expect("Failed to get users store");
+
         let posts_store = op1
             .get_subtree::<KVStore>("posts")
             .expect("Failed to get posts store");
 
-        // Set data in users subtree
         users_store
             .set("user1.name", "Alice")
             .expect("Failed to set user data");
 
-        // Set data in posts subtree
         posts_store
             .set("post1.title", "First Post")
             .expect("Failed to set post data");
-    } // Handles go out of scope, changes staged in op1
-
-    // Commit the operation
+    }
     op1.commit().expect("Failed to commit operation");
 
     // --- Verify initial data with viewers ---
@@ -153,15 +136,9 @@ fn test_subtree_operations() {
 
 #[test]
 fn test_get_name_from_settings() {
-    let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
-    // Create initial settings
-    let mut settings = KVNested::new();
-    settings.set_string("name".to_string(), "TestTree".to_string());
-
     // Create tree with settings
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let settings = [("name", "TestTree")];
+    let tree = setup_tree_with_settings(&settings);
 
     // Test that get_name works
     let name = tree.get_name().expect("Failed to get tree name");
@@ -186,9 +163,7 @@ fn test_get_name_from_settings() {
 
 #[test]
 fn test_atomic_op_scenarios() {
-    let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let tree = setup_tree();
 
     // --- 1. Modify multiple subtrees in one op and read staged data ---
     let op1 = tree.new_operation().expect("Op1: Failed to start");
@@ -220,10 +195,7 @@ fn test_atomic_op_scenarios() {
 
         // Try reading non-staged key (should be NotFound)
         assert!(store_a.get("non_existent").is_err());
-        match store_a.get("non_existent") {
-            Err(eideticadb::Error::NotFound) => (), // Expected
-            other => panic!("Op1: Expected NotFound for non-staged key, got {:?}", other),
-        }
+        assert_key_not_found(store_a.get("non_existent"));
     }
     let commit1_id = op1.commit().expect("Op1: Failed to commit");
     assert_ne!(commit1_id, initial_tip, "Op1: Commit should create new tip");
@@ -271,9 +243,7 @@ fn test_atomic_op_scenarios() {
 
 #[test]
 fn test_get_subtree_viewer() {
-    let backend: Box<dyn eideticadb::backend::Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let tree = setup_tree();
 
     // --- Initial state ---
     let op1 = tree.new_operation().expect("Op1: Failed start");
@@ -355,8 +325,59 @@ fn test_get_subtree_viewer() {
         empty_viewer.get("any_key").is_err(),
         "Viewer for non-existent subtree should be empty"
     );
-    match empty_viewer.get("any_key") {
-        Err(eideticadb::Error::NotFound) => (), // Expected
-        other => panic!("Expected NotFound from empty viewer, got {:?}", other),
-    }
+    assert_key_not_found(empty_viewer.get("any_key"));
+}
+
+#[test]
+fn test_setup_tree_with_multiple_kvstores() {
+    // Prepare test data
+    let users = [("user1", "Alice"), ("user2", "Bob")];
+    let posts = [("post1", "First Post")];
+    let comments = [("comment1", "Great post!")];
+
+    let subtrees = [
+        ("users", &users[..]),
+        ("posts", &posts[..]),
+        ("comments", &comments[..]),
+    ];
+
+    // Create the tree with the helper
+    let tree = setup_tree_with_multiple_kvstores(&subtrees);
+
+    // Verify the data was correctly set
+    let users_viewer = tree
+        .get_subtree_viewer::<KVStore>("users")
+        .expect("Failed to get users viewer");
+    assert_eq!(
+        users_viewer
+            .get_string("user1")
+            .expect("Failed to get user1"),
+        "Alice"
+    );
+    assert_eq!(
+        users_viewer
+            .get_string("user2")
+            .expect("Failed to get user2"),
+        "Bob"
+    );
+
+    let posts_viewer = tree
+        .get_subtree_viewer::<KVStore>("posts")
+        .expect("Failed to get posts viewer");
+    assert_eq!(
+        posts_viewer
+            .get_string("post1")
+            .expect("Failed to get post1"),
+        "First Post"
+    );
+
+    let comments_viewer = tree
+        .get_subtree_viewer::<KVStore>("comments")
+        .expect("Failed to get comments viewer");
+    assert_eq!(
+        comments_viewer
+            .get_string("comment1")
+            .expect("Failed to get comment1"),
+        "Great post!"
+    );
 }

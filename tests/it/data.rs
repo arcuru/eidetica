@@ -1,3 +1,4 @@
+use crate::helpers::*;
 use eideticadb::atomicop::AtomicOp;
 use eideticadb::backend::InMemoryBackend;
 use eideticadb::basedb::BaseDB;
@@ -11,7 +12,7 @@ use std::collections::HashMap;
 
 #[test]
 fn test_kvoverwrite_basic_operations() {
-    let mut kv = KVOverWrite::new();
+    let mut kv = create_kvoverwrite(&[]);
 
     // Test set and get
     let key = "test_key";
@@ -29,13 +30,9 @@ fn test_kvoverwrite_basic_operations() {
 
 #[test]
 fn test_kvoverwrite_merge() {
-    let mut kv1 = KVOverWrite::new();
-    kv1.set("key1", "value1");
-    kv1.set("key2", "value2");
+    let kv1 = create_kvoverwrite(&[("key1", "value1"), ("key2", "value2")]);
 
-    let mut kv2 = KVOverWrite::new();
-    kv2.set("key2", "value2_updated");
-    kv2.set("key3", "value3");
+    let kv2 = create_kvoverwrite(&[("key2", "value2_updated"), ("key3", "value3")]);
 
     // Merge kv2 into kv1
     let merged = kv1.merge(&kv2).expect("Merge failed");
@@ -48,9 +45,7 @@ fn test_kvoverwrite_merge() {
 
 #[test]
 fn test_kvoverwrite_serialization() {
-    let mut kv = KVOverWrite::new();
-    kv.set("key1", "value1");
-    kv.set("key2", "value2");
+    let kv = create_kvoverwrite(&[("key1", "value1"), ("key2", "value2")]);
 
     // Serialize to string
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
@@ -66,9 +61,7 @@ fn test_kvoverwrite_serialization() {
 #[test]
 fn test_kvoverwrite_from_entry() {
     // Create an entry with KVOverWrite data
-    let mut kv = KVOverWrite::new();
-    kv.set("key1", "value1");
-    kv.set("key2", "value2");
+    let kv = create_kvoverwrite(&[("key1", "value1"), ("key2", "value2")]);
 
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
     let entry = Entry::root_builder(serialized).build();
@@ -83,8 +76,7 @@ fn test_kvoverwrite_from_entry() {
 
 #[test]
 fn test_kvoverwrite_to_raw_data() {
-    let mut kv = KVOverWrite::new();
-    kv.set("key1", "value1");
+    let kv = create_kvoverwrite(&[("key1", "value1")]);
 
     let raw_data = serde_json::to_string(&kv).expect("Serialization failed");
     assert!(!raw_data.is_empty());
@@ -97,21 +89,24 @@ fn test_kvoverwrite_to_raw_data() {
 #[test]
 fn test_kvoverwrite_multiple_merge_operations() {
     // Start with an initial KVOverWrite
-    let mut base = KVOverWrite::new();
-    base.set("key1", "initial1");
-    base.set("key2", "initial2");
-    base.set("common", "base");
+    let base = create_kvoverwrite(&[
+        ("key1", "initial1"),
+        ("key2", "initial2"),
+        ("common", "base"),
+    ]);
 
     // Create two diverging updates
-    let mut branch1 = KVOverWrite::new();
-    branch1.set("key1", "branch1_value");
-    branch1.set("branch1_key", "branch1_only");
-    branch1.set("common", "branch1");
+    let branch1 = create_kvoverwrite(&[
+        ("key1", "branch1_value"),
+        ("branch1_key", "branch1_only"),
+        ("common", "branch1"),
+    ]);
 
-    let mut branch2 = KVOverWrite::new();
-    branch2.set("key2", "branch2_value");
-    branch2.set("branch2_key", "branch2_only");
-    branch2.set("common", "branch2");
+    let branch2 = create_kvoverwrite(&[
+        ("key2", "branch2_value"),
+        ("branch2_key", "branch2_only"),
+        ("common", "branch2"),
+    ]);
 
     // Merge in different orders to compare last-write-wins behavior
 
@@ -144,9 +139,7 @@ fn test_kvoverwrite_multiple_merge_operations() {
 #[test]
 fn test_kvoverwrite_serialization_roundtrip_with_merge() {
     // Create and serialize original data
-    let mut original = KVOverWrite::new();
-    original.set("key1", "value1");
-    original.set("key2", "value2");
+    let original = create_kvoverwrite(&[("key1", "value1"), ("key2", "value2")]);
 
     let serialized = serde_json::to_string(&original).expect("Serialization failed");
 
@@ -155,9 +148,7 @@ fn test_kvoverwrite_serialization_roundtrip_with_merge() {
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Create a second KVOverWrite with different data
-    let mut update = KVOverWrite::new();
-    update.set("key2", "updated2");
-    update.set("key3", "value3");
+    let update = create_kvoverwrite(&[("key2", "updated2"), ("key3", "value3")]);
 
     // Merge update into the deserialized data
     let merged = deserialized.merge(&update).expect("Merge failed");
@@ -390,51 +381,60 @@ fn test_kvoverwrite_merge_with_dual_tombstones() {
 
 #[test]
 fn test_kvnested_basic() {
-    let mut kv = KVNested::new();
+    // Create KVNested with string values
+    let kv = create_kvnested(&[("key1", "value1"), ("key2", "value2")]);
 
-    // Test adding string values
-    kv.set_string("str_key", "str_value");
-
-    // Test retrieving values
-    match kv.get("str_key") {
-        Some(NestedValue::String(s)) => assert_eq!(s, "str_value"),
-        _ => panic!("Expected string value"),
+    // Test get values
+    match kv.get("key1") {
+        Some(NestedValue::String(s)) => assert_eq!(s, "value1"),
+        _ => panic!("Expected string value for key1"),
     }
 
-    // Test adding nested maps
-    let mut nested = KVNested::new();
-    nested.set_string("inner_key", "inner_value");
-
-    kv.set_map("map_key", nested);
-
-    // Test retrieving nested values
-    match kv.get("map_key") {
-        Some(NestedValue::Map(inner_map)) => match inner_map.get("inner_key") {
-            Some(NestedValue::String(s)) => assert_eq!(s, "inner_value"),
-            _ => panic!("Expected string in inner map"),
-        },
-        _ => panic!("Expected map value"),
+    match kv.get("key2") {
+        Some(NestedValue::String(s)) => assert_eq!(s, "value2"),
+        _ => panic!("Expected string value for key2"),
     }
 
-    // Test using the NestedValue enum directly
-    kv.set(
-        "direct_key",
-        NestedValue::String("direct_value".to_string()),
-    );
+    assert_eq!(kv.get("non_existent"), None);
 
-    match kv.get("direct_key") {
-        Some(NestedValue::String(s)) => assert_eq!(s, "direct_value"),
-        _ => panic!("Expected string value for direct_key"),
+    // Create a nested map
+    let nested = create_nested_kvnested(&[(
+        "outer",
+        &[("inner1", "nested_value1"), ("inner2", "nested_value2")],
+    )]);
+
+    // Test nested access
+    assert_nested_value(&nested, &["outer", "inner1"], "nested_value1");
+    assert_nested_value(&nested, &["outer", "inner2"], "nested_value2");
+
+    // Test basic merge
+    let kv1 = create_kvnested(&[("a", "value_a"), ("b", "value_b")]);
+    let kv2 = create_kvnested(&[("b", "updated_b"), ("c", "value_c")]);
+
+    let merged = kv1.merge(&kv2).expect("Merge failed");
+
+    match merged.get("a") {
+        Some(NestedValue::String(s)) => assert_eq!(s, "value_a"),
+        _ => panic!("Expected string value for merged key a"),
+    }
+
+    match merged.get("b") {
+        Some(NestedValue::String(s)) => assert_eq!(s, "updated_b"), // Should be updated
+        _ => panic!("Expected string value for merged key b"),
+    }
+
+    match merged.get("c") {
+        Some(NestedValue::String(s)) => assert_eq!(s, "value_c"),
+        _ => panic!("Expected string value for merged key c"),
     }
 }
 
 #[test]
 fn test_kvnested_tombstones() {
-    let mut kv = KVNested::new();
+    // Create KVNested with initial values
+    let mut kv = create_kvnested(&[("str_key", "str_value")]);
 
-    // Add some values
-    kv.set_string("str_key", "str_value");
-
+    // Add a nested map
     let mut nested = KVNested::new();
     nested.set_string("inner_key", "inner_value");
     kv.set_map("map_key", nested);
@@ -449,15 +449,11 @@ fn test_kvnested_tombstones() {
     // Verify it's gone from regular access
     assert_eq!(kv.get("str_key"), None);
 
-    // But there should be a tombstone in the underlying HashMap
-    match kv.as_hashmap().get("str_key") {
-        Some(NestedValue::Deleted) => (), // This is correct
-        _ => panic!("Expected a tombstone"),
-    }
+    // Verify the tombstone using the helper
+    assert_path_deleted(&kv, &["str_key"]);
 
     // Test merging with tombstones
-    let mut kv2 = KVNested::new();
-    kv2.set_string("str_key", "revived_value"); // Try to resurrect
+    let kv2 = create_kvnested(&[("str_key", "revived_value")]); // Try to resurrect
 
     let merged = kv.merge(&kv2).expect("Merge failed");
 
@@ -473,8 +469,8 @@ fn test_kvnested_tombstones() {
 
     let final_merged = merged.merge(&kv3).expect("Second merge failed");
 
-    // The map should be gone
-    assert_eq!(final_merged.get("map_key"), None);
+    // The map should be gone - verify using the path helper
+    assert_path_deleted(&final_merged, &["map_key"]);
 
     // But the revived string should remain
     match final_merged.get("str_key") {

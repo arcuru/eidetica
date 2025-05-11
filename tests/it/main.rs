@@ -18,5 +18,6 @@ mod backend;
 mod basedb;
 mod data;
 mod entry;
+mod helpers;
 mod subtree;
 mod tree;

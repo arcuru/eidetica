@@ -48,6 +48,28 @@ For new features, we follow a test-driven approach:
 
 We exclusively test through public interfaces. This approach ensures API stability.
 
+### Test Helpers
+
+EideticaDB provides a comprehensive set of test helpers in the `tests/it/helpers.rs` module to simplify test setup and common assertions:
+
+- **Tree Setup Helpers**:
+  - `setup_tree()`: Creates a basic tree with an InMemoryBackend
+  - `setup_tree_with_settings()`: Creates a tree with initial settings
+  - `setup_tree_with_multiple_kvstores()`: Creates a tree with multiple KVStore subtrees and preset values
+
+- **Data Structure Helpers**:
+  - `create_kvnested()`: Creates a KVNested with specified key-value pairs
+  - `create_nested_kvnested()`: Creates a nested KVNested structure
+  - `create_kvoverwrite()`: Creates a KVOverWrite with initial data
+
+- **Assertion Helpers**:
+  - `assert_kvstore_value()`: Verifies a KVStore contains an expected string value
+  - `assert_key_not_found()`: Verifies a key doesn't exist in a store
+  - `assert_nested_value()`: Checks deep nested values inside a KVNested structure
+  - `assert_path_deleted()`: Validates that a path is deleted (has tombstone or is missing)
+
+Using these helpers improves test readability, reduces code duplication, and ensures consistent test setup across the codebase.
+
 ### Standard Test Structure
 
 Most tests follow this pattern:
@@ -56,14 +78,15 @@ Most tests follow this pattern:
 #[test]
 fn test_component_functionality() {
     // Setup - prepare the test environment
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let tree = setup_tree(); // Using a test helper
 
     // Action - perform the operation being tested
-    let result = db.some_operation();
+    let operation = tree.new_operation().expect("Failed to create operation");
+    let store = KVStore::new(&operation, "data").expect("Failed to create store");
+    store.set("key", "value").expect("Failed to set value");
 
-    // Assertion - verify the expected outcome
-    assert_eq!(result, expected_value);
+    // Assertion - verify the expected outcome using a helper
+    assert_kvstore_value(&store, "key", "value");
 }
 ```
 
@@ -155,6 +178,7 @@ When adding features or fixing bugs:
    - Interactions between the component and other parts of the system.
 2. Consider adding example code in the `examples/` directory for significant new features to demonstrate usage and provide further validation.
 3. Test both normal operation ("happy path") and error cases.
+4. Use the test helpers in `tests/it/helpers.rs` to simplify test setup and assertions. Consider adding new helpers for common patterns.
 
 ## Best Practices
 
