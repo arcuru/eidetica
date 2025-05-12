@@ -65,26 +65,26 @@ Internally, `RowStore<T>` manages its state (likely a map of IDs to `T` instance
 classDiagram
     class KVStore {
         <<SubtreeType>>
-        +get(key: &str) Result<NestedValue>
-        +get_string(key: &str) Result<String>
-        +set(key: &str, value: &str) Result<()>
-        +set_value(key: &str, value: NestedValue) Result<()>
-        +delete(key: &str) Result<()>
+        +get<K>(key: K) Result<NestedValue> where K: Into<String>
+        +get_string<K>(key: K) Result<String> where K: Into<String>
+        +set<K, V>(key: K, value: V) Result<()> where K: Into<String>, V: Into<String>
+        +set_value<K>(key: K, value: NestedValue) Result<()> where K: Into<String>
+        +delete<K>(key: K) Result<()> where K: Into<String>
         +get_all() Result<KVNested>
-        +get_value_mut(key: &str) ValueEditor
+        +get_value_mut<K>(key: K) ValueEditor where K: Into<String>
         +get_root_mut() ValueEditor
-        +get_at_path(path: &[String]) Result<NestedValue>
-        +set_at_path(path: &[String], value: NestedValue) Result<()>
+        +get_at_path<S, P>(path: P) Result<NestedValue> where S: AsRef<str>, P: AsRef<[S]>
+        +set_at_path<S, P>(path: P, value: NestedValue) Result<()> where S: AsRef<str>, P: AsRef<[S]>
     }
 
     class ValueEditor {
-        +new(kv_store: &KVStore, keys: Vec<String>) Self
+        +new<K>(kv_store: &KVStore, keys: K) Self where K: Into<Vec<String>>
         +get() Result<NestedValue>
         +set(value: NestedValue) Result<()>
-        +get_value(key: &str) Result<NestedValue>
-        +get_value_mut(key: &str) ValueEditor
+        +get_value<K>(key: K) Result<NestedValue> where K: Into<String>
+        +get_value_mut<K>(key: K) ValueEditor where K: Into<String>
         +delete_self() Result<()>
-        +delete_child(key: &str) Result<()>
+        +delete_child<K>(key: K) Result<()> where K: Into<String>
     }
 
     KVStore --> ValueEditor : creates
@@ -132,14 +132,18 @@ kv.set("username", "alice")?;
 
 // Create nested structures
 let mut preferences = KVNested::new();
-preferences.set_string("theme".to_string(), "dark".to_string());
-preferences.set_string("language".to_string(), "en".to_string());
+preferences.set_string("theme", "dark");
+preferences.set_string("language", "en");
 kv.set_value("user_prefs", NestedValue::Map(preferences))?;
 
 // Using ValueEditor to modify nested structures
 let editor = kv.get_value_mut("user_prefs");
 editor.get_value_mut("theme").set(NestedValue::String("light".to_string()))?;
 editor.get_value_mut("notifications").set(NestedValue::String("enabled".to_string()))?;
+
+// Using path-based APIs with string literals directly
+kv.set_at_path(["user", "profile", "email"], NestedValue::String("user@example.com".to_string()))?;
+let email = kv.get_at_path(["user", "profile", "email"])?;
 
 // Delete keys (creating tombstones)
 kv.delete("old_setting")?;

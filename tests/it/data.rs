@@ -1218,11 +1218,11 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eideticadb::Result<()> {
     let op = tree.new_operation()?;
     let store = setup_kvstore_for_path_tests(&op)?;
 
-    let path = vec!["simple_key".to_string()];
+    let path = ["simple_key"];
     let value = NestedValue::String("simple_value".to_string());
 
-    store.set_at_path(&path, value.clone())?;
-    let retrieved = store.get_at_path(&path)?;
+    store.set_at_path(path, value.clone())?;
+    let retrieved = store.get_at_path(path)?;
     assert_eq!(retrieved, value);
 
     // Verify with regular get as well
@@ -1233,7 +1233,7 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eideticadb::Result<()> {
     // Verify after commit
     let viewer_op = tree.new_operation()?;
     let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
-    assert_eq!(viewer_store.get_at_path(&path)?, value);
+    assert_eq!(viewer_store.get_at_path(path)?, value);
     assert_eq!(viewer_store.get("simple_key")?, value);
 
     Ok(())
@@ -1246,20 +1246,16 @@ fn test_kvstore_set_at_path_and_get_at_path_nested() -> eideticadb::Result<()> {
     let op = tree.new_operation()?;
     let store = setup_kvstore_for_path_tests(&op)?;
 
-    let path = vec![
-        "user".to_string(),
-        "profile".to_string(),
-        "email".to_string(),
-    ];
+    let path = ["user", "profile", "email"];
     let value = NestedValue::String("test@example.com".to_string());
 
-    store.set_at_path(&path, value.clone())?;
-    let retrieved = store.get_at_path(&path)?;
+    store.set_at_path(path, value.clone())?;
+    let retrieved = store.get_at_path(path)?;
     assert_eq!(retrieved, value);
 
     // Verify intermediate map structure
-    let profile_path = vec!["user".to_string(), "profile".to_string()];
-    match store.get_at_path(&profile_path)? {
+    let profile_path = ["user", "profile"];
+    match store.get_at_path(profile_path)? {
         NestedValue::Map(profile_map) => {
             assert_eq!(profile_map.get("email"), Some(&value));
         }
@@ -1271,7 +1267,7 @@ fn test_kvstore_set_at_path_and_get_at_path_nested() -> eideticadb::Result<()> {
     // Verify after commit
     let viewer_op = tree.new_operation()?;
     let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
-    assert_eq!(viewer_store.get_at_path(&path)?, value);
+    assert_eq!(viewer_store.get_at_path(path)?, value);
 
     Ok(())
 }
@@ -1283,16 +1279,16 @@ fn test_kvstore_set_at_path_creates_intermediate_maps() -> eideticadb::Result<()
     let op = tree.new_operation()?;
     let store = setup_kvstore_for_path_tests(&op)?;
 
-    let path = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    let path = ["a", "b", "c"];
     let value = NestedValue::String("deep_value".to_string());
-    store.set_at_path(&path, value.clone())?;
+    store.set_at_path(path, value.clone())?;
 
-    assert_eq!(store.get_at_path(&path)?, value);
-    match store.get_at_path(&["a".to_string(), "b".to_string()])? {
+    assert_eq!(store.get_at_path(path)?, value);
+    match store.get_at_path(["a", "b"])? {
         NestedValue::Map(_) => (),
         _ => panic!("Expected a.b to be a map"),
     }
-    match store.get_at_path(&["a".to_string()])? {
+    match store.get_at_path(["a"])? {
         NestedValue::Map(_) => (),
         _ => panic!("Expected a to be a map"),
     }
@@ -1308,23 +1304,19 @@ fn test_kvstore_set_at_path_overwrites_non_map() -> eideticadb::Result<()> {
 
     // Set user.profile = "string_value"
     store.set_at_path(
-        &["user".to_string(), "profile".to_string()],
+        ["user", "profile"],
         NestedValue::String("string_value".to_string()),
     )?;
 
     // Now try to set user.profile.name = "charlie"
-    let new_path = vec![
-        "user".to_string(),
-        "profile".to_string(),
-        "name".to_string(),
-    ];
+    let new_path = ["user", "profile", "name"];
     let new_value = NestedValue::String("charlie".to_string());
-    store.set_at_path(&new_path, new_value.clone())?;
+    store.set_at_path(new_path, new_value.clone())?;
 
-    assert_eq!(store.get_at_path(&new_path)?, new_value);
+    assert_eq!(store.get_at_path(new_path)?, new_value);
 
     // Verify that 'user.profile' is now a map
-    match store.get_at_path(&["user".to_string(), "profile".to_string()])? {
+    match store.get_at_path(["user", "profile"])? {
         NestedValue::Map(profile_map) => {
             assert_eq!(profile_map.get("name"), Some(&new_value));
         }
@@ -1340,8 +1332,8 @@ fn test_kvstore_get_at_path_not_found() -> eideticadb::Result<()> {
     let op = tree.new_operation()?;
     let store = setup_kvstore_for_path_tests(&op)?;
 
-    let path = vec!["non".to_string(), "existent".to_string(), "key".to_string()];
-    match store.get_at_path(&path) {
+    let path = ["non", "existent", "key"];
+    match store.get_at_path(path) {
         Err(Error::NotFound) => (),
         Ok(v) => panic!("Expected NotFound, got {:?}", v),
         Err(e) => panic!("Expected NotFound, got error {:?}", e),
@@ -1350,17 +1342,10 @@ fn test_kvstore_get_at_path_not_found() -> eideticadb::Result<()> {
     // Test path where an intermediate key segment does not exist within a valid map.
     // Set up: existing_root -> some_child_map (empty map)
     let child_map = KVNested::new();
-    store.set_at_path(
-        &["existing_root_map".to_string()],
-        NestedValue::Map(child_map),
-    )?;
+    store.set_at_path(["existing_root_map"], NestedValue::Map(child_map))?;
 
-    let path_intermediate_missing = vec![
-        "existing_root_map".to_string(),
-        "non_existent_child_in_map".to_string(),
-        "key".to_string(),
-    ];
-    match store.get_at_path(&path_intermediate_missing) {
+    let path_intermediate_missing = ["existing_root_map", "non_existent_child_in_map", "key"];
+    match store.get_at_path(path_intermediate_missing) {
         Err(Error::NotFound) => (),
         Ok(v) => panic!(
             "Expected NotFound for intermediate missing key in map, got {:?}",
@@ -1373,10 +1358,10 @@ fn test_kvstore_get_at_path_not_found() -> eideticadb::Result<()> {
     }
 
     // Test path leading to a tombstone
-    let tombstone_path = vec!["deleted".to_string(), "item".to_string()];
-    store.set_at_path(&tombstone_path, NestedValue::String("temp".to_string()))?;
-    store.set_at_path(&tombstone_path, NestedValue::Deleted)?;
-    match store.get_at_path(&tombstone_path) {
+    let tombstone_path = ["deleted", "item"];
+    store.set_at_path(tombstone_path, NestedValue::String("temp".to_string()))?;
+    store.set_at_path(tombstone_path, NestedValue::Deleted)?;
+    match store.get_at_path(tombstone_path) {
         Err(Error::NotFound) => (),
         Ok(v) => panic!("Expected NotFound for tombstone path, got {:?}", v),
         Err(e) => panic!("Expected NotFound for tombstone path, got error {:?}", e),
@@ -1394,13 +1379,13 @@ fn test_kvstore_get_at_path_invalid_intermediate_type() -> eideticadb::Result<()
 
     // Set a.b = "string" (not a map)
     store.set_at_path(
-        &["a".to_string(), "b".to_string()],
+        ["a", "b"],
         NestedValue::String("i_am_not_a_map".to_string()),
     )?;
 
     // Try to get a.b.c
-    let path = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-    match store.get_at_path(&path) {
+    let path = ["a", "b", "c"];
+    match store.get_at_path(path) {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData => (),
         Ok(v) => panic!("Expected Io(InvalidData), got {:?}", v),
         Err(e) => panic!("Expected Io(InvalidData), got error {:?}", e),
