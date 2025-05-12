@@ -16,41 +16,41 @@ fn test_kvoverwrite_basic_operations() {
     // Test set and get
     let key = "test_key";
     let value = "test_value";
-    kv.set(key.to_string(), value.to_string());
+    kv.set(key, value);
 
-    assert_eq!(kv.get(key), Some(&value.to_string()));
+    assert_eq!(kv.get(key), Some(value));
     assert_eq!(kv.get("non_existent_key"), None);
 
     // Test overwrite
     let new_value = "new_value";
-    kv.set(key.to_string(), new_value.to_string());
-    assert_eq!(kv.get(key), Some(&new_value.to_string()));
+    kv.set(key, new_value);
+    assert_eq!(kv.get(key), Some(new_value));
 }
 
 #[test]
 fn test_kvoverwrite_merge() {
     let mut kv1 = KVOverWrite::new();
-    kv1.set("key1".to_string(), "value1".to_string());
-    kv1.set("key2".to_string(), "value2".to_string());
+    kv1.set("key1", "value1");
+    kv1.set("key2", "value2");
 
     let mut kv2 = KVOverWrite::new();
-    kv2.set("key2".to_string(), "value2_updated".to_string());
-    kv2.set("key3".to_string(), "value3".to_string());
+    kv2.set("key2", "value2_updated");
+    kv2.set("key3", "value3");
 
     // Merge kv2 into kv1
     let merged = kv1.merge(&kv2).expect("Merge failed");
 
     // Verify merged result
-    assert_eq!(merged.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(merged.get("key2"), Some(&"value2_updated".to_string())); // overwritten
-    assert_eq!(merged.get("key3"), Some(&"value3".to_string())); // added from kv2
+    assert_eq!(merged.get("key1"), Some("value1"));
+    assert_eq!(merged.get("key2"), Some("value2_updated")); // overwritten
+    assert_eq!(merged.get("key3"), Some("value3")); // added from kv2
 }
 
 #[test]
 fn test_kvoverwrite_serialization() {
     let mut kv = KVOverWrite::new();
-    kv.set("key1".to_string(), "value1".to_string());
-    kv.set("key2".to_string(), "value2".to_string());
+    kv.set("key1", "value1");
+    kv.set("key2", "value2");
 
     // Serialize to string
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
@@ -59,16 +59,16 @@ fn test_kvoverwrite_serialization() {
     // Deserialize back
     let deserialized: KVOverWrite =
         serde_json::from_str(&serialized).expect("Deserialization failed");
-    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(deserialized.get("key2"), Some(&"value2".to_string()));
+    assert_eq!(deserialized.get("key1"), Some("value1"));
+    assert_eq!(deserialized.get("key2"), Some("value2"));
 }
 
 #[test]
 fn test_kvoverwrite_from_entry() {
     // Create an entry with KVOverWrite data
     let mut kv = KVOverWrite::new();
-    kv.set("key1".to_string(), "value1".to_string());
-    kv.set("key2".to_string(), "value2".to_string());
+    kv.set("key1", "value1");
+    kv.set("key2", "value2");
 
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
     let entry = Entry::root_builder(serialized).build();
@@ -77,14 +77,14 @@ fn test_kvoverwrite_from_entry() {
     let data = entry.get_settings().expect("Failed to get settings");
     let deserialized: KVOverWrite = serde_json::from_str(&data).expect("Deserialization failed");
 
-    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(deserialized.get("key2"), Some(&"value2".to_string()));
+    assert_eq!(deserialized.get("key1"), Some("value1"));
+    assert_eq!(deserialized.get("key2"), Some("value2"));
 }
 
 #[test]
 fn test_kvoverwrite_to_raw_data() {
     let mut kv = KVOverWrite::new();
-    kv.set("key1".to_string(), "value1".to_string());
+    kv.set("key1", "value1");
 
     let raw_data = serde_json::to_string(&kv).expect("Serialization failed");
     assert!(!raw_data.is_empty());
@@ -98,20 +98,20 @@ fn test_kvoverwrite_to_raw_data() {
 fn test_kvoverwrite_multiple_merge_operations() {
     // Start with an initial KVOverWrite
     let mut base = KVOverWrite::new();
-    base.set("key1".to_string(), "initial1".to_string());
-    base.set("key2".to_string(), "initial2".to_string());
-    base.set("common".to_string(), "base".to_string());
+    base.set("key1", "initial1");
+    base.set("key2", "initial2");
+    base.set("common", "base");
 
     // Create two diverging updates
     let mut branch1 = KVOverWrite::new();
-    branch1.set("key1".to_string(), "branch1_value".to_string());
-    branch1.set("branch1_key".to_string(), "branch1_only".to_string());
-    branch1.set("common".to_string(), "branch1".to_string());
+    branch1.set("key1", "branch1_value");
+    branch1.set("branch1_key", "branch1_only");
+    branch1.set("common", "branch1");
 
     let mut branch2 = KVOverWrite::new();
-    branch2.set("key2".to_string(), "branch2_value".to_string());
-    branch2.set("branch2_key".to_string(), "branch2_only".to_string());
-    branch2.set("common".to_string(), "branch2".to_string());
+    branch2.set("key2", "branch2_value");
+    branch2.set("branch2_key", "branch2_only");
+    branch2.set("common", "branch2");
 
     // Merge in different orders to compare last-write-wins behavior
 
@@ -126,39 +126,27 @@ fn test_kvoverwrite_multiple_merge_operations() {
     // Since branch1 and branch2 modify different keys (except for "common"),
     // merged1_2 and merged2_1 should be mostly identical
 
-    assert_eq!(merged1_2.get("key1"), Some(&"branch1_value".to_string()));
-    assert_eq!(merged1_2.get("key2"), Some(&"branch2_value".to_string()));
-    assert_eq!(
-        merged1_2.get("branch1_key"),
-        Some(&"branch1_only".to_string())
-    );
-    assert_eq!(
-        merged1_2.get("branch2_key"),
-        Some(&"branch2_only".to_string())
-    );
+    assert_eq!(merged1_2.get("key1"), Some("branch1_value"));
+    assert_eq!(merged1_2.get("key2"), Some("branch2_value"));
+    assert_eq!(merged1_2.get("branch1_key"), Some("branch1_only"));
+    assert_eq!(merged1_2.get("branch2_key"), Some("branch2_only"));
 
-    assert_eq!(merged2_1.get("key1"), Some(&"branch1_value".to_string()));
-    assert_eq!(merged2_1.get("key2"), Some(&"branch2_value".to_string()));
-    assert_eq!(
-        merged2_1.get("branch1_key"),
-        Some(&"branch1_only".to_string())
-    );
-    assert_eq!(
-        merged2_1.get("branch2_key"),
-        Some(&"branch2_only".to_string())
-    );
+    assert_eq!(merged2_1.get("key1"), Some("branch1_value"));
+    assert_eq!(merged2_1.get("key2"), Some("branch2_value"));
+    assert_eq!(merged2_1.get("branch1_key"), Some("branch1_only"));
+    assert_eq!(merged2_1.get("branch2_key"), Some("branch2_only"));
 
     // But for the "common" key, the order matters
-    assert_eq!(merged1_2.get("common"), Some(&"branch2".to_string())); // Last write wins
-    assert_eq!(merged2_1.get("common"), Some(&"branch1".to_string())); // Last write wins
+    assert_eq!(merged1_2.get("common"), Some("branch2")); // Last write wins
+    assert_eq!(merged2_1.get("common"), Some("branch1")); // Last write wins
 }
 
 #[test]
 fn test_kvoverwrite_serialization_roundtrip_with_merge() {
     // Create and serialize original data
     let mut original = KVOverWrite::new();
-    original.set("key1".to_string(), "value1".to_string());
-    original.set("key2".to_string(), "value2".to_string());
+    original.set("key1", "value1");
+    original.set("key2", "value2");
 
     let serialized = serde_json::to_string(&original).expect("Serialization failed");
 
@@ -168,8 +156,8 @@ fn test_kvoverwrite_serialization_roundtrip_with_merge() {
 
     // Create a second KVOverWrite with different data
     let mut update = KVOverWrite::new();
-    update.set("key2".to_string(), "updated2".to_string());
-    update.set("key3".to_string(), "value3".to_string());
+    update.set("key2", "updated2");
+    update.set("key3", "value3");
 
     // Merge update into the deserialized data
     let merged = deserialized.merge(&update).expect("Merge failed");
@@ -183,18 +171,18 @@ fn test_kvoverwrite_serialization_roundtrip_with_merge() {
         serde_json::from_str(&merged_serialized).expect("Deserialization of merged data failed");
 
     // Verify final state
-    assert_eq!(final_data.get("key1"), Some(&"value1".to_string())); // Unchanged
-    assert_eq!(final_data.get("key2"), Some(&"updated2".to_string())); // Updated
-    assert_eq!(final_data.get("key3"), Some(&"value3".to_string())); // Added
+    assert_eq!(final_data.get("key1"), Some("value1")); // Unchanged
+    assert_eq!(final_data.get("key2"), Some("updated2")); // Updated
+    assert_eq!(final_data.get("key3"), Some("value3")); // Added
 
     // Test merging with an empty CRDT
     let empty = KVOverWrite::new();
     let merged_with_empty = final_data.merge(&empty).expect("Merge with empty failed");
 
     // Merging with empty should not change anything
-    assert_eq!(merged_with_empty.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(merged_with_empty.get("key2"), Some(&"updated2".to_string()));
-    assert_eq!(merged_with_empty.get("key3"), Some(&"value3".to_string()));
+    assert_eq!(merged_with_empty.get("key1"), Some("value1"));
+    assert_eq!(merged_with_empty.get("key2"), Some("updated2"));
+    assert_eq!(merged_with_empty.get("key3"), Some("value3"));
 }
 
 #[test]
@@ -208,13 +196,13 @@ fn test_kvoverwrite_new() {
 fn test_kvoverwrite_from_hashmap() {
     // Test creation from an existing HashMap
     let mut data = HashMap::new();
-    data.insert("key1".to_string(), "value1".to_string());
-    data.insert("key2".to_string(), "value2".to_string());
+    data.insert("key1", "value1");
+    data.insert("key2", "value2");
 
     let kv = KVOverWrite::from_hashmap(data.clone());
     assert_eq!(kv.as_hashmap().len(), 2);
-    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
+    assert_eq!(kv.get("key1"), Some("value1"));
+    assert_eq!(kv.get("key2"), Some("value2"));
 }
 
 #[test]
@@ -223,12 +211,11 @@ fn test_kvoverwrite_remove() {
     let mut kv = KVOverWrite::new();
 
     // Add a value then remove it
-    kv.set("key1".to_string(), "value1".to_string());
-    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    kv.set("key1", "value1");
+    assert_eq!(kv.get("key1"), Some("value1"));
 
     let removed = kv.remove("key1");
     assert_eq!(removed, Some("value1".to_string()));
-    assert_eq!(kv.get("key1"), None);
     // Assert that key1 is now a tombstone
     assert_eq!(kv.as_hashmap().get("key1"), Some(&None));
 
@@ -244,22 +231,22 @@ fn test_kvoverwrite_as_hashmap_mut() {
     let mut kv = KVOverWrite::new();
 
     // Modify through the KVOverWrite methods
-    kv.set("key1".to_string(), "value1".to_string());
+    kv.set("key1", "value1");
 
     // Modify through the mutable HashMap reference
     kv.as_hashmap_mut()
         .insert("key2".to_string(), Some("value2".to_string()));
 
     // Verify both modifications worked
-    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
-    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
+    assert_eq!(kv.get("key1"), Some("value1"));
+    assert_eq!(kv.get("key2"), Some("value2"));
 }
 
 #[test]
 fn test_kvowrite_to_entry() {
     let mut kvstore = KVOverWrite::default();
-    kvstore.set("key1".to_string(), "value1".to_string());
-    kvstore.set("key2".to_string(), "value2".to_string());
+    kvstore.set("key1", "value1");
+    kvstore.set("key2", "value2");
 
     // Serialize the KVOverwrite to a string
     let serialized = serde_json::to_string(&kvstore).unwrap();
@@ -282,10 +269,10 @@ fn test_kvoverwrite_tombstones() {
     let mut kv = KVOverWrite::new();
 
     // Add and then remove some values
-    kv.set("key1".to_string(), "value1".to_string());
-    kv.set("key2".to_string(), "value2".to_string());
+    kv.set("key1", "value1");
+    kv.set("key2", "value2");
 
-    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(kv.get("key1"), Some("value1"));
 
     // Remove key1, should return the value and create a tombstone
     let removed = kv.remove("key1");
@@ -300,14 +287,14 @@ fn test_kvoverwrite_tombstones() {
 
     // Test merging with tombstones
     let mut kv2 = KVOverWrite::new();
-    kv2.set("key1".to_string(), "new_value1".to_string()); // Try to resurrect the deleted key
-    kv2.set("key3".to_string(), "value3".to_string());
+    kv2.set("key1", "new_value1"); // Try to resurrect the deleted key
+    kv2.set("key3", "value3");
 
     // Should overwrite the tombstone
     let merged = kv.merge(&kv2).expect("Merge failed");
-    assert_eq!(merged.get("key1"), Some(&"new_value1".to_string())); // Resurrected
-    assert_eq!(merged.get("key2"), Some(&"value2".to_string())); // Unchanged
-    assert_eq!(merged.get("key3"), Some(&"value3".to_string())); // Added
+    assert_eq!(merged.get("key1"), Some("new_value1")); // Resurrected
+    assert_eq!(merged.get("key2"), Some("value2")); // Unchanged
+    assert_eq!(merged.get("key3"), Some("value3")); // Added
 
     // Now test deleting in the other direction
     let mut kv3 = KVOverWrite::new();
@@ -318,16 +305,16 @@ fn test_kvoverwrite_tombstones() {
 
     // key2 should now be deleted
     assert_eq!(final_merge.get("key2"), None);
-    assert_eq!(final_merge.get("key1"), Some(&"new_value1".to_string())); // Still present
-    assert_eq!(final_merge.get("key3"), Some(&"value3".to_string())); // Still present
+    assert_eq!(final_merge.get("key1"), Some("new_value1")); // Still present
+    assert_eq!(final_merge.get("key3"), Some("value3")); // Still present
 }
 
 #[test]
 fn test_kvoverwrite_tombstone_serialization() {
     // Test serialization with tombstones
     let mut kv = KVOverWrite::new();
-    kv.set("key1".to_string(), "value1".to_string());
-    kv.set("key2".to_string(), "value2".to_string());
+    kv.set("key1", "value1");
+    kv.set("key2", "value2");
 
     // Create tombstone
     kv.remove("key2");
@@ -344,7 +331,7 @@ fn test_kvoverwrite_tombstone_serialization() {
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify structure is maintained
-    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(deserialized.get("key1"), Some("value1"));
     assert_eq!(deserialized.get("key2"), None);
 
     // Verify tombstone survived serialization
@@ -373,13 +360,13 @@ fn test_kvoverwrite_delete_nonexistent() {
 fn test_kvoverwrite_merge_with_dual_tombstones() {
     // Test merging when both sources have tombstones
     let mut kv1 = KVOverWrite::new();
-    kv1.set("key1".to_string(), "value1".to_string());
-    kv1.set("key2".to_string(), "value2".to_string());
+    kv1.set("key1", "value1");
+    kv1.set("key2", "value2");
     kv1.remove("key1"); // Create tombstone in kv1
 
     let mut kv2 = KVOverWrite::new();
-    kv2.set("key2".to_string(), "updated2".to_string());
-    kv2.set("key3".to_string(), "value3".to_string());
+    kv2.set("key2", "updated2");
+    kv2.set("key3", "value3");
     kv2.remove("key3"); // Create tombstone in kv2
 
     // Merge kv2 into kv1
@@ -391,7 +378,7 @@ fn test_kvoverwrite_merge_with_dual_tombstones() {
     // key3: tombstone from kv2
 
     assert_eq!(merged.get("key1"), None);
-    assert_eq!(merged.get("key2"), Some(&"updated2".to_string()));
+    assert_eq!(merged.get("key2"), Some("updated2"));
     assert_eq!(merged.get("key3"), None);
 
     // Verify tombstones are present
@@ -406,7 +393,7 @@ fn test_kvnested_basic() {
     let mut kv = KVNested::new();
 
     // Test adding string values
-    kv.set_string("str_key".to_string(), "str_value".to_string());
+    kv.set_string("str_key", "str_value");
 
     // Test retrieving values
     match kv.get("str_key") {
@@ -416,9 +403,9 @@ fn test_kvnested_basic() {
 
     // Test adding nested maps
     let mut nested = KVNested::new();
-    nested.set_string("inner_key".to_string(), "inner_value".to_string());
+    nested.set_string("inner_key", "inner_value");
 
-    kv.set_map("map_key".to_string(), nested);
+    kv.set_map("map_key", nested);
 
     // Test retrieving nested values
     match kv.get("map_key") {
@@ -431,7 +418,7 @@ fn test_kvnested_basic() {
 
     // Test using the NestedValue enum directly
     kv.set(
-        "direct_key".to_string(),
+        "direct_key",
         NestedValue::String("direct_value".to_string()),
     );
 
@@ -446,11 +433,11 @@ fn test_kvnested_tombstones() {
     let mut kv = KVNested::new();
 
     // Add some values
-    kv.set_string("str_key".to_string(), "str_value".to_string());
+    kv.set_string("str_key", "str_value");
 
     let mut nested = KVNested::new();
-    nested.set_string("inner_key".to_string(), "inner_value".to_string());
-    kv.set_map("map_key".to_string(), nested);
+    nested.set_string("inner_key", "inner_value");
+    kv.set_map("map_key", nested);
 
     // Remove a string value
     let removed = kv.remove("str_key");
@@ -470,7 +457,7 @@ fn test_kvnested_tombstones() {
 
     // Test merging with tombstones
     let mut kv2 = KVNested::new();
-    kv2.set_string("str_key".to_string(), "revived_value".to_string()); // Try to resurrect
+    kv2.set_string("str_key", "revived_value"); // Try to resurrect
 
     let merged = kv.merge(&kv2).expect("Merge failed");
 
@@ -502,39 +489,39 @@ fn test_kvnested_recursive_merge() {
     let mut kv1 = KVNested::new();
 
     // Setup level 1
-    kv1.set_string("key1".to_string(), "value1".to_string());
+    kv1.set_string("key1", "value1");
 
     // Setup level 2
     let mut level2 = KVNested::new();
-    level2.set_string("level2_key1".to_string(), "level2_value1".to_string());
-    level2.set_string("shared_key".to_string(), "kv1_value".to_string());
+    level2.set_string("level2_key1", "level2_value1");
+    level2.set_string("shared_key", "kv1_value");
 
     // Setup level 3
     let mut level3 = KVNested::new();
-    level3.set_string("level3_key1".to_string(), "level3_value1".to_string());
+    level3.set_string("level3_key1", "level3_value1");
 
     // Link them together
-    level2.set_map("level3".to_string(), level3);
-    kv1.set_map("level2".to_string(), level2);
+    level2.set_map("level3", level3);
+    kv1.set_map("level2", level2);
 
     // Create a second structure with overlapping keys but different values
     let mut kv2 = KVNested::new();
 
     // Setup a different level 2
     let mut level2_alt = KVNested::new();
-    level2_alt.set_string("level2_key2".to_string(), "level2_value2".to_string());
-    level2_alt.set_string("shared_key".to_string(), "kv2_value".to_string()); // Same key, different value
+    level2_alt.set_string("level2_key2", "level2_value2");
+    level2_alt.set_string("shared_key", "kv2_value"); // Same key, different value
 
     // Setup a different level 3
     let mut level3_alt = KVNested::new();
-    level3_alt.set_string("level3_key2".to_string(), "level3_value2".to_string());
+    level3_alt.set_string("level3_key2", "level3_value2");
 
     // Link them
-    level2_alt.set_map("level3".to_string(), level3_alt);
-    kv2.set_map("level2".to_string(), level2_alt);
+    level2_alt.set_map("level3", level3_alt);
+    kv2.set_map("level2", level2_alt);
 
     // Add a top-level key that will conflict
-    kv2.set_string("key1".to_string(), "value1_updated".to_string());
+    kv2.set_string("key1", "value1_updated");
 
     // Merge them
     let merged = kv1.merge(&kv2).expect("Merge failed");
@@ -591,11 +578,11 @@ fn test_kvnested_serialization() {
     let mut kv = KVNested::new();
 
     // Add various value types
-    kv.set_string("string_key".to_string(), "string_value".to_string());
+    kv.set_string("string_key", "string_value");
 
     let mut nested = KVNested::new();
-    nested.set_string("inner".to_string(), "inner_value".to_string());
-    kv.set_map("map_key".to_string(), nested);
+    nested.set_string("inner", "inner_value");
+    kv.set_map("map_key", nested);
 
     // Create a tombstone
     kv.remove("deleted_key");
@@ -639,10 +626,10 @@ fn test_kvnested_cascading_delete() {
     let mut level2 = KVNested::new();
     let mut level3 = KVNested::new();
 
-    level3.set_string("deepest".to_string(), "treasure".to_string());
-    level2.set_map("level3".to_string(), level3);
-    level1.set_map("level2".to_string(), level2);
-    kv.set_map("level1".to_string(), level1);
+    level3.set_string("deepest", "treasure");
+    level2.set_map("level3", level3);
+    level1.set_map("level2", level2);
+    kv.set_map("level1", level1);
 
     // Delete the entire structure by removing level1
     kv.remove("level1");
@@ -658,8 +645,8 @@ fn test_kvnested_cascading_delete() {
 
     // Add a new level1 with different content and verify it works
     let mut new_level1 = KVNested::new();
-    new_level1.set_string("new_value".to_string(), "resurrected".to_string());
-    kv.set_map("level1".to_string(), new_level1);
+    new_level1.set_string("new_value", "resurrected");
+    kv.set_map("level1", new_level1);
 
     // Verify level1 is accessible again
     match kv.get("level1") {
@@ -678,12 +665,12 @@ fn test_kvnested_type_conflicts() {
     let mut kv2 = KVNested::new();
 
     // In kv1, key is a string
-    kv1.set_string("conflict_key".to_string(), "string_value".to_string());
+    kv1.set_string("conflict_key", "string_value");
 
     // In kv2, same key is a map
     let mut nested = KVNested::new();
-    nested.set_string("inner".to_string(), "inner_value".to_string());
-    kv2.set_map("conflict_key".to_string(), nested);
+    nested.set_string("inner", "inner_value");
+    kv2.set_map("conflict_key", nested);
 
     // Test merge in both directions
 
@@ -713,24 +700,24 @@ fn test_kvnested_complex_merge_with_tombstones() {
     let mut kv1 = KVNested::new();
     let mut level1a = KVNested::new();
 
-    level1a.set_string("key1".to_string(), "value1".to_string());
-    level1a.set_string("to_delete".to_string(), "will_be_deleted".to_string());
-    level1a.set_string("to_update".to_string(), "initial_value".to_string());
+    level1a.set_string("key1", "value1");
+    level1a.set_string("to_delete", "will_be_deleted");
+    level1a.set_string("to_update", "initial_value");
 
-    kv1.set_map("level1".to_string(), level1a);
-    kv1.set_string("top_level_key".to_string(), "top_value".to_string());
+    kv1.set_map("level1", level1a);
+    kv1.set_string("top_level_key", "top_value");
 
     // Structure 2 (with changes and tombstones)
     let mut kv2 = KVNested::new();
     let mut level1b = KVNested::new();
 
-    level1b.set_string("key2".to_string(), "value2".to_string()); // New key
+    level1b.set_string("key2", "value2"); // New key
     level1b.remove("to_delete"); // Create tombstone
-    level1b.set_string("to_update".to_string(), "updated_value".to_string()); // Update
+    level1b.set_string("to_update", "updated_value"); // Update
 
-    kv2.set_map("level1".to_string(), level1b);
+    kv2.set_map("level1", level1b);
     kv2.remove("top_level_key"); // Create tombstone at top level
-    kv2.set_string("new_top_key".to_string(), "new_top_value".to_string()); // New top level
+    kv2.set_string("new_top_key", "new_top_value"); // New top level
 
     // Merge
     let merged = kv1.merge(&kv2).expect("Complex merge failed");
@@ -781,11 +768,11 @@ fn test_kvnested_multi_generation_updates() {
 
     // Initialize base state
     let mut base = KVNested::new();
-    base.set_string("key".to_string(), "original".to_string());
+    base.set_string("key", "original");
 
     // Generation 1: Update in branch1
     let mut branch1 = KVNested::new();
-    branch1.set_string("key".to_string(), "branch1_value".to_string());
+    branch1.set_string("key", "branch1_value");
     let gen1 = base.merge(&branch1).expect("Gen1 merge failed");
 
     // Verify gen1
@@ -808,7 +795,7 @@ fn test_kvnested_multi_generation_updates() {
 
     // Generation 3: Resurrect in branch3
     let mut branch3 = KVNested::new();
-    branch3.set_string("key".to_string(), "resurrected".to_string());
+    branch3.set_string("key", "resurrected");
     let gen3 = gen2.merge(&branch3).expect("Gen3 merge failed");
 
     // Verify gen3
@@ -820,8 +807,8 @@ fn test_kvnested_multi_generation_updates() {
     // Generation 4: Replace with map in branch4
     let mut branch4 = KVNested::new();
     let mut nested = KVNested::new();
-    nested.set_string("inner".to_string(), "inner_value".to_string());
-    branch4.set_map("key".to_string(), nested);
+    nested.set_string("inner", "inner_value");
+    branch4.set_map("key", nested);
     let gen4 = gen3.merge(&branch4).expect("Gen4 merge failed");
 
     // Verify gen4
@@ -839,7 +826,7 @@ fn test_kvnested_set_deleted_and_get() {
     let mut kv = KVNested::new();
 
     // Set a key directly to Deleted
-    kv.set("deleted_key".to_string(), NestedValue::Deleted);
+    kv.set("deleted_key", NestedValue::Deleted);
 
     // get() should return None
     assert_eq!(kv.get("deleted_key"), None);
@@ -851,8 +838,8 @@ fn test_kvnested_set_deleted_and_get() {
     );
 
     // Set another key with a value, then set to Deleted
-    kv.set_string("another_key".to_string(), "value".to_string());
-    kv.set("another_key".to_string(), NestedValue::Deleted);
+    kv.set_string("another_key", "value");
+    kv.set("another_key", NestedValue::Deleted);
     assert_eq!(kv.get("another_key"), None);
     assert_eq!(
         kv.as_hashmap().get("another_key"),
@@ -886,7 +873,7 @@ fn test_kvnested_remove_existing_tombstone() {
     let mut kv = KVNested::new();
 
     // Create a tombstone by removing a key
-    kv.set_string("key_to_tombstone".to_string(), "some_value".to_string());
+    kv.set_string("key_to_tombstone", "some_value");
     let _ = kv.remove("key_to_tombstone"); // This creates the first tombstone
 
     // Verify it's a tombstone
@@ -915,7 +902,7 @@ fn test_kvnested_remove_existing_tombstone() {
     );
 
     // Directly set a tombstone and then remove it
-    kv.set("direct_tombstone".to_string(), NestedValue::Deleted);
+    kv.set("direct_tombstone", NestedValue::Deleted);
     let removed_direct = kv.remove("direct_tombstone");
     assert!(removed_direct.is_none());
     assert_eq!(kv.get("direct_tombstone"), None);
@@ -928,17 +915,17 @@ fn test_kvnested_remove_existing_tombstone() {
 #[test]
 fn test_kvnested_merge_dual_tombstones() {
     let mut kv1 = KVNested::new();
-    kv1.set_string("key1_kv1".to_string(), "value1_kv1".to_string());
+    kv1.set_string("key1_kv1", "value1_kv1");
     kv1.remove("key1_kv1"); // Tombstone in kv1
 
-    kv1.set_string("common_key".to_string(), "value_common_kv1".to_string());
+    kv1.set_string("common_key", "value_common_kv1");
     kv1.remove("common_key"); // Tombstone for common_key in kv1
 
     let mut kv2 = KVNested::new();
-    kv2.set_string("key2_kv2".to_string(), "value2_kv2".to_string());
+    kv2.set_string("key2_kv2", "value2_kv2");
     kv2.remove("key2_kv2"); // Tombstone in kv2
 
-    kv2.set_string("common_key".to_string(), "value_common_kv2".to_string()); // Value in kv2
+    kv2.set_string("common_key", "value_common_kv2"); // Value in kv2
     kv2.remove("common_key"); // Tombstone for common_key in kv2 (other's tombstone wins)
 
     // Merge kv2 into kv1
@@ -967,7 +954,7 @@ fn test_kvnested_merge_dual_tombstones() {
 
     // What if one has a value and the other a tombstone (kv2's tombstone wins)
     let mut kv3 = KVNested::new();
-    kv3.set_string("val_then_tomb".to_string(), "i_existed".to_string());
+    kv3.set_string("val_then_tomb", "i_existed");
 
     let mut kv4 = KVNested::new();
     kv4.remove("val_then_tomb");
@@ -1501,7 +1488,7 @@ fn test_value_editor_root_operations() -> eideticadb::Result<()> {
 
     // Create a new nested map at root level
     let mut nested = KVNested::new();
-    nested.set_string("nested_key".to_string(), "nested_value".to_string());
+    nested.set_string("nested_key", "nested_value");
     root_editor
         .get_value_mut("nested")
         .set(NestedValue::Map(nested))?;
@@ -1550,12 +1537,12 @@ fn test_value_editor_delete_methods() -> eideticadb::Result<()> {
 
     // Set up a nested structure
     let mut user_profile = KVNested::new();
-    user_profile.set_string("name".to_string(), "Alice".to_string());
-    user_profile.set_string("email".to_string(), "alice@example.com".to_string());
+    user_profile.set_string("name", "Alice");
+    user_profile.set_string("email", "alice@example.com");
 
     let mut user_data = KVNested::new();
-    user_data.set("profile".to_string(), NestedValue::Map(user_profile));
-    user_data.set_string("role".to_string(), "admin".to_string());
+    user_data.set("profile", NestedValue::Map(user_profile));
+    user_data.set_string("role", "admin");
 
     store.set_value("user", NestedValue::Map(user_data))?;
 
@@ -1649,7 +1636,7 @@ fn test_value_editor_set_non_map_to_root() -> eideticadb::Result<()> {
 
     // Setting a map value should succeed
     let mut map = KVNested::new();
-    map.set_string("key".to_string(), "value".to_string());
+    map.set_string("key", "value");
     let map_result = root_editor.set(NestedValue::Map(map));
     assert!(map_result.is_ok());
 

@@ -76,7 +76,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
             let mut settings = eideticadb::data::KVOverWrite::new(); // Tree settings
-            settings.set("name".to_string(), tree_name.to_string());
+            settings.set("name", tree_name);
             let tree = db.new_tree(settings)?;
 
             // No initial commit needed here as subtrees like RowStore handle

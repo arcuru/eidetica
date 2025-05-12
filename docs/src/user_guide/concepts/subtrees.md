@@ -59,8 +59,8 @@ op.commit()?;
 ```rust
 // Create nested structures
 let mut preferences = KVNested::new();
-preferences.set_string("theme".to_string(), "dark".to_string());
-preferences.set_string("language".to_string(), "en".to_string());
+preferences.set_string("theme", "dark");
+preferences.set_string("language", "en");
 
 // Set this map as a value in the KVStore
 config.set_value("user_prefs", NestedValue::Map(preferences))?;
@@ -68,7 +68,7 @@ config.set_value("user_prefs", NestedValue::Map(preferences))?;
 // Later retrieve and modify the nested data
 if let NestedValue::Map(mut prefs) = config.get("user_prefs")? {
     // Modify the map
-    prefs.set_string("theme".to_string(), "light".to_string());
+    prefs.set_string("theme", "light");
 
     // Update the value in the store
     config.set_value("user_prefs", NestedValue::Map(prefs))?;

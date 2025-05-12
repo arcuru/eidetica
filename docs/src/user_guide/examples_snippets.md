@@ -51,7 +51,7 @@ let tree = match db.find_tree(tree_name) {
     Err(Error::NotFound) => {
         println!("Creating new tree: {}", tree_name);
         let mut settings = KVOverWrite::new();
-        settings.set("name".to_string(), tree_name.to_string());
+        settings.set("name", tree_name);
         db.new_tree(settings)?
     }
     Err(e) => return Err(e.into()), // Propagate other errors

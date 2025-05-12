@@ -34,7 +34,7 @@ let db = BaseDB::new(Box::new(backend));
 
 // Create a tree to store data
 let mut settings = eideticadb::data::KVOverWrite::new();
-settings.set("name".to_string(), "my_tree".to_string());
+settings.set("name", "my_tree");
 let tree = db.new_tree(settings)?;
 ```
 

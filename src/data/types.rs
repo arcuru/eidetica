@@ -51,24 +51,33 @@ impl KVOverWrite {
         Self::default()
     }
 
-    /// Create a KVOverWrite from an existing HashMap of String values
+    /// Create a KVOverWrite from an existing HashMap.
+    /// Keys and values should be convertible to Strings via `Into<String>`.
     /// Values will be wrapped in Some().
-    pub fn from_hashmap(initial_data: HashMap<String, String>) -> Self {
+    pub fn from_hashmap<K, V>(initial_data: HashMap<K, V>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
         let data = initial_data
             .into_iter()
-            .map(|(k, v)| (k, Some(v)))
+            .map(|(k, v)| (k.into(), Some(v.into())))
             .collect();
         Self { data }
     }
 
     /// Get a value by key. Returns None if the key does not exist or has been deleted (tombstone).
-    pub fn get(&self, key: &str) -> Option<&String> {
-        self.data.get(key).and_then(Option::as_ref)
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.data.get(key).and_then(Option::as_deref)
     }
 
     /// Set a key-value pair. This will overwrite any existing value or tombstone.
-    pub fn set(&mut self, key: String, value: String) -> &mut Self {
-        self.data.insert(key, Some(value));
+    pub fn set<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.data.insert(key.into(), Some(value.into()));
         self
     }
 
@@ -171,20 +180,33 @@ impl KVNested {
     }
 
     /// Set a key-value pair where the value is a NestedValue
-    pub fn set(&mut self, key: String, value: NestedValue) -> &mut Self {
-        self.data.insert(key, value);
+    pub fn set<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: Into<String>,
+        V: Into<NestedValue>,
+    {
+        self.data.insert(key.into(), value.into());
         self
     }
 
     /// Set a key-value pair where the value is a String
-    pub fn set_string(&mut self, key: String, value: String) -> &mut Self {
-        self.data.insert(key, NestedValue::String(value));
+    /// Key and value should be convertible to Strings via `Into<String>`.
+    pub fn set_string<K, V>(&mut self, key: K, value: V) -> &mut Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.data
+            .insert(key.into(), NestedValue::String(value.into()));
         self
     }
 
     /// Set a key-value pair where the value is a nested KVNested map
-    pub fn set_map(&mut self, key: String, value: KVNested) -> &mut Self {
-        self.data.insert(key, NestedValue::Map(value));
+    pub fn set_map<K>(&mut self, key: K, value: KVNested) -> &mut Self
+    where
+        K: Into<String>,
+    {
+        self.data.insert(key.into(), NestedValue::Map(value));
         self
     }
 
