@@ -54,7 +54,7 @@ struct SubTreeNode {
     pub data: RawData,
 }
 
-/// The fundamental unit of data in EideticaDB, representing a finalized, immutable Database Entry.
+/// The fundamental unit of data in Eidetica, representing a finalized, immutable Database Entry.
 ///
 /// An `Entry` represents a snapshot of data within a `Tree` and potentially one or more named `SubTree`s.
 /// It is content-addressable, meaning its `ID` is a cryptographic hash of its contents.
@@ -70,7 +70,7 @@ struct SubTreeNode {
 /// # Example
 ///
 /// ```
-/// # use eideticadb::entry::Entry;
+/// # use eidetica::entry::Entry;
 ///
 /// // Create a new entry using Entry::builder()
 /// let entry = Entry::builder("tree_root".to_string(), r#"{"settings":true}"#.to_string())
@@ -90,7 +90,7 @@ struct SubTreeNode {
 /// `Entry::builder()` for regular entries or `Entry::root_builder()` for new top-level tree roots.
 ///
 /// ```
-/// # use eideticadb::entry::{Entry, RawData};
+/// # use eidetica::entry::{Entry, RawData};
 /// # let root_id: String = "some_root_id".to_string();
 /// # let data: RawData = "{}".to_string();
 /// // For a regular entry:
@@ -247,7 +247,7 @@ impl Entry {
 /// The builder provides two patterns for construction:
 /// 1. Ownership chaining: Each method returns `self` for chained calls.
 ///    ```
-///    # use eideticadb::entry::Entry;
+///    # use eidetica::entry::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
 ///    let entry = Entry::builder(root_id, data)
@@ -258,7 +258,7 @@ impl Entry {
 ///
 /// 2. Mutable reference: Methods ending in `_mut` modify the builder in place.
 ///    ```
-///    # use eideticadb::entry::Entry;
+///    # use eidetica::entry::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
 ///    let mut builder = Entry::builder(root_id, data);
@@ -270,7 +270,7 @@ impl Entry {
 /// # Example
 ///
 /// ```
-/// use eideticadb::entry::Entry;
+/// use eidetica::entry::Entry;
 ///
 /// // Create a builder for a regular entry
 /// let entry = Entry::builder("root_id".to_string(), "main_data".to_string())

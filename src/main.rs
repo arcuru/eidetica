@@ -1,7 +1,7 @@
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
-use eideticadb::entry::Entry;
-use eideticadb::Tree;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
+use eidetica::entry::Entry;
+use eidetica::Tree;
 use signal_hook::flag as signal_flag;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -39,7 +39,7 @@ fn main() -> io::Result<()> {
         let _ = signal_flag::register(*signal, Arc::clone(&term_signal));
     }
 
-    println!("Welcome to EideticaDB REPL");
+    println!("Welcome to Eidetica REPL");
     println!(
         "Database is automatically loaded from and saved to '{}'",
         DB_FILE
@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
     print_help();
 
     // Create or load the in-memory backend
-    let backend: Box<dyn eideticadb::backend::Backend> =
+    let backend: Box<dyn eidetica::backend::Backend> =
         match InMemoryBackend::load_from_file(DB_FILE) {
             Ok(backend) => {
                 println!("Loaded database from {}", DB_FILE);
@@ -211,7 +211,7 @@ fn main() -> io::Result<()> {
     // Save the database automatically on exit, unless exit-no-save was used
     if save_on_exit {
         save_database(&db);
-        println!("Exiting EideticaDB REPL");
+        println!("Exiting Eidetica REPL");
     }
 
     Ok(())

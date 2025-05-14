@@ -1,6 +1,6 @@
 ### Entry
 
-Entries are the fundamental unit of data in EideticaDB. Once created, an `Entry` is immutable. Entries are constructed using the `EntryBuilder`. Each entry contains:
+Entries are the fundamental unit of data in Eidetica. Once created, an `Entry` is immutable. Entries are constructed using the `EntryBuilder`. Each entry contains:
 
 - **Tree**: Contains the root ID, parent references, tree metadata, and optional entry metadata
 - **Subtrees**: Vector of named subtrees (equivalent to tables), each with their own parents and data

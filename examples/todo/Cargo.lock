@@ -212,20 +212,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "eidetica-todo"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "eideticadb",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "eideticadb"
+name = "eidetica"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -234,6 +221,19 @@ dependencies = [
  "sha2",
  "thiserror",
  "typetag",
+ "uuid",
+]
+
+[[package]]
+name = "eidetica-todo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "eidetica",
+ "serde",
+ "serde_json",
  "uuid",
 ]
 

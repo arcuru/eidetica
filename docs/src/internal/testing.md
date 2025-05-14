@@ -1,16 +1,16 @@
 # Testing Architecture
 
-EideticaDB employs a comprehensive testing strategy to ensure reliability and correctness. This document outlines our testing approach, organization, and best practices for developers working with or contributing to the codebase.
+Eidetica employs a comprehensive testing strategy to ensure reliability and correctness. This document outlines our testing approach, organization, and best practices for developers working with or contributing to the codebase.
 
 ## Test Organization
 
-EideticaDB centralizes all its tests into a unified integration test binary located in the `tests/it/` directory. All testing is done through public interfaces, without separate unit tests, promoting interface stability.
+Eidetica centralizes all its tests into a unified integration test binary located in the `tests/it/` directory. All testing is done through public interfaces, without separate unit tests, promoting interface stability.
 
 The main categories of testing activities are:
 
 ### Comprehensive Integration Tests
 
-All tests for the EideticaDB crate are located in the `tests/it/` directory. These tests verify both:
+All tests for the Eidetica crate are located in the `tests/it/` directory. These tests verify both:
 
 - **Component behavior**: Validating individual components through their public interfaces
 - **System behavior**: Ensuring different components interact correctly when used together
@@ -23,11 +23,11 @@ The module structure within `tests/it/` mirrors the main library structure from 
 
 The `examples/` directory contains standalone applications that demonstrate library features. While not traditional tests, these examples serve as pragmatic validation of the API's usability and functionality in real-world scenarios.
 
-For instance, the `examples/todo/` directory contains a complete Todo application that demonstrates practical usage of EideticaDB, effectively acting as both documentation and functional validation.
+For instance, the `examples/todo/` directory contains a complete Todo application that demonstrates practical usage of Eidetica, effectively acting as both documentation and functional validation.
 
 ## Test Coverage Goals
 
-EideticaDB maintains ambitious test coverage targets:
+Eidetica maintains ambitious test coverage targets:
 
 - **Core Data Types**: 95%+ coverage for all core data types (`Entry`, `Tree`, `SubTree`)
 - **CRDT Implementations**: 100% coverage for all CRDT implementations
@@ -50,14 +50,16 @@ We exclusively test through public interfaces. This approach ensures API stabili
 
 ### Test Helpers
 
-EideticaDB provides a comprehensive set of test helpers in the `tests/it/helpers.rs` module to simplify test setup and common assertions:
+Eidetica provides a comprehensive set of test helpers in the `tests/it/helpers.rs` module to simplify test setup and common assertions:
 
 - **Tree Setup Helpers**:
+
   - `setup_tree()`: Creates a basic tree with an InMemoryBackend
   - `setup_tree_with_settings()`: Creates a tree with initial settings
   - `setup_tree_with_multiple_kvstores()`: Creates a tree with multiple KVStore subtrees and preset values
 
 - **Data Structure Helpers**:
+
   - `create_kvnested()`: Creates a KVNested with specified key-value pairs
   - `create_nested_kvnested()`: Creates a nested KVNested structure
   - `create_kvoverwrite()`: Creates a KVOverWrite with initial data
@@ -110,7 +112,7 @@ fn test_error_handling() {
 
 ## CRDT-Specific Testing
 
-Given EideticaDB's CRDT foundation, special attention is paid to testing CRDT properties:
+Given Eidetica's CRDT foundation, special attention is paid to testing CRDT properties:
 
 1. **Merge Semantics**: Validating that merge operations produce expected results
 2. **Conflict Resolution**: Ensuring conflicts resolve according to CRDT rules
@@ -128,7 +130,7 @@ cargo test
 task test
 ```
 
-EideticaDB uses [nextest](https://nexte.st/) for test execution, which provides improved test output and performance:
+Eidetica uses [nextest](https://nexte.st/) for test execution, which provides improved test output and performance:
 
 ```bash
 cargo nextest run --workspace --all-features
@@ -160,7 +162,7 @@ cargo nextest run tests::it::subtree
 
 ### Coverage Analysis
 
-EideticaDB uses [tarpaulin](https://github.com/xd009642/tarpaulin) for code coverage analysis:
+Eidetica uses [tarpaulin](https://github.com/xd009642/tarpaulin) for code coverage analysis:
 
 ```bash
 # Run with coverage analysis

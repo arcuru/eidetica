@@ -2,7 +2,7 @@
 
 While [Entries](entry.md) store subtree data as raw serialized strings (`RawData`), specific implementations provide structured ways to interact with this data via the [`Operation`](basedb_tree.md) context. These implementations handle serialization/deserialization and provide typed APIs.
 
-**Note on Naming:** Subtree names beginning with an underscore (e.g., `_settings`, `_root`) are reserved for internal EideticaDB use. Avoid using this prefix for user-defined subtrees to prevent conflicts.
+**Note on Naming:** Subtree names beginning with an underscore (e.g., `_settings`, `_root`) are reserved for internal Eidetica use. Avoid using this prefix for user-defined subtrees to prevent conflicts.
 
 Currently, the main specialized implementations are `RowStore<T>` and `KVStore`.
 

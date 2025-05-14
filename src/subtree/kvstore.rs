@@ -164,8 +164,8 @@ impl KVStore {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # use eideticadb::Tree;
-    /// # use eideticadb::subtree::KVStore;
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::KVStore;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation().unwrap();
     /// let store = op.get_subtree::<KVStore>("my_data").unwrap();

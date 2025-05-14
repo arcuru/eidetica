@@ -1,10 +1,10 @@
 # Entries & Trees
 
-The basic units of data and organization in EideticaDB.
+The basic units of data and organization in Eidetica.
 
 ## Entries
 
-Entries are the fundamental building blocks in EideticaDB. An Entry represents an atomic unit of data with the following characteristics:
+Entries are the fundamental building blocks in Eidetica. An Entry represents an atomic unit of data with the following characteristics:
 
 - **Content-addressable**: Each entry has a unique ID derived from its content, similar to Git commits.
 - **Immutable**: Once created, entries cannot be modified.
@@ -16,7 +16,7 @@ Entries function similar to commits in Git - they represent a point-in-time snap
 
 ## Trees
 
-A Tree in EideticaDB is a logical container for related entries, conceptually similar to:
+A Tree in Eidetica is a logical container for related entries, conceptually similar to:
 
 - A table in a relational database
 - A branch in a version control system
@@ -46,7 +46,7 @@ settings.set("version", "1.2.0")?;
 let new_entry_id = op.commit()?;
 ```
 
-When you commit an operation, EideticaDB:
+When you commit an operation, Eidetica:
 
 1. Creates a new Entry containing all changes
 2. Links it to the appropriate parent entries
@@ -75,7 +75,7 @@ Common settings include:
 
 ## Tips and History
 
-Trees in EideticaDB maintain a concept of "tips" - the latest entries in the tree's history:
+Trees in Eidetica maintain a concept of "tips" - the latest entries in the tree's history:
 
 ```rust
 // Get the current tip entries

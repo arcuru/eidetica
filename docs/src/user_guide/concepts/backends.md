@@ -1,10 +1,10 @@
 # Backends
 
-Backends in EideticaDB define how and where data is physically stored.
+Backends in Eidetica define how and where data is physically stored.
 
 ## The Backend Abstraction
 
-The Backend trait abstracts the underlying storage mechanism for EideticaDB entries. This separation of concerns allows the core database logic to remain independent of the specific storage details.
+The Backend trait abstracts the underlying storage mechanism for Eidetica entries. This separation of concerns allows the core database logic to remain independent of the specific storage details.
 
 Key responsibilities of a Backend:
 
@@ -45,13 +45,13 @@ let backend = InMemoryBackend::load_from_file(&path)?;
 let db = BaseDB::new(Box::new(backend));
 ```
 
-**Note:** The `InMemoryBackend` is the only backend implementation currently provided with EideticaDB.
+**Note:** The `InMemoryBackend` is the only backend implementation currently provided with Eidetica.
 
 <!-- TODO: Document other backend implementations when available (e.g., persistent storage, distributed backends) -->
 
 ## Backend Trait Responsibilities
 
-The `Backend` trait (`eideticadb::backend::Backend`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
+The `Backend` trait (`eidetica::backend::Backend`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
 
 - `get_tips(tree_id)`: Finds the latest entries in a specific `Tree`.
 - `get_subtree_tips(tree_id, subtree_name)`: Finds the latest entries _for a specific `Subtree`_ within a `Tree`.

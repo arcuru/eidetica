@@ -1,16 +1,16 @@
 # Todo CLI App
 
-A simple command-line Todo application that demonstrates the usage of EideticaDB.
+A simple command-line Todo application that demonstrates the usage of Eidetica.
 
 ## Overview
 
-This Todo CLI application demonstrates how EideticaDB can be used to build a simple database-backed application. The app allows you to:
+This Todo CLI application demonstrates how Eidetica can be used to build a simple database-backed application. The app allows you to:
 
 - Add new tasks to your todo list
 - Mark tasks as complete
 - List all tasks with their completion status
 
-All data is persisted to a local file using EideticaDB's InMemoryBackend with file serialization.
+All data is persisted to a local file using Eidetica's InMemoryBackend with file serialization.
 To specify which file it persists into, pass the option `--database-path /path/to/file.json`.
 
 ## Usage
@@ -47,7 +47,7 @@ eidetica-todo list
 
 ## How It Works
 
-This app uses several EideticaDB features:
+This app uses several Eidetica features:
 
 - **BaseDB**: The main database interface
 - **InMemoryBackend**: Memory storage with JSON file persistence
@@ -65,7 +65,7 @@ Each todo item has:
 - Creation timestamp
 - Completion timestamp (when completed)
 
-The unique ID for each task is provided by the EideticaDB RowStore, which automatically generates and manages primary keys.
+The unique ID for each task is provided by the Eidetica RowStore, which automatically generates and manages primary keys.
 
 ## Automated Test Script
 

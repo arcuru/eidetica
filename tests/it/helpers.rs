@@ -1,10 +1,10 @@
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
-use eideticadb::data::{KVNested, NestedValue};
-use eideticadb::subtree::KVStore;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
+use eidetica::data::{KVNested, NestedValue};
+use eidetica::subtree::KVStore;
 
 /// Creates a basic tree using an InMemoryBackend
-pub fn setup_tree() -> eideticadb::Tree {
+pub fn setup_tree() -> eidetica::Tree {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
     db.new_tree_default()
@@ -12,7 +12,7 @@ pub fn setup_tree() -> eideticadb::Tree {
 }
 
 /// Creates a tree with initial settings using KVNested
-pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eideticadb::Tree {
+pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let mut kv_nested = KVNested::new();
 
     for (key, value) in settings {
@@ -65,16 +65,16 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
 }
 
 /// Helper for checking NotFound errors
-pub fn assert_key_not_found(result: Result<NestedValue, eideticadb::Error>) {
+pub fn assert_key_not_found(result: Result<NestedValue, eidetica::Error>) {
     match result {
-        Err(eideticadb::Error::NotFound) => (), // Expected
+        Err(eidetica::Error::NotFound) => (), // Expected
         other => panic!("Expected NotFound error, got {:?}", other),
     }
 }
 
 /// Helper to create a KVOverWrite with initial data
-pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eideticadb::data::KVOverWrite {
-    let mut kv = eideticadb::data::KVOverWrite::new();
+pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::data::KVOverWrite {
+    let mut kv = eidetica::data::KVOverWrite::new();
 
     for (key, value) in values {
         kv.set(*key, *value);
@@ -149,7 +149,7 @@ pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
 /// Creates a tree with multiple KVStore subtrees and preset values
 pub fn setup_tree_with_multiple_kvstores(
     subtree_values: &[(&str, &[(&str, &str)])],
-) -> eideticadb::Tree {
+) -> eidetica::Tree {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 

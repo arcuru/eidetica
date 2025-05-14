@@ -4,14 +4,14 @@ Subtrees provide structured, type-safe access to different kinds of data within 
 
 ## The Subtree Concept
 
-In EideticaDB, Subtrees extend the Merkle-CRDT concept by explicitly partitioning data within each Entry. A Subtree:
+In Eidetica, Subtrees extend the Merkle-CRDT concept by explicitly partitioning data within each Entry. A Subtree:
 
 - Represents a specific type of data structure (like a key-value store or a collection of records)
 - Has a unique name within its parent Tree
 - Maintains its own history tracking
 - Is strongly typed (via Rust generics)
 
-Subtrees are what make EideticaDB practical for real applications, as they provide high-level, data-structure-aware interfaces on top of the core Entry and Tree concepts.
+Subtrees are what make Eidetica practical for real applications, as they provide high-level, data-structure-aware interfaces on top of the core Entry and Tree concepts.
 
 ## Why Subtrees?
 
@@ -206,7 +206,7 @@ Use cases for `RowStore`:
 
 ## Subtree Implementation Details
 
-Each Subtree implementation in EideticaDB:
+Each Subtree implementation in Eidetica:
 
 1. Implements the `SubTree` trait
 2. Provides methods appropriate for its data structure
@@ -226,7 +226,7 @@ Subtree implementations add their own methods on top of this minimal interface.
 
 ## Subtree History and Merging (CRDT Aspects)
 
-While EideticaDB uses Merkle-DAGs for overall history, the way data _within_ a Subtree is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
+While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Subtree is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
 
 Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
 
@@ -240,7 +240,7 @@ Each Subtree type implements its own merge logic, typically triggered implicitly
 
 ## Future Subtree Types
 
-EideticaDB's architecture allows for adding new Subtree implementations. Potential future types include:
+Eidetica's architecture allows for adding new Subtree implementations. Potential future types include:
 
 - **ObjectStore**: For storing large binary blobs.
 

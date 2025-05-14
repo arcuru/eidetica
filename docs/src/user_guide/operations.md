@@ -1,6 +1,6 @@
 # Operations: Atomic Changes
 
-In EideticaDB, all modifications to the data stored within a `Tree`'s `Subtree`s happen through an **`Operation`**. This is a fundamental concept ensuring atomicity and providing a consistent mechanism for interacting with your data.
+In Eidetica, all modifications to the data stored within a `Tree`'s `Subtree`s happen through an **`Operation`**. This is a fundamental concept ensuring atomicity and providing a consistent mechanism for interacting with your data.
 
 Internally, the `Operation` corresponds to the `AtomicOp` struct.
 

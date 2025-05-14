@@ -1,10 +1,10 @@
 use crate::helpers::*;
-use eideticadb::backend::Backend;
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::constants::SETTINGS;
-use eideticadb::data::{KVNested, NestedValue};
-use eideticadb::subtree::{KVStore, SubTree};
-use eideticadb::tree::Tree;
+use eidetica::backend::Backend;
+use eidetica::backend::InMemoryBackend;
+use eidetica::constants::SETTINGS;
+use eidetica::data::{KVNested, NestedValue};
+use eidetica::subtree::{KVStore, SubTree};
+use eidetica::tree::Tree;
 use std::sync::{Arc, Mutex};
 
 #[test]

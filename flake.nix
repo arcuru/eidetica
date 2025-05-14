@@ -1,5 +1,5 @@
 {
-  description = "EideticaDB - Remember Everything";
+  description = "Eidetica: Remember Everything";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -84,15 +84,15 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         # Build the actual crate itself, reusing the cargoArtifacts
-        eideticadb = craneLib.buildPackage (commonArgs
+        eidetica = craneLib.buildPackage (commonArgs
           // {
             doCheck = false; # Tests are run as a separate build with nextest
-            meta.mainProgram = "eideticadb";
+            meta.mainProgram = "eidetica";
           });
       in {
         packages = {
-          default = eideticadb;
-          eideticadb = eideticadb;
+          default = eidetica;
+          eidetica = eidetica;
 
           # Check code coverage with tarpaulin
           # This is currently broken because the tests require the running database
@@ -126,7 +126,7 @@
         };
 
         checks = {
-          inherit eideticadb;
+          inherit eidetica;
           # Build almost every package in checks, with exceptions:
           # - coverage: It requires a full rebuild, and only needs to be run occasionally
           # - audit: Requires remote access
@@ -155,16 +155,16 @@
         };
 
         apps = rec {
-          default = eideticadb;
-          eideticadb.program = self.packages.${system}.eideticadb;
+          default = eidetica;
+          eidetica.program = self.packages.${system}.eidetica;
         };
 
         overlayAttrs = {
-          inherit (config.packages) eideticadb;
+          inherit (config.packages) eidetica;
         };
 
         devShells.default = pkgs.mkShell {
-          name = "eideticadb";
+          name = "eidetica";
           shellHook = ''
             echo ---------------------
             task --list
@@ -209,7 +209,7 @@
           CARGO_PROFILE_RELEASE_DEBUG = true;
 
           # Set the debug level for this crate while developing
-          RUST_LOG = "eideticadb=debug";
+          RUST_LOG = "eidetica=debug";
         };
       };
     };

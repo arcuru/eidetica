@@ -1,6 +1,6 @@
 use crate::helpers::*;
-use eideticadb::data::{KVNested, NestedValue};
-use eideticadb::subtree::KVStore;
+use eidetica::data::{KVNested, NestedValue};
+use eidetica::subtree::KVStore;
 
 #[test]
 fn test_kvstore_set_and_get_via_op() {

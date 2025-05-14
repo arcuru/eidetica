@@ -1,5 +1,5 @@
-use eideticadb::constants::ROOT;
-use eideticadb::entry::Entry;
+use eidetica::constants::ROOT;
+use eidetica::entry::Entry;
 
 #[test]
 fn test_entry_creation() {

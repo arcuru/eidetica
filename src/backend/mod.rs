@@ -12,7 +12,7 @@ mod in_memory;
 
 pub use in_memory::InMemoryBackend;
 
-/// Backend trait abstracting the underlying storage mechanism for EideticaDB entries.
+/// Backend trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
 /// and querying entries and their relationships within trees and subtrees.

@@ -1,4 +1,4 @@
-/*! Integration tests for EideticaDB.
+/*! Integration tests for Eidetica.
  *
  * This test suite is organized as a single integration test binary
  * following the pattern described by matklad in

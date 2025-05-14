@@ -1,4 +1,4 @@
-//! Constants used throughout the EideticaDB library.
+//! Constants used throughout the Eidetica library.
 //!
 //! This module provides central definitions for internal strings and other constants
 //! used within the library, especially for reserved subtree names.

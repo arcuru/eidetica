@@ -1,9 +1,9 @@
-use eideticadb::backend::Backend;
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
-use eideticadb::constants::SETTINGS;
-use eideticadb::subtree::KVStore;
-use eideticadb::Error;
+use eidetica::backend::Backend;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
+use eidetica::constants::SETTINGS;
+use eidetica::subtree::KVStore;
+use eidetica::Error;
 
 #[test]
 fn test_new_db_and_tree() {
@@ -168,7 +168,7 @@ fn test_basic_subtree_modification() {
     );
 
     match data_viewer.get("non_existent_key") {
-        Err(eideticadb::Error::NotFound) => (),
+        Err(eidetica::Error::NotFound) => (),
         other => panic!("Expected NotFound error, got {:?}", other),
     }
 }

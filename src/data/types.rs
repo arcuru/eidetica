@@ -2,7 +2,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Marker trait for data types that can be stored in EideticaDB.
+/// Marker trait for data types that can be stored in Eidetica.
 ///
 /// Requires `Serialize` and `Deserialize` for conversion to/from [`RawData`](crate::entry::RawData).
 /// Users can implement this for any type they wish to store, typically alongside `serde::Serialize` and `serde::Deserialize`.
@@ -11,7 +11,7 @@ pub trait Data: Serialize + for<'de> Deserialize<'de> {}
 /// Trait for Conflict-free Replicated Data Types (CRDTs).
 ///
 /// CRDTs define a deterministic `merge` operation that combines two states
-/// into a new state, resolving conflicts automatically. EideticaDB uses this
+/// into a new state, resolving conflicts automatically. Eidetica uses this
 /// trait to merge data from different branches of the history.
 ///
 /// Implementors must also implement `Default` and `Data`.

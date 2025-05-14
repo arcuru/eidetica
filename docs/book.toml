@@ -1,6 +1,6 @@
 [book]
 authors = ["Patrick Jackson"]
-title = "EideticaDB Documentation"
+title = "Eidetica Documentation"
 language = "en"
 
 [output.html]

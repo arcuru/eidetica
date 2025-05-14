@@ -1,20 +1,20 @@
-# Developer Walkthrough: Building with EideticaDB
+# Developer Walkthrough: Building with Eidetica
 
-This guide provides a practical walkthrough for developers starting with EideticaDB, using the simple command-line [Todo Example](../../examples/todo/) to illustrate core concepts.
+This guide provides a practical walkthrough for developers starting with Eidetica, using the simple command-line [Todo Example](../../examples/todo/) to illustrate core concepts.
 
 ## Core Concepts
 
-EideticaDB organizes data differently from traditional relational databases. Here's a breakdown of the key components you'll interact with, illustrated by the Todo example (`examples/todo/src/main.rs`).
+Eidetica organizes data differently from traditional relational databases. Here's a breakdown of the key components you'll interact with, illustrated by the Todo example (`examples/todo/src/main.rs`).
 
 ### 1. The Database (`BaseDB`)
 
-The `BaseDB` is your main entry point to interacting with an EideticaDB database instance. It manages the underlying storage (the "backend") and provides access to data structures called Trees.
+The `BaseDB` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "backend") and provides access to data structures called Trees.
 
 In the Todo example, we initialize or load the database using an `InMemoryBackend`, which can be persisted to a file:
 
 ```rust
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
 use anyhow::Result;
 
@@ -56,8 +56,8 @@ A `Tree` is a primary organizational unit within a `BaseDB`. Think of it somewha
 The Todo example uses a single Tree named "todo":
 
 ```rust
-use eideticadb::basedb::BaseDB;
-use eideticadb::Tree;
+use eidetica::basedb::BaseDB;
+use eidetica::Tree;
 use anyhow::Result;
 
 fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
@@ -72,10 +72,10 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             println!("Found existing todo tree.");
             Ok(trees.pop().unwrap()) // Safe unwrap as find_tree errors if empty
         }
-        Err(eideticadb::Error::NotFound) => {
+        Err(eidetica::Error::NotFound) => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eideticadb::data::KVOverWrite::new(); // Tree settings
+            let mut settings = eidetica::data::KVOverWrite::new(); // Tree settings
             settings.set("name", tree_name);
             let tree = db.new_tree(settings)?;
 
@@ -100,7 +100,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
 All modifications to a `Tree`'s data happen within an `Operation`. Operations ensure atomicity – similar to transactions in traditional databases. Changes made within an operation are only applied to the Tree when the operation is successfully committed.
 
 ```rust
-use eideticadb::Tree;
+use eidetica::Tree;
 use anyhow::Result;
 
 fn some_data_modification(tree: &Tree) -> Result<()> {
@@ -124,14 +124,14 @@ Read-only access also typically uses an `Operation` to ensure a consistent view 
 
 - **Analogy:** You can think of a Subtree _loosely_ like a table or a collection within a Tree.
 - **Flexibility:** Subtrees aren't tied to a single data type or structure. They are generic containers identified by a name (e.g., "todos").
-- **Implementations:** EideticaDB provides several `Subtree` implementations for common data patterns. The Todo example uses `RowStore<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
+- **Implementations:** Eidetica provides several `Subtree` implementations for common data patterns. The Todo example uses `RowStore<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
 - **Extensibility:** You can implement your own `Subtree` types to model complex or domain-specific data structures.
 
 The Todo example uses a `RowStore` to store `Todo` structs:
 
 ```rust
-use eideticadb::{Tree, Error};
-use eideticadb::subtree::RowStore;
+use eidetica::{Tree, Error};
+use eidetica::subtree::RowStore;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use anyhow::{anyhow, Result};
@@ -182,7 +182,7 @@ fn list_todos(tree: &Tree) -> Result<()> {
 
 ### 5. Data Modeling (`Serialize`, `Deserialize`)
 
-EideticaDB leverages the `serde` framework for data serialization. Any data structure you want to store needs to implement `serde::Serialize` and `serde::Deserialize`. This allows you to store complex Rust types directly.
+Eidetica leverages the `serde` framework for data serialization. Any data structure you want to store needs to implement `serde::Serialize` and `serde::Deserialize`. This allows you to store complex Rust types directly.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)] // Serde traits
@@ -206,7 +206,7 @@ cd examples/todo
 cargo build
 
 # Run commands (this will create todo_db.json)
-cargo run -- add "Learn EideticaDB"
+cargo run -- add "Learn Eidetica"
 cargo run -- list
 # Note the ID printed
 cargo run -- complete <id_from_list>
@@ -215,4 +215,4 @@ cargo run -- list
 
 Refer to the example's [README.md](../../examples/todo/README.md) and [test.sh](../../examples/todo/test.sh) for more usage details.
 
-This walkthrough provides a starting point. Explore the EideticaDB documentation and other examples to learn about more advanced features like different subtree types, history traversal, and distributed capabilities.
+This walkthrough provides a starting point. Explore the Eidetica documentation and other examples to learn about more advanced features like different subtree types, history traversal, and distributed capabilities.

@@ -1,6 +1,6 @@
 use crate::helpers::*;
-use eideticadb::constants::SETTINGS;
-use eideticadb::subtree::KVStore;
+use eidetica::constants::SETTINGS;
+use eidetica::subtree::KVStore;
 
 #[test]
 fn test_insert_into_tree() {

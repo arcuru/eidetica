@@ -1,12 +1,12 @@
 [package]
-name = "eideticadb"
+name = "eidetica"
 version = "0.1.0"
 edition = "2021"
 authors = ["Patrick Jackson <patrick@jackson.dev>"]
 readme = "README.md"
 license-file = "LICENSE.txt"
-description = "EideticaDB - Remember everything."
-repository = "https://github.com/arcuru/EideticaDB"
+description = "Eidetica - Remember everything."
+repository = "https://github.com/arcuru/eidetica"
 homepage = "https://eidetica.dev"
 
 [dependencies]
@@ -24,7 +24,7 @@ version = "0.3"
 optional = true
 
 [[bin]]
-name = "eideticadb"
+name = "eidetica"
 required-features = ["signal-hook"]
 
 # Profile configuration for optimizing builds

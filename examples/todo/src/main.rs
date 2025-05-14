@@ -1,12 +1,12 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
-use eideticadb::data::KVNested;
-use eideticadb::subtree::RowStore;
-use eideticadb::Error;
-use eideticadb::Tree;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
+use eidetica::data::KVNested;
+use eidetica::subtree::RowStore;
+use eidetica::Error;
+use eidetica::Tree;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

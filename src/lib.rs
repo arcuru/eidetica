@@ -1,10 +1,10 @@
 //!
-//! EideticaDB: A decentralized database designed to "Remember Everything".
-//! This library provides the core components for building and interacting with EideticaDB instances.
+//! Eidetica: A decentralized database designed to "Remember Everything".
+//! This library provides the core components for building and interacting with Eidetica instances.
 //!
 //! ## Core Concepts
 //!
-//! EideticaDB is built around several key concepts:
+//! Eidetica is built around several key concepts:
 //!
 //! * **Entries (`entry::Entry`)**: The fundamental, content-addressable unit of data. Entries contain data for a main tree and optional named subtrees.
 //! * **Trees (`basedb::Tree`)**: Analogous to tables or branches, representing a history of related entries identified by a root entry ID.
@@ -28,10 +28,10 @@ pub mod tree;
 /// Re-export the `Tree` struct for easier access.
 pub use tree::Tree;
 
-/// Result type used throughout the EideticaDB library.
+/// Result type used throughout the Eidetica library.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Common error type for the EideticaDB library.
+/// Common error type for the Eidetica library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Entry not found")]

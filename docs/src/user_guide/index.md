@@ -1,10 +1,10 @@
 # User Guide
 
-Welcome to the EideticaDB User Guide. This guide will help you understand and use EideticaDB effectively in your applications.
+Welcome to the Eidetica User Guide. This guide will help you understand and use Eidetica effectively in your applications.
 
-## What is EideticaDB?
+## What is Eidetica?
 
-EideticaDB is a Rust library for managing structured data with built-in history tracking. It combines concepts from distributed systems, Merkle-CRDTs, and traditional databases to provide a unique approach to data management:
+Eidetica is a Rust library for managing structured data with built-in history tracking. It combines concepts from distributed systems, Merkle-CRDTs, and traditional databases to provide a unique approach to data management:
 
 - **Efficient data storage** with customizable [Backends](concepts/backends.md)
 - **History tracking** for all changes via immutable [Entries](concepts/entries_trees.md) forming a DAG
@@ -28,7 +28,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
 
 ## Quick Overview: The Core Flow
 
-EideticaDB revolves around a few key components working together:
+Eidetica revolves around a few key components working together:
 
 1.  **`Backend`**: You start by choosing or creating a storage `Backend` (e.g., `InMemoryBackend`).
 2.  **`BaseDB`**: You create a `BaseDB` instance, providing it the `Backend`. This is your main database handle.
@@ -40,9 +40,9 @@ EideticaDB revolves around a few key components working together:
 ## Basic Usage Pattern (Conceptual Code)
 
 ```rust
-use eideticadb::{BaseDB, Tree, Error};
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::subtree::{KVStore, RowStore};
+use eidetica::{BaseDB, Tree, Error};
+use eidetica::backend::InMemoryBackend;
+use eidetica::subtree::{KVStore, RowStore};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tree = match db.find_tree("my_tree") {
         Ok(mut trees) => trees.pop().unwrap(), // Found existing
         Err(Error::NotFound) => {
-            let mut settings = eideticadb::data::KVOverWrite::new();
+            let mut settings = eidetica::data::KVOverWrite::new();
             settings.set("name".to_string(), "my_tree".to_string());
             db.new_tree(settings)? // Create new
         }
@@ -96,6 +96,6 @@ See [Operations](operations.md) and [Code Examples](examples_snippets.md) for mo
 
 ## Project Status
 
-EideticaDB is currently under active development. The core functionality is working, but APIs are considered **experimental** and may change in future releases. It is suitable for evaluation and prototyping, but not yet recommended for production systems requiring long-term API stability.
+Eidetica is currently under active development. The core functionality is working, but APIs are considered **experimental** and may change in future releases. It is suitable for evaluation and prototyping, but not yet recommended for production systems requiring long-term API stability.
 
 <!-- TODO: Add links to versioning policy or release notes once available -->

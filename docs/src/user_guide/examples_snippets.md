@@ -1,14 +1,14 @@
 # Code Examples
 
-This page provides focused code snippets for common tasks in EideticaDB.
+This page provides focused code snippets for common tasks in Eidetica.
 
-_Assumes basic setup like `use eideticadb::{BaseDB, Tree, Error, ...};` and error handling (`?`) for brevity._
+_Assumes basic setup like `use eidetica::{BaseDB, Tree, Error, ...};` and error handling (`?`) for brevity._
 
 ## 1. Initializing the Database (`BaseDB`)
 
 ```rust
-use eideticadb::backend::InMemoryBackend;
-use eideticadb::basedb::BaseDB;
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
 
 // Option A: Create a new, empty in-memory database
@@ -38,7 +38,7 @@ if db_path.exists() {
 ## 2. Creating or Loading a Tree
 
 ```rust
-use eideticadb::data::KVOverWrite;
+use eidetica::data::KVOverWrite;
 
 let db: BaseDB = /* obtained from step 1 */;
 let tree_name = "my_app_data";
@@ -63,7 +63,7 @@ println!("Using Tree with root ID: {}", tree.root_id());
 ## 3. Writing Data (KVStore Example)
 
 ```rust
-use eideticadb::subtree::KVStore;
+use eidetica::subtree::KVStore;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -93,7 +93,7 @@ println!("KVStore changes committed in entry: {}", entry_id);
 ## 4. Writing Data (RowStore Example)
 
 ```rust
-use eideticadb::subtree::RowStore;
+use eidetica::subtree::RowStore;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -142,7 +142,7 @@ println!("RowStore changes committed in entry: {}", entry_id);
 ## 5. Reading Data (KVStore Viewer)
 
 ```rust
-use eideticadb::subtree::KVStore;
+use eidetica::subtree::KVStore;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -168,7 +168,7 @@ match config_viewer.get("retry_count") {
 ## 6. Reading Data (RowStore Viewer)
 
 ```rust
-use eideticadb::subtree::RowStore;
+use eidetica::subtree::RowStore;
 // Assume Task struct from example 4
 
 let tree: Tree = /* obtained from step 2 */;
@@ -202,7 +202,7 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust
-use eideticadb::subtree::{KVStore, NestedValue, KVNested};
+use eidetica::subtree::{KVStore, NestedValue, KVNested};
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -318,7 +318,7 @@ if let Ok(user_data) = viewer_store.get("user123") {
 ## 8. Saving the Database (InMemoryBackend)
 
 ```rust
-use eideticadb::backend::InMemoryBackend;
+use eidetica::backend::InMemoryBackend;
 use std::path::PathBuf;
 
 let db: BaseDB = /* database instance */;

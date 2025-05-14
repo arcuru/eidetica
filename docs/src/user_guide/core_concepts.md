@@ -1,21 +1,21 @@
 # Core Concepts
 
-Understanding the fundamental ideas behind EideticaDB will help you use it effectively and appreciate its unique capabilities.
+Understanding the fundamental ideas behind Eidetica will help you use it effectively and appreciate its unique capabilities.
 
 ## Architectural Foundation
 
-EideticaDB builds on several powerful concepts from distributed systems and database design:
+Eidetica builds on several powerful concepts from distributed systems and database design:
 
 1. **Content-addressable storage**: Data is identified by the hash of its content, similar to Git and IPFS
 2. **Directed acyclic graphs (DAGs)**: Changes form a graph structure rather than a linear history
 3. **Conflict-free replicated data types (CRDTs)**: Data structures that can merge concurrent changes automatically
 4. **Immutable data structures**: Once created, data is never modified, only new versions are added
 
-These foundations enable EideticaDB's key features: robust history tracking, efficient synchronization, and eventual consistency in distributed environments.
+These foundations enable Eidetica's key features: robust history tracking, efficient synchronization, and eventual consistency in distributed environments.
 
 ## Merkle-CRDTs
 
-EideticaDB is inspired by the Merkle-CRDT concept from OrbitDB, which combines:
+Eidetica is inspired by the Merkle-CRDT concept from OrbitDB, which combines:
 
 - **Merkle DAGs**: A data structure where each node contains a cryptographic hash of its children, creating a tamper-evident history
 - **CRDTs**: Data types designed to resolve conflicts automatically when concurrent changes occur
@@ -34,7 +34,7 @@ This approach allows for:
 
 ## Data Model Layers
 
-EideticaDB organizes data in a layered architecture:
+Eidetica organizes data in a layered architecture:
 
 ```
 +-----------------------+
@@ -62,7 +62,7 @@ Each layer builds on the ones below, providing progressively higher-level abstra
 
 ## Entries and the DAG
 
-At the core of EideticaDB is a directed acyclic graph (DAG) of immutable Entry objects:
+At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry objects:
 
 - Each Entry represents a point-in-time snapshot of data and has:
 
@@ -78,20 +78,20 @@ At the core of EideticaDB is a directed acyclic graph (DAG) of immutable Entry o
 
 ## IPFS Inspiration and Future Direction
 
-While EideticaDB draws inspiration from IPFS (InterPlanetary File System), it currently uses its own implementation patterns:
+While Eidetica draws inspiration from IPFS (InterPlanetary File System), it currently uses its own implementation patterns:
 
 - IPFS is a content-addressed, distributed storage system where data is identified by cryptographic hashes
-- OrbitDB (which inspired EideticaDB) uses IPFS for backend storage and distribution
+- OrbitDB (which inspired Eidetica) uses IPFS for backend storage and distribution
 
-EideticaDB's future plans include:
+Eidetica's future plans include:
 
-- Developing efficient internal APIs for transferring objects between EideticaDB instances
+- Developing efficient internal APIs for transferring objects between Eidetica instances
 - Potential IPFS-compatible addressing for distributed storage
 - More efficient synchronization mechanisms than traditional IPFS
 
 ## Subtrees: A Core Innovation
 
-EideticaDB extends the Merkle-CRDT concept with Subtrees, which partition data within each Entry:
+Eidetica extends the Merkle-CRDT concept with Subtrees, which partition data within each Entry:
 
 - Each subtree is a named, typed data structure within a Tree
 - Subtrees can use different data models and conflict resolution strategies
@@ -112,7 +112,7 @@ Planned future subtrees include:
 
 ## Atomic Operations and Transactions
 
-All changes in EideticaDB happen through atomic Operations:
+All changes in Eidetica happen through atomic Operations:
 
 1. An Operation is created from a Tree
 2. Subtrees are accessed and modified through the Operation
@@ -123,7 +123,7 @@ This transaction-like model ensures data consistency while allowing complex oper
 
 ## Settings as Subtrees
 
-In EideticaDB, even configuration is stored as a subtree:
+In Eidetica, even configuration is stored as a subtree:
 
 - A Tree's settings are stored in a special "settings" KV Store subtree
 - This approach unifies the data model and allows settings to participate in history tracking
@@ -131,18 +131,18 @@ In EideticaDB, even configuration is stored as a subtree:
 
 ## CRDT Properties and Eventual Consistency
 
-EideticaDB is designed with distributed systems in mind:
+Eidetica is designed with distributed systems in mind:
 
 - All data structures have CRDT properties for automatic conflict resolution
 - Different subtree types implement appropriate CRDT strategies:
   - KVStore uses last-writer-wins (LWW) with implicit timestamps
   - RowStore preserves all items, with LWW for updates to the same item
 
-These properties ensure that when EideticaDB instances synchronize, they eventually reach a consistent state regardless of the order in which updates are received.
+These properties ensure that when Eidetica instances synchronize, they eventually reach a consistent state regardless of the order in which updates are received.
 
 ## History Tracking and Time Travel
 
-One of EideticaDB's most powerful features is comprehensive history tracking:
+One of Eidetica's most powerful features is comprehensive history tracking:
 
 - All changes are preserved in the Entry DAG
 - "Tips" represent the latest state of a Tree or Subtree
@@ -159,7 +159,7 @@ This design allows for future capabilities like:
 
 ## Current Status and Roadmap
 
-EideticaDB is under active development, and some features mentioned in this documentation are still in planning or development stages. Here's a summary of the current status:
+Eidetica is under active development, and some features mentioned in this documentation are still in planning or development stages. Here's a summary of the current status:
 
 ### Implemented Features
 

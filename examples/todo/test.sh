@@ -5,7 +5,7 @@ set -e
 DB_FILE="test_todo.json"
 CMD="cargo run --quiet -- --database-path $DB_FILE"
 
-echo "=== EideticaDB Todo App Test ==="
+echo "=== Eidetica Todo App Test ==="
 echo
 
 # Clean up previous test database
