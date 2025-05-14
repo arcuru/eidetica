@@ -67,3 +67,8 @@ tasks:
     cmds:
       - cd examples/todo && cargo build --all-targets --all-features
       - cd examples/todo && cargo clippy --all-targets --all-features -- -D warnings
+  min-versions:
+    desc: Check the minimum versions of the dependencies
+    cmds:
+      - cargo update -Z minimal-versions && cargo build --workspace --all-targets --all-features && cargo nextest run --workspace --all-features
+      # We do _not_ want to run the clippy check here, because it will fail

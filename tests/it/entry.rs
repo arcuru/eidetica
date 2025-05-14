@@ -160,7 +160,7 @@ fn test_entry_with_multiple_subtrees() {
 
     // Add parents to each subtree
     for (name, _) in subtrees.iter() {
-        let parent_id = format!("parent_for_{}", name);
+        let parent_id = format!("parent_for_{name}");
         builder.set_subtree_parents_mut(*name, vec![parent_id.clone()]);
     }
 
@@ -183,7 +183,7 @@ fn test_entry_with_multiple_subtrees() {
 
     // Verify parents were set correctly
     for (name, _) in subtrees.iter() {
-        let parent_id = format!("parent_for_{}", name);
+        let parent_id = format!("parent_for_{name}");
         let parents = entry.subtree_parents(name).unwrap();
         assert_eq!(parents.len(), 1);
         assert_eq!(parents[0], parent_id);

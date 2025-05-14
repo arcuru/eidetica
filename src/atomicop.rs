@@ -81,8 +81,7 @@ impl AtomicOp {
     pub(crate) fn update_subtree(&self, subtree: &str, data: &str) -> Result<()> {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref.as_mut().ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;
@@ -127,8 +126,7 @@ impl AtomicOp {
         {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref.as_mut().ok_or_else(|| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Error::Io(std::io::Error::other(
                     "Operation has already been committed",
                 ))
             })?;
@@ -169,8 +167,7 @@ impl AtomicOp {
     {
         let builder_ref = self.entry_builder.borrow();
         let builder = builder_ref.as_ref().ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;
@@ -210,8 +207,7 @@ impl AtomicOp {
         // Get the entry builder to get parent pointers
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref.as_mut().ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;
@@ -271,8 +267,7 @@ impl AtomicOp {
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
         let builder = builder_cell.as_ref().ok_or_else(|| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;

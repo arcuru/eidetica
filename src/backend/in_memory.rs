@@ -43,12 +43,8 @@ impl InMemoryBackend {
     /// # Returns
     /// A `Result` indicating success or an I/O or serialization error.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let json = serde_json::to_string(self).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to serialize: {}", e),
-            ))
-        })?;
+        let json = serde_json::to_string(self)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to serialize: {e}"))))?;
 
         fs::write(path, json).map_err(Error::Io)?;
         Ok(())
@@ -70,12 +66,8 @@ impl InMemoryBackend {
         }
 
         let json = fs::read_to_string(path).map_err(Error::Io)?;
-        serde_json::from_str(&json).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to deserialize: {}", e),
-            ))
-        })
+        serde_json::from_str(&json)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to deserialize: {e}"))))
     }
 
     /// Returns a vector containing the IDs of all entries currently stored in the backend.
@@ -222,13 +214,9 @@ impl InMemoryBackend {
         while let Some(current_id) = queue.pop_front() {
             processed_nodes_count += 1;
             let current_height = *heights.get(&current_id).ok_or_else(|| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "BFS height calculation: Height missing for node {}",
-                        current_id
-                    )
-                    .as_str(),
+                Error::Io(std::io::Error::other(
+                    format!("BFS height calculation: Height missing for node {current_id}")
+                        .as_str(),
                 ))
             })?;
 
@@ -255,18 +243,15 @@ impl InMemoryBackend {
                             }
                         } else {
                             // This indicates an issue: degree already 0 but node is being processed as child.
-                            return Err(Error::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("BFS height calculation: Negative in-degree detected for child {}", child_id).as_str()
+                            return Err(Error::Io(std::io::Error::other(
+                                format!("BFS height calculation: Negative in-degree detected for child {child_id}").as_str()
                             )));
                         }
                     } else {
                         // This indicates an inconsistency: child_id was in children_map but not in_degree map
-                        return Err(Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(Error::Io(std::io::Error::other(
                             format!(
-                                "BFS height calculation: In-degree missing for child {}",
-                                child_id
+                                "BFS height calculation: In-degree missing for child {child_id}"
                             )
                             .as_str(),
                         )));
@@ -277,9 +262,11 @@ impl InMemoryBackend {
 
         // 4. Check for cycles (if not all nodes were processed) - Assumes DAG
         if processed_nodes_count != nodes_in_context.len() {
-            panic!("calculate_heights processed {} nodes, but found {} nodes in context. Potential cycle or disconnected graph portion detected.",
-                 processed_nodes_count, nodes_in_context.len()
-             );
+            panic!(
+                "calculate_heights processed {} nodes, but found {} nodes in context. Potential cycle or disconnected graph portion detected.",
+                processed_nodes_count,
+                nodes_in_context.len()
+            );
         }
 
         // Ensure the final map only contains heights for nodes within the specified context

@@ -152,7 +152,7 @@ impl Entry {
         // convert the hash to a string
         let hash = hasher.finalize();
         // convert the hash to a hex string
-        format!("{:x}", hash)
+        format!("{hash:x}")
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.

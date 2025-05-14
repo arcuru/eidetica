@@ -76,8 +76,7 @@ impl Tree {
     /// Helper function to lock the backend mutex.
     pub(crate) fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
         self.backend.lock().map_err(|_| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            Error::Io(std::io::Error::other(
                 "Failed to lock backend in Tree::lock_backend",
             ))
         })

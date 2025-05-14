@@ -57,10 +57,10 @@ pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> KVNested
 pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
     match store
         .get(key)
-        .unwrap_or_else(|_| panic!("Failed to get key {}", key))
+        .unwrap_or_else(|_| panic!("Failed to get key {key}"))
     {
         NestedValue::String(value) => assert_eq!(value, expected),
-        _ => panic!("Expected string value for key {}", key),
+        _ => panic!("Expected string value for key {key}"),
     }
 }
 
@@ -68,7 +68,7 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
 pub fn assert_key_not_found(result: Result<NestedValue, eidetica::Error>) {
     match result {
         Err(eidetica::Error::NotFound) => (), // Expected
-        other => panic!("Expected NotFound error, got {:?}", other),
+        other => panic!("Expected NotFound error, got {other:?}"),
     }
 }
 
@@ -92,8 +92,8 @@ pub fn assert_nested_value(kv: &KVNested, path: &[&str], expected: &str) {
     for key in path.iter().take(last_idx) {
         match current.get(key) {
             Some(NestedValue::Map(map)) => current = map,
-            Some(other) => panic!("Expected map at path element '{}', got {:?}", key, other),
-            None => panic!("Path element '{}' not found in nested structure", key),
+            Some(other) => panic!("Expected map at path element '{key}', got {other:?}"),
+            None => panic!("Path element '{key}' not found in nested structure"),
         }
     }
 
@@ -101,14 +101,8 @@ pub fn assert_nested_value(kv: &KVNested, path: &[&str], expected: &str) {
     let final_key = path[last_idx];
     match current.get(final_key) {
         Some(NestedValue::String(value)) => assert_eq!(value, expected),
-        Some(other) => panic!(
-            "Expected string at path end '{}', got {:?}",
-            final_key, other
-        ),
-        None => panic!(
-            "Final path element '{}' not found in nested structure",
-            final_key
-        ),
+        Some(other) => panic!("Expected string at path end '{final_key}', got {other:?}"),
+        None => panic!("Final path element '{final_key}' not found in nested structure"),
     }
 }
 
@@ -126,10 +120,7 @@ pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
         match current.get(key) {
             Some(NestedValue::Map(map)) => current = map,
             Some(NestedValue::Deleted) => return, // Found tombstone
-            Some(other) => panic!(
-                "Unexpected value at path element '{}', got {:?}",
-                key, other
-            ),
+            Some(other) => panic!("Unexpected value at path element '{key}', got {other:?}"),
             None => return, // Path doesn't exist, which is valid for a deleted path
         }
     }
@@ -139,10 +130,7 @@ pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
     match current.get(final_key) {
         Some(NestedValue::Deleted) => (), // Tombstone, as expected
         None => (),                       // Key doesn't exist, which is valid
-        Some(other) => panic!(
-            "Expected tombstone at path end '{}', got {:?}",
-            final_key, other
-        ),
+        Some(other) => panic!("Expected tombstone at path end '{final_key}', got {other:?}"),
     }
 }
 
@@ -156,12 +144,12 @@ pub fn setup_tree_with_multiple_kvstores(
     for (subtree_name, values) in subtree_values {
         let kv_store = op
             .get_subtree::<KVStore>(subtree_name)
-            .unwrap_or_else(|_| panic!("Failed to get KVStore '{}'", subtree_name));
+            .unwrap_or_else(|_| panic!("Failed to get KVStore '{subtree_name}'"));
 
         for (key, value) in *values {
             kv_store
                 .set(*key, *value)
-                .unwrap_or_else(|_| panic!("Failed to set value for '{}.{}'", subtree_name, key));
+                .unwrap_or_else(|_| panic!("Failed to set value for '{subtree_name}.{key}'"));
         }
     }
 

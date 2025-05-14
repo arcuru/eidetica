@@ -38,12 +38,9 @@ impl BaseDB {
 
     /// Helper function to lock the backend mutex.
     fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
-        self.backend.lock().map_err(|_| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to lock backend",
-            ))
-        })
+        self.backend
+            .lock()
+            .map_err(|_| Error::Io(std::io::Error::other("Failed to lock backend")))
     }
 
     /// Create a new tree in the database.
@@ -129,7 +126,7 @@ impl BaseDB {
         for tree in all_trees {
             // Attempt to get the name from the tree's settings
             if let Ok(tree_name) = tree.get_name() {
-                println!("tree_name: {}", tree_name);
+                println!("tree_name: {tree_name}");
                 if tree_name == name {
                     matching_trees.push(tree);
                 }

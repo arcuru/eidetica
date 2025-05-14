@@ -10,18 +10,15 @@ repository = "https://github.com/arcuru/eidetica"
 homepage = "https://eidetica.dev"
 
 [dependencies]
-sha2 = "0.10"
+chrono = ">= 0.3"
+serde = { version = "1.0.113", features = ["derive"] }
+serde_json = "1"
+sha2 = ">= 0.9"
 thiserror = "2"
-chrono = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-typetag = "0.2"
-uuid = { version = "1.16.0", features = ["v4"] }
-
-# Signal handlng for the binary
-[dependencies.signal-hook]
-version = "0.3"
-optional = true
+typetag = "0.2.2"
+uuid = { version = "1", features = ["v4"] }
+# Dependencies for the binary
+signal-hook = { version = "0.3", optional = true }
 
 [[bin]]
 name = "eidetica"

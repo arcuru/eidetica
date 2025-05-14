@@ -12,13 +12,13 @@ const DB_FILE: &str = "eidetica.json";
 
 // Helper function to save the database
 fn save_database(db: &BaseDB) {
-    println!("Saving database to {}...", DB_FILE);
+    println!("Saving database to {DB_FILE}...");
     if let Ok(backend_guard) = db.backend().lock() {
         let backend_any = backend_guard.as_any();
         if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemoryBackend>() {
             match in_memory_backend.save_to_file(DB_FILE) {
                 Ok(_) => println!("Database saved successfully."),
-                Err(e) => println!("Failed to save database: {:?}", e),
+                Err(e) => println!("Failed to save database: {e:?}"),
             }
         } else {
             println!("Failed to downcast backend to InMemoryBackend for saving.");
@@ -40,21 +40,18 @@ fn main() -> io::Result<()> {
     }
 
     println!("Welcome to Eidetica REPL");
-    println!(
-        "Database is automatically loaded from and saved to '{}'",
-        DB_FILE
-    );
+    println!("Database is automatically loaded from and saved to '{DB_FILE}'");
     print_help();
 
     // Create or load the in-memory backend
     let backend: Box<dyn eidetica::backend::Backend> =
         match InMemoryBackend::load_from_file(DB_FILE) {
             Ok(backend) => {
-                println!("Loaded database from {}", DB_FILE);
+                println!("Loaded database from {DB_FILE}");
                 Box::new(backend)
             }
             Err(e) => {
-                println!("Failed to load database: {:?}. Creating a new one.", e);
+                println!("Failed to load database: {e:?}. Creating a new one.");
                 Box::new(InMemoryBackend::new())
             }
         };
@@ -85,7 +82,7 @@ fn main() -> io::Result<()> {
             }
         }
         Err(e) => {
-            println!("Error loading trees from database: {:?}", e);
+            println!("Error loading trees from database: {e:?}");
         }
     }
 
@@ -143,7 +140,7 @@ fn main() -> io::Result<()> {
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         trees.insert(name.to_string(), tree);
                     }
-                    Err(e) => println!("Error creating tree: {:?}", e),
+                    Err(e) => println!("Error creating tree: {e:?}"),
                 }
             }
             "list-trees" => {
@@ -167,7 +164,7 @@ fn main() -> io::Result<()> {
                 if let Some(tree) = trees.get(name) {
                     println!("Root ID for tree '{}': {}", name, tree.root_id());
                 } else {
-                    println!("Tree '{}' not found", name);
+                    println!("Tree '{name}' not found");
                 }
             }
             "get-entry" => {
@@ -183,13 +180,13 @@ fn main() -> io::Result<()> {
                     if tree.root_id() == id {
                         match tree.get_root() {
                             Ok(entry) => {
-                                println!("Entry found in tree '{}':", name);
+                                println!("Entry found in tree '{name}':");
                                 print_entry(&entry);
                                 found = true;
                                 break;
                             }
                             Err(e) => {
-                                println!("Error retrieving entry: {:?}", e);
+                                println!("Error retrieving entry: {e:?}");
                                 found = true;
                                 break;
                             }
@@ -198,7 +195,7 @@ fn main() -> io::Result<()> {
                 }
 
                 if !found {
-                    println!("Entry with ID '{}' not found", id);
+                    println!("Entry with ID '{id}' not found");
                 }
             }
             _ => println!(
@@ -233,12 +230,12 @@ fn print_entry(entry: &Entry) {
     println!("  ID: {}", entry.id());
     println!("  Root: {}", entry.root());
     for subtree in entry.subtrees() {
-        println!("  Subtree: {}", subtree);
+        println!("  Subtree: {subtree}");
         println!("    Data:");
         println!("      {}", entry.get_settings().unwrap());
     }
     if let Ok(parents) = entry.parents() {
-        println!("  Parents: {:?}", parents);
+        println!("  Parents: {parents:?}");
     } else {
         println!("  Parents: []");
     }

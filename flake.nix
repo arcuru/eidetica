@@ -57,9 +57,9 @@
         ...
       }: let
         # Use the stable rust tools from fenix
-        fenixStable = inputs.fenix.packages.${system}.stable;
+        fenixStable = inputs.fenix.packages.${system}.complete;
         rustSrc = fenixStable.rust-src;
-        toolChain = fenixStable.completeToolchain;
+        toolChain = fenixStable.toolchain;
 
         # Use the toolchain with the crane helper functions
         craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolChain;
@@ -133,7 +133,7 @@
           # Build almost every package in checks, with exceptions:
           # - coverage: Expensive, so only run explicitly
           # - audit: Requires remote access
-          inherit (self.packages.${system}) clippy doc fmt deny test;
+          inherit (self.packages.${system}) clippy doc deny fmt test;
         };
 
         # This also sets up `nix fmt` to run all formatters
@@ -149,7 +149,7 @@
               ];
             };
             rustfmt = {
-              enable = true;
+              enable = false; # Temporary disabled due to formatting conflicts
               package = toolChain;
             };
             shfmt.enable = true;

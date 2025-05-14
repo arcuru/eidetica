@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
+use eidetica::Error;
+use eidetica::Tree;
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
 use eidetica::subtree::RowStore;
-use eidetica::Error;
-use eidetica::Tree;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -77,11 +77,11 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Add { title } => {
             add_todo(&todo_tree, title.clone())?;
-            println!("Task added: {}", title);
+            println!("Task added: {title}");
         }
         Commands::Complete { id } => {
             complete_todo(&todo_tree, id)?;
-            println!("Task completed: {}", id);
+            println!("Task completed: {id}");
         }
         Commands::List => {
             list_todos(&todo_tree)?;
@@ -162,7 +162,7 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
     // Commit the operation
     op.commit()?;
 
-    println!("Added todo with ID: {}", todo_id);
+    println!("Added todo with ID: {todo_id}");
 
     Ok(())
 }

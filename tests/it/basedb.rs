@@ -169,7 +169,7 @@ fn test_basic_subtree_modification() {
 
     match data_viewer.get("non_existent_key") {
         Err(eidetica::Error::NotFound) => (),
-        other => panic!("Expected NotFound error, got {:?}", other),
+        other => panic!("Expected NotFound error, got {other:?}"),
     }
 }
 

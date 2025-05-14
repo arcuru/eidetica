@@ -1331,8 +1331,8 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
     let path = ["non", "existent", "key"];
     match store.get_at_path(path) {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound, got {:?}", v),
-        Err(e) => panic!("Expected NotFound, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound, got {v:?}"),
+        Err(e) => panic!("Expected NotFound, got error {e:?}"),
     }
 
     // Test path where an intermediate key segment does not exist within a valid map.
@@ -1343,14 +1343,8 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
     let path_intermediate_missing = ["existing_root_map", "non_existent_child_in_map", "key"];
     match store.get_at_path(path_intermediate_missing) {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!(
-            "Expected NotFound for intermediate missing key in map, got {:?}",
-            v
-        ),
-        Err(e) => panic!(
-            "Expected NotFound for intermediate missing key in map, got error {:?}",
-            e
-        ),
+        Ok(v) => panic!("Expected NotFound for intermediate missing key in map, got {v:?}"),
+        Err(e) => panic!("Expected NotFound for intermediate missing key in map, got error {e:?}"),
     }
 
     // Test path leading to a tombstone
@@ -1359,8 +1353,8 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
     store.set_at_path(tombstone_path, NestedValue::Deleted)?;
     match store.get_at_path(tombstone_path) {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound for tombstone path, got {:?}", v),
-        Err(e) => panic!("Expected NotFound for tombstone path, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound for tombstone path, got {v:?}"),
+        Err(e) => panic!("Expected NotFound for tombstone path, got error {e:?}"),
     }
 
     Ok(())
@@ -1383,8 +1377,8 @@ fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> 
     let path = ["a", "b", "c"];
     match store.get_at_path(path) {
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData => (),
-        Ok(v) => panic!("Expected Io(InvalidData), got {:?}", v),
-        Err(e) => panic!("Expected Io(InvalidData), got error {:?}", e),
+        Ok(v) => panic!("Expected Io(InvalidData), got {v:?}"),
+        Err(e) => panic!("Expected Io(InvalidData), got error {e:?}"),
     }
     Ok(())
 }
@@ -1402,17 +1396,14 @@ fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
     match store.set_at_path(&path, NestedValue::String("test".to_string())) {
         Err(Error::InvalidOperation(_)) => (),
         Ok(_) => panic!("Expected InvalidOperation when setting a non-map at root"),
-        Err(e) => panic!("Expected InvalidOperation, got error {:?}", e),
+        Err(e) => panic!("Expected InvalidOperation, got error {e:?}"),
     }
 
     // Setting a map value at the root should succeed
     let nested_map = KVNested::new();
     match store.set_at_path(&path, NestedValue::Map(nested_map)) {
         Ok(_) => (),
-        Err(e) => panic!(
-            "Expected success when setting map at root, got error {:?}",
-            e
-        ),
+        Err(e) => panic!("Expected success when setting map at root, got error {e:?}"),
     }
 
     Ok(())
@@ -1430,8 +1421,8 @@ fn test_kvstore_get_at_path_empty_path() -> eidetica::Result<()> {
     // Getting the root should return a map (the entire KVStore contents)
     match store.get_at_path(&path) {
         Ok(NestedValue::Map(_)) => (),
-        Ok(v) => panic!("Expected Map for root path, got {:?}", v),
-        Err(e) => panic!("Expected success for root path, got error {:?}", e),
+        Ok(v) => panic!("Expected Map for root path, got {v:?}"),
+        Err(e) => panic!("Expected success for root path, got error {e:?}"),
     }
 
     Ok(())
@@ -1489,8 +1480,8 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     // Verify deletion
     match root_editor.get_value("key1") {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound after deletion, got {:?}", v),
-        Err(e) => panic!("Expected NotFound after deletion, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound after deletion, got {v:?}"),
+        Err(e) => panic!("Expected NotFound after deletion, got error {e:?}"),
     }
 
     op.commit()?;
@@ -1500,8 +1491,8 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
     match viewer_store.get("key1") {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound after commit, got {:?}", v),
-        Err(e) => panic!("Expected NotFound after commit, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound after commit, got {v:?}"),
+        Err(e) => panic!("Expected NotFound after commit, got error {e:?}"),
     }
 
     assert_eq!(viewer_store.get_string("key2")?, "value2");
@@ -1536,8 +1527,8 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     // Verify the role is deleted
     match user_editor.get_value("role") {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound after delete_child, got {:?}", v),
-        Err(e) => panic!("Expected NotFound after delete_child, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound after delete_child, got {v:?}"),
+        Err(e) => panic!("Expected NotFound after delete_child, got error {e:?}"),
     }
 
     // The profile should still exist
@@ -1555,8 +1546,8 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     // Verify the profile is deleted
     match user_editor.get_value("profile") {
         Err(Error::NotFound) => (),
-        Ok(v) => panic!("Expected NotFound after delete_self, got {:?}", v),
-        Err(e) => panic!("Expected NotFound after delete_self, got error {:?}", e),
+        Ok(v) => panic!("Expected NotFound after delete_self, got {v:?}"),
+        Err(e) => panic!("Expected NotFound after delete_self, got error {e:?}"),
     }
 
     // But the parent object (user) should still exist
@@ -1579,13 +1570,13 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
             // Check that the entries are properly marked as deleted (tombstones)
             match entries.get("role") {
                 Some(NestedValue::Deleted) => (),
-                Some(other) => panic!("Expected role to be deleted, got {:?}", other),
+                Some(other) => panic!("Expected role to be deleted, got {other:?}"),
                 None => panic!("Expected role key with tombstone to exist"),
             }
 
             match entries.get("profile") {
                 Some(NestedValue::Deleted) => (),
-                Some(other) => panic!("Expected profile to be deleted, got {:?}", other),
+                Some(other) => panic!("Expected profile to be deleted, got {other:?}"),
                 None => panic!("Expected profile key with tombstone to exist"),
             }
         }
@@ -1612,7 +1603,7 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     match result {
         Err(Error::InvalidOperation(_)) => (),
         Ok(_) => panic!("Expected InvalidOperation error when setting non-map at root"),
-        Err(e) => panic!("Expected InvalidOperation, got error: {:?}", e),
+        Err(e) => panic!("Expected InvalidOperation, got error: {e:?}"),
     }
 
     // Setting a map value should succeed
