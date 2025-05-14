@@ -3,6 +3,7 @@ name = "eidetica-todo"
 version = "0.1.0"
 edition = "2021"
 description = "A simple CLI todo list app using Eidetica"
+publish = false
 
 [dependencies]
 eidetica = { path = "../.." }
