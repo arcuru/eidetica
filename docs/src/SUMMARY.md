@@ -16,7 +16,7 @@
 
 # Internal
 
-- [Overview](internal/overview.md)
+- [Overview](internal/README.md)
 - [Core Components](internal/core_components/index.md)
   - [Entry Structure](internal/core_components/entry.md)
   - [Backend Interface](internal/core_components/backend.md)
@@ -29,3 +29,7 @@
 - [Performance Considerations](internal/performance.md)
 - [Error Handling](internal/error_handling.md)
 - [Future Development](internal/future_development.md)
+
+# Design Documents
+
+- [Overview](design/index.md)
