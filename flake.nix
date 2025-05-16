@@ -108,6 +108,9 @@
               cargoClippyExtraArgs = "--all-targets -- --deny warnings";
             });
 
+          # Cargo Deny to check licenses
+          deny = craneLib.cargoDeny commonArgs;
+
           # Check docs build successfully
           doc = craneLib.cargoDoc commonArgs;
 
@@ -128,10 +131,9 @@
         checks = {
           inherit eidetica;
           # Build almost every package in checks, with exceptions:
-          # - coverage: It requires a full rebuild, and only needs to be run occasionally
+          # - coverage: Expensive, so only run explicitly
           # - audit: Requires remote access
-          # - test: Requires a running postgres db
-          inherit (self.packages.${system}) clippy doc fmt;
+          inherit (self.packages.${system}) clippy doc fmt deny test;
         };
 
         # This also sets up `nix fmt` to run all formatters

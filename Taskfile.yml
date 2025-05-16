@@ -43,8 +43,10 @@ tasks:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features
   audit:
-    desc: Run cargo security audit
-    cmd: cargo audit
+    desc: Run cargo security/license audit
+    cmds:
+      - cargo audit
+      - cargo deny check
   build:debug:
     desc: Build the project
     aliases: [b, build]
