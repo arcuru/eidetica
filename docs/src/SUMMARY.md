@@ -16,7 +16,7 @@
 
 # Internal
 
-- [Overview](internal/README.md)
+- [Overview](internal/index.md)
 - [Core Components](internal/core_components/index.md)
   - [Entry Structure](internal/core_components/entry.md)
   - [Backend Interface](internal/core_components/backend.md)
@@ -33,3 +33,4 @@
 # Design Documents
 
 - [Overview](design/index.md)
+  - [Authentication](design/authentication.md)
