@@ -6,6 +6,7 @@ language = "en"
 [output.html]
 default-theme = "light"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
+git-repository-url = "https://github.com/arcuru/eidetica"
 
 [preprocessor.mermaid]
 command = "mdbook-mermaid"
