@@ -6,8 +6,12 @@
 
 Remember Everything.
 
-unimplemented!();
+todo!();
 
 I wanted to search my email, so I started by building a decentralized database.
 
 It made sense at the time...
+
+## Contributions
+
+At this time, outside contributions will not be accepted due to licensing considerations.
