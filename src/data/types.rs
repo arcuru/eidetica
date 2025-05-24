@@ -106,6 +106,18 @@ pub enum NestedValue {
     Deleted, // Tombstone
 }
 
+impl From<String> for NestedValue {
+    fn from(s: String) -> Self {
+        NestedValue::String(s)
+    }
+}
+
+impl From<KVNested> for NestedValue {
+    fn from(nested: KVNested) -> Self {
+        NestedValue::Map(nested)
+    }
+}
+
 /// A nested key-value CRDT implementation using a last-write-wins (LWW) strategy.
 ///
 /// Values can be either strings or other `KVNested` instances, allowing for arbitrary nesting.

@@ -17,6 +17,7 @@
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
 pub mod atomicop;
+pub mod auth;
 pub mod backend;
 pub mod basedb;
 pub mod constants;
@@ -48,4 +49,25 @@ pub enum Error {
 
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    /// General authentication errors including configuration issues,
+    /// key resolution failures, and validation problems
+    #[error("Authentication error: {0}")]
+    Authentication(String),
+
+    /// Cryptographic signature verification failed
+    #[error("Invalid signature")]
+    InvalidSignature,
+
+    /// Authentication key ID not found in _settings.auth configuration
+    #[error("Key not found: {0}")]
+    KeyNotFound(String),
+
+    /// Insufficient permissions for the requested operation
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    /// Public key parsing or format validation failed
+    #[error("Invalid key format: {0}")]
+    InvalidKeyFormat(String),
 }

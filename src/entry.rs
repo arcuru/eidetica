@@ -5,6 +5,7 @@
 //! representing a snapshot of data in the main tree and potentially multiple named subtrees.
 //! This module also defines the `ID` type and `RawData` type.
 
+use crate::auth::types::AuthInfo;
 use crate::constants::ROOT;
 use crate::Error;
 use crate::Result;
@@ -106,12 +107,8 @@ pub struct Entry {
     /// A collection of named subtrees this entry contains data for.
     /// The vector is kept sorted alphabetically by subtree name during the build process.
     subtrees: Vec<SubTreeNode>,
-    // TODO: Security
-    // The ID of the key that was used to sign the entry.
-    // This is an Entry ID pointing to the entry that allows the key used to sign this.
-    // key: String,
-    // The signature of the entry.
-    // signature: String,
+    /// Authentication information for this entry
+    pub auth: AuthInfo,
 }
 
 impl Entry {
@@ -223,16 +220,36 @@ impl Entry {
             .ok_or(Error::NotFound)
     }
 
-    /// Get the metadata for this entry's tree node.
-    ///
-    /// Metadata is optional information attached to an entry that is not part of the
-    /// main data model and is not merged between entries. It is used to improve efficiency
-    /// of certain operations (like sparse checkouts) and for experimentation.
-    ///
-    /// # Returns
-    /// An `Option<&RawData>` containing the metadata if present, or `None` if no metadata was set.
+    /// Get the metadata for this entry's tree node, if present.
     pub fn get_metadata(&self) -> Option<&RawData> {
         self.tree.metadata.as_ref()
+    }
+
+    /// Create a canonical representation of this entry for signing purposes.
+    ///
+    /// This creates a copy of the entry with the signature field removed from auth,
+    /// which is necessary for signature generation and verification.
+    /// The returned entry has deterministic field ordering for consistent signatures.
+    pub fn canonical_for_signing(&self) -> Self {
+        let mut canonical = self.clone();
+        canonical.auth.signature = None;
+        canonical
+    }
+
+    /// Create canonical bytes for signing or ID generation.
+    ///
+    /// This method serializes the entry to JSON with deterministic field ordering.
+    /// For signing purposes, call `canonical_for_signing()` first.
+    pub fn canonical_bytes(&self) -> crate::Result<Vec<u8>> {
+        let json = serde_json::to_string(self).map_err(crate::Error::Serialize)?;
+        Ok(json.into_bytes())
+    }
+
+    /// Create canonical bytes for signing (convenience method).
+    ///
+    /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
+    pub fn signing_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.canonical_for_signing().canonical_bytes()
     }
 }
 
@@ -287,6 +304,7 @@ impl Entry {
 pub struct EntryBuilder {
     tree: TreeNode,
     subtrees: Vec<SubTreeNode>,
+    auth: AuthInfo,
 }
 
 impl EntryBuilder {
@@ -307,6 +325,7 @@ impl EntryBuilder {
                 metadata: None,
             },
             subtrees: Vec::new(),
+            auth: AuthInfo::default(),
         }
     }
 
@@ -325,6 +344,35 @@ impl EntryBuilder {
         // Add a special subtree that identifies this as a root entry
         builder.set_subtree_data_mut(ROOT.to_string(), "".to_string());
         builder
+    }
+
+    /// Set the authentication information for this entry.
+    ///
+    /// # Arguments
+    /// * `auth` - The authentication information including key ID and optional signature
+    pub fn set_auth(mut self, auth: AuthInfo) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Mutable reference version of set_auth.
+    /// Set the authentication information for this entry.
+    ///
+    /// # Arguments
+    /// * `auth` - The authentication information including key ID and optional signature
+    pub fn set_auth_mut(&mut self, auth: AuthInfo) -> &mut Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Get a reference to the current authentication information
+    pub fn auth(&self) -> &AuthInfo {
+        &self.auth
+    }
+
+    /// Get a mutable reference to the current authentication information
+    pub fn auth_mut(&mut self) -> &mut AuthInfo {
+        &mut self.auth
     }
 
     /// Get the names of all subtrees this entry builder contains data for.
@@ -683,6 +731,7 @@ impl EntryBuilder {
         Entry {
             tree: self.tree,
             subtrees: self.subtrees,
+            auth: self.auth,
         }
     }
 }
