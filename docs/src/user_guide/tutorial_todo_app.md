@@ -194,6 +194,71 @@ pub struct Todo {
 }
 ```
 
+### 6. Y-CRDT Integration (`YrsStore`)
+
+The Todo example also demonstrates the use of `YrsStore` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
+
+```rust
+use eidetica::subtree::YrsStore;
+use eidetica::y_crdt::{Map, Transact};
+
+fn set_user_info(tree: &Tree, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_info' YrsStore subtree
+    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+
+    // Update user information using the Y-CRDT document
+    user_info_store.with_doc_mut(|doc| {
+        let user_info_map = doc.get_or_insert_map("user_info");
+        let mut txn = doc.transact_mut();
+
+        if let Some(name) = name {
+            user_info_map.insert(&mut txn, "name", name.clone());
+        }
+        if let Some(email) = email {
+            user_info_map.insert(&mut txn, "email", email.clone());
+        }
+        if let Some(bio) = bio {
+            user_info_map.insert(&mut txn, "bio", bio.clone());
+        }
+
+        Ok(())
+    })?;
+
+    op.commit()?;
+    Ok(())
+}
+
+fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_prefs' YrsStore subtree
+    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+
+    // Update user preference using the Y-CRDT document
+    user_prefs_store.with_doc_mut(|doc| {
+        let prefs_map = doc.get_or_insert_map("preferences");
+        let mut txn = doc.transact_mut();
+        prefs_map.insert(&mut txn, key, value);
+        Ok(())
+    })?;
+
+    op.commit()?;
+    Ok(())
+}
+```
+
+**Multiple Subtree Types in One Tree:**
+
+The Todo example demonstrates how different subtree types can coexist within the same tree:
+
+- **"todos"** (RowStore<Todo>): Stores todo items with automatic ID generation
+- **"user_info"** (YrsStore): Stores user profile information using Y-CRDT Maps
+- **"user_prefs"** (YrsStore): Stores user preferences using Y-CRDT Maps
+
+This shows how Eidetica allows you to choose the most appropriate data structure for each type of data within your application, optimizing for different use cases (record storage vs. collaborative editing).
+
 ## Running the Todo Example
 
 To see these concepts in action, you can run the Todo example:

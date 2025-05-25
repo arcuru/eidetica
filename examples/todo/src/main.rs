@@ -1,12 +1,14 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::Error;
-use eidetica::Tree;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend;
 use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
 use eidetica::subtree::RowStore;
+use eidetica::subtree::YrsStore;
+use eidetica::y_crdt::{Map, Transact};
+use eidetica::Error;
+use eidetica::Tree;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -37,6 +39,31 @@ enum Commands {
     },
     /// List all tasks
     List,
+    /// Set user information
+    SetUser {
+        /// The user's name
+        #[arg(short, long)]
+        name: Option<String>,
+        /// The user's email
+        #[arg(short, long)]
+        email: Option<String>,
+        /// The user's bio
+        #[arg(short, long)]
+        bio: Option<String>,
+    },
+    /// Show user information
+    ShowUser,
+    /// Set user preference
+    SetPref {
+        /// Preference key
+        #[arg(required = true)]
+        key: String,
+        /// Preference value
+        #[arg(required = true)]
+        value: String,
+    },
+    /// Show user preferences
+    ShowPrefs,
 }
 
 ///  A very basic todo list item
@@ -86,6 +113,20 @@ fn main() -> Result<()> {
         Commands::List => {
             list_todos(&todo_tree)?;
         }
+        Commands::SetUser { name, email, bio } => {
+            set_user_info(&todo_tree, name.as_ref(), email.as_ref(), bio.as_ref())?;
+            println!("User information updated");
+        }
+        Commands::ShowUser => {
+            show_user_info(&todo_tree)?;
+        }
+        Commands::SetPref { key, value } => {
+            set_user_preference(&todo_tree, key.clone(), value.clone())?;
+            println!("User preference set");
+        }
+        Commands::ShowPrefs => {
+            show_user_preferences(&todo_tree)?;
+        }
     }
 
     // Save the database
@@ -96,10 +137,10 @@ fn main() -> Result<()> {
 
 fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     if path.exists() {
-        let backend = InMemoryBackend::load_from_file(path)?;
+        let backend = backend::InMemoryBackend::load_from_file(path)?;
         Ok(BaseDB::new(Box::new(backend)))
     } else {
-        let backend = InMemoryBackend::new();
+        let backend = backend::InMemoryBackend::new();
         Ok(BaseDB::new(Box::new(backend)))
     }
 }
@@ -111,7 +152,7 @@ fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
     // Cast the backend to InMemoryBackend to access save_to_file
     let in_memory_backend = backend_guard
         .as_any()
-        .downcast_ref::<InMemoryBackend>()
+        .downcast_ref::<backend::InMemoryBackend>()
         .ok_or(anyhow!("Failed to downcast backend to InMemoryBackend"))?;
 
     in_memory_backend.save_to_file(path)?;
@@ -217,6 +258,124 @@ fn list_todos(tree: &Tree) -> Result<()> {
             println!("[{}] {} (ID: {})", status, todo.title, id);
         }
     }
+
+    Ok(())
+}
+
+fn set_user_info(
+    tree: &Tree,
+    name: Option<&String>,
+    email: Option<&String>,
+    bio: Option<&String>,
+) -> Result<()> {
+    // Start an atomic operation
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_info' YrsStore subtree
+    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+
+    // Update user information using the Y-CRDT document
+    user_info_store.with_doc_mut(|doc| {
+        let user_info_map = doc.get_or_insert_map("user_info");
+        let mut txn = doc.transact_mut();
+
+        if let Some(name) = name {
+            user_info_map.insert(&mut txn, "name", name.clone());
+        }
+        if let Some(email) = email {
+            user_info_map.insert(&mut txn, "email", email.clone());
+        }
+        if let Some(bio) = bio {
+            user_info_map.insert(&mut txn, "bio", bio.clone());
+        }
+
+        Ok(())
+    })?;
+
+    // Commit the operation
+    op.commit()?;
+
+    Ok(())
+}
+
+fn show_user_info(tree: &Tree) -> Result<()> {
+    // Start an atomic operation (for read-only)
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_info' YrsStore subtree
+    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+
+    // Read user information from the Y-CRDT document
+    user_info_store.with_doc(|doc| {
+        let user_info_map = doc.get_or_insert_map("user_info");
+        let txn = doc.transact();
+
+        println!("User Information:");
+
+        if let Some(name) = user_info_map.get(&txn, "name") {
+            let name_str = name.to_string(&txn);
+            println!("Name: {name_str}");
+        }
+
+        if let Some(email) = user_info_map.get(&txn, "email") {
+            let email_str = email.to_string(&txn);
+            println!("Email: {email_str}");
+        }
+
+        if let Some(bio) = user_info_map.get(&txn, "bio") {
+            let bio_str = bio.to_string(&txn);
+            println!("Bio: {bio_str}");
+        }
+
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
+    // Start an atomic operation
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_prefs' YrsStore subtree
+    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+
+    // Update user preference using the Y-CRDT document
+    user_prefs_store.with_doc_mut(|doc| {
+        let prefs_map = doc.get_or_insert_map("preferences");
+        let mut txn = doc.transact_mut();
+        prefs_map.insert(&mut txn, key, value);
+        Ok(())
+    })?;
+
+    // Commit the operation
+    op.commit()?;
+
+    Ok(())
+}
+
+fn show_user_preferences(tree: &Tree) -> Result<()> {
+    // Start an atomic operation (for read-only)
+    let op = tree.new_operation()?;
+
+    // Get a handle to the 'user_prefs' YrsStore subtree
+    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+
+    // Read user preferences from the Y-CRDT document
+    user_prefs_store.with_doc(|doc| {
+        let prefs_map = doc.get_or_insert_map("preferences");
+        let txn = doc.transact();
+
+        println!("User Preferences:");
+
+        // Iterate over all preferences
+        for (key, value) in prefs_map.iter(&txn) {
+            let value_str = value.to_string(&txn);
+            println!("{key}: {value_str}");
+        }
+
+        Ok(())
+    })?;
 
     Ok(())
 }

@@ -315,7 +315,118 @@ if let Ok(user_data) = viewer_store.get("user123") {
 }
 ```
 
-## 8. Saving the Database (InMemoryBackend)
+## 8. Working with Y-CRDT Documents (YrsStore)
+
+The `YrsStore` subtree provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
+
+```rust
+use eidetica::subtree::YrsStore;
+use eidetica::y_crdt::{Map, Transact};
+
+let tree: Tree = /* obtained from step 2 */;
+
+// Start an operation
+let op = tree.new_operation()?;
+
+// Get the YrsStore subtree handle
+let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+
+// Writing to Y-CRDT document
+user_info_store.with_doc_mut(|doc| {
+    let user_info_map = doc.get_or_insert_map("user_info");
+    let mut txn = doc.transact_mut();
+
+    user_info_map.insert(&mut txn, "name", "Alice Johnson");
+    user_info_map.insert(&mut txn, "email", "alice@example.com");
+    user_info_map.insert(&mut txn, "bio", "Software developer");
+
+    Ok(())
+})?;
+
+// Commit the operation
+let entry_id = op.commit()?;
+println!("YrsStore changes committed in entry: {}", entry_id);
+
+// Reading from Y-CRDT document
+let read_op = tree.new_operation()?;
+let reader_store = read_op.get_subtree::<YrsStore>("user_info")?;
+
+reader_store.with_doc(|doc| {
+    let user_info_map = doc.get_or_insert_map("user_info");
+    let txn = doc.transact();
+
+    println!("User Information:");
+
+    if let Some(name) = user_info_map.get(&txn, "name") {
+        let name_str = name.to_string(&txn);
+        println!("Name: {name_str}");
+    }
+
+    if let Some(email) = user_info_map.get(&txn, "email") {
+        let email_str = email.to_string(&txn);
+        println!("Email: {email_str}");
+    }
+
+    if let Some(bio) = user_info_map.get(&txn, "bio") {
+        let bio_str = bio.to_string(&txn);
+        println!("Bio: {bio_str}");
+    }
+
+    Ok(())
+})?;
+
+// Working with nested Y-CRDT maps
+let prefs_op = tree.new_operation()?;
+let prefs_store = prefs_op.get_subtree::<YrsStore>("user_prefs")?;
+
+prefs_store.with_doc_mut(|doc| {
+    let prefs_map = doc.get_or_insert_map("preferences");
+    let mut txn = doc.transact_mut();
+
+    prefs_map.insert(&mut txn, "theme", "dark");
+    prefs_map.insert(&mut txn, "notifications", "enabled");
+    prefs_map.insert(&mut txn, "language", "en");
+
+    Ok(())
+})?;
+
+prefs_op.commit()?;
+
+// Reading preferences
+let prefs_read_op = tree.new_operation()?;
+let prefs_read_store = prefs_read_op.get_subtree::<YrsStore>("user_prefs")?;
+
+prefs_read_store.with_doc(|doc| {
+    let prefs_map = doc.get_or_insert_map("preferences");
+    let txn = doc.transact();
+
+    println!("User Preferences:");
+
+    // Iterate over all preferences
+    for (key, value) in prefs_map.iter(&txn) {
+        let value_str = value.to_string(&txn);
+        println!("{key}: {value_str}");
+    }
+
+    Ok(())
+})?;
+```
+
+**YrsStore Features:**
+
+- **Collaborative Editing**: Y-CRDT documents provide conflict-free merging for concurrent modifications
+- **Rich Data Types**: Support for Maps, Arrays, Text, and other Y-CRDT types
+- **Functional Interface**: Access via `with_doc()` for reads and `with_doc_mut()` for writes
+- **Atomic Integration**: Changes are staged within the Operation and committed atomically
+
+**Use Cases for YrsStore:**
+
+- User profiles and preferences (as shown in the todo example)
+- Collaborative documents and shared state
+- Real-time data synchronization
+- Any scenario requiring conflict-free concurrent updates
+
+## 9. Saving the Database (InMemoryBackend)
 
 ```rust
 use eidetica::backend::InMemoryBackend;
