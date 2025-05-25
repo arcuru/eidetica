@@ -7,6 +7,11 @@ pub use kvstore::KVStore;
 mod rowstore;
 pub use rowstore::RowStore;
 
+#[cfg(feature = "y-crdt")]
+mod yrsstore;
+#[cfg(feature = "y-crdt")]
+pub use yrsstore::{YrsBinary, YrsStore};
+
 /// A trait representing a named, CRDT-based data structure within a `Tree`.
 ///
 /// `SubTree` implementations define how data within a specific named partition of a `Tree`

@@ -9,6 +9,10 @@ description = "Remember everything."
 repository = "https://github.com/arcuru/eidetica"
 homepage = "https://eidetica.dev"
 
+[features]
+default = []
+y-crdt = ["yrs"]
+
 [dependencies]
 chrono = ">= 0.3"
 base64ct = { version = "1.6", features = ["std"] }
@@ -20,6 +24,7 @@ sha2 = ">= 0.9"
 thiserror = "1"
 typetag = "0.2.2"
 uuid = { version = "1", features = ["v4"] }
+yrs = { version = "0.23", optional = true }
 # Dependencies for the binary
 signal-hook = { version = "0.3", optional = true }
 
