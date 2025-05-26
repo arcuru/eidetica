@@ -11,6 +11,7 @@
   - [Backends](user_guide/concepts/backends.md)
   - [Subtrees](user_guide/concepts/subtrees.md)
   - [Operations](user_guide/operations.md)
+- [Authentication Guide](user_guide/authentication_guide.md)
 - [Tutorial: Todo App](user_guide/tutorial_todo_app.md)
 - [Code Examples](user_guide/examples_snippets.md)
 
@@ -21,6 +22,7 @@
   - [Entry Structure](internal/core_components/entry.md)
   - [Backend Interface](internal/core_components/backend.md)
   - [BaseDB & Tree](internal/core_components/basedb_tree.md)
+  - [Authentication](internal/core_components/authentication.md)
   - [Subtree Implementations](internal/core_components/subtrees.md)
   - [CRDT System](internal/core_components/crdt.md)
 - [Data Flow](internal/data_flow.md)

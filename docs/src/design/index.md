@@ -25,6 +25,7 @@ Each design document typically includes:
 
 ## Available Design Documents
 
-### In Progress
+### Implemented
 
-- [Authentication](authentication.md)
+- [Authentication](authentication.md) - Mandatory cryptographic authentication for all entries
+- [Settings Storage](settings_storage.md) - How settings are stored and tracked in trees
