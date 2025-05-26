@@ -795,7 +795,11 @@ impl AtomicOp {
         // This prevents operations from modifying their own permission requirements.
         let settings_for_validation = effective_settings_for_validation.clone();
 
-        let verification_status = match validator.validate_entry(&entry, &settings_for_validation) {
+        let verification_status = match validator.validate_entry(
+            &entry,
+            &settings_for_validation,
+            Some(self.tree.backend()),
+        ) {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
                 match settings_for_validation.get("auth") {
@@ -809,8 +813,11 @@ impl AtomicOp {
                             Operation::WriteData // Default to write for other data modifications
                         };
 
-                        let resolved_auth =
-                            validator.resolve_auth_key(&entry.auth.id, &settings_for_validation)?;
+                        let resolved_auth = validator.resolve_auth_key(
+                            &entry.auth.id,
+                            &settings_for_validation,
+                            Some(self.tree.backend()),
+                        )?;
 
                         let has_permission =
                             validator.check_permissions(&resolved_auth, &operation_type)?;

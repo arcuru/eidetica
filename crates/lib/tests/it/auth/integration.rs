@@ -435,7 +435,7 @@ fn test_validation_pipeline_entry_level_validation() {
         .expect("Failed to get settings data");
 
     for (i, entry) in entries.iter().enumerate() {
-        let result = validator.validate_entry(entry, &current_settings);
+        let result = validator.validate_entry(entry, &current_settings, None);
         assert!(
             result.is_ok() && result.unwrap(),
             "Entry {i} should validate"

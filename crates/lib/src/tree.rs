@@ -433,7 +433,7 @@ impl Tree {
 
         // Use the authentication validator with historical settings
         let mut validator = crate::auth::validation::AuthValidator::new();
-        validator.validate_entry(&entry, &historical_settings)
+        validator.validate_entry(&entry, &historical_settings, Some(&self.backend))
     }
 
     /// Get the authentication settings that were valid when a specific entry was created.
