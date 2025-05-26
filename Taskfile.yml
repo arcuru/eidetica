@@ -32,7 +32,7 @@ tasks:
   clippy:fix:
     desc: Run clippy fixes
     cmds:
-      - cargo clippy --workspace --fix --allow-dirty --all-targets --all-features -- -D warnings
+      - cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings
   fmt:
     desc: Run all formatters
     cmds:
@@ -42,7 +42,7 @@ tasks:
   test:
     desc: Run all tests
     aliases: [t]
-    cmd: cargo nextest run --workspace --all-features
+    cmd: cargo nextest run --workspace --all-features --no-fail-fast
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features
