@@ -1,4 +1,7 @@
-**Document Status**: Direct Keys (stored in Tree Settings) are Implemented, User Authentication Tree support is In Progress.
+**Implementation Status**:
+
+- ✅ **Direct Keys** - Fully implemented and functional
+- ✅ **Delegated Trees** - Fully implemented and functional with comprehensive test coverage
 
 # Authentication Design
 
@@ -24,16 +27,16 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Key Status Semantics](#key-status-semantics)
     - [Priority System](#priority-system)
       - [When Does Priority Matter?](#when-does-priority-matter)
-  - [User Authentication Trees](#user-authentication-trees)
+  - [Delegation (Delegated Trees)](#delegation-delegated-trees)
     - [Concept and Benefits](#concept-and-benefits)
     - [Structure](#structure)
     - [Permission Clamping](#permission-clamping)
     - [Multi-Level References](#multi-level-references)
-    - [User Auth Tree references](#user-auth-tree-references)
+    - [Delegated Tree References](#delegated-tree-references)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
-    - [Key Status Changes in User Auth Trees: Examples](#key-status-changes-in-user-auth-trees-examples)
-      - [Example 1: Basic User Auth Tree Key Status Change](#example-1-basic-user-auth-tree-key-status-change)
+    - [Key Status Changes in Delegated Trees: Examples](#key-status-changes-in-delegated-trees-examples)
+      - [Example 1: Basic Delegated Tree Key Status Change](#example-1-basic-delegated-tree-key-status-change)
       - [Example 2: Last Write Wins Conflict Resolution](#example-2-last-write-wins-conflict-resolution)
   - [Authorization Scenarios](#authorization-scenarios)
     - [Network Partition Recovery](#network-partition-recovery)
@@ -70,7 +73,7 @@ The authentication system is **not** implemented as a pure consumer of the datab
 2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
 3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
 4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
-5. **User Autonomy**: Users can manage their own keys without requiring admin intervention
+5. **Delegation**: Support for delegating authentication to other trees without granting admin privileges (infrastructure built, activation pending)
 6. **Auditability**: All authentication changes are tracked in the immutable DAG history
 
 ### Non-Goals
@@ -88,8 +91,7 @@ Authentication configuration is stored in the special `_settings` subtree under 
 - Access control changes are tracked in the immutable history
 - Settings can be validated against the current entry being created
 
-NB: This isn't accurate? \_settings has conflicts
-The `_settings` subtree uses `Nested` CRDT structure, allowing for hierarchical organization of authentication data while maintaining conflict-free merging properties using a Last-Write-Wins method.
+The `_settings` subtree uses the `crate::crdt::Nested` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
 
 **Clarification**: Throughout this document, when we refer to `Nested`, this is the hierarchical CRDT implementation that supports nested maps. The `_settings` subtree specifically uses `Nested` to enable complex authentication configurations.
 
@@ -107,7 +109,7 @@ Eidetica implements a three-tier permission model:
 
 ### Key Structure
 
-Each authentication key consists of several components stored in the `_settings.auth` configuration:
+The current implementation supports direct authentication keys stored in the `_settings.auth` configuration. Each key consists of:
 
 ```mermaid
 classDiagram
@@ -116,41 +118,27 @@ classDiagram
         String key
         Permission permissions
         KeyStatus status
-        Integer priority
-    }
-
-    class UserAuthTreeRef {
-        String id
-        Permission permissions
-        Integer priority
-        TreeReference tree
-    }
-
-    class TreeReference {
-        String root_hash
-        Array tip_hashes
+        Integer priority (for Admin/Write)
     }
 
     class Permission {
         <<enumeration>>
-        ADMIN
-        WRITE
-        READ
+        Admin(priority: u32)
+        Write(priority: u32)
+        Read
     }
 
     class KeyStatus {
         <<enumeration>>
-        ACTIVE
-        REVOKED
-        IGNORE (V2)
-        BANNED (V2)
+        Active
+        Revoked
     }
 
     AuthKey --> Permission
     AuthKey --> KeyStatus
-    UserAuthTreeRef --> Permission
-    UserAuthTreeRef --> TreeReference
 ```
+
+**Note**: Both direct keys and delegated trees are fully implemented and functional, including `DelegatedTreeRef`, `PermissionBounds`, and `TreeReference` types.
 
 ### Direct Key Example
 
@@ -159,20 +147,19 @@ classDiagram
   "_settings": {
     "auth": {
       "KEY_LAPTOP": {
-        "key": "ssh-ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "write",
-        "status": "active",
-        "priority": 10
+        "key": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
+        "permissions": { "Write": 10 },
+        "status": "Active"
       },
       "KEY_DESKTOP": {
-        "key": "ssh-ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "read",
-        "status": "active",
-        "priority": 20
+        "key": "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpkPExACKOW0L",
+        "permissions": "Read",
+        "status": "Active"
       },
       "*": {
-        "permissions": "read",
-        "status": "active"
+        "key": "*",
+        "permissions": "Read",
+        "status": "Active"
       }
     },
     "name": "My Tree"
@@ -180,11 +167,15 @@ classDiagram
 }
 ```
 
-**Note**: The wildcard key `*` enables global permissions, commonly used for world-readable trees. Wildcard keys do not have a priority field since they cannot perform administrative operations.
+**Note**: The wildcard key `*` enables global permissions, commonly used for world-readable trees. Wildcard keys:
+
+- Do not have a priority field since they cannot perform administrative operations
+- Can be revoked like any other key
+- Can be included in delegated trees (if you delegate to a tree with a wildcard, that's valid)
 
 ### Entry Signing Format
 
-When creating an entry, the authentication information is embedded in the entry structure in a top-level `auth` field. `auth.id` must provide a direct reference to which key is used and it's location for validating it's permissions.
+Every entry in Eidetica must be signed. The authentication information is embedded in the entry structure:
 
 ```json
 {
@@ -202,164 +193,106 @@ When creating an entry, the authentication information is embedded in the entry 
     }
   ],
   "auth": {
-    "id": "KEY_LAPTOP",
-    "signature": "ed25519_signature_bytes_hex_encoded"
+    "id": { "Direct": "KEY_LAPTOP" },
+    "signature": "ed25519_signature_base64_encoded"
   }
 }
 ```
 
-For User Auth Tree keys, the authentication structure is more complex:
-
-```json
-{
-  "auth": {
-    "id": {
-      "id": "example@eidetica.dev",
-      "tips": ["abc123def456"],
-      "key": "KEY_LAPTOP"
-    },
-    "signature": "ed25519_signature_bytes_hex_encoded"
-  }
-}
-```
-
-For nested User Auth Tree references:
-
-```json
-{
-  "auth": {
-    "id": [
-      {
-        "id": "example@eidetica.dev",
-        "tips": ["current_tip"]
-      },
-      {
-        "id": "old-identity",
-        "tips": ["old_tip"]
-      },
-      {
-        "key": "LEGACY_KEY"
-      }
-    ],
-    "signature": "ed25519_signature_bytes_hex_encoded"
-  }
-}
-```
-
-Deeply nested Auth Tree references are discouraged.
+The `auth.id` field currently supports only the `Direct` variant, which references a key name in the `_settings.auth` configuration. The signature is a base64-encoded Ed25519 signature of the entry's content hash.
 
 ## Key Management
 
-**Note**: The current implementation focuses on **Active** and **Revoked** key statuses. **Ignore** and **Banned** statuses are planned for V2 and are included in this design for completeness.
-
 ### Key Lifecycle
 
-**V1 Design:**
+The current implementation supports two key statuses:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Active: Key Added
-    Active --> Revoked: Content Preserved
-    Revoked --> Active: Reactivated
+    Active --> Revoked: Revoke Key
+    Revoked --> Active: Reactivate Key
 
     note right of Active : Can create new entries
-    note right of Revoked : Historical entries preserved, cannot be parents of new entries
-```
-
-**Future V2 Features:**
-
-```mermaid
-stateDiagram-v2
-    [*] --> Active: Key Added
-    Active --> Ignore: Soft Delete (V2)
-    Active --> Revoked: Content Preserved
-    Active --> Banned: Admin Action (V2)
-    Ignore --> Active: Reactivated (V2)
-    Revoked --> Active: Reactivated
-    Ignore --> Banned: Admin Escalation (V2)
-    Revoked --> Banned: Admin Escalation (V2)
-    Banned --> Active: Manual Recovery (V2)
-
-    note right of Active : Can create new entries
-    note right of Ignore : Historical entries preserved, content ignored in merges (V2)
-    note right of Revoked : Historical entries preserved, cannot be parents of new entries
-    note right of Banned : All entries marked invalid, cannot merge siblings (V2)
+    note right of Revoked : Historical entries preserved, cannot create new entries
 ```
 
 ### Key Status Semantics
 
-**V1 Implementation:**
-
 1. **Active**: Key can create new entries and all historical entries remain valid
-2. **Revoked**: Key cannot create new entries. Historical entries remain valid, but new entries cannot have revoked entries as parents. Content of revoked entries is preserved during merges
-
-**Future V2 Features:**
-
-3. **Ignore** _(V2)_: Key cannot create new entries. During CRDT merges, sibling branches containing ignored entries can be merged, but the content of ignored entries is ignored
-4. **Banned** _(V2)_: Key cannot create new entries. Sibling branches containing banned entries cannot be merged
+2. **Revoked**: Key cannot create new entries. Historical entries remain valid and their content is preserved during merges
 
 **Key Behavioral Details**:
 
-- Entries that are ancestors of the status change action always remain valid to preserve history integrity
-- Revoked semantics apply to sibling chains and future entries, not the historical chain leading to the status change
-- An Admin can transition an entry back to Active state from Revoked status
-- **Revoked** status prevents new entries from building on revoked content while preserving existing content in merges
-- _(V2)_ **Ignore** status will enable graceful key deprecation while maintaining history integrity, with content excluded from merges
-- _(V2)_ **Banned** status will be reserved for compromised keys or malicious activity requiring manual intervention
+- Entries created before revocation remain valid to preserve history integrity
+- An Admin can transition a key back to Active state from Revoked status
+- Revoked status prevents new entries but preserves existing content in merges
 
 ### Priority System
 
-Priority **only impacts administrative actions**, which are limited to modifications of the `_settings` subtree. Priority does **not** affect conflict resolution during merges - conflicts are resolved using the same Last Write Wins (LWW) strategy as the underlying Nested CRDT.
+Priority is integrated into the permission levels for Admin and Write permissions:
 
-Keys include a priority field (positive integers, lower values = higher priority) to establish administrative hierarchy:
+- **Admin(priority)**: Can modify settings and manage keys with equal or lower priority
+- **Write(priority)**: Can write data but not modify settings
+- **Read**: No priority, read-only access
 
-- Priority `0`: Typically reserved for the initial super-admin key
-- Higher priority keys (lower numbers) can modify keys with equal or lower priority (equal or higher numbers)
-- The default Priority is the lowest priority
-- Priority enables recovery from compromised admin keys by higher-priority keys
-- Priority has **no effect** on merge conflict resolution
+Priority values are u32 integers where lower values indicate higher priority:
 
-**Priority Rules**:
+- Priority `0`: Highest priority, typically the initial admin key
+- Higher numbers = lower priority
+- Keys can only modify other keys with equal or lower priority (equal or higher number)
 
-- A key can only create or modify keys with priority equal or lower than its own priority
-- Priority 0 keys have universal authority over all other keys
-- Multiple keys can share the same priority level, and keys at the same level can modify each other
-- Priority inheritance: User Auth Tree keys inherit the priority from their main tree reference
-- When delegating through User Auth Trees, the effective priority is always taken from the outermost (main tree) reference
+**Important**: Priority **only** affects administrative operations (key management). It does **not** influence CRDT merge conflict resolution, which uses Last Write Wins semantics based on the DAG structure.
 
-#### When Does Priority Matter?
+## Delegation (Delegated Trees)
 
-Priority **only** matters for administrative operations - specifically who can create, modify, or revoke keys in the `_settings.auth` configuration. Priority does **not** affect merge conflict resolution.
-
-When merging two chains that have conflicting auth settings, the standard Nested Last Write Wins (LWW) strategy is used, just like any other conflicting changes in the `_settings` tree.
-
-## User Authentication Trees
+**Status**: Fully implemented and functional with comprehensive test coverage. Delegated trees enable powerful authentication delegation patterns.
 
 ### Concept and Benefits
 
-User Authentication Trees allow users to maintain their own key hierarchies without requiring admin permissions on the main tree. This provides:
+Delegation allows any tree to be referenced as a source of authentication keys for another tree. This enables flexible authentication patterns where trees can delegate authentication to other trees without granting administrative privileges on the delegating tree. Key benefits include:
 
-- **User Autonomy**: Users control their own key addition/removal
-- **Consistent Identity**: Same user identity across multiple trees
-- **Privacy**: Users can maintain multiple authentication trees for different Identities
-- **Delegation**: Users can create sub-keys for different purposes
+- **Flexible Delegation**: Any tree can delegate authentication to any other tree
+- **User Autonomy**: Users can manage their own personal trees with keys they control
+- **Cross-Project Authentication**: Share authentication across multiple projects or trees
+- **Granular Permissions**: Set both minimum and maximum permission bounds for delegated keys
 
-User Auth Trees are normal Trees, and their normal auth settings are used.
+Delegated trees are normal trees, and their authentication settings are used with permission clamping applied.
+
+**Important**: Any tree can be used as a delegated tree - there's no special "authentication tree" type. This means:
+
+- A project's main tree can delegate to a user's personal tree
+- Multiple projects can delegate to the same shared authentication tree
+- Trees can form delegation networks where trees delegate to each other
+- The delegated tree doesn't need to know it's being used for delegation
 
 ### Structure
 
-A User Auth Tree reference in the main tree's `_settings.auth` contains:
+A delegated tree reference in the main tree's `_settings.auth` contains:
 
 ```json
 {
   "_settings": {
     "auth": {
       "example@eidetica.dev": {
-        "permissions": "admin",
+        "permission-bounds": {
+          "max": "write",
+          "min": "read" // optional, defaults to no minimum
+        },
         "priority": 15,
         "tree": {
           "root": "hash_of_root_entry",
           "tips": ["hash1", "hash2"]
+        }
+      },
+      "another@example.com": {
+        "permission-bounds": {
+          "max": "admin" // min not specified, so no minimum bound
+        },
+        "priority": 20,
+        "tree": {
+          "root": "hash_of_another_root",
+          "tips": ["hash3"]
         }
       }
     }
@@ -367,7 +300,7 @@ A User Auth Tree reference in the main tree's `_settings.auth` contains:
 }
 ```
 
-The referenced User Auth Tree maintains its own `_settings.auth` with direct keys:
+The referenced delegated tree maintains its own `_settings.auth` with direct keys:
 
 ```json
 {
@@ -391,28 +324,42 @@ The referenced User Auth Tree maintains its own `_settings.auth` with direct key
 
 ### Permission Clamping
 
-Permissions in User Auth Trees are clamped to the maximum allowed in the main tree using a minimum function, while the effective priority is always taken from their definition in the main tree:
+Permissions from delegated trees are clamped based on the `permission-bounds` field in the main tree's reference:
+
+- **max** (required): The maximum permission level that keys from the delegated tree can have
+  - Must be <= the permissions of the key adding the delegated tree reference
+- **min** (optional): The minimum permission level for keys from the delegated tree
+  - If not specified, there is no minimum bound
+  - If specified, keys with lower permissions are raised to this level
+
+The effective priority is always taken from their definition in the main tree:
 
 ```mermaid
 graph LR
-    A["User Tree: admin"] --> B["Main Tree: write"] --> C["Effective: write"]
-    D["User Tree: write"] --> B --> E["Effective: write"]
-    F["User Tree: read"] --> B --> G["Effective: read"]
+    A["Delegated Tree: admin"] --> B["Main Tree: max=write, min=read"] --> C["Effective: write"]
+    D["Delegated Tree: write"] --> B --> E["Effective: write"]
+    F["Delegated Tree: read"] --> B --> G["Effective: read"]
 
-    H["User Tree: admin"] --> I["Main Tree: read"] --> J["Effective: read"]
-    K["User Tree: write"] --> I --> L["Effective: read"]
+    H["Delegated Tree: admin"] --> I["Main Tree: max=read (no min)"] --> J["Effective: read"]
+    K["Delegated Tree: read"] --> I --> L["Effective: read"]
+    M["Delegated Tree: write"] --> N["Main Tree: max=admin, min=write"] --> O["Effective: write"]
 ```
 
 **Clamping Rules**:
 
-- Effective permission = min(user_tree_permission, main_tree_permission)
-- Effective priority = main_tree_priority (always inherited, never from user tree)
-- User Auth Tree admin permissions only apply within that user's tree
+- Effective permission = clamp(delegated_tree_permission, min, max)
+  - If delegated tree permission > max, it's lowered to max
+  - If min is specified and delegated tree permission < min, it's raised to min
+  - If min is not specified, no minimum bound is applied
+- The max bound must be <= permissions of the key that added the delegated tree reference
+- Effective priority = main_tree_priority (always inherited, never from delegated tree)
+- Delegated tree admin permissions only apply within that delegated tree
 - Permission clamping occurs at each level of delegation chains
+- Note: There is no "none" permission level - absence of permissions means no access
 
 ### Multi-Level References
 
-User Auth Trees can reference other User Auth Trees, creating delegation chains:
+Delegated trees can reference other delegated trees, creating delegation chains:
 
 ```json
 {
@@ -438,24 +385,42 @@ User Auth Trees can reference other User Auth Trees, creating delegation chains:
 **Delegation Chain Rules**:
 
 - Each element in the `auth.id` array represents a step in the delegation chain
-- The first element references the main tree's User Auth Tree
-- Subsequent elements reference nested User Auth Trees or direct keys
+- The first element references the main tree's delegated tree
+- Subsequent elements reference nested delegated trees or direct keys
 - The final element must be a direct key reference
 - Permission clamping applies at each level using the minimum function
 - Priority is always determined by the outermost (main tree) reference
 - Tips must be valid at each level of the chain for the delegation to be valid
 
-### User Auth Tree references
+### Delegated Tree References
 
-The main tree must validate the User Auth Tree structure as well as the main tree.
+The main tree must validate the delegated tree structure as well as the main tree.
 
-User Auth Tree tip references must be validated against the latest known tips at the tim of validating an Entry or merging chains. The tips of the User Auth Tree can not refer to "old" tips as seen by the parents of the Entry, and the validity of the User Auth Tree keys are handled recursivly using the same rules as the Main Tree when merging chains.
+#### Latest Known Tips
+
+"Latest known tips" refers to the latest tips of a delegated tree that have been seen used in valid key signatures within the current tree. This creates a "high water mark" for each delegated tree:
+
+1. When an entry uses a delegated tree key, it includes the delegated tree's tips at signing time
+2. The tree tracks these tips as the "latest known tips" for that delegated tree
+3. Future entries using that delegated tree must reference tips that are equal to or newer than the latest known tips
+4. This ensures that key revocations in delegated trees are respected once observed
+
+#### Tip Tracking and Validation
+
+To validate entries with delegated tree keys:
+
+1. Check that the referenced tips are descendants of (or equal to) the latest known tips for that delegated tree
+2. Verify the key exists and has appropriate permissions at those tips
+3. Update the latest known tips if these are newer
+4. Apply permission clamping based on the delegation reference
+
+This mechanism ensures that once a key revocation is observed in a delegated tree, no entry can use an older version of that tree where the key was still valid.
 
 ### Key Revocation
 
-User Auth Tree key deletion is always treated as `revoked` status in the main tree. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
+Delegated tree key deletion is always treated as `revoked` status in the main tree. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
 
-By treating User Auth Tree key deletion as `revoked` status, users can manage their own key lifecycle in the Main Tree while ensuring that:
+By treating delegated tree key deletion as `revoked` status, users can manage their own key lifecycle in the Main Tree while ensuring that:
 
 - Historical entries remain valid and their content is preserved
 - New entries cannot use the revoked key's entries as parents
@@ -464,29 +429,29 @@ By treating User Auth Tree key deletion as `revoked` status, users can manage th
 
 ## Conflict Resolution and Merging
 
-Conflicts in the `_settings` tree are merged using the same Last Write Wins (LWW) strategy as the underlying Nested CRDT. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the most recent write (by logical timestamp) will win, regardless of the priority of the signing key.
+Conflicts in the `_settings` tree are resolved by the `crate::crdt::Nested` type using Last Write Wins (LWW) semantics. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the write with the higher logical timestamp (determined by the DAG structure) will win, regardless of the priority of the signing key.
 
 Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
-This is applied to User Auth Trees as well. A write to the Main Tree must also recursively merge any changed settings in the User Auth Trees using the same LWW strategy to handle network splits in the User Auth Trees.
+This is applied to delegated trees as well. A write to the Main Tree must also recursively merge any changed settings in the delegated trees using the same LWW strategy to handle network splits in the delegated trees.
 
-### Key Status Changes in User Auth Trees: Examples
+### Key Status Changes in Delegated Trees: Examples
 
-The following examples demonstrate how key status changes in User Auth Trees affect entries in the main tree.
+The following examples demonstrate how key status changes in delegated trees affect entries in the main tree.
 
-#### Example 1: Basic User Auth Tree Key Status Change
+#### Example 1: Basic Delegated Tree Key Status Change
 
 **Initial State**:
 
 ```mermaid
 graph TD
     subgraph "Main Tree"
-        A["Entry A<br/>Settings: user1 = write<br/>Tip: UA"]
-        B["Entry B<br/>Signed by user1:laptop<br/>Tip: UA<br/>Status: Valid"]
-        C["Entry C<br/>Signed by user1:laptop<br/>Tip: UB<br/>Status: Valid"]
+        A["Entry A<br/>Settings: delegated_tree1 = max:write, min:read<br/>Tip: UA"]
+        B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
+        C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
     end
 
-    subgraph "User Auth Tree"
+    subgraph "Delegated Tree"
         UA["Entry UA<br/>Settings: laptop = active"]
         UB["Entry UB<br/>Signed by laptop"]
     end
@@ -496,22 +461,22 @@ graph TD
     UA --> UB
 ```
 
-**After Key Status Change in User Auth Tree**:
+**After Key Status Change in Delegated Tree**:
 
 ```mermaid
 graph TD
     subgraph "Main Tree"
         A["Entry A<br/>Settings: user1 = write"]
-        B["Entry B<br/>Signed by user1:laptop<br/>Tip: UA<br/>Status: Valid"]
-        C["Entry C<br/>Signed by user1:laptop<br/>Tip: UB<br/>Status: Valid"]
-        D["Entry D<br/>Signed by user1:mobile<br/>Tip: UC<br/>Status: Valid"]
-        E["Entry E<br/>Signed by user1:laptop<br/>Parent: C<br/>Tip: UB<br/>Status: Valid"]
-        F["Entry F<br/>Signed by user1:mobile<br/>Tip: UC<br/>Sees E but ignores since the key is invalid"]
-        G["Entry G<br/>Signed by user1:desktop<br/>Tip: UB<br/>Still thinks user1:laptop is valid"]
-        H["Entry H<br/>Signed by user1:mobile<br/>Tip: UC<br/>Merges, as there is a valid key at G"]
+        B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
+        C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
+        D["Entry D<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Status: Valid"]
+        E["Entry E<br/>Signed by delegated_tree1:laptop<br/>Parent: C<br/>Tip: UB<br/>Status: Valid"]
+        F["Entry F<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Sees E but ignores since the key is invalid"]
+        G["Entry G<br/>Signed by delegated_tree1:desktop<br/>Tip: UB<br/>Still thinks delegated_tree1:laptop is valid"]
+        H["Entry H<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Merges, as there is a valid key at G"]
     end
 
-    subgraph "User Auth Tree (user1)"
+    subgraph "Delegated Tree (delegated_tree1)"
         UA["Entry UA<br/>Settings: laptop = active, mobile = active, desktop = active"]
         UB["Entry UB<br/>Signed by laptop"]
         UC["Entry UC<br/>Settings: laptop = revoked<br/>Signed by mobile"]
@@ -608,6 +573,7 @@ graph TD
 - **Historical Tampering**: Immutable DAG prevents retroactive modifications
 - **Replay Attacks**: Content-addressable IDs prevent entry duplication
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
+- **Permission Boundary Violations**: Delegated tree permissions are constrained within their specified min/max bounds
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
@@ -648,14 +614,15 @@ graph TD
 
 ### Authentication Validation Process
 
-The validation process follows these steps:
+The current validation process:
 
 1. **Extract Authentication Info**: Parse the `auth` field from the entry
-2. **Resolve Key Identity**: For direct keys, lookup in `_settings.auth`; for User Auth Tree keys, validate tree reference and lookup in referenced tree
-3. **Check Key Status**: Verify the key is active (not revoked). _(V2 will add ignore and banned status checks)_
-4. **Validate Signature**: Verify the ed25519 signature against the entry content
+2. **Resolve Key Identity**: Lookup the direct key in `_settings.auth`
+3. **Check Key Status**: Verify the key is Active (not Revoked)
+4. **Validate Signature**: Verify the Ed25519 signature against the entry content hash
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation
-6. **Apply Permission Clamping**: For User Auth Tree keys, apply permission clamping rules
+
+**Current features include**: Direct key validation, delegated tree resolution, tip validation, and permission clamping.
 
 ### Sync Permissions
 
@@ -669,12 +636,60 @@ The current system uses entry metadata to reference settings tips. With authenti
 - Authentication validation uses the settings state at the referenced tips
 - This ensures entries are validated against the authentication rules that were current when created
 
+### Implementation Architecture
+
+#### Core Components
+
+1. **AuthValidator** (`auth/validation.rs`): Validates entries and resolves authentication
+
+   - Direct key resolution and validation
+   - Signature verification
+   - Permission checking
+   - Caching for performance
+
+2. **Crypto Module** (`auth/crypto.rs`): Cryptographic operations
+
+   - Ed25519 key generation and parsing
+   - Entry signing and verification
+   - Key format: `ed25519:<base64-encoded-public-key>`
+
+3. **AuthSettings** (`auth/settings.rs`): Settings management interface
+
+   - Add/update/get authentication keys
+   - Convert between settings storage and auth types
+   - Validate authentication operations
+
+4. **Permission Module** (`auth/permission.rs`): Permission logic
+   - Permission checking for operations
+   - Permission clamping for delegated trees
+
+#### Storage Format
+
+Authentication configuration is stored in `_settings.auth` as a Nested CRDT:
+
+```rust
+// Key storage structure
+AuthKey {
+    key: String,              // Ed25519 public key
+    permissions: Permission,  // Admin(u32), Write(u32), or Read
+    status: KeyStatus,       // Active or Revoked
+}
+```
+
 ## Future Considerations
 
-### Open Questions
+### Current Implementation Status
 
-1. What is the appropriate maximum delegation chain depth?
-   This document does not specify a maximum, but implementation considerations may require limits for performance.
+1. **Direct Keys**: ✅ Fully implemented and tested
+2. **Delegated Trees**: ✅ Fully implemented with comprehensive test coverage
+3. **Permission Clamping**: ✅ Functional for delegation chains
+4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_DEPTH=10
+
+### Future Enhancements
+
+1. **Advanced Key Status**: Add Ignore and Banned statuses for more nuanced key management
+2. **Performance Optimizations**: Further caching and validation improvements
+3. User experience improvements for key management
 
 ## References
 
