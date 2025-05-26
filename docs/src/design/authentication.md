@@ -26,13 +26,14 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Key Lifecycle](#key-lifecycle)
     - [Key Status Semantics](#key-status-semantics)
     - [Priority System](#priority-system)
-      - [When Does Priority Matter?](#when-does-priority-matter)
   - [Delegation (Delegated Trees)](#delegation-delegated-trees)
     - [Concept and Benefits](#concept-and-benefits)
     - [Structure](#structure)
     - [Permission Clamping](#permission-clamping)
     - [Multi-Level References](#multi-level-references)
     - [Delegated Tree References](#delegated-tree-references)
+      - [Latest Known Tips](#latest-known-tips)
+      - [Tip Tracking and Validation](#tip-tracking-and-validation)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
     - [Key Status Changes in Delegated Trees: Examples](#key-status-changes-in-delegated-trees-examples)
@@ -53,8 +54,12 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Authentication Validation Process](#authentication-validation-process)
     - [Sync Permissions](#sync-permissions)
     - [CRDT Metadata Considerations](#crdt-metadata-considerations)
+    - [Implementation Architecture](#implementation-architecture)
+      - [Core Components](#core-components)
+      - [Storage Format](#storage-format)
   - [Future Considerations](#future-considerations)
-    - [Open Questions](#open-questions)
+    - [Current Implementation Status](#current-implementation-status)
+    - [Future Enhancements](#future-enhancements)
   - [References](#references)
 
 ## Overview
@@ -402,7 +407,7 @@ The main tree must validate the delegated tree structure as well as the main tre
 
 1. When an entry uses a delegated tree key, it includes the delegated tree's tips at signing time
 2. The tree tracks these tips as the "latest known tips" for that delegated tree
-3. Future entries using that delegated tree must reference tips that are equal to or newer than the latest known tips
+3. Future entries using that delegated tree must reference tips that are equal to or newer than the latest known tips, or must be valid at the latest known tips
 4. This ensures that key revocations in delegated trees are respected once observed
 
 #### Tip Tracking and Validation
@@ -410,9 +415,10 @@ The main tree must validate the delegated tree structure as well as the main tre
 To validate entries with delegated tree keys:
 
 1. Check that the referenced tips are descendants of (or equal to) the latest known tips for that delegated tree
-2. Verify the key exists and has appropriate permissions at those tips
-3. Update the latest known tips if these are newer
-4. Apply permission clamping based on the delegation reference
+2. If they're not, check that the entry validates at the latest known tips
+3. Verify the key exists and has appropriate permissions at those tips
+4. Update the latest known tips if these are newer
+5. Apply permission clamping based on the delegation reference
 
 This mechanism ensures that once a key revocation is observed in a delegated tree, no entry can use an older version of that tree where the key was still valid.
 

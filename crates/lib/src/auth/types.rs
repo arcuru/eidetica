@@ -4,6 +4,7 @@
 //! key management, and authentication identifiers used in the system.
 
 use crate::crdt::{Nested, Value};
+use crate::entry::ID;
 use serde::{Deserialize, Serialize};
 
 /// Macro to implement Value conversions for types that convert via String
@@ -39,62 +40,64 @@ macro_rules! impl_nested_value_string {
 }
 
 /// Macro to implement Value conversions for types that convert to Map
+/// TODO: Clean this up
 macro_rules! impl_nested_value_map {
-    ($type:ty, {
-        $($field:ident : $field_type:ty),* $(,)?
-    }) => {
-        impl From<$type> for Value {
-            fn from(value: $type) -> Self {
-                let mut nested = Nested::new();
-                $(
-                    nested.as_hashmap_mut().insert(stringify!($field).to_string(), Value::from(value.$field));
-                )*
-                Value::Map(nested)
-            }
-        }
+     ($type:ty, {
+         $($field:ident : $field_type:ty),* $(,)?
+     }) => {
+         impl From<$type> for Value {
+             fn from(value: $type) -> Self {
+                 let mut nested = Nested::new();
+                 $(
+                     nested.set(stringify!($field), value.$field);
+                 )*
+                 Value::Map(nested)
+             }
+         }
 
-        impl TryFrom<Value> for $type {
-            type Error = String;
+         impl TryFrom<Value> for $type {
+             type Error = String;
 
-            fn try_from(value: Value) -> Result<Self, Self::Error> {
-                match value {
-                    Value::Map(map) => {
-                        $(
-                            let $field = map
-                                .get(stringify!($field))
-                                .ok_or_else(|| format!("Missing '{}' field in {}", stringify!($field), stringify!($type)))?;
+             fn try_from(value: Value) -> Result<Self, Self::Error> {
+                 match value {
+                     Value::Map(map) => {
+                         $(
+                             let $field = map
+                                 .get(stringify!($field))
+                                 .ok_or_else(|| format!("Missing '{}' field in {}", stringify!($field), stringify!($type)))?;
 
-                            let $field = <$field_type>::try_from($field.clone())
-                                .map_err(|e| format!("Invalid {}: {}", stringify!($field), e))?;
-                        )*
+                             let $field = <$field_type>::try_from($field.clone())
+                                 .map_err(|e| format!("Invalid {}: {}", stringify!($field), e))?;
+                         )*
 
-                        Ok(Self {
-                            $($field,)*
-                        })
+                         Ok(Self {
+                             $($field,)*
+                         })
+                     }
+                     Value::String(json) => {
+                         // Fallback to JSON parsing for backward compatibility
+                         serde_json::from_str(&json)
+                             .map_err(|e| format!("Failed to parse {} from JSON: {}", stringify!($type), e))
+                     }
+                     Value::Array(_) => {
+                        Err(concat!("Cannot convert array to ", stringify!($type)).to_string())
                     }
-                    Value::String(json) => {
-                        // Fallback to JSON parsing for backward compatibility
-                        serde_json::from_str(&json)
-                            .map_err(|e| format!("Failed to parse {} from JSON: {}", stringify!($type), e))
-                    }
-                    Value::Array(_) => Err(concat!("Cannot convert array to ", stringify!($type)).to_string()),
                     Value::Deleted => Err(concat!("Cannot convert deleted value to ", stringify!($type)).to_string()),
-                }
-            }
-        }
-    };
-}
+                 }
+             }
+         }
+     };
+ }
 
 /// Permission levels for authenticated operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Permission {
     /// Full administrative access including settings and key management
-    /// Priority determines administrative hierarchy (lower number = higher priority)
-    /// Priority only affects who can modify keys, not merge conflict resolution
+    /// Priority may be used for conflict resolution, lower number = higher priority
+    /// Admin keys always have priority over Write keys
     Admin(u32),
     /// Read and write access to data (excludes settings modifications)
-    /// Priority determines administrative hierarchy (lower number = higher priority)
-    /// Priority only affects who can modify keys, not merge conflict resolution
+    /// Priority may be used for conflict resolution, lower number = higher priority
     Write(u32),
     /// Read-only access to data
     Read,
@@ -145,12 +148,21 @@ impl Permission {
 
     /// Clamp permissions to a maximum level
     ///
-    /// Used for User Auth Tree delegation to ensure users cannot escalate
+    /// Used for delegated tree delegation to ensure users cannot escalate
     /// their permissions beyond what was granted in the main tree.
     /// Returns the minimum of self and max_permission.
     pub fn clamp_to(&self, max_permission: &Permission) -> Permission {
         use std::cmp::min;
         min(self.clone(), max_permission.clone())
+    }
+
+    /// Clamp permissions within bounds (for delegated trees)
+    ///
+    /// Applies both minimum and maximum bounds from PermissionBounds.
+    /// If min is specified and self is below min, raises to min.
+    /// If self is above max, lowers to max.
+    pub fn clamp_to_bounds(&self, bounds: &PermissionBounds) -> Permission {
+        crate::auth::permission::clamp_permission(self.clone(), bounds)
     }
 }
 
@@ -160,7 +172,7 @@ pub enum KeyStatus {
     /// Key is active and can create new entries
     Active,
     /// Key is revoked - cannot create new entries, but historical entries are preserved
-    /// During merges, content from revoked entries is preserved using standard LWW merge
+    /// Content of revoked entries is preserved during merges, but cannot be parents of new entries
     Revoked,
 }
 
@@ -176,48 +188,58 @@ pub struct AuthKey {
     pub status: KeyStatus,
 }
 
-/// Reference to a Merkle-DAG tree (for User Auth Trees)
+/// Reference to a Merkle-DAG tree (for delegated trees)
 /// TODO: May standardize on this format across the codebase
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TreeReference {
     /// Root entry ID of the referenced tree
-    pub root: String,
+    pub root: ID,
     /// Current tip entry IDs of the referenced tree
-    pub tips: Vec<String>,
+    pub tips: Vec<ID>,
 }
 
 /// User Authentication Tree reference stored in main tree's _settings.auth
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UserAuthTreeRef {
-    /// Maximum permission level this user can have (subject to clamping)
-    pub permissions: Permission,
-    /// Reference to the User Auth Tree
+pub struct PermissionBounds {
+    /// Maximum permission level (required)
+    pub max: Permission,
+    /// Minimum permission level (optional)
+    pub min: Option<Permission>,
+}
+
+/// Delegated tree reference stored in main tree's _settings.auth
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DelegatedTreeRef {
+    /// Permission bounds for keys from this delegated tree
+    #[serde(rename = "permission-bounds")]
+    pub permission_bounds: PermissionBounds,
+    /// Reference to the delegated tree
     pub tree: TreeReference,
 }
 
-impl Default for UserAuthTreeRef {
+impl Default for PermissionBounds {
     fn default() -> Self {
         Self {
-            permissions: Permission::Read,
-            tree: TreeReference::default(),
+            max: Permission::Read,
+            min: None,
         }
     }
 }
 
 /// Authentication identifier for entry signing
 ///
-/// Can be either a direct key reference or a nested User Auth Tree delegation
+/// Can be either a direct key reference or a nested delegated tree delegation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AuthId {
     /// Direct reference to a key ID in the main tree's _settings.auth
     Direct(String),
-    /// User Auth Tree delegation with optional nesting
-    UserTree {
-        /// User Auth Tree ID in the main tree's _settings.auth
+    /// Delegated tree delegation with optional nesting
+    DelegatedTree {
+        /// Delegated tree ID in the main tree's _settings.auth
         id: String,
-        /// Tips of the User Auth Tree at time of signing
-        tips: Vec<String>,
-        /// Key reference within the User Auth Tree (can be nested)
+        /// Tips of the delegated tree at time of signing
+        tips: Vec<ID>,
+        /// Key reference within the delegated tree (can be nested)
         key: Box<AuthId>,
     },
 }
@@ -345,14 +367,79 @@ impl_nested_value_map!(AuthKey, {
 });
 
 impl_nested_value_map!(TreeReference, {
-    root: String,
-    tips: Vec<String>
+    root: ID,
+    tips: Vec<ID>
 });
 
-impl_nested_value_map!(UserAuthTreeRef, {
-    permissions: Permission,
+impl_nested_value_map!(PermissionBounds, {
+    max: Permission,
+    min: Option<Permission>
+});
+
+impl_nested_value_map!(DelegatedTreeRef, {
+    permission_bounds: PermissionBounds,
     tree: TreeReference
 });
+
+// Support for Option<Permission>
+impl From<Option<Permission>> for Value {
+    fn from(value: Option<Permission>) -> Self {
+        match value {
+            Some(perm) => Value::String(perm.into()),
+            None => Value::String("none".to_string()),
+        }
+    }
+}
+
+impl TryFrom<Value> for Option<Permission> {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => {
+                if s == "none" {
+                    Ok(None)
+                } else {
+                    Permission::try_from(s).map(Some)
+                }
+            }
+            Value::Map(_) => Err("Cannot convert map to Option<Permission>".to_string()),
+            Value::Array(_) => Err("Cannot convert array to Option<Permission>".to_string()),
+            Value::Deleted => Ok(None),
+        }
+    }
+}
+
+// Support for Option<u32>
+impl From<Option<u32>> for Value {
+    fn from(value: Option<u32>) -> Self {
+        match value {
+            Some(num) => Value::String(num.to_string()),
+            None => Value::String("none".to_string()),
+        }
+    }
+}
+
+impl TryFrom<Value> for Option<u32> {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => {
+                if s == "none" {
+                    Ok(None)
+                } else {
+                    s.parse::<u32>()
+                        .map(Some)
+                        .map_err(|e| format!("Invalid u32: {e}"))
+                }
+            }
+            Value::Map(_) => Err("Cannot convert map to Option<u32>".to_string()),
+            Value::Array(_) => Err("Cannot convert array to Option<u32>".to_string()),
+            Value::Deleted => Ok(None),
+        }
+    }
+}
 
 impl From<Vec<String>> for Value {
     fn from(vec: Vec<String>) -> Self {
@@ -369,16 +456,7 @@ impl TryFrom<Value> for Vec<String> {
             Value::String(s) => serde_json::from_str(&s)
                 .map_err(|e| format!("Failed to parse Vec<String> from JSON: {e}")),
             Value::Map(_) => Err("Cannot convert map to Vec<String>".to_string()),
-            Value::Array(array) => {
-                let mut result = Vec::new();
-                for (_, nested_value) in array.iter() {
-                    match nested_value {
-                        Value::String(s) => result.push(s.clone()),
-                        _ => return Err("Array contains non-string values".to_string()),
-                    }
-                }
-                Ok(result)
-            }
+            Value::Array(_) => Err("Cannot convert array to Vec<String>".to_string()),
             Value::Deleted => Err("Cannot convert deleted value to Vec<String>".to_string()),
         }
     }
@@ -392,10 +470,10 @@ impl From<AuthId> for Value {
                 nested.set("type", "direct".to_string());
                 nested.set("key_id", key_id);
             }
-            AuthId::UserTree { id, tips, key } => {
-                nested.set("type", "user_tree".to_string());
+            AuthId::DelegatedTree { id, tips, key } => {
+                nested.set("type", "delegated_tree".to_string());
                 nested.set("id", id);
-                nested.set("tips", serde_json::to_string(&tips).unwrap_or_default());
+                nested.set("tips", tips);
                 nested.set("key", *key);
             }
         }
@@ -431,7 +509,7 @@ impl TryFrom<Value> for AuthId {
 
                         Ok(AuthId::Direct(key_id_str))
                     }
-                    "user_tree" => {
+                    "delegated_tree" => {
                         let id = map
                             .get("id")
                             .ok_or_else(|| "Missing 'id' field in UserTree AuthId".to_string())?;
@@ -447,13 +525,13 @@ impl TryFrom<Value> for AuthId {
                             _ => return Err("AuthId 'id' field must be a string".to_string()),
                         };
 
-                        let tips_vec = Vec::<String>::try_from(tips.clone())
+                        let tips_vec = Vec::<ID>::try_from(tips.clone())
                             .map_err(|e| format!("Invalid tips: {e}"))?;
 
                         let key_parsed = AuthId::try_from(key.clone())
                             .map_err(|e| format!("Invalid nested key: {e}"))?;
 
-                        Ok(AuthId::UserTree {
+                        Ok(AuthId::DelegatedTree {
                             id: id_str,
                             tips: tips_vec,
                             key: Box::new(key_parsed),
@@ -476,9 +554,7 @@ impl TryFrom<Value> for AuthId {
 impl From<AuthInfo> for Value {
     fn from(auth_info: AuthInfo) -> Self {
         let mut nested = Nested::new();
-        nested
-            .as_hashmap_mut()
-            .insert("id".to_string(), Value::from(auth_info.id));
+        nested.set("id", auth_info.id);
         if let Some(signature) = auth_info.signature {
             nested.set("signature", signature);
         }
@@ -516,18 +592,70 @@ impl TryFrom<Value> for AuthInfo {
 }
 
 impl AuthInfo {
-    /// Check if this entry is signed by a specific key ID.
+    /// Check if this AuthInfo was signed by a specific key ID
     ///
-    /// Returns `true` if the entry is signed by the given key ID and has a signature,
-    /// `false` otherwise.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key ID to check against
-    ///
-    /// # Returns
-    /// `true` if signed by the key and has a signature, `false` otherwise
-    pub fn is_signed_by(&self, key_id: impl AsRef<str>) -> bool {
-        self.id == AuthId::Direct(key_id.as_ref().to_string()) && self.signature.is_some()
+    /// For direct keys, this checks if the key ID matches.
+    /// For delegated trees, this checks if the nested key ultimately resolves to the given key ID.
+    pub fn is_signed_by(&self, key_id: &str) -> bool {
+        self.id.is_signed_by(key_id)
+    }
+}
+
+impl AuthId {
+    /// Check if this AuthId ultimately resolves to a specific key ID
+    pub fn is_signed_by(&self, key_id: &str) -> bool {
+        match self {
+            AuthId::Direct(id) => id == key_id,
+            AuthId::DelegatedTree { key, .. } => {
+                // Recursively check nested keys
+                key.as_ref().is_signed_by(key_id)
+            }
+        }
+    }
+}
+
+// Support for ID types
+impl From<ID> for Value {
+    fn from(value: ID) -> Self {
+        Value::String(value.to_string())
+    }
+}
+
+impl TryFrom<Value> for ID {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => Ok(ID::new(s)),
+            Value::Map(_) => Err("Cannot convert map to ID".to_string()),
+            Value::Array(_) => Err("Cannot convert array to ID".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to ID".to_string()),
+        }
+    }
+}
+
+// Support for Vec<ID>
+impl From<Vec<ID>> for Value {
+    fn from(value: Vec<ID>) -> Self {
+        let strings: Vec<String> = value.into_iter().map(|id| id.to_string()).collect();
+        Value::String(serde_json::to_string(&strings).unwrap())
+    }
+}
+
+impl TryFrom<Value> for Vec<ID> {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => {
+                let strings: Vec<String> =
+                    serde_json::from_str(&s).map_err(|e| format!("Invalid Vec<ID> JSON: {e}"))?;
+                Ok(strings.into_iter().map(ID::new).collect())
+            }
+            Value::Array(_) => Err("Cannot convert array to Vec<ID>".to_string()),
+            Value::Map(_) => Err("Cannot convert map to Vec<ID>".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to Vec<ID>".to_string()),
+        }
     }
 }
 
@@ -655,10 +783,10 @@ mod tests {
     }
 
     #[test]
-    fn test_user_tree_auth_id() {
-        let auth_id = AuthId::UserTree {
+    fn test_delegated_tree_auth_id() {
+        let auth_id = AuthId::DelegatedTree {
             id: "example@eidetica.dev".to_string(),
-            tips: vec!["abc123".to_string()],
+            tips: vec![ID::new("abc123")],
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };
 
@@ -758,10 +886,10 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_id_user_tree_structured_format() {
-        let auth_id = AuthId::UserTree {
+    fn test_auth_id_delegated_tree_structured_format() {
+        let auth_id = AuthId::DelegatedTree {
             id: "user@example.com".to_string(),
-            tips: vec!["tip1".to_string(), "tip2".to_string()],
+            tips: vec![ID::new("tip1"), ID::new("tip2")],
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };
 
@@ -770,7 +898,7 @@ mod tests {
         if let Value::Map(map) = nested {
             assert_eq!(
                 map.get("type"),
-                Some(&Value::String("user_tree".to_string()))
+                Some(&Value::String("delegated_tree".to_string()))
             );
             assert_eq!(
                 map.get("id"),
@@ -808,10 +936,10 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_id_user_tree_roundtrip() {
-        let original = AuthId::UserTree {
+    fn test_auth_id_delegated_tree_roundtrip() {
+        let original = AuthId::DelegatedTree {
             id: "user@example.com".to_string(),
-            tips: vec!["tip1".to_string(), "tip2".to_string()],
+            tips: vec![ID::new("tip1"), ID::new("tip2")],
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };
 
@@ -833,43 +961,10 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_info_is_signed_by() {
-        // Test signed entry with matching key
-        let auth_info_signed = AuthInfo {
-            id: AuthId::Direct("TEST_KEY".to_string()),
-            signature: Some("signature_data".to_string()),
-        };
-        assert!(auth_info_signed.is_signed_by("TEST_KEY"));
-        assert!(!auth_info_signed.is_signed_by("OTHER_KEY"));
-
-        // Test signed entry without signature
-        let auth_info_no_sig = AuthInfo {
-            id: AuthId::Direct("TEST_KEY".to_string()),
-            signature: None,
-        };
-        assert!(!auth_info_no_sig.is_signed_by("TEST_KEY"));
-
-        // Test default (unsigned) auth info
-        let auth_info_default = AuthInfo::default();
-        assert!(!auth_info_default.is_signed_by("ANY_KEY"));
-
-        // Test User Tree auth (should return false since it's not Direct)
-        let auth_info_user_tree = AuthInfo {
-            id: AuthId::UserTree {
-                id: "user_tree".to_string(),
-                tips: vec!["tip1".to_string()],
-                key: Box::new(AuthId::Direct("nested_key".to_string())),
-            },
-            signature: Some("signature".to_string()),
-        };
-        assert!(!auth_info_user_tree.is_signed_by("nested_key"));
-    }
-
-    #[test]
     fn test_tree_reference_nested_value_content() {
         let tree_ref = TreeReference {
-            root: "root123".to_string(),
-            tips: vec!["tip1".to_string(), "tip2".to_string()],
+            root: ID::new("root123"),
+            tips: vec![ID::new("tip1"), ID::new("tip2")],
         };
 
         let nested: Value = tree_ref.into();
@@ -879,6 +974,132 @@ mod tests {
         } else {
             panic!("Expected Value::Map");
         }
+    }
+
+    #[test]
+    fn test_permission_bounds_clamping() {
+        // Test permission clamping with bounds
+        let bounds = PermissionBounds {
+            max: Permission::Write(10),
+            min: Some(Permission::Read),
+        };
+
+        // Test clamping admin to write (max bound)
+        let admin_perm = Permission::Admin(5);
+        assert_eq!(admin_perm.clamp_to_bounds(&bounds), Permission::Write(10));
+
+        // Test clamping Write(5) to Write(10) (Write(5) exceeds max)
+        let write_perm = Permission::Write(5);
+        assert_eq!(write_perm.clamp_to_bounds(&bounds), Permission::Write(10));
+
+        // Test minimum bound enforcement when no minimum specified
+        let bounds_no_min = PermissionBounds {
+            max: Permission::Admin(5),
+            min: None,
+        };
+
+        let read_perm = Permission::Read;
+        assert_eq!(read_perm.clamp_to_bounds(&bounds_no_min), Permission::Read);
+    }
+
+    #[test]
+    fn test_delegated_tree_ref_serialization() {
+        let bounds = PermissionBounds {
+            max: Permission::Write(10),
+            min: Some(Permission::Read),
+        };
+
+        let tree_ref = DelegatedTreeRef {
+            permission_bounds: bounds,
+            tree: TreeReference {
+                root: ID::new("root123"),
+                tips: vec![ID::new("tip1")],
+            },
+        };
+
+        let nested: Value = tree_ref.clone().into();
+        let parsed = DelegatedTreeRef::try_from(nested).unwrap();
+
+        assert_eq!(tree_ref.permission_bounds.max, parsed.permission_bounds.max);
+        assert_eq!(tree_ref.permission_bounds.min, parsed.permission_bounds.min);
+        assert_eq!(tree_ref.tree.root, parsed.tree.root);
+    }
+
+    #[test]
+    fn test_option_permission_nested_value_roundtrip() {
+        // Test Some(permission)
+        let some_perm = Some(Permission::Write(42));
+        let nested: Value = some_perm.clone().into();
+        let parsed = Option::<Permission>::try_from(nested).unwrap();
+        assert_eq!(some_perm, parsed);
+
+        // Test None
+        let none_perm: Option<Permission> = None;
+        let nested: Value = none_perm.clone().into();
+        let parsed = Option::<Permission>::try_from(nested).unwrap();
+        assert_eq!(none_perm, parsed);
+    }
+
+    #[test]
+    fn test_option_u32_nested_value_roundtrip() {
+        // Test Some(u32)
+        let some_num = Some(42u32);
+        let nested: Value = some_num.into();
+        let parsed = Option::<u32>::try_from(nested).unwrap();
+        assert_eq!(some_num, parsed);
+
+        // Test None
+        let none_num: Option<u32> = None;
+        let nested: Value = none_num.into();
+        let parsed = Option::<u32>::try_from(nested).unwrap();
+        assert_eq!(none_num, parsed);
+    }
+
+    #[test]
+    fn test_permission_bounds_nested_value_roundtrip() {
+        // Test with both min and max
+        let bounds = PermissionBounds {
+            max: Permission::Admin(5),
+            min: Some(Permission::Read),
+        };
+
+        let nested: Value = bounds.clone().into();
+        let parsed = PermissionBounds::try_from(nested).unwrap();
+        assert_eq!(bounds.max, parsed.max);
+        assert_eq!(bounds.min, parsed.min);
+
+        // Test with only max
+        let bounds_no_min = PermissionBounds {
+            max: Permission::Write(10),
+            min: None,
+        };
+
+        let nested: Value = bounds_no_min.clone().into();
+        let parsed = PermissionBounds::try_from(nested).unwrap();
+        assert_eq!(bounds_no_min.max, parsed.max);
+        assert_eq!(bounds_no_min.min, parsed.min);
+    }
+
+    #[test]
+    fn test_delegated_tree_ref_complete_roundtrip() {
+        let tree_ref = DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(10),
+                min: Some(Permission::Read),
+            },
+            tree: TreeReference {
+                root: ID::new("root123"),
+                tips: vec![ID::new("tip1"), ID::new("tip2")],
+            },
+        };
+
+        let nested: Value = tree_ref.clone().into();
+        let parsed = DelegatedTreeRef::try_from(nested).unwrap();
+
+        assert_eq!(tree_ref.permission_bounds.max, parsed.permission_bounds.max);
+        assert_eq!(tree_ref.permission_bounds.min, parsed.permission_bounds.min);
+        assert_eq!(tree_ref.tree.root, parsed.tree.root);
+        assert_eq!(tree_ref.tree.tips, parsed.tree.tips);
     }
 
     #[test]

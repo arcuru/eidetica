@@ -222,7 +222,7 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Test with no auth section at all
     let empty_settings = Nested::new();
-    let result = validator.validate_entry(&entry, &empty_settings);
+    let result = validator.validate_entry(&entry, &empty_settings, None);
     assert!(
         result.is_ok(),
         "Should allow unsigned when no auth configured"
@@ -232,14 +232,14 @@ fn test_entry_validation_with_corrupted_auth_section() {
     let mut corrupted_settings = Nested::new();
     corrupted_settings.set("auth", "invalid_string_value".to_string());
 
-    let result = validator.validate_entry(&entry, &corrupted_settings);
+    let result = validator.validate_entry(&entry, &corrupted_settings, None);
     assert!(result.is_err(), "Should fail with corrupted auth section");
 
     // Test with settings containing deleted auth section
     let mut deleted_settings = Nested::new();
     deleted_settings.set("auth", Value::Deleted);
 
-    let result = validator.validate_entry(&entry, &deleted_settings);
+    let result = validator.validate_entry(&entry, &deleted_settings, None);
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
 }
 
@@ -286,7 +286,7 @@ fn test_entry_validation_cache_behavior() {
     entry.auth.signature = Some(signature);
 
     // Validate the entry - should work
-    let result1 = validator.validate_entry(&entry, &settings);
+    let result1 = validator.validate_entry(&entry, &settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "First validation should succeed"
@@ -302,14 +302,14 @@ fn test_entry_validation_cache_behavior() {
     new_settings.set_map("auth", new_auth_settings);
 
     // Validate with revoked key - should fail
-    let result2 = validator.validate_entry(&entry, &new_settings);
+    let result2 = validator.validate_entry(&entry, &new_settings, None);
     assert!(
         result2.is_ok() && !result2.unwrap(),
         "Validation with revoked key should fail"
     );
 
     // Validate with original settings again - should work (no stale cache)
-    let result3 = validator.validate_entry(&entry, &settings);
+    let result3 = validator.validate_entry(&entry, &settings, None);
     assert!(
         result3.is_ok() && result3.unwrap(),
         "Validation should work again with active key"
@@ -344,7 +344,7 @@ fn test_entry_validation_with_malformed_keys() {
     correct_entry.auth.signature = Some(correct_signature);
 
     // Should validate successfully with correct settings
-    let result1 = validator.validate_entry(&correct_entry, &settings);
+    let result1 = validator.validate_entry(&correct_entry, &settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -363,7 +363,7 @@ fn test_entry_validation_with_malformed_keys() {
     malformed_settings.set_map("auth", malformed_auth_settings);
 
     // Entry with same ID but malformed key in settings should fail
-    let result_malformed = validator.validate_entry(&correct_entry, &malformed_settings);
+    let result_malformed = validator.validate_entry(&correct_entry, &malformed_settings, None);
     assert!(
         result_malformed.is_err() || (result_malformed.is_ok() && !result_malformed.unwrap()),
         "Entry should fail validation with malformed key settings"
@@ -373,7 +373,7 @@ fn test_entry_validation_with_malformed_keys() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.auth.signature = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &settings);
+    let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {
@@ -394,7 +394,7 @@ fn test_entry_validation_with_malformed_keys() {
         eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
     wrong_signature_entry.auth.signature = Some(wrong_signature);
 
-    let result3 = validator.validate_entry(&wrong_signature_entry, &settings);
+    let result3 = validator.validate_entry(&wrong_signature_entry, &settings, None);
     assert!(
         result3.is_ok() && !result3.unwrap(),
         "Entry with wrong key signature should fail validation"
@@ -410,7 +410,7 @@ fn test_entry_validation_unsigned_entry_detection() {
 
     // Test with no auth settings
     let empty_settings = Nested::new();
-    let result1 = validator.validate_entry(&entry, &empty_settings);
+    let result1 = validator.validate_entry(&entry, &empty_settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Unsigned entry should be valid when no auth configured"
@@ -421,7 +421,7 @@ fn test_entry_validation_unsigned_entry_detection() {
     let auth_settings = Nested::new();
     settings.set_map("auth", auth_settings);
 
-    let result2 = validator.validate_entry(&entry, &settings);
+    let result2 = validator.validate_entry(&entry, &settings, None);
     assert!(
         result2.is_ok() && result2.unwrap(),
         "Unsigned entry should still be valid for backward compatibility"
@@ -457,7 +457,7 @@ fn test_entry_validation_with_invalid_signatures() {
     correct_entry.auth.signature = Some(correct_signature);
 
     // Should validate successfully
-    let result1 = validator.validate_entry(&correct_entry, &settings);
+    let result1 = validator.validate_entry(&correct_entry, &settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -467,7 +467,7 @@ fn test_entry_validation_with_invalid_signatures() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.auth.signature = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &settings);
+    let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {

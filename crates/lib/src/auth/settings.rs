@@ -5,7 +5,7 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
-use crate::auth::types::{AuthId, AuthKey, KeyStatus, ResolvedAuth, UserAuthTreeRef};
+use crate::auth::types::{AuthId, AuthKey, DelegatedTreeRef, KeyStatus, ResolvedAuth};
 use crate::crdt::{Nested, Value};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -54,11 +54,11 @@ impl AuthSettings {
         Ok(())
     }
 
-    /// Add or update a User Auth Tree reference
-    pub fn add_user_tree(
+    /// Add or update a delegated tree reference
+    pub fn add_delegated_tree(
         &mut self,
         id: impl Into<String>,
-        tree_ref: UserAuthTreeRef,
+        tree_ref: DelegatedTreeRef,
     ) -> Result<()> {
         self.inner
             .as_hashmap_mut()
@@ -79,7 +79,7 @@ impl AuthSettings {
                     Ok(())
                 }
                 Err(_) => {
-                    // Not an AuthKey, might be a UserAuthTreeRef - for now just error
+                    // Not an AuthKey, might be a DelegatedTreeRef - for now just error
                     Err(Error::Authentication(format!(
                         "Cannot revoke non-key entry: {id}"
                     )))
@@ -98,11 +98,11 @@ impl AuthSettings {
         })
     }
 
-    /// Get a specific User Auth Tree reference by ID
-    pub fn get_user_tree(&self, id: impl AsRef<str>) -> Option<Result<UserAuthTreeRef>> {
+    /// Get a specific delegated tree reference by ID
+    pub fn get_delegated_tree(&self, id: impl AsRef<str>) -> Option<Result<DelegatedTreeRef>> {
         self.inner.get(id.as_ref()).map(|value| {
-            UserAuthTreeRef::try_from(value.clone())
-                .map_err(|e| Error::Authentication(format!("Invalid user auth tree format: {e}")))
+            DelegatedTreeRef::try_from(value.clone())
+                .map_err(|e| Error::Authentication(format!("Invalid delegated tree format: {e}")))
         })
     }
 
@@ -118,12 +118,12 @@ impl AuthSettings {
         Ok(keys)
     }
 
-    /// Get all User Auth Tree references
-    pub fn get_all_user_trees(&self) -> Result<HashMap<String, UserAuthTreeRef>> {
+    /// Get all delegated tree references
+    pub fn get_all_delegated_trees(&self) -> Result<HashMap<String, DelegatedTreeRef>> {
         let mut trees = HashMap::new();
         for (tree_id, value) in self.inner.as_hashmap().iter() {
-            // Try to parse as UserAuthTreeRef, skip if it's not one
-            if let Ok(tree_ref) = UserAuthTreeRef::try_from(value.clone()) {
+            // Try to parse as DelegatedTreeRef, skip if it's not one
+            if let Ok(tree_ref) = DelegatedTreeRef::try_from(value.clone()) {
                 trees.insert(tree_id.clone(), tree_ref);
             }
         }
@@ -149,10 +149,10 @@ impl AuthSettings {
                     Err(Error::Authentication(format!("Key not found: {key_id}")))
                 }
             }
-            AuthId::UserTree { .. } => {
-                // Phase 1: User Auth Trees not implemented yet
+            AuthId::DelegatedTree { .. } => {
+                // Phase 1: Delegated trees not implemented yet
                 Err(Error::Authentication(
-                    "User Auth Trees not yet implemented in Phase 1".to_string(),
+                    "Delegated trees not yet implemented in Phase 1".to_string(),
                 ))
             }
         }
