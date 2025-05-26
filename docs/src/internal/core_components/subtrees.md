@@ -4,13 +4,13 @@ While [Entries](entry.md) store subtree data as raw serialized strings (`RawData
 
 **Note on Naming:** Subtree names beginning with an underscore (e.g., `_settings`, `_root`) are reserved for internal Eidetica use. Avoid using this prefix for user-defined subtrees to prevent conflicts.
 
-Currently, the main specialized implementations are `RowStore<T>` and `KVStore`.
+Currently, the main specialized implementations are `RowStore<T>`, `KVStore`, and `YrsStore` (requires the "y-crdt" feature).
 
 <!-- TODO: Add a section on the `SubtreeType` trait and how new types can be created. -->
 
 ### The `SubTree` Trait
 
-Specific subtree types (like `RowStore`, `KVStore`, or custom CRDT implementations) are accessed through handles that implement the [`SubTree`](../../src/subtree/mod.rs) trait. This trait requires:
+Specific subtree types (like `RowStore`, `KVStore`, `YrsStore`, or custom CRDT implementations) are accessed through handles that implement the [`SubTree`](../../src/subtree/mod.rs) trait. This trait requires:
 
 - `fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self>`: An associated function used by `AtomicOp::get_subtree` to create a handle instance linked to the current operation.
 - `fn name(&self) -> &str`: A method to retrieve the name of the subtree this handle manages.
@@ -151,6 +151,112 @@ kv.delete("old_setting")?;
 editor.delete_child("deprecated_setting")?;
 
 // Commit changes
+op.commit()?;
+```
+
+#### YrsStore (Y-CRDT Integration)
+
+`YrsStore` provides seamless integration with Y-CRDT (Yjs) for real-time collaborative editing and automatic conflict resolution. This implementation is only available when the "y-crdt" feature is enabled.
+
+```mermaid
+classDiagram
+    class YrsStore {
+        <<SubtreeType>>
+        +doc() Result<Doc>
+        +with_doc<F, R>(f: F) Result<R> where F: FnOnce(&Doc) -> Result<R>
+        +with_doc_mut<F, R>(f: F) Result<R> where F: FnOnce(&Doc) -> Result<R>
+        +apply_update(update_data: &[u8]) Result<()>
+        +get_update() Result<Vec<u8>>
+        +save_doc_full(doc: &Doc) Result<()>
+        +save_doc(doc: &Doc) Result<()>
+    }
+
+    class YrsBinary {
+        <<CRDT>>
+        +new(data: Vec<u8>) Self
+        +as_bytes() &[u8]
+        +is_empty() bool
+        +merge(&self, other: &Self) Result<Self>
+    }
+
+    YrsStore --> YrsBinary : uses for storage
+```
+
+**Features:**
+
+- **Real-time Collaboration**: Built on Y-CRDT algorithms for sophisticated conflict resolution and real-time collaborative editing
+- **Differential Saving**: Only stores incremental changes, not full document state, optimizing storage overhead
+- **Efficient Caching**: Caches expensive backend data retrieval operations to minimize I/O
+- **Full Y-CRDT API**: Direct access to the complete `yrs` library functionality through the underlying `Doc`
+- **Seamless Integration**: Works with Eidetica's atomic operation and viewer model
+
+**Architecture:**
+
+The `YrsStore` integrates Y-CRDT with Eidetica's CRDT system through the `YrsBinary` wrapper, which implements the required `Data` and `CRDT` traits. Key architectural features include:
+
+- **Caching Strategy**: Caches the expensive `get_full_state()` operation from the backend and constructs documents on-demand
+- **Differential Updates**: When saving, calculates diffs relative to the current backend state rather than full snapshots
+- **Binary Update Merging**: The `YrsBinary` CRDT applies both updates to a new Y-CRDT document and returns the merged state
+
+**Key Operations:**
+
+- `doc()`: Gets the current Y-CRDT document, merging all historical state
+- `with_doc()` / `with_doc_mut()`: Provides safe access to the document within a closure
+- `apply_update()`: Applies an external Y-CRDT update to the current document
+- `get_update()`: Returns the current staged changes as a binary update
+- `save_doc()`: Saves changes using differential updates (recommended)
+- `save_doc_full()`: Saves the complete document state (for special cases)
+
+**Merge Strategy:**
+
+When merging two `YrsBinary` instances, both updates are applied to a new Y-CRDT document, and the resulting merged state is returned. This preserves Y-CRDT's sophisticated conflict resolution algorithms within Eidetica's merge operations.
+
+**Performance Considerations:**
+
+The implementation minimizes both I/O overhead and memory usage by:
+
+- Caching backend data retrieval operations
+- Constructing documents and state vectors on-demand from cached data
+- Storing only incremental changes rather than full document snapshots
+
+Example usage:
+
+```rust
+// Enable the y-crdt feature in Cargo.toml:
+// eidetica = { version = "0.1", features = ["y-crdt"] }
+
+use eidetica::subtree::YrsStore;
+use eidetica::y_crdt::{Map, Text, Transact};
+
+let op = tree.new_operation()?;
+let yrs_store = op.get_subtree::<YrsStore>("collaborative_doc")?;
+
+// Work directly with the Y-CRDT document
+yrs_store.with_doc_mut(|doc| {
+    let text = doc.get_or_insert_text("content");
+    let metadata = doc.get_or_insert_map("metadata");
+
+    let mut txn = doc.transact_mut();
+
+    // Insert text collaboratively
+    text.insert(&mut txn, 0, "Hello, collaborative world!");
+
+    // Set metadata
+    metadata.insert(&mut txn, "title", "My Document");
+    metadata.insert(&mut txn, "author", "Alice");
+
+    Ok(())
+})?;
+
+// Apply external updates from other clients
+let external_update = receive_update_from_network();
+yrs_store.apply_update(&external_update)?;
+
+// Get updates to send to other clients
+let update_to_broadcast = yrs_store.get_update()?;
+send_update_to_network(update_to_broadcast);
+
+// Commit changes (saves only the differential updates)
 op.commit()?;
 ```
 
