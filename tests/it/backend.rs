@@ -1,6 +1,6 @@
+use eidetica::Error;
 use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::entry::Entry;
-use eidetica::Error;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;

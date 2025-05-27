@@ -5,10 +5,10 @@
 //! representing a snapshot of data in the main tree and potentially multiple named subtrees.
 //! This module also defines the `ID` type and `RawData` type.
 
-use crate::auth::types::AuthInfo;
-use crate::constants::ROOT;
 use crate::Error;
 use crate::Result;
+use crate::auth::types::AuthInfo;
+use crate::constants::ROOT;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

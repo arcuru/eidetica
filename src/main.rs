@@ -1,12 +1,12 @@
+use eidetica::Tree;
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
 use eidetica::entry::Entry;
-use eidetica::Tree;
 use signal_hook::flag as signal_flag;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const DB_FILE: &str = "eidetica.json";
 

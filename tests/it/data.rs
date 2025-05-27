@@ -1,13 +1,13 @@
 use crate::helpers::*;
+use eidetica::Error;
 use eidetica::atomicop::AtomicOp;
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
-use eidetica::data::KVOverWrite;
 use eidetica::data::CRDT;
+use eidetica::data::KVOverWrite;
 use eidetica::data::{KVNested, NestedValue};
 use eidetica::entry::Entry;
 use eidetica::subtree::KVStore;
-use eidetica::Error;
 use std::collections::HashMap;
 
 #[test]

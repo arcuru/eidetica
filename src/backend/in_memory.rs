@@ -1,7 +1,7 @@
-use crate::backend::Backend;
-use crate::entry::{Entry, ID};
 use crate::Error;
 use crate::Result;
+use crate::backend::Backend;
+use crate::entry::{Entry, ID};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};

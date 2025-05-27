@@ -1,5 +1,5 @@
 use crate::atomicop::AtomicOp;
-use crate::data::{KVNested, NestedValue, CRDT};
+use crate::data::{CRDT, KVNested, NestedValue};
 use crate::subtree::SubTree;
 use crate::{Error, Result};
 
@@ -371,16 +371,14 @@ impl KVStore {
             let key_segment_string = key_segment_s.as_ref().to_string();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
             current_map_mut = match entry.or_insert_with(|| NestedValue::Map(KVNested::default())) {
-                NestedValue::Map(ref mut map) => map,
+                NestedValue::Map(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
                     *non_map_val = NestedValue::Map(KVNested::default());
-                    if let NestedValue::Map(ref mut map) = non_map_val {
-                        map
-                    } else {
-                        // This unreachable!() is safe because we just assigned NestedValue::Map.
-                        unreachable!("Just assigned a map, should be a map variant");
+                    match non_map_val {
+                        NestedValue::Map(map) => map,
+                        _ => unreachable!("Just assigned a map"),
                     }
                 }
             };

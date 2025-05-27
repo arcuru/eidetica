@@ -1,9 +1,9 @@
+use eidetica::Error;
 use eidetica::backend::Backend;
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
 use eidetica::subtree::KVStore;
-use eidetica::Error;
 
 #[test]
 fn test_new_db_and_tree() {

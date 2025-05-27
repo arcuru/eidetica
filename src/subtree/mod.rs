@@ -1,5 +1,5 @@
-use crate::atomicop::AtomicOp;
 use crate::Result;
+use crate::atomicop::AtomicOp;
 
 mod kvstore;
 pub use kvstore::KVStore;

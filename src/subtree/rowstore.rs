@@ -1,5 +1,5 @@
 use crate::atomicop::AtomicOp;
-use crate::data::{KVOverWrite, CRDT};
+use crate::data::{CRDT, KVOverWrite};
 use crate::subtree::SubTree;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};

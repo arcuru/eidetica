@@ -1,12 +1,12 @@
+use crate::Error;
+use crate::Result;
 use crate::constants::SETTINGS;
-use crate::data::KVOverWrite;
 use crate::data::CRDT;
+use crate::data::KVOverWrite;
 use crate::entry::Entry;
 use crate::entry::{EntryBuilder, ID};
 use crate::subtree::SubTree;
 use crate::tree::Tree;
-use crate::Error;
-use crate::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
 

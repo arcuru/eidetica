@@ -73,7 +73,7 @@ impl AuthValidator {
             _ => {
                 return Err(Error::Authentication(
                     "Auth section must be a nested map".to_string(),
-                ))
+                ));
             }
         };
 
@@ -222,28 +222,40 @@ mod tests {
         };
 
         // Test admin permissions
-        assert!(validator
-            .check_permissions(&admin_auth, &Operation::WriteData)
-            .unwrap());
-        assert!(validator
-            .check_permissions(&admin_auth, &Operation::WriteSettings)
-            .unwrap());
+        assert!(
+            validator
+                .check_permissions(&admin_auth, &Operation::WriteData)
+                .unwrap()
+        );
+        assert!(
+            validator
+                .check_permissions(&admin_auth, &Operation::WriteSettings)
+                .unwrap()
+        );
 
         // Test write permissions
-        assert!(validator
-            .check_permissions(&write_auth, &Operation::WriteData)
-            .unwrap());
-        assert!(!validator
-            .check_permissions(&write_auth, &Operation::WriteSettings)
-            .unwrap());
+        assert!(
+            validator
+                .check_permissions(&write_auth, &Operation::WriteData)
+                .unwrap()
+        );
+        assert!(
+            !validator
+                .check_permissions(&write_auth, &Operation::WriteSettings)
+                .unwrap()
+        );
 
         // Test read permissions
-        assert!(!validator
-            .check_permissions(&read_auth, &Operation::WriteData)
-            .unwrap());
-        assert!(!validator
-            .check_permissions(&read_auth, &Operation::WriteSettings)
-            .unwrap());
+        assert!(
+            !validator
+                .check_permissions(&read_auth, &Operation::WriteData)
+                .unwrap()
+        );
+        assert!(
+            !validator
+                .check_permissions(&read_auth, &Operation::WriteSettings)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -346,10 +358,12 @@ mod tests {
 
         let result = validator.resolve_auth_key(&auth_id, &settings);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("User Auth Trees not yet implemented"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("User Auth Trees not yet implemented")
+        );
     }
 
     #[test]

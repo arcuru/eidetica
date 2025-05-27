@@ -21,7 +21,7 @@
 //! This module is only available when the "y-crdt" feature is enabled.
 
 use crate::atomicop::AtomicOp;
-use crate::data::{Data, CRDT};
+use crate::data::{CRDT, Data};
 use crate::subtree::SubTree;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};

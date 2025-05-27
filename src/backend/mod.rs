@@ -4,8 +4,8 @@
 //! The `Backend` trait defines the interface for storing and retrieving `Entry` objects.
 //! This allows the core database logic (`BaseDB`, `Tree`) to be independent of the specific storage mechanism.
 
-use crate::entry::{Entry, ID};
 use crate::Result;
+use crate::entry::{Entry, ID};
 use std::any::Any;
 
 mod in_memory;
