@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn test_user_tree_auth_id() {
         let auth_id = AuthId::UserTree {
-            id: "patrick@jackson.dev".to_string(),
+            id: "example@eidetica.dev".to_string(),
             tips: vec!["abc123".to_string()],
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };

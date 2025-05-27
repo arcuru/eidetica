@@ -211,7 +211,7 @@ For User Auth Tree keys, the authentication structure is more complex:
 {
   "auth": {
     "id": {
-      "id": "patrick@jackson.dev",
+      "id": "example@eidetica.dev",
       "tips": ["abc123def456"],
       "key": "KEY_LAPTOP"
     },
@@ -226,7 +226,7 @@ For nested User Auth Tree references:
 {
   "auth": {
     "id": {
-      "id": "patrick@jackson.dev",
+      "id": "example@eidetica.dev",
       "tips": ["current_tip"],
       "key": {
         "id": "old-identity",
@@ -318,7 +318,7 @@ A User Auth Tree reference in the main tree's `_settings.auth` contains:
 {
   "_settings": {
     "auth": {
-      "patrick@jackson.dev": {
+      "example@eidetica.dev": {
         "permissions": "admin",
         "priority": 15,
         "tree": {
@@ -382,7 +382,7 @@ User Auth Trees can reference other User Auth Trees, creating delegation chains:
 {
   "auth": {
     "id": {
-      "id": "patrick@jackson.dev",
+      "id": "example@eidetica.dev",
       "tips": ["current_tip"],
       "key": {
         "id": "old-identity",
