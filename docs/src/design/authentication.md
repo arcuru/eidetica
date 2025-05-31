@@ -32,10 +32,9 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [User Auth Tree references](#user-auth-tree-references)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
-    - [Key Revocation in User Auth Trees: Examples](#key-revocation-in-user-auth-trees-examples)
-      - [Example 1: Basic User Auth Tree Key Revocation](#example-1-basic-user-auth-tree-key-revocation)
-      - [Example 2: Sibling Branch Merge with Revoked Key](#example-2-sibling-branch-merge-with-revoked-key)
-      - [Example 3: Priority-Based Conflict Resolution](#example-3-priority-based-conflict-resolution)
+    - [Key Status Changes in User Auth Trees: Examples](#key-status-changes-in-user-auth-trees-examples)
+      - [Example 1: Basic User Auth Tree Key Status Change](#example-1-basic-user-auth-tree-key-status-change)
+      - [Example 2: Last Write Wins Conflict Resolution](#example-2-last-write-wins-conflict-resolution)
   - [Authorization Scenarios](#authorization-scenarios)
     - [Network Partition Recovery](#network-partition-recovery)
   - [Security Considerations](#security-considerations)
@@ -140,7 +139,8 @@ classDiagram
         <<enumeration>>
         ACTIVE
         REVOKED
-        BANNED
+        IGNORE (V2)
+        BANNED (V2)
     }
 
     AuthKey --> Permission
@@ -225,15 +225,19 @@ For nested User Auth Tree references:
 ```json
 {
   "auth": {
-    "id": {
-      "id": "example@eidetica.dev",
-      "tips": ["current_tip"],
-      "key": {
+    "id": [
+      {
+        "id": "example@eidetica.dev",
+        "tips": ["current_tip"]
+      },
+      {
         "id": "old-identity",
-        "tips": ["old_tip"],
+        "tips": ["old_tip"]
+      },
+      {
         "key": "LEGACY_KEY"
       }
-    },
+    ],
     "signature": "ed25519_signature_bytes_hex_encoded"
   }
 }
@@ -243,59 +247,88 @@ Deeply nested Auth Tree references are discouraged.
 
 ## Key Management
 
+**Note**: The current implementation focuses on **Active** and **Revoked** key statuses. **Ignore** and **Banned** statuses are planned for V2 and are included in this design for completeness.
+
 ### Key Lifecycle
+
+**V1 Design:**
 
 ```mermaid
 stateDiagram-v2
     [*] --> Active: Key Added
-    Active --> Revoked: Soft Delete
-    Active --> Banned: Admin Action
+    Active --> Revoked: Content Preserved
     Revoked --> Active: Reactivated
-    Revoked --> Banned: Admin Escalation
-    Banned --> Active: Manual Recovery
 
     note right of Active : Can create new entries
-    note right of Revoked : Historical entries preserved, content ignored in merges
-    note right of Banned : All entries marked invalid, cannot merge siblings
+    note right of Revoked : Historical entries preserved, cannot be parents of new entries
+```
+
+**Future V2 Features:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: Key Added
+    Active --> Ignore: Soft Delete (V2)
+    Active --> Revoked: Content Preserved
+    Active --> Banned: Admin Action (V2)
+    Ignore --> Active: Reactivated (V2)
+    Revoked --> Active: Reactivated
+    Ignore --> Banned: Admin Escalation (V2)
+    Revoked --> Banned: Admin Escalation (V2)
+    Banned --> Active: Manual Recovery (V2)
+
+    note right of Active : Can create new entries
+    note right of Ignore : Historical entries preserved, content ignored in merges (V2)
+    note right of Revoked : Historical entries preserved, cannot be parents of new entries
+    note right of Banned : All entries marked invalid, cannot merge siblings (V2)
 ```
 
 ### Key Status Semantics
 
+**V1 Implementation:**
+
 1. **Active**: Key can create new entries and all historical entries remain valid
-2. **Revoked**: Key cannot create new entries. During CRDT merges, sibling branches containing revoked entries can be merged, but the content of revoked entries is ignored
-3. **Banned**: Key cannot create new entries. Sibling branches containing banned entries cannot be merged
+2. **Revoked**: Key cannot create new entries. Historical entries remain valid, but new entries cannot have revoked entries as parents. Content of revoked entries is preserved during merges
+
+**Future V2 Features:**
+
+3. **Ignore** _(V2)_: Key cannot create new entries. During CRDT merges, sibling branches containing ignored entries can be merged, but the content of ignored entries is ignored
+4. **Banned** _(V2)_: Key cannot create new entries. Sibling branches containing banned entries cannot be merged
 
 **Key Behavioral Details**:
 
 - Entries that are ancestors of the status change action always remain valid to preserve history integrity
-- Revoked/Banned semantics apply to sibling chains and future entries, not the historical chain leading to the status change
-- An Admin can transition an entry back to Active state from either Revoked or Banned status
-- Revoked status enables graceful key deprecation while maintaining history integrity
-- Banned status is reserved for compromised keys or malicious activity requiring manual intervention
+- Revoked semantics apply to sibling chains and future entries, not the historical chain leading to the status change
+- An Admin can transition an entry back to Active state from Revoked status
+- **Revoked** status prevents new entries from building on revoked content while preserving existing content in merges
+- _(V2)_ **Ignore** status will enable graceful key deprecation while maintaining history integrity, with content excluded from merges
+- _(V2)_ **Banned** status will be reserved for compromised keys or malicious activity requiring manual intervention
 
 ### Priority System
 
-Priority **only impacts administrative actions**, which are limited to modifications of the `_settings` subtree. A priority setting on a non-admin key has no effect.
+Priority **only impacts administrative actions**, which are limited to modifications of the `_settings` subtree. Priority does **not** affect conflict resolution during merges - conflicts are resolved using the same Last Write Wins (LWW) strategy as the underlying KVNested CRDT.
 
 Keys include a priority field (positive integers, lower values = higher priority) to establish administrative hierarchy:
 
 - Priority `0`: Typically reserved for the initial super-admin key
-- Higher priority keys (lower numbers) can modify keys with lower priority (higher numbers)
+- Higher priority keys (lower numbers) can modify keys with equal or lower priority (equal or higher numbers)
 - The default Priority is the lowest priority
 - Priority enables recovery from compromised admin keys by higher-priority keys
-- Priority ties are resolved by lexicographic ordering of key IDs as a deterministic fallback
+- Priority has **no effect** on merge conflict resolution
 
 **Priority Rules**:
 
-- A key can only create or modify keys with priority > its own priority
+- A key can only create or modify keys with priority equal or lower than its own priority
 - Priority 0 keys have universal authority over all other keys
-- Multiple keys can share the same priority level
+- Multiple keys can share the same priority level, and keys at the same level can modify each other
 - Priority inheritance: User Auth Tree keys inherit the priority from their main tree reference
 - When delegating through User Auth Trees, the effective priority is always taken from the outermost (main tree) reference
 
 #### When Does Priority Matter?
 
-When merging two chains that have conflicting auth settings, the higher priority write wins.
+Priority **only** matters for administrative operations - specifically who can create, modify, or revoke keys in the `_settings.auth` configuration. Priority does **not** affect merge conflict resolution.
+
+When merging two chains that have conflicting auth settings, the standard KVNested Last Write Wins (LWW) strategy is used, just like any other conflicting changes in the `_settings` tree.
 
 ## User Authentication Trees
 
@@ -381,15 +414,19 @@ User Auth Trees can reference other User Auth Trees, creating delegation chains:
 ```json
 {
   "auth": {
-    "id": {
-      "id": "example@eidetica.dev",
-      "tips": ["current_tip"],
-      "key": {
+    "id": [
+      {
+        "id": "example@eidetica.dev",
+        "tips": ["current_tip"]
+      },
+      {
         "id": "old-identity",
-        "tips": ["old_tip"],
+        "tips": ["old_tip"]
+      },
+      {
         "key": "LEGACY_KEY"
       }
-    },
+    ],
     "signature": "signature_bytes"
   }
 }
@@ -397,6 +434,10 @@ User Auth Trees can reference other User Auth Trees, creating delegation chains:
 
 **Delegation Chain Rules**:
 
+- Each element in the `auth.id` array represents a step in the delegation chain
+- The first element references the main tree's User Auth Tree
+- Subsequent elements reference nested User Auth Trees or direct keys
+- The final element must be a direct key reference
 - Permission clamping applies at each level using the minimum function
 - Priority is always determined by the outermost (main tree) reference
 - Tips must be valid at each level of the chain for the delegation to be valid
@@ -409,21 +450,28 @@ User Auth Tree tip references must be validated against the latest known tips at
 
 ### Key Revocation
 
-User Auth Tree key deletion is always treated as `revoked` status in the main tree, preventing users from creating unresolvable conflicts. If we allowed User Auth Tree Bans to affect the Main Tree, this would allow users without Admin permissions in thee main tree to delete existing Entries made by other Users.
+User Auth Tree key deletion is always treated as `revoked` status in the main tree. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
 
-By allowing User Auth Tree's to revoke their own keys, they can edit only their own Entries in the Main Tree.
+By treating User Auth Tree key deletion as `revoked` status, users can manage their own key lifecycle in the Main Tree while ensuring that:
+
+- Historical entries remain valid and their content is preserved
+- New entries cannot use the revoked key's entries as parents
+- The merge operation proceeds normally with content preserved
+- Users cannot create conflicts that would affect other users' valid entries
 
 ## Conflict Resolution and Merging
 
-Conflicts in the `_settings` tree are merged following the priority rules. If the tree has diverged with both sides of the merge having written to the `_settings` tree, the write with the highest priority will win.
+Conflicts in the `_settings` tree are merged using the same Last Write Wins (LWW) strategy as the underlying KVNested CRDT. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the most recent write (by logical timestamp) will win, regardless of the priority of the signing key.
 
-This is applied to User Auth Trees as well. A write to the Main Tree must also recursively merge any changed settings in the User Auth Trees so as to handle network splits in the User Auth Trees.
+Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
-### Key Revocation in User Auth Trees: Examples
+This is applied to User Auth Trees as well. A write to the Main Tree must also recursively merge any changed settings in the User Auth Trees using the same LWW strategy to handle network splits in the User Auth Trees.
 
-The following examples demonstrate how key revocation in User Auth Trees affects entries in the main tree.
+### Key Status Changes in User Auth Trees: Examples
 
-#### Example 1: Basic User Auth Tree Key Revocation
+The following examples demonstrate how key status changes in User Auth Trees affect entries in the main tree.
+
+#### Example 1: Basic User Auth Tree Key Status Change
 
 **Initial State**:
 
@@ -445,7 +493,7 @@ graph TD
     UA --> UB
 ```
 
-**After Key Revocation in User Auth Tree**:
+**After Key Status Change in User Auth Tree**:
 
 ```mermaid
 graph TD
@@ -454,11 +502,14 @@ graph TD
         B["Entry B<br/>Signed by user1:laptop<br/>Tip: UA<br/>Status: Valid"]
         C["Entry C<br/>Signed by user1:laptop<br/>Tip: UB<br/>Status: Valid"]
         D["Entry D<br/>Signed by user1:mobile<br/>Tip: UC<br/>Status: Valid"]
-        E["Entry E<br/>Signed by user1:laptop<br/>Tip: UC<br/>Status: Invalid - Key Revoked"]
+        E["Entry E<br/>Signed by user1:laptop<br/>Parent: C<br/>Tip: UB<br/>Status: Valid"]
+        F["Entry F<br/>Signed by user1:mobile<br/>Tip: UC<br/>Sees E but ignores since the key is invalid"]
+        G["Entry G<br/>Signed by user1:desktop<br/>Tip: UB<br/>Still thinks user1:laptop is valid"]
+        H["Entry H<br/>Signed by user1:mobile<br/>Tip: UC<br/>Merges, as there is a valid key at G"]
     end
 
     subgraph "User Auth Tree (user1)"
-        UA["Entry UA<br/>Settings: laptop = active"]
+        UA["Entry UA<br/>Settings: laptop = active, mobile = active, desktop = active"]
         UB["Entry UB<br/>Signed by laptop"]
         UC["Entry UC<br/>Settings: laptop = revoked<br/>Signed by mobile"]
     end
@@ -466,55 +517,18 @@ graph TD
     A --> B
     B --> C
     C --> D
-    D --> E
+    D --> F
+    C --> E
+    E --> G
+    F --> H
+    G --> H
     UA --> UB
     UB --> UC
 ```
 
-**Key Points**:
+#### Example 2: Last Write Wins Conflict Resolution
 
-- Entries B and C remain valid as they were created before the revocation
-- Entry E is invalid because it was created after the revocation
-- The key revocation only affects future entries, not existing ones in the ancestry
-
-#### Example 2: Sibling Branch Merge with Revoked Key
-
-```mermaid
-graph TD
-    subgraph "Main Tree"
-        A["Entry A<br/>Common Ancestor<br/>Settings: user1 = write"]
-        B1["Entry B1<br/>Signed by admin_key<br/>Settings: user1 = write"]
-        C1["Entry C1<br/>Signed by user1:mobile<br/>Tips: UB<br/>Data: {key: value2}"]
-        B2["Entry B2<br/>Signed by user1:laptop<br/>Tips: UA<br/>Data: {key: value2}"]
-        C2["Entry C2<br/>Signed by admin_key<br/>Data: {key: value3}"]
-        D["Entry D<br/>Signed by admin_key<br/>"]
-    end
-
-    subgraph "User Auth Tree"
-      UA["Entry UA<br/>Settings: laptop=active, mobile=active"]
-      UB["Entry UB<br/>Settings: laptop=revoked<br/>Signed by mobile"]
-    end
-
-    A --> B1
-    A --> B2
-    B1 --> C1
-    B2 --> C2
-    C1 --> D
-    C2 --> D
-
-    UA --> UB
-```
-
-**Key Points**:
-
-- Entry B2 is preserved in history but the content is ignored during merge because the laptop key was revoked in C1
-- The merge operation can proceed normally (unlike with banned keys) to preserve the data added in C2 that occurred because of the network split
-- The final merged state reflects only non-revoked contributions
-- The effective tip for the User Auth Tree at Entry D is UB
-
-#### Example 3: Priority-Based Conflict Resolution
-
-**Scenario**: Two admins with different priority levels make conflicting authentication changes during a network partition.
+**Scenario**: Two admins make conflicting authentication changes during a network partition. Priority determines who can make the changes, but Last Write Wins determines the final merged state.
 
 **After Network Reconnection and Merge**:
 
@@ -522,10 +536,10 @@ graph TD
 graph TD
     subgraph "Merged Main Tree"
         A["Entry A"]
-        B["Entry B<br/>Alice (priority: 10) bans user_bob"]
-        C["Entry C<br/>Super admin promotes user_bob to admin (priority: 50)"]
-        M["Entry M<br/>Merge entry<br/>user_bob = admin (priority: 50)<br/>Super admin wins due to higher priority"]
-        N["Entry N<br/>Alice bans user_bob"]
+        B["Entry B<br/>Alice (priority: 10) bans user_bob<br/>Timestamp: T1"]
+        C["Entry C<br/>Super admin (priority: 0) promotes user_bob to admin (priority: 5)<br/>Timestamp: T2"]
+        M["Entry M<br/>Merge entry<br/>user_bob = admin<br/>Last write (T2) wins via LWW"]
+        N["Entry N<br/>Alice attempts to ban user_bob<br/>Rejected: Alice can't modify admin-level user with higher priority"]
     end
 
     A --> B
@@ -538,10 +552,10 @@ graph TD
 **Key Points**:
 
 - All administrative actions are preserved in history
-- Priority system resolves the conflict: super_admin (priority 0) overrides admin_alice (priority 10)
-- The merged state reflects the higher-priority decision
-- Lower priority cannot override higher priority, ensuring administrative hierarchy
-- Alice can still ban user_bob as long as she acks the Super admin change by having it in the history
+- Last Write Wins resolves the merge conflict: the most recent change (T2) takes precedence
+- Priority still prevents unauthorized modifications: Alice cannot ban an admin:5 level user due to insufficient priority
+- The merged state reflects the most recent write, not the highest priority
+- Priority rules prevent Alice from making the change in Entry N, as she lacks authority to modify admin-level users
 
 ## Authorization Scenarios
 
@@ -549,7 +563,7 @@ graph TD
 
 When network partitions occur, the authentication system must handle concurrent changes gracefully:
 
-**Scenario**: Two branches of the tree independently modify the auth settings, requiring CRDT-based conflict resolution.
+**Scenario**: Two branches of the tree independently modify the auth settings, requiring CRDT-based conflict resolution using Last Write Wins.
 
 Both branches share the same root, but a network partition has caused them to diverge before merging back together.
 
@@ -557,11 +571,11 @@ Both branches share the same root, but a network partition has caused them to di
 graph TD
     subgraph "Merged Main Tree"
         ROOT["Entry ROOT"]
-        A1["Entry A1<br/>admin adds new_developer"]
-        A2["Entry A2<br/>dev_team revokes contractor_alice"]
+        A1["Entry A1<br/>admin adds new_developer<br/>Timestamp: T1"]
+        A2["Entry A2<br/>dev_team revokes contractor_alice<br/>Timestamp: T3"]
         B1["Entry B1<br/>contractor_alice data change<br/>Valid at time of creation"]
-        B2["Entry B2<br/>admin adds emergency_key"]
-        M["Entry M<br/>Merge entry<br/>Final state includes all auth changes<br/>contractor_alice revocation applies"]
+        B2["Entry B2<br/>admin adds emergency_key<br/>Timestamp: T2"]
+        M["Entry M<br/>Merge entry<br/>Final state based on LWW:<br/>- new_developer: added (T1)<br/>- emergency_key: added (T2)<br/>- contractor_alice: revoked (T3, latest)"]
     end
 
     ROOT --> A1
@@ -574,11 +588,11 @@ graph TD
 
 **Conflict Resolution Rules Applied**:
 
-- **Settings Merge**: All authentication changes are merged using KVNested CRDT semantics
-- **Priority Enforcement**: Changes are ordered by the priority of the signing key
-- **Historical Validity**: Entry B1 remains valid because it was created before the revocation, **but content is dropped**
-- **Future Restrictions**: Future entries by contractor_alice would be rejected
-- **Administrative Hierarchy**: All admin-level changes (priority 0 and 10) take precedence over team-level changes (priority 20)
+- **Settings Merge**: All authentication changes are merged using KVNested CRDT semantics with Last Write Wins
+- **Timestamp Ordering**: Changes are resolved based on logical timestamps, with the most recent change taking precedence
+- **Historical Validity**: Entry B1 remains valid because it was created before the status change
+- **Content Preservation**: With "revoked" status, content is preserved in merges but cannot be used as parents for new entries
+- **Future Restrictions**: Future entries by contractor_alice would be rejected based on the applied status change
 
 ## Security Considerations
 
@@ -590,13 +604,13 @@ graph TD
 - **Permission Escalation**: Users cannot grant themselves higher privileges than their main tree reference
 - **Historical Tampering**: Immutable DAG prevents retroactive modifications
 - **Replay Attacks**: Content-addressable IDs prevent entry duplication
-- **Priority Bypassing**: Lower priority keys cannot modify higher priority keys
-- **Mutual Banning**: Multiple network partitions banning each other's keys is resolved by highest priority key
-- **Priority Conflicts**: Ties in priority levels resolved by key ID lexicographic ordering, and keys disallowed from creating new keys at the same priority level
+- **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
+- **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
 
 - **Admin Key Compromise**: When no higher-priority key exists
+- **Conflicting Administrative Changes**: LWW may result in unintended administrative state during network partitions
 
 ### Cryptographic Assumptions
 
@@ -618,7 +632,8 @@ graph TD
 
 - **DoS via Large Histories**: Priority system limits damage from compromised lower-priority keys
 - **Social Engineering**: Administrative hierarchy limits scope of individual key compromise
-- **Timestamp Manipulation**: CRDT merge ordering provides deterministic conflict resolution
+- **Timestamp Manipulation**: LWW conflict resolution is deterministic but may be influenced by the chosen timestamp resolution algorithm
+- **Administrative Confusion**: Network partitions may result in unexpected administrative states due to LWW resolution
 
 #### Not Addressed
 
@@ -634,7 +649,7 @@ The validation process follows these steps:
 
 1. **Extract Authentication Info**: Parse the `auth` field from the entry
 2. **Resolve Key Identity**: For direct keys, lookup in `_settings.auth`; for User Auth Tree keys, validate tree reference and lookup in referenced tree
-3. **Check Key Status**: Verify the key is active (not revoked or banned)
+3. **Check Key Status**: Verify the key is active (not revoked). _(V2 will add ignore and banned status checks)_
 4. **Validate Signature**: Verify the ed25519 signature against the entry content
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation
 6. **Apply Permission Clamping**: For User Auth Tree keys, apply permission clamping rules
