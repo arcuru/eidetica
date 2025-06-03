@@ -6,6 +6,7 @@
 
 use crate::Result;
 use crate::entry::{Entry, ID};
+use ed25519_dalek::SigningKey;
 use std::any::Any;
 
 mod in_memory;
@@ -155,4 +156,51 @@ pub trait Backend: Send + Sync + Any {
     /// A `Result` containing a vector of `Entry` objects in the subtree up to the given tips,
     /// sorted topologically, or an error.
     fn get_subtree_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>>;
+
+    // === Private Key Storage Methods ===
+    //
+    // These methods provide secure local storage for private keys outside of the Tree structures.
+    // Private keys are stored separately from the content-addressable entries to maintain security
+    // and allow for different storage policies (e.g., encryption, hardware security modules).
+
+    /// Store a private key in the backend's local key storage.
+    ///
+    /// Private keys are stored separately from entries and are not part of the content-addressable
+    /// database. They are used for signing new entries but are never shared or synchronized.
+    ///
+    /// # Arguments
+    /// * `key_id` - A unique identifier for the private key (e.g., "KEY_LAPTOP")
+    /// * `private_key` - The Ed25519 private key to store
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    ///
+    /// # Security Note
+    /// This is a basic implementation suitable for development and testing.
+    /// Production systems should consider encryption at rest and hardware security modules.
+    fn store_private_key(&mut self, key_id: &str, private_key: SigningKey) -> Result<()>;
+
+    /// Retrieve a private key from the backend's local key storage.
+    ///
+    /// # Arguments
+    /// * `key_id` - The unique identifier of the private key to retrieve
+    ///
+    /// # Returns
+    /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
+    fn get_private_key(&self, key_id: &str) -> Result<Option<SigningKey>>;
+
+    /// List all private key identifiers stored in the backend.
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of key identifiers, or an error.
+    fn list_private_keys(&self) -> Result<Vec<String>>;
+
+    /// Remove a private key from the backend's local key storage.
+    ///
+    /// # Arguments
+    /// * `key_id` - The unique identifier of the private key to remove
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
+    fn remove_private_key(&mut self, key_id: &str) -> Result<()>;
 }

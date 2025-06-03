@@ -6,6 +6,7 @@
  *
  * The module structure mirrors the main library structure:
  * - atomicop: Tests for the AtomicOp struct and its interaction with EntryBuilder
+ * - auth_integration: Tests for the authentication integration features
  * - basedb: Tests for the BaseDB struct and related functionality
  * - backend: Tests for the Backend trait and implementations
  * - data: Tests for the CRDT trait and implementations (e.g., KVOverWrite)
@@ -14,6 +15,7 @@
  */
 
 mod atomicop;
+mod auth_integration;
 mod backend;
 mod basedb;
 mod data;

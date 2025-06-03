@@ -28,6 +28,9 @@ yrs = { version = "0.23", optional = true }
 # Dependencies for the binary
 signal-hook = { version = "0.3", optional = true }
 
+[dev-dependencies]
+tempfile = "3.0"
+
 [[bin]]
 name = "eidetica"
 required-features = ["signal-hook"]

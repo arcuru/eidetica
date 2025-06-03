@@ -2,7 +2,8 @@ use crate::Error;
 use crate::Result;
 use crate::backend::Backend;
 use crate::entry::{Entry, ID};
-use serde::{Deserialize, Serialize};
+use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -16,9 +17,70 @@ use std::path::Path;
 ///
 /// It provides basic persistence capabilities via `save_to_file` and
 /// `load_from_file`, serializing the `HashMap` to JSON.
-#[derive(Serialize, Deserialize, Debug)]
+///
+/// **Security Note**: Private keys are stored in memory in plaintext in this implementation.
+/// This is acceptable for development and testing but should not be used in production
+/// without proper encryption or hardware security module integration.
+#[derive(Debug)]
 pub struct InMemoryBackend {
     entries: HashMap<ID, Entry>,
+    /// Private key storage for authentication
+    ///
+    /// **Security Warning**: Keys are stored in memory without encryption.
+    /// This is suitable for development/testing only. Production systems should use
+    /// proper key management with encryption at rest.
+    private_keys: HashMap<String, SigningKey>,
+}
+
+/// Serializable version of InMemoryBackend for persistence
+#[derive(Serialize, Deserialize)]
+struct SerializableBackend {
+    entries: HashMap<ID, Entry>,
+    /// Private keys stored as 32-byte arrays for serialization
+    private_keys_bytes: HashMap<String, [u8; 32]>,
+}
+
+impl Serialize for InMemoryBackend {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let private_keys_bytes = self
+            .private_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.to_bytes()))
+            .collect();
+
+        let serializable = SerializableBackend {
+            entries: self.entries.clone(),
+            private_keys_bytes,
+        };
+
+        serializable.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for InMemoryBackend {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let serializable = SerializableBackend::deserialize(deserializer)?;
+
+        let private_keys = serializable
+            .private_keys_bytes
+            .into_iter()
+            .map(|(k, bytes)| {
+                let signing_key = SigningKey::from_bytes(&bytes);
+                (k, signing_key)
+            })
+            .collect();
+
+        Ok(InMemoryBackend {
+            entries: serializable.entries,
+            private_keys,
+        })
+    }
 }
 
 impl Default for InMemoryBackend {
@@ -32,6 +94,7 @@ impl InMemoryBackend {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            private_keys: HashMap::new(),
         }
     }
 
@@ -43,11 +106,9 @@ impl InMemoryBackend {
     /// # Returns
     /// A `Result` indicating success or an I/O or serialization error.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let json = serde_json::to_string(self)
+        let json = serde_json::to_string_pretty(self)
             .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to serialize: {e}"))))?;
-
-        fs::write(path, json).map_err(Error::Io)?;
-        Ok(())
+        fs::write(path, json).map_err(Error::Io)
     }
 
     /// Loads the backend state from a specified JSON file.
@@ -60,14 +121,15 @@ impl InMemoryBackend {
     /// # Returns
     /// A `Result` containing the loaded `InMemoryBackend` or an I/O or deserialization error.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file_exists = path.as_ref().exists();
-        if !file_exists {
+        if !path.as_ref().exists() {
             return Ok(Self::new());
         }
 
         let json = fs::read_to_string(path).map_err(Error::Io)?;
-        serde_json::from_str(&json)
-            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to deserialize: {e}"))))
+        let backend: Self = serde_json::from_str(&json)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to deserialize: {e}"))))?;
+
+        Ok(backend)
     }
 
     /// Returns a vector containing the IDs of all entries currently stored in the backend.
@@ -552,5 +614,34 @@ impl Backend for InMemoryBackend {
         self.sort_entries_by_subtree_height(tree, subtree, &mut result)?;
 
         Ok(result)
+    }
+
+    // === Private Key Storage Implementation ===
+
+    /// Store a private key in local memory storage.
+    ///
+    /// **Security Warning**: Keys are stored in plaintext memory without encryption.
+    /// This implementation is suitable for development and testing only.
+    fn store_private_key(&mut self, key_id: &str, private_key: SigningKey) -> Result<()> {
+        self.private_keys.insert(key_id.to_string(), private_key);
+        Ok(())
+    }
+
+    /// Retrieve a private key from local memory storage.
+    fn get_private_key(&self, key_id: &str) -> Result<Option<SigningKey>> {
+        Ok(self.private_keys.get(key_id).cloned())
+    }
+
+    /// List all stored private key identifiers.
+    fn list_private_keys(&self) -> Result<Vec<String>> {
+        Ok(self.private_keys.keys().cloned().collect())
+    }
+
+    /// Remove a private key from local memory storage.
+    ///
+    /// Returns Ok even if the key doesn't exist.
+    fn remove_private_key(&mut self, key_id: &str) -> Result<()> {
+        self.private_keys.remove(key_id);
+        Ok(())
     }
 }
