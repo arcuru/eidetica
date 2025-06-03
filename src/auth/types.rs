@@ -85,11 +85,12 @@ macro_rules! impl_nested_value_map {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Permission {
     /// Full administrative access including settings and key management
-    /// Priority may be used for conflict resolution, lower number = higher priority
-    /// Admin keys always have priority over Write keys
+    /// Priority determines administrative hierarchy (lower number = higher priority)
+    /// Priority only affects who can modify keys, not merge conflict resolution
     Admin(u32),
     /// Read and write access to data (excludes settings modifications)
-    /// Priority may be used for conflict resolution, lower number = higher priority
+    /// Priority determines administrative hierarchy (lower number = higher priority)
+    /// Priority only affects who can modify keys, not merge conflict resolution
     Write(u32),
     /// Read-only access to data
     Read,
@@ -155,11 +156,8 @@ pub enum KeyStatus {
     /// Key is active and can create new entries
     Active,
     /// Key is revoked - cannot create new entries, but historical entries are preserved
-    /// During merges, content from revoked entries is ignored but merge can proceed
+    /// During merges, content from revoked entries is preserved using standard LWW merge
     Revoked,
-    /// Key is banned - cannot create new entries and cannot merge sibling branches
-    /// Historical entries are preserved
-    Banned,
 }
 
 /// Authentication key configuration stored in _settings.auth
@@ -301,7 +299,6 @@ impl From<KeyStatus> for String {
         match status {
             KeyStatus::Active => "active".to_string(),
             KeyStatus::Revoked => "revoked".to_string(),
-            KeyStatus::Banned => "banned".to_string(),
         }
     }
 }
@@ -313,7 +310,6 @@ impl TryFrom<String> for KeyStatus {
         match s.as_str() {
             "active" => Ok(KeyStatus::Active),
             "revoked" => Ok(KeyStatus::Revoked),
-            "banned" => Ok(KeyStatus::Banned),
             _ => Err(format!("Invalid key status: {s}")),
         }
     }

@@ -2,6 +2,14 @@
 //!
 //! This module provides validation logic for authentication information,
 //! including key resolution, permission checking, and signature verification.
+//!
+//! ## Design Approach
+//!
+//! This implementation uses a simplified approach:
+//! - **Entry-time validation**: Validate entries against current auth settings when created
+//! - **Standard CRDT merging**: Use existing KVNested Last Write Wins (LWW) for all conflicts
+//! - **Administrative priority**: Priority rules apply only to key creation/modification operations
+//! - **No custom merge logic**: Authentication relies on proven KVNested CRDT semantics
 
 use crate::auth::crypto::{parse_public_key, verify_entry_signature};
 use crate::auth::types::{AuthId, AuthKey, KeyStatus, Operation, ResolvedAuth};
