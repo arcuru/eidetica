@@ -1,6 +1,9 @@
-use eidetica::auth::crypto::format_public_key;
+use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
+use eidetica::auth::types::AuthId;
 use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::basedb::BaseDB;
+use eidetica::data::KVNested;
+use eidetica::subtree::KVStore;
 
 #[test]
 fn test_key_management() {
@@ -244,4 +247,220 @@ fn test_remove_nonexistent_key() {
     // Should still have no keys
     let keys = db.list_private_keys().expect("Failed to list keys");
     assert!(keys.is_empty());
+}
+
+#[test]
+fn test_authenticated_operations() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key for testing
+    let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
+
+    // Create a tree
+    let settings = KVNested::new();
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an authenticated operation
+    let op = tree
+        .new_authenticated_operation("TEST_KEY")
+        .expect("Failed to create authenticated operation");
+
+    // Verify the operation has the correct auth key
+    assert_eq!(op.auth_key_id(), Some("TEST_KEY"));
+
+    // Use the operation to add some data
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("key1", "value1").expect("Failed to set value");
+
+    // Commit the operation
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Retrieve the entry and verify it's signed
+    let backend_guard = db.backend().lock().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+
+    // Check authentication info
+    assert_eq!(entry.auth.id, AuthId::Direct("TEST_KEY".to_string()));
+    assert!(entry.auth.signature.is_some());
+
+    // Verify the signature
+    let is_valid = verify_entry_signature(entry, &public_key).expect("Failed to verify signature");
+    assert!(is_valid, "Entry signature should be valid");
+}
+
+#[test]
+fn test_operation_auth_methods() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate keys for testing
+    db.add_private_key("KEY1").expect("Failed to add key1");
+    db.add_private_key("KEY2").expect("Failed to add key2");
+
+    // Create a tree
+    let settings = KVNested::new();
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Test with_auth method (chaining)
+    let op1 = tree
+        .new_operation()
+        .expect("Failed to create operation")
+        .with_auth("KEY1");
+    assert_eq!(op1.auth_key_id(), Some("KEY1"));
+
+    // Test set_auth_key method (mutable)
+    let mut op2 = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op2.auth_key_id(), None);
+    op2.set_auth_key("KEY2");
+    assert_eq!(op2.auth_key_id(), Some("KEY2"));
+}
+
+#[test]
+fn test_tree_default_authentication() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key for testing
+    db.add_private_key("DEFAULT_KEY")
+        .expect("Failed to add key");
+
+    // Create a tree
+    let settings = KVNested::new();
+    let mut tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Initially no default auth
+    assert_eq!(tree.default_auth_key(), None);
+
+    // Set default auth key
+    tree.set_default_auth_key("DEFAULT_KEY");
+    assert_eq!(tree.default_auth_key(), Some("DEFAULT_KEY"));
+
+    // New operations should use the default key
+    let op = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op.auth_key_id(), Some("DEFAULT_KEY"));
+
+    // Clear default auth
+    tree.clear_default_auth_key();
+    assert_eq!(tree.default_auth_key(), None);
+
+    // New operations should not have auth
+    let op2 = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op2.auth_key_id(), None);
+}
+
+#[test]
+fn test_unsigned_operations() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Create a tree
+    let settings = KVNested::new();
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an operation without authentication
+    let op = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op.auth_key_id(), None);
+
+    // Use the operation to add some data
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("key1", "value1").expect("Failed to set value");
+
+    // Commit the operation
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Retrieve the entry and verify it's unsigned
+    let backend_guard = db.backend().lock().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+
+    // Check that auth info is default (empty direct key)
+    assert_eq!(entry.auth.id, AuthId::Direct(String::new()));
+    assert!(entry.auth.signature.is_none());
+}
+
+#[test]
+fn test_missing_authentication_key_error() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Create a tree
+    let settings = KVNested::new();
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an operation with a non-existent key
+    let op = tree
+        .new_authenticated_operation("NONEXISTENT_KEY")
+        .expect("Failed to create operation");
+
+    // Use the operation to add some data
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("key1", "value1").expect("Failed to set value");
+
+    // Commit should fail because the key doesn't exist
+    let result = op.commit();
+    assert!(result.is_err());
+
+    // Check that the error mentions the missing key
+    let error_msg = format!("{:?}", result.unwrap_err());
+    assert!(error_msg.contains("NONEXISTENT_KEY"));
+    assert!(error_msg.contains("not found"));
+}
+
+#[test]
+fn test_multiple_authenticated_entries() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate keys for testing
+    let public_key1 = db.add_private_key("USER1").expect("Failed to add key1");
+    let public_key2 = db.add_private_key("USER2").expect("Failed to add key2");
+
+    // Create a tree
+    let settings = KVNested::new();
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create first authenticated entry
+    let op1 = tree
+        .new_authenticated_operation("USER1")
+        .expect("Failed to create operation");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store1
+        .set("user1_data", "hello")
+        .expect("Failed to set value");
+    let entry_id1 = op1.commit().expect("Failed to commit");
+
+    // Create second authenticated entry
+    let op2 = tree
+        .new_authenticated_operation("USER2")
+        .expect("Failed to create operation");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store2
+        .set("user2_data", "world")
+        .expect("Failed to set value");
+    let entry_id2 = op2.commit().expect("Failed to commit");
+
+    // Verify both entries are properly signed
+    let backend_guard = db.backend().lock().expect("Failed to lock backend");
+
+    let entry1 = backend_guard.get(&entry_id1).expect("Entry1 not found");
+    assert_eq!(entry1.auth.id, AuthId::Direct("USER1".to_string()));
+    assert!(verify_entry_signature(entry1, &public_key1).expect("Failed to verify"));
+
+    let entry2 = backend_guard.get(&entry_id2).expect("Entry2 not found");
+    assert_eq!(entry2.auth.id, AuthId::Direct("USER2".to_string()));
+    assert!(verify_entry_signature(entry2, &public_key2).expect("Failed to verify"));
+
+    // Verify cross-validation fails (entry1 with key2 should fail)
+    assert!(!verify_entry_signature(entry1, &public_key2).expect("Failed to verify"));
+    assert!(!verify_entry_signature(entry2, &public_key1).expect("Failed to verify"));
 }

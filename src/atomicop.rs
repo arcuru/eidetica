@@ -1,5 +1,8 @@
 use crate::Error;
 use crate::Result;
+use crate::auth::crypto::sign_entry;
+use crate::auth::types::AuthId;
+use crate::auth::types::AuthInfo;
 use crate::constants::SETTINGS;
 use crate::data::CRDT;
 use crate::data::KVOverWrite;
@@ -22,7 +25,8 @@ use std::rc::Rc;
 /// 2. Calculates the entry's content-addressable ID
 /// 3. Ensures the correct parent links are set based on the tree's state
 /// 4. Removes any empty subtrees that didn't have data staged
-/// 5. Persists the resulting immutable `Entry` to the backend
+/// 5. Signs the entry if authentication is configured
+/// 6. Persists the resulting immutable `Entry` to the backend
 ///
 /// `AtomicOp` instances are typically created via `Tree::new_operation()`.
 #[derive(Clone)]
@@ -31,6 +35,8 @@ pub struct AtomicOp {
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
     /// The tree this operation belongs to
     tree: Tree,
+    /// Optional authentication key ID for signing entries
+    auth_key_id: Option<String>,
 }
 
 impl AtomicOp {
@@ -59,7 +65,37 @@ impl AtomicOp {
         Ok(Self {
             entry_builder: Rc::new(RefCell::new(Some(builder))),
             tree: tree.clone(),
+            auth_key_id: None,
         })
+    }
+
+    /// Set the authentication key ID for signing entries created by this operation.
+    ///
+    /// If set, the operation will attempt to sign the entry with the specified
+    /// private key during commit. The private key must be available in the backend's
+    /// local key storage.
+    ///
+    /// # Arguments
+    /// * `key_id` - The identifier of the private key to use for signing
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_auth(mut self, key_id: &str) -> Self {
+        self.auth_key_id = Some(key_id.to_string());
+        self
+    }
+
+    /// Set the authentication key ID for this operation (mutable version).
+    ///
+    /// # Arguments
+    /// * `key_id` - The identifier of the private key to use for signing
+    pub fn set_auth_key(&mut self, key_id: &str) {
+        self.auth_key_id = Some(key_id.to_string());
+    }
+
+    /// Get the current authentication key ID for this operation.
+    pub fn auth_key_id(&self) -> Option<&str> {
+        self.auth_key_id.as_deref()
     }
 
     /// Stages an update for a specific subtree within this atomic operation.
@@ -253,10 +289,12 @@ impl AtomicOp {
     /// 1. Takes ownership of the `EntryBuilder` from the internal `Option`
     /// 2. Removes any empty subtrees
     /// 3. Adds metadata if appropriate
-    /// 4. Builds the immutable `Entry` using `EntryBuilder::build()`
-    /// 5. Calculates the entry's content-addressable ID
-    /// 6. Persists the entry to the backend
-    /// 7. Returns the ID of the newly created entry
+    /// 4. Sets authentication if configured
+    /// 5. Builds the immutable `Entry` using `EntryBuilder::build()`
+    /// 6. Signs the entry if authentication is configured
+    /// 7. Calculates the entry's content-addressable ID
+    /// 8. Persists the entry to the backend
+    /// 9. Returns the ID of the newly created entry
     ///
     /// After commit, the operation cannot be used again, as the internal
     /// `EntryBuilder` has been consumed.
@@ -303,8 +341,37 @@ impl AtomicOp {
             }
         }
 
+        // Handle authentication if configured
+        let signing_key = if let Some(key_id) = &self.auth_key_id {
+            // Set auth ID on the entry builder (without signature initially)
+            builder.set_auth_mut(AuthInfo {
+                id: AuthId::Direct(key_id.clone()),
+                signature: None,
+            });
+
+            // Get the private key from backend for signing
+            let backend_guard = self.tree.lock_backend()?;
+            let signing_key = backend_guard.get_private_key(key_id)?;
+
+            if signing_key.is_none() {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "Authentication key '{key_id}' not found in local storage"
+                ))));
+            }
+
+            signing_key
+        } else {
+            None
+        };
+
         // Remove empty subtrees and build the final immutable Entry
-        let entry = builder.remove_empty_subtrees().build();
+        let mut entry = builder.remove_empty_subtrees().build();
+
+        // Sign the entry if we have a signing key
+        if let Some(signing_key) = signing_key {
+            let signature = sign_entry(&entry, &signing_key)?;
+            entry.auth.signature = Some(signature);
+        }
 
         // Get the entry's ID
         let id = entry.id();

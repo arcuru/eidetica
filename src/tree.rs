@@ -23,6 +23,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct Tree {
     root: ID,
     backend: Arc<Mutex<Box<dyn Backend>>>,
+    /// Default authentication key ID for operations on this tree
+    default_auth_key: Option<String>,
 }
 
 impl Tree {
@@ -43,6 +45,7 @@ impl Tree {
         let dummy_tree = Self {
             root: "".to_string(),
             backend: backend.clone(),
+            default_auth_key: None,
         };
 
         // Use an operation on the dummy tree to add the settings
@@ -55,6 +58,7 @@ impl Tree {
         Ok(Self {
             root: root_id,
             backend,
+            default_auth_key: None,
         })
     }
 
@@ -70,7 +74,47 @@ impl Tree {
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
     pub(crate) fn new_from_id(id: ID, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
-        Ok(Self { root: id, backend })
+        Ok(Self {
+            root: id,
+            backend,
+            default_auth_key: None,
+        })
+    }
+
+    /// Set the default authentication key ID for operations on this tree.
+    ///
+    /// When set, all operations created via `new_operation()` will automatically
+    /// use this key for signing unless explicitly overridden.
+    ///
+    /// # Arguments
+    /// * `key_id` - The identifier of the private key to use by default
+    pub fn set_default_auth_key(&mut self, key_id: &str) {
+        self.default_auth_key = Some(key_id.to_string());
+    }
+
+    /// Clear the default authentication key for this tree.
+    pub fn clear_default_auth_key(&mut self) {
+        self.default_auth_key = None;
+    }
+
+    /// Get the default authentication key ID for this tree.
+    pub fn default_auth_key(&self) -> Option<&str> {
+        self.default_auth_key.as_deref()
+    }
+
+    /// Create a new atomic operation on this tree with authentication.
+    ///
+    /// This is a convenience method that creates an operation and sets the authentication
+    /// key in one call.
+    ///
+    /// # Arguments
+    /// * `key_id` - The identifier of the private key to use for signing
+    ///
+    /// # Returns
+    /// A `Result<AtomicOp>` containing the new authenticated operation
+    pub fn new_authenticated_operation(&self, key_id: &str) -> Result<AtomicOp> {
+        let op = self.new_operation()?;
+        Ok(op.with_auth(key_id))
     }
 
     /// Helper function to lock the backend mutex.
@@ -121,11 +165,19 @@ impl Tree {
     ///
     /// This creates a new atomic operation containing a new Entry.
     /// The atomic operation will be initialized with the current state of the tree.
+    /// If a default authentication key is set, the operation will use it for signing.
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new atomic operation
     pub fn new_operation(&self) -> Result<AtomicOp> {
-        AtomicOp::new(self)
+        let mut op = AtomicOp::new(self)?;
+
+        // Set default authentication if configured
+        if let Some(ref key_id) = self.default_auth_key {
+            op.set_auth_key(key_id);
+        }
+
+        Ok(op)
     }
 
     /// Insert an entry into the tree without modifying it.
