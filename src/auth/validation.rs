@@ -38,6 +38,34 @@ impl AuthValidator {
     /// * `entry` - The entry to validate
     /// * `settings_state` - Current state of the _settings subtree for key lookup
     pub fn validate_entry(&mut self, entry: &Entry, settings_state: &KVNested) -> Result<bool> {
+        // Handle unsigned entries (for backward compatibility)
+        // An entry is considered unsigned if it has an empty Direct key ID and no signature
+        if let AuthId::Direct(key_id) = &entry.auth.id {
+            if key_id.is_empty() && entry.auth.signature.is_none() {
+                // This is an unsigned entry - allow it to pass without authentication
+                return Ok(true);
+            }
+        }
+
+        // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
+        match settings_state.get("auth") {
+            Some(NestedValue::Map(auth_map)) => {
+                // If 'auth' section exists and is a map, check if it's empty
+                if auth_map.as_hashmap().is_empty() {
+                    return Ok(true);
+                }
+            }
+            None => {
+                // If 'auth' section does not exist at all, it means no keys are configured
+                return Ok(true);
+            }
+            _ => {
+                // If 'auth' section exists but is not a map (e.g., a string or deleted),
+                // or if it's a non-empty map, then proceed with normal validation.
+            }
+        }
+
+        // For all other entries, proceed with normal authentication validation
         // Resolve the authentication information
         let resolved_auth = self.resolve_auth_key(&entry.auth.id, settings_state)?;
 
@@ -403,5 +431,30 @@ mod tests {
         let result = validator.validate_entry(&entry, &settings);
         assert!(result.is_ok());
         assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_validate_entry_with_auth_info_against_empty_settings() {
+        let mut validator = AuthValidator::new();
+        let (signing_key, _verifying_key) = generate_keypair();
+
+        // Create an entry with auth info (signed)
+        let mut entry = Entry::builder("root123".to_string(), "{}".to_string()).build();
+        entry.auth = AuthInfo {
+            id: AuthId::Direct("SOME_KEY".to_string()),
+            signature: None,
+        };
+
+        // Sign the entry
+        let signature = sign_entry(&entry, &signing_key).unwrap();
+        entry.auth.signature = Some(signature);
+
+        // Validate against empty settings (no auth configuration)
+        let empty_settings = crate::data::KVNested::new();
+        let result = validator.validate_entry(&entry, &empty_settings);
+
+        // Should succeed because there's no auth configuration to validate against
+        assert!(result.is_ok(), "Validation failed: {:?}", result.err());
+        assert!(result.unwrap(), "Expected validation to return true");
     }
 }

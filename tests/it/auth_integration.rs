@@ -1,5 +1,5 @@
 use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
-use eidetica::auth::types::AuthId;
+use eidetica::auth::types::{AuthId, AuthKey, KeyStatus, Permission};
 use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
@@ -422,7 +422,29 @@ fn test_multiple_authenticated_entries() {
     let public_key2 = db.add_private_key("USER2").expect("Failed to add key2");
 
     // Create a tree
-    let settings = KVNested::new();
+    let mut settings = KVNested::new();
+    // Add the two keys as Write keys in the auth settings
+    let mut auth_settings = KVNested::new();
+    auth_settings.set(
+        "USER1".to_string(),
+        AuthKey {
+            key: format_public_key(&public_key1),
+            permissions: Permission::Write(10),
+            status: KeyStatus::Active,
+        },
+    );
+    auth_settings.set(
+        "USER2".to_string(),
+        AuthKey {
+            key: format_public_key(&public_key2),
+            permissions: Permission::Write(10),
+            status: KeyStatus::Active,
+        },
+    );
+    settings.set_map("auth", auth_settings);
+
+    // This creates a tree with a separate, new root signing key but with the two keys above already
+    // configured as write keys.
     let tree = db.new_tree(settings).expect("Failed to create tree");
 
     // Create first authenticated entry
@@ -463,4 +485,278 @@ fn test_multiple_authenticated_entries() {
     // Verify cross-validation fails (entry1 with key2 should fail)
     assert!(!verify_entry_signature(entry1, &public_key2).expect("Failed to verify"));
     assert!(!verify_entry_signature(entry2, &public_key1).expect("Failed to verify"));
+}
+
+// ===== Phase 3: Authentication Validation Tests =====
+
+#[test]
+fn test_backend_authentication_validation() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key for testing
+    let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
+
+    // Create a tree with authentication enabled
+    let mut settings = KVNested::new();
+    let mut auth_settings = KVNested::new();
+
+    // Add the test key to authentication settings
+    let auth_key = AuthKey {
+        key: format_public_key(&public_key),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+    auth_settings.set("TEST_KEY".to_string(), auth_key);
+    settings.set_map("auth", auth_settings);
+
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an authenticated operation
+    let op = tree
+        .new_authenticated_operation("TEST_KEY")
+        .expect("Failed to create authenticated operation");
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    // This should succeed because the key is configured in auth settings
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Verify the entry was stored
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+    assert_eq!(entry.auth.id, AuthId::Direct("TEST_KEY".to_string()));
+}
+
+#[test]
+fn test_authentication_validation_revoked_key() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key for testing
+    let public_key = db
+        .add_private_key("REVOKED_KEY")
+        .expect("Failed to add key");
+
+    // Create a tree with authentication enabled, but mark the key as revoked
+    let mut settings = KVNested::new();
+    let mut auth_settings = KVNested::new();
+
+    let auth_key = AuthKey {
+        key: format_public_key(&public_key),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Revoked, // Key is revoked
+    };
+    auth_settings.set("REVOKED_KEY".to_string(), auth_key);
+    settings.set_map("auth", auth_settings);
+
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an authenticated operation
+    let op = tree
+        .new_authenticated_operation("REVOKED_KEY")
+        .expect("Failed to create authenticated operation");
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    // This should fail because the key is revoked
+    let result = op.commit();
+    assert!(result.is_err());
+
+    // Check that the error mentions authentication validation failure
+    let error_msg = format!("{:?}", result.unwrap_err());
+    assert!(error_msg.contains("authentication validation failed"));
+}
+
+#[test]
+fn test_permission_checking_admin_operations() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate keys with different permission levels
+    let write_key = db
+        .add_private_key("WRITE_KEY")
+        .expect("Failed to add write key");
+    let admin_key = db
+        .add_private_key("ADMIN_KEY")
+        .expect("Failed to add admin key");
+
+    // Create a tree with authentication enabled
+    let mut settings = KVNested::new();
+    let mut auth_settings = KVNested::new();
+
+    // Add write-only key
+    let write_auth_key = AuthKey {
+        key: format_public_key(&write_key),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+    auth_settings.set("WRITE_KEY".to_string(), write_auth_key);
+
+    // Add admin key
+    let admin_auth_key = AuthKey {
+        key: format_public_key(&admin_key),
+        permissions: Permission::Admin(1),
+        status: KeyStatus::Active,
+    };
+    auth_settings.set("ADMIN_KEY".to_string(), admin_auth_key);
+
+    settings.set_map("auth", auth_settings);
+
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Test: Write key should be able to write data
+    let op1 = tree
+        .new_authenticated_operation("WRITE_KEY")
+        .expect("Failed to create operation");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store1.set("test", "value").expect("Failed to set value");
+
+    let result1 = op1.commit();
+    assert!(result1.is_ok(), "Write key should be able to write data");
+
+    // Test: Admin key should be able to write data
+    let op2 = tree
+        .new_authenticated_operation("ADMIN_KEY")
+        .expect("Failed to create operation");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store2.set("test2", "value2").expect("Failed to set value");
+
+    let result2 = op2.commit();
+    assert!(result2.is_ok(), "Admin key should be able to write data");
+
+    // Test: Admin key should be able to modify settings
+    let op3 = tree
+        .new_authenticated_operation("ADMIN_KEY")
+        .expect("Failed to create operation");
+    let store3 = op3
+        .get_subtree::<KVStore>("_settings")
+        .expect("Failed to get settings subtree");
+    store3
+        .set("new_setting", "value")
+        .expect("Failed to set setting");
+
+    let result3 = op3.commit();
+    assert!(
+        result3.is_ok(),
+        "Admin key should be able to modify settings"
+    );
+
+    // Test: Write key should NOT be able to modify settings
+    let op4 = tree
+        .new_authenticated_operation("WRITE_KEY")
+        .expect("Failed to create operation");
+    let store4 = op4
+        .get_subtree::<KVStore>("_settings")
+        .expect("Failed to get settings subtree");
+    store4
+        .set("forbidden_setting", "value")
+        .expect("Failed to set setting");
+
+    let result4 = op4.commit();
+    assert!(
+        result4.is_err(),
+        "Write key should NOT be able to modify settings"
+    );
+
+    // Check that the error mentions authentication validation failure
+    let error_msg = format!("{:?}", result4.unwrap_err());
+    assert!(error_msg.contains("authentication validation failed"));
+}
+
+#[test]
+fn test_unsigned_entries_still_work() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Create a tree with authentication enabled
+    let mut settings = KVNested::new();
+    let auth_settings = KVNested::new();
+    settings.set_map("auth", auth_settings);
+
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an operation without authentication (should still work for backward compatibility)
+    let op = tree.new_operation().expect("Failed to create operation");
+    let store = op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    // This should succeed - unsigned entries are allowed for backward compatibility
+    let entry_id = op.commit().expect("Unsigned entries should still work");
+
+    // Verify the entry was stored and is unsigned
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+    assert_eq!(entry.auth.id, AuthId::default());
+}
+
+#[test]
+fn test_mixed_authenticated_and_unsigned_entries() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key for testing
+    let public_key = db.add_private_key("MIXED_KEY").expect("Failed to add key");
+
+    // Create a tree with authentication enabled
+    let mut settings = KVNested::new();
+    let mut auth_settings = KVNested::new();
+
+    let auth_key = AuthKey {
+        key: format_public_key(&public_key),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+    auth_settings.set("MIXED_KEY".to_string(), auth_key);
+    settings.set_map("auth", auth_settings);
+
+    let tree = db.new_tree(settings).expect("Failed to create tree");
+
+    // Create an unsigned entry
+    let op1 = tree
+        .new_operation()
+        .expect("Failed to create unsigned operation");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store1
+        .set("unsigned", "value")
+        .expect("Failed to set value");
+    let unsigned_id = op1.commit().expect("Failed to commit unsigned entry");
+
+    // Create a signed entry
+    let op2 = tree
+        .new_authenticated_operation("MIXED_KEY")
+        .expect("Failed to create signed operation");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store2.set("signed", "value").expect("Failed to set value");
+    let signed_id = op2.commit().expect("Failed to commit signed entry");
+
+    // Both entries should exist and be retrievable
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+
+    let unsigned_entry = backend_guard
+        .get(&unsigned_id)
+        .expect("Unsigned entry not found");
+    assert_eq!(unsigned_entry.auth.id, AuthId::default());
+
+    let signed_entry = backend_guard
+        .get(&signed_id)
+        .expect("Signed entry not found");
+    assert_eq!(
+        signed_entry.auth.id,
+        AuthId::Direct("MIXED_KEY".to_string())
+    );
 }

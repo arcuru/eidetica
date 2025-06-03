@@ -13,6 +13,24 @@ mod in_memory;
 
 pub use in_memory::InMemoryBackend;
 
+/// Verification status for entries in the backend.
+///
+/// This enum tracks whether an entry has been cryptographically verified
+/// by the higher-level authentication system. The backend stores this status
+/// but does not perform verification itself - that's handled by the Tree/Operation layers.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
+pub enum VerificationStatus {
+    /// Entry has not been verified
+    #[default]
+    Unverified,
+    /// Entry has been cryptographically verified as authentic
+    Verified,
+    /// Entry failed verification (invalid signature, revoked key, etc.)
+    Failed,
+}
+
 /// Backend trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
@@ -26,6 +44,13 @@ pub use in_memory::InMemoryBackend;
 ///
 /// All backend implementations must be `Send` and `Sync` to allow sharing across threads,
 /// and implement `Any` to allow for downcasting if needed.
+///
+/// ## Verification Status
+///
+/// The backend stores a verification status for each entry, indicating whether
+/// the entry has been authenticated by the higher-level authentication system.
+/// The backend itself does not perform verification - it only stores the status
+/// set by the calling code (typically Tree/Operation implementations).
 pub trait Backend: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
@@ -36,17 +61,57 @@ pub trait Backend: Send + Sync + Any {
     /// A `Result` containing a reference to the `Entry` if found, or an `Error::NotFound` otherwise.
     fn get(&self, id: &ID) -> Result<&Entry>;
 
-    /// Stores an entry in the backend.
+    /// Gets the verification status of an entry.
+    ///
+    /// # Arguments
+    /// * `id` - The ID of the entry to check.
+    ///
+    /// # Returns
+    /// A `Result` containing the `VerificationStatus` if the entry exists, or an `Error::NotFound` otherwise.
+    fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus>;
+
+    /// Stores an entry in the backend with the specified verification status.
     ///
     /// If an entry with the same ID already exists, it may be overwritten,
     /// although the content-addressable nature means the content will be identical.
+    /// The verification status will be updated to the provided value.
     ///
     /// # Arguments
+    /// * `verification_status` - The verification status to assign to this entry
     /// * `entry` - The `Entry` to store.
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put(&mut self, entry: Entry) -> Result<()>;
+    fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
+
+    /// Updates the verification status of an existing entry.
+    ///
+    /// This allows the authentication system to mark entries as verified or failed
+    /// after they have been stored. Useful for batch verification operations.
+    ///
+    /// # Arguments
+    /// * `id` - The ID of the entry to update
+    /// * `verification_status` - The new verification status
+    ///
+    /// # Returns
+    /// A `Result` indicating success or `Error::NotFound` if the entry doesn't exist.
+    fn update_verification_status(
+        &mut self,
+        id: &ID,
+        verification_status: VerificationStatus,
+    ) -> Result<()>;
+
+    /// Gets all entries with a specific verification status.
+    ///
+    /// This is useful for finding unverified entries that need authentication
+    /// or for security audits.
+    ///
+    /// # Arguments
+    /// * `status` - The verification status to filter by
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of entry IDs with the specified status.
+    fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>>;
 
     /// Retrieves the IDs of the tip entries for a given tree.
     ///

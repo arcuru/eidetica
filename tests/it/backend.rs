@@ -1,5 +1,5 @@
 use eidetica::Error;
-use eidetica::backend::{Backend, InMemoryBackend};
+use eidetica::backend::{Backend, InMemoryBackend, VerificationStatus};
 use eidetica::entry::Entry;
 use std::fs;
 use std::io::Write;
@@ -15,7 +15,7 @@ fn test_in_memory_backend_basic_operations() {
     let id = entry.id();
 
     // Put the entry
-    let put_result = backend.put(entry);
+    let put_result = backend.put(eidetica::backend::VerificationStatus::Unverified, entry);
     assert!(put_result.is_ok());
 
     // Get the entry back
@@ -40,7 +40,12 @@ fn test_in_memory_backend_tree_operations() {
     let root_data = "root_data".to_string();
     let root_entry = Entry::root_builder(root_data).build();
     let root_id = root_entry.id();
-    backend.put(root_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root_entry,
+        )
+        .unwrap();
 
     // Create child entries
     let child1_data = "child1_data".to_string();
@@ -48,14 +53,24 @@ fn test_in_memory_backend_tree_operations() {
         .add_parent(root_id.clone())
         .build();
     let child1_id = child1_entry.id();
-    backend.put(child1_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child1_entry,
+        )
+        .unwrap();
 
     let child2_data = "child2_data".to_string();
     let child2_entry = Entry::builder(root_id.clone(), child2_data)
         .add_parent(child1_id.clone())
         .build();
     let child2_id = child2_entry.id();
-    backend.put(child2_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child2_entry,
+        )
+        .unwrap();
 
     // Test get_tips
     let tips_result = backend.get_tips(&root_id);
@@ -87,7 +102,12 @@ fn test_in_memory_backend_subtree_operations() {
         .set_subtree_data("subtree1".to_string(), "root_subtree1_data".to_string())
         .build();
     let root_id = root_entry.id();
-    backend.put(root_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root_entry,
+        )
+        .unwrap();
 
     // Create child entry with subtree
     let child_data = "child_data".to_string();
@@ -97,7 +117,12 @@ fn test_in_memory_backend_subtree_operations() {
         .add_subtree_parent("subtree1", root_id.clone())
         .build();
     let child_id = child_entry.id();
-    backend.put(child_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child_entry,
+        )
+        .unwrap();
 
     // Test get_subtree_tips
     let subtree_tips_result = backend.get_subtree_tips(&root_id, "subtree1");
@@ -123,7 +148,9 @@ fn test_in_memory_backend_save_and_load() {
     {
         let mut backend = InMemoryBackend::new();
         let entry = Entry::root_builder("test_data".to_string()).build();
-        backend.put(entry).unwrap();
+        backend
+            .put(eidetica::backend::VerificationStatus::Unverified, entry)
+            .unwrap();
 
         // Save to file
         let save_result = backend.save_to_file(&file_path);
@@ -193,7 +220,12 @@ fn test_in_memory_backend_complex_tree_structure() {
     let root_data = "root_data".to_string();
     let root_entry = Entry::root_builder(root_data).build();
     let root_id = root_entry.id();
-    backend.put(root_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root_entry,
+        )
+        .unwrap();
 
     // Create a diamond pattern: root -> A, B -> C
     // First level children
@@ -202,14 +234,18 @@ fn test_in_memory_backend_complex_tree_structure() {
         .add_parent(root_id.clone())
         .build();
     let a_id = a_entry.id();
-    backend.put(a_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, a_entry)
+        .unwrap();
 
     let b_data = "b_data".to_string();
     let b_entry = Entry::builder(root_id.clone(), b_data)
         .add_parent(root_id.clone())
         .build();
     let b_id = b_entry.id();
-    backend.put(b_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, b_entry)
+        .unwrap();
 
     // Second level: one child with two parents
     let c_data = "c_data".to_string();
@@ -218,7 +254,9 @@ fn test_in_memory_backend_complex_tree_structure() {
         .add_parent(b_id.clone())
         .build();
     let c_id = c_entry.id();
-    backend.put(c_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, c_entry)
+        .unwrap();
 
     // Test get_tips - should only return C since it has no children
     let tips_result = backend.get_tips(&root_id);
@@ -251,7 +289,9 @@ fn test_in_memory_backend_complex_tree_structure() {
         .add_parent(c_id.clone())
         .build();
     let d_id = d_entry.id();
-    backend.put(d_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, d_entry)
+        .unwrap();
 
     // Tips should now be D
     let final_tips = backend.get_tips(&root_id).unwrap();
@@ -269,25 +309,36 @@ fn test_backend_get_tree_from_tips() {
         .add_parent(root_id.clone())
         .build();
     let root_entry_id = root_entry.id();
-    backend.put(root_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root_entry,
+        )
+        .unwrap();
 
     let e1_entry = Entry::builder(root_id.clone(), "e1_data".to_string())
         .add_parent(root_entry_id.clone())
         .build();
     let e1_id = e1_entry.id();
-    backend.put(e1_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e1_entry)
+        .unwrap();
 
     let e2a_entry = Entry::builder(root_id.clone(), "e2a_data".to_string())
         .add_parent(e1_id.clone())
         .build();
     let e2a_id = e2a_entry.id();
-    backend.put(e2a_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e2a_entry)
+        .unwrap();
 
     let e2b_entry = Entry::builder(root_id.clone(), "e2b_data".to_string())
         .add_parent(e1_id.clone())
         .build();
     let e2b_id = e2b_entry.id();
-    backend.put(e2b_entry).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e2b_entry)
+        .unwrap();
 
     // --- Test with single tip e2a ---
     let tree_e2a = backend
@@ -363,13 +414,20 @@ fn test_backend_get_subtree_from_tips() {
         .set_subtree_data(subtree_name_string.clone(), "root_sub_data".to_string())
         .build();
     let root_entry_id = entry_root.id();
-    backend.put(entry_root).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_root,
+        )
+        .unwrap();
 
     let e1 = Entry::builder(root_entry_id.clone(), "e1_data".to_string())
         .add_parent(root_entry_id.clone())
         .build();
     let e1_id = e1.id();
-    backend.put(e1).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e1)
+        .unwrap();
 
     let e2a = Entry::builder(root_entry_id.clone(), "e2a_data".to_string())
         .add_parent(e1_id.clone())
@@ -377,7 +435,9 @@ fn test_backend_get_subtree_from_tips() {
         .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
         .build();
     let e2a_id = e2a.id();
-    backend.put(e2a).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e2a)
+        .unwrap();
 
     let e2b = Entry::builder(root_entry_id.clone(), "e2b_data".to_string())
         .add_parent(e1_id.clone())
@@ -385,7 +445,9 @@ fn test_backend_get_subtree_from_tips() {
         .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
         .build();
     let e2b_id = e2b.id();
-    backend.put(e2b).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, e2b)
+        .unwrap();
 
     // --- Test with single tip e2a ---
     let subtree_e2a = backend
@@ -513,13 +575,27 @@ fn test_calculate_entry_height() {
     let id_d = entry_d.id();
 
     // Insert all entries
-    backend.put(root).unwrap();
-    backend.put(entry_a).unwrap();
-    backend.put(entry_b).unwrap();
-    backend.put(entry_c).unwrap();
-    backend.put(entry_d).unwrap();
-    backend.put(entry_e).unwrap();
-    backend.put(entry_f).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, root)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_a)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_b)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_c)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_d)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_e)
+        .unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_f)
+        .unwrap();
 
     // Check that the tree was created correctly
     // by verifying the tip is entry D
@@ -604,35 +680,54 @@ fn test_save_load_with_various_entries() {
     // Top-level root
     let root_entry = Entry::root_builder("root_data".to_string()).build();
     let root_id = root_entry.id();
-    backend.put(root_entry).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root_entry,
+        )
+        .unwrap();
 
     // Child 1
     let child1 = Entry::builder(root_id.clone(), "child1_data".to_string())
         .add_parent(root_id.clone())
         .build();
     let child1_id = child1.id();
-    backend.put(child1).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, child1)
+        .unwrap();
 
     // Child 2
     let child2 = Entry::builder(root_id.clone(), "child2_data".to_string())
         .add_parent(root_id.clone())
         .build();
     let child2_id = child2.id();
-    backend.put(child2).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, child2)
+        .unwrap();
 
     // Grandchild (child of child1)
     let grandchild = Entry::builder(root_id.clone(), "grandchild_data".to_string())
         .add_parent(child1_id.clone())
         .build();
     let grandchild_id = grandchild.id();
-    backend.put(grandchild).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            grandchild,
+        )
+        .unwrap();
 
     // Entry with subtree
     let entry_with_subtree = Entry::builder(root_id.clone(), "entry_with_subtree_data".to_string())
         .set_subtree_data("subtree1".to_string(), "subtree_data".to_string())
         .build();
     let entry_with_subtree_id = entry_with_subtree.id();
-    backend.put(entry_with_subtree).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_with_subtree,
+        )
+        .unwrap();
 
     // Save to file
     backend.save_to_file(&file_path).unwrap();
@@ -702,10 +797,30 @@ fn test_sort_entries() {
         .build();
 
     // Store all entries in backend
-    backend.put(root.clone()).unwrap();
-    backend.put(entry_a.clone()).unwrap();
-    backend.put(entry_b.clone()).unwrap();
-    backend.put(entry_c.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_a.clone(),
+        )
+        .unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_b.clone(),
+        )
+        .unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_c.clone(),
+        )
+        .unwrap();
 
     // Create a vector with entries in random order
     let mut entries = vec![
@@ -747,8 +862,18 @@ fn test_save_load_in_memory_backend() {
     let id1 = entry1.id();
     let id2 = entry2.id();
 
-    backend1.put(entry1.clone()).unwrap();
-    backend1.put(entry2.clone()).unwrap();
+    backend1
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry1.clone(),
+        )
+        .unwrap();
+    backend1
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry2.clone(),
+        )
+        .unwrap();
 
     // Save
     backend1.save_to_file(&path).unwrap();
@@ -774,11 +899,15 @@ fn test_all_roots() {
     // Add a simple top-level entry (a root)
     let root1 = Entry::root_builder("root1 data".to_string()).build();
     let root1_id = root1.id();
-    backend.put(root1).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, root1)
+        .unwrap();
 
     let root2 = Entry::root_builder("root2 data".to_string()).build();
     let root2_id = root2.id();
-    backend.put(root2).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, root2)
+        .unwrap();
 
     // Test with two roots
     let roots = backend.all_roots().unwrap();
@@ -790,7 +919,9 @@ fn test_all_roots() {
     let child = Entry::builder(root1_id.clone(), "child data".to_string())
         .add_parent(root1_id.clone())
         .build();
-    backend.put(child).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, child)
+        .unwrap();
 
     // Should still have only the two roots
     let roots = backend.all_roots().unwrap();
@@ -809,7 +940,12 @@ fn test_get_tips() {
 
     let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
-    backend.put(root.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
 
     // Initially, root is the only tip
     let tips = backend.get_tips(&root_id).unwrap();
@@ -821,7 +957,12 @@ fn test_get_tips() {
         .add_parent(root_id.clone())
         .build();
     let id_a = entry_a.id();
-    backend.put(entry_a.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_a.clone(),
+        )
+        .unwrap();
 
     // Now A should be the only tip
     let tips = backend.get_tips(&root_id).unwrap();
@@ -833,7 +974,12 @@ fn test_get_tips() {
         .add_parent(id_a.clone())
         .build();
     let id_b = entry_b.id();
-    backend.put(entry_b.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_b.clone(),
+        )
+        .unwrap();
 
     // Now B should be the only tip from that branch
     let tips = backend.get_tips(&root_id).unwrap();
@@ -845,7 +991,12 @@ fn test_get_tips() {
         .add_parent(root_id.clone())
         .build();
     let id_c = entry_c.id();
-    backend.put(entry_c.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_c.clone(),
+        )
+        .unwrap();
 
     // Now should have 2 tips: B and C
     let tips = backend.get_tips(&root_id).unwrap();
@@ -863,7 +1014,10 @@ fn test_put_get_entry() {
     let id = entry.id();
 
     // Put
-    let put_result = backend.put(entry.clone());
+    let put_result = backend.put(
+        eidetica::backend::VerificationStatus::Unverified,
+        entry.clone(),
+    );
     assert!(put_result.is_ok());
 
     // Get
@@ -885,7 +1039,12 @@ fn test_get_subtree_tips() {
     // Create a tree with subtrees
     let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
-    backend.put(root.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
 
     // Add entry A with subtree "sub1"
     let entry_a = Entry::builder(root_id.clone(), "A".to_string())
@@ -893,7 +1052,9 @@ fn test_get_subtree_tips() {
         .set_subtree_data("sub1".to_string(), "A sub1 data".to_string())
         .build();
     let id_a = entry_a.id();
-    backend.put(entry_a).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_a)
+        .unwrap();
 
     // Initially, A is the only tip in subtree "sub1"
     let sub1_tips = backend.get_subtree_tips(&root_id, "sub1").unwrap();
@@ -907,7 +1068,9 @@ fn test_get_subtree_tips() {
         .add_subtree_parent("sub1", id_a.clone())
         .build();
     let id_b = entry_b.id();
-    backend.put(entry_b).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_b)
+        .unwrap();
 
     // Now B is the only tip in subtree "sub1"
     let sub1_tips = backend.get_subtree_tips(&root_id, "sub1").unwrap();
@@ -920,7 +1083,9 @@ fn test_get_subtree_tips() {
         .set_subtree_data("sub2".to_string(), "C sub2 data".to_string())
         .build();
     let id_c = entry_c.id();
-    backend.put(entry_c).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_c)
+        .unwrap();
 
     // Check tips for subtree "sub1" (should still be just B)
     let sub1_tips = backend.get_subtree_tips(&root_id, "sub1").unwrap();
@@ -942,7 +1107,9 @@ fn test_get_subtree_tips() {
         .add_subtree_parent("sub2", id_c.clone())
         .build();
     let id_d = entry_d.id();
-    backend.put(entry_d).unwrap();
+    backend
+        .put(eidetica::backend::VerificationStatus::Unverified, entry_d)
+        .unwrap();
 
     // Now D should be the tip for both subtrees
     let sub1_tips = backend.get_subtree_tips(&root_id, "sub1").unwrap();
@@ -961,18 +1128,33 @@ fn test_get_tree() {
     // Create a simple tree with three entries
     let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
-    backend.put(root.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
 
     let child = Entry::builder(root_id.clone(), "child".to_string())
         .add_parent(root_id.clone())
         .build();
     let child_id = child.id();
-    backend.put(child.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child.clone(),
+        )
+        .unwrap();
 
     let grandchild = Entry::builder(root_id.clone(), "grandchild".to_string())
         .add_parent(child_id.clone())
         .build();
-    backend.put(grandchild.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            grandchild.clone(),
+        )
+        .unwrap();
 
     // Get the full tree
     let tree = backend.get_tree(&root_id).unwrap();
@@ -997,7 +1179,12 @@ fn test_get_subtree() {
     // Create a tree with a subtree
     let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
-    backend.put(root.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
 
     // Create children with and without subtree data
 
@@ -1007,14 +1194,24 @@ fn test_get_subtree() {
         .set_subtree_data("subtree1".to_string(), "child1 data".to_string())
         .build();
     let child1_id = child1.id();
-    backend.put(child1.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child1.clone(),
+        )
+        .unwrap();
 
     // Child 2 - without subtree
     let child2 = Entry::builder(root_id.clone(), "child2".to_string())
         .add_parent(root_id.clone())
         .build();
     let child2_id = child2.id();
-    backend.put(child2.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            child2.clone(),
+        )
+        .unwrap();
 
     // Grandchild 1 - with subtree, child of child1
     let grandchild1 = Entry::builder(root_id.clone(), "grandchild1".to_string())
@@ -1023,7 +1220,12 @@ fn test_get_subtree() {
         .add_subtree_parent("subtree1", child1_id.clone())
         .build();
     let gc1_id = grandchild1.id();
-    backend.put(grandchild1.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            grandchild1.clone(),
+        )
+        .unwrap();
 
     // Grandchild 2 - with subtree, but from different parent (child2)
     let grandchild2 = Entry::builder(root_id.clone(), "grandchild2".to_string())
@@ -1032,7 +1234,12 @@ fn test_get_subtree() {
         .build();
     let grandchild2_id = grandchild2.id();
     // No subtree parent set, so it starts a new subtree branch
-    backend.put(grandchild2.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            grandchild2.clone(),
+        )
+        .unwrap();
 
     // Get the subtree
     let subtree = backend.get_subtree(&root_id, "subtree1").unwrap();
@@ -1057,7 +1264,12 @@ fn test_calculate_subtree_height() {
     // Create a tree with a subtree that has a different structure
     let root = Entry::root_builder("root data".to_string()).build();
     let root_id = root.id();
-    backend.put(root.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            root.clone(),
+        )
+        .unwrap();
 
     // A
     let entry_a = Entry::builder(root_id.clone(), "A".to_string())
@@ -1065,7 +1277,12 @@ fn test_calculate_subtree_height() {
         .set_subtree_data("sub1".to_string(), "A_sub1".to_string())
         .build();
     let id_a = entry_a.id();
-    backend.put(entry_a.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_a.clone(),
+        )
+        .unwrap();
 
     // B (after A in main tree)
     let entry_b = Entry::builder(root_id.clone(), "B".to_string())
@@ -1075,7 +1292,12 @@ fn test_calculate_subtree_height() {
     // B is directly under root in subtree (not under A)
     // So we don't set subtree parents
     let id_b = entry_b.id();
-    backend.put(entry_b.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_b.clone(),
+        )
+        .unwrap();
 
     // C (after B in main tree)
     let entry_c = Entry::builder(root_id.clone(), "C".to_string())
@@ -1085,7 +1307,12 @@ fn test_calculate_subtree_height() {
         .add_subtree_parent("sub1", id_b.clone())
         .build();
     let id_c = entry_c.id();
-    backend.put(entry_c.clone()).unwrap();
+    backend
+        .put(
+            eidetica::backend::VerificationStatus::Unverified,
+            entry_c.clone(),
+        )
+        .unwrap();
 
     // Calculate heights for main tree
     let main_heights = backend.calculate_heights(&root_id, None).unwrap();
@@ -1106,4 +1333,177 @@ fn test_calculate_subtree_height() {
     assert_eq!(sub_heights.get(&id_a).unwrap(), &0);
     assert_eq!(sub_heights.get(&id_b).unwrap(), &0);
     assert_eq!(sub_heights.get(&id_c).unwrap(), &1);
+}
+
+#[test]
+fn test_verification_status_basic_operations() {
+    let mut backend = InMemoryBackend::new();
+
+    // Create a test entry
+    let entry = Entry::builder("root".to_string(), "data".to_string()).build();
+    let entry_id = entry.id();
+
+    // Test storing with different verification statuses
+    backend
+        .put(VerificationStatus::Verified, entry.clone())
+        .expect("Failed to put verified entry");
+
+    // Test getting verification status
+    let status = backend
+        .get_verification_status(&entry_id)
+        .expect("Failed to get status");
+    assert_eq!(status, VerificationStatus::Verified);
+
+    // Test updating verification status
+    backend
+        .update_verification_status(&entry_id, VerificationStatus::Failed)
+        .expect("Failed to update status");
+    let updated_status = backend
+        .get_verification_status(&entry_id)
+        .expect("Failed to get updated status");
+    assert_eq!(updated_status, VerificationStatus::Failed);
+
+    // Test getting entries by verification status
+    let failed_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Failed)
+        .expect("Failed to get failed entries");
+    assert_eq!(failed_entries.len(), 1);
+    assert_eq!(failed_entries[0], entry_id);
+
+    let verified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .expect("Failed to get verified entries");
+    assert_eq!(verified_entries.len(), 0); // Should be empty since we updated to Failed
+}
+
+#[test]
+fn test_verification_status_default_behavior() {
+    let mut backend = InMemoryBackend::new();
+
+    // Create a test entry
+    let entry = Entry::builder("root".to_string(), "data".to_string()).build();
+    let entry_id = entry.id();
+
+    // Store with Unverified (default)
+    backend
+        .put(VerificationStatus::Unverified, entry)
+        .expect("Failed to put entry");
+
+    // Status should be Unverified
+    let status = backend
+        .get_verification_status(&entry_id)
+        .expect("Failed to get status");
+    assert_eq!(status, VerificationStatus::Unverified);
+
+    // Should appear in unverified entries
+    let unverified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
+        .expect("Failed to get unverified entries");
+    assert_eq!(unverified_entries.len(), 1);
+    assert_eq!(unverified_entries[0], entry_id);
+}
+
+#[test]
+fn test_verification_status_multiple_entries() {
+    let mut backend = InMemoryBackend::new();
+
+    // Create multiple test entries
+    let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
+    let entry2 = Entry::builder("root2".to_string(), "data2".to_string()).build();
+    let entry3 = Entry::builder("root3".to_string(), "data3".to_string()).build();
+
+    let entry1_id = entry1.id();
+    let entry2_id = entry2.id();
+    let entry3_id = entry3.id();
+
+    // Store with different statuses
+    backend
+        .put(VerificationStatus::Verified, entry1)
+        .expect("Failed to put entry1");
+    backend
+        .put(VerificationStatus::Unverified, entry2)
+        .expect("Failed to put entry2");
+    backend
+        .put(VerificationStatus::Failed, entry3)
+        .expect("Failed to put entry3");
+
+    // Test filtering by status
+    let verified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .expect("Failed to get verified entries");
+    assert_eq!(verified_entries.len(), 1);
+    assert_eq!(verified_entries[0], entry1_id);
+
+    let unverified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
+        .expect("Failed to get unverified entries");
+    assert_eq!(unverified_entries.len(), 1);
+    assert_eq!(unverified_entries[0], entry2_id);
+
+    let failed_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Failed)
+        .expect("Failed to get failed entries");
+    assert_eq!(failed_entries.len(), 1);
+    assert_eq!(failed_entries[0], entry3_id);
+}
+
+#[test]
+fn test_verification_status_not_found_errors() {
+    let backend = InMemoryBackend::new();
+
+    let nonexistent_id = "nonexistent".to_string();
+
+    // Test getting status for nonexistent entry
+    let result = backend.get_verification_status(&nonexistent_id);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), Error::NotFound));
+
+    // Test updating status for nonexistent entry
+    let mut mutable_backend = backend;
+    let result =
+        mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), Error::NotFound));
+}
+
+#[test]
+fn test_verification_status_serialization() {
+    let mut backend = InMemoryBackend::new();
+
+    // Create test entries with different verification statuses
+    let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
+    let entry2 = Entry::builder("root2".to_string(), "data2".to_string()).build();
+
+    let entry1_id = entry1.id();
+    let entry2_id = entry2.id();
+
+    backend
+        .put(VerificationStatus::Verified, entry1)
+        .expect("Failed to put entry1");
+    backend
+        .put(VerificationStatus::Failed, entry2)
+        .expect("Failed to put entry2");
+
+    // Save and load
+    let temp_file = "/tmp/test_verification_status.json";
+    backend
+        .save_to_file(temp_file)
+        .expect("Failed to save backend");
+
+    let loaded_backend =
+        InMemoryBackend::load_from_file(temp_file).expect("Failed to load backend");
+
+    // Verify statuses are preserved
+    let status1 = loaded_backend
+        .get_verification_status(&entry1_id)
+        .expect("Failed to get status1");
+    let status2 = loaded_backend
+        .get_verification_status(&entry2_id)
+        .expect("Failed to get status2");
+
+    assert_eq!(status1, VerificationStatus::Verified);
+    assert_eq!(status2, VerificationStatus::Failed);
+
+    // Clean up
+    std::fs::remove_file(temp_file).ok();
 }

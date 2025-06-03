@@ -7,11 +7,15 @@
 use crate::atomicop::AtomicOp;
 use crate::backend::Backend;
 use crate::constants::{ROOT, SETTINGS};
-use crate::data::KVNested;
+use crate::data::{KVNested, NestedValue};
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
 use crate::{Error, Result};
 
+use crate::auth::crypto::format_public_key;
+use crate::auth::settings::AuthSettings;
+use crate::auth::types::{AuthKey, KeyStatus, Permission};
+use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -36,29 +40,111 @@ impl Tree {
     /// # Arguments
     /// * `settings` - A `KVNested` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
+    /// * `signing_key_id_opt` - Optional authentication key ID to use for the initial commit.
+    ///   If None, creates an unsigned tree (default for backward compatibility).
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
-    pub fn new(settings: KVNested, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
-        // Create a dummy tree pointing to the root of all roots
-        // FIXME: This should use a None for the root ID
-        let dummy_tree = Self {
-            root: "".to_string(),
-            backend: backend.clone(),
-            default_auth_key: None,
+    pub fn new(
+        initial_settings: KVNested,
+        backend: Arc<Mutex<Box<dyn Backend>>>,
+        signing_key_id_opt: Option<&str>,
+    ) -> Result<Self> {
+        // Check if auth is configured in the initial settings
+        let auth_configured = matches!(initial_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+
+        let (super_user_key_id_opt, final_tree_settings) = if auth_configured {
+            // Auth settings are already provided - use them as-is
+            // If a specific signing key is provided, use it; otherwise no default auth
+            (signing_key_id_opt.map(|s| s.to_string()), initial_settings)
+        } else if let Some(key_id) = signing_key_id_opt {
+            // User explicitly wants authentication but no auth config provided
+            // Verify the key exists and bootstrap auth config with it
+            {
+                let backend_guard = backend.lock().map_err(|_| {
+                    Error::Io(std::io::Error::other(
+                        "Failed to lock backend for initial key setup",
+                    ))
+                })?;
+
+                let _private_key = backend_guard.get_private_key(key_id)?.ok_or_else(|| {
+                    Error::Authentication(format!(
+                        "Provided signing key ID '{key_id}' not found in backend"
+                    ))
+                })?;
+            } // backend_guard is dropped here
+
+            // Bootstrap auth configuration with the provided key
+            let super_user_key_id: String;
+            let public_key: ed25519_dalek::VerifyingKey;
+
+            {
+                let backend_guard = backend.lock().map_err(|_| {
+                    Error::Io(std::io::Error::other(
+                        "Failed to lock backend for key retrieval",
+                    ))
+                })?;
+
+                let private_key = backend_guard.get_private_key(key_id)?.unwrap();
+                public_key = private_key.verifying_key();
+                super_user_key_id = key_id.to_string();
+            } // backend_guard is dropped here
+
+            // Create auth settings with the provided key
+            let mut auth_settings_handler = AuthSettings::new();
+            let super_user_auth_key = AuthKey {
+                key: format_public_key(&public_key),
+                permissions: Permission::Admin(0), // Highest priority
+                status: KeyStatus::Active,
+            };
+            auth_settings_handler.add_key(super_user_key_id.clone(), super_user_auth_key)?;
+
+            // Prepare final tree settings for the initial commit
+            let mut final_tree_settings = initial_settings.clone();
+            final_tree_settings.set_map("auth", auth_settings_handler.as_kvnested().clone());
+
+            (Some(super_user_key_id), final_tree_settings)
+        } else {
+            // No authentication needed - use original settings as-is
+            (None, initial_settings)
         };
 
-        // Use an operation on the dummy tree to add the settings
-        let op = dummy_tree.new_operation()?;
-        op.update_subtree(SETTINGS, &serde_json::to_string(&settings)?)?;
-        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?;
-        let root_id = op.commit()?;
+        // Create the initial root entry using a temporary Tree and AtomicOp
+        // This placeholder ID should not exist in the backend, so get_tips will be empty.
+        let bootstrap_placeholder_id = format!(
+            "bootstrap_root_{}",
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(10)
+                .map(char::from)
+                .collect::<String>()
+        );
 
-        // Now create the real tree with the root ID
+        let temp_tree_for_bootstrap = Tree {
+            root: bootstrap_placeholder_id.clone(),
+            backend: backend.clone(),
+            default_auth_key: super_user_key_id_opt.clone(),
+        };
+
+        // Create the operation. If we have an auth key, it will be used automatically
+        let op = temp_tree_for_bootstrap.new_operation()?;
+
+        // IMPORTANT: For the root entry, we need to set the tree root to empty string
+        // so that is_toplevel_root() returns true and all_roots() can find it
+        op.set_entry_root("")?;
+
+        // Populate the SETTINGS and ROOT subtrees for the very first entry
+        op.update_subtree(SETTINGS, &serde_json::to_string(&final_tree_settings)?)?;
+        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
+
+        // Commit the initial entry
+        let new_root_id = op.commit()?;
+
+        // Now create the real tree with the new_root_id
         Ok(Self {
-            root: root_id,
+            root: new_root_id,
             backend,
-            default_auth_key: None,
+            default_auth_key: super_user_key_id_opt,
         })
     }
 
@@ -118,7 +204,7 @@ impl Tree {
     }
 
     /// Helper function to lock the backend mutex.
-    pub(crate) fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
+    pub fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
         self.backend.lock().map_err(|_| {
             Error::Io(std::io::Error::other(
                 "Failed to lock backend in Tree::lock_backend",
@@ -186,7 +272,7 @@ impl Tree {
         let id = entry.id();
 
         let mut backend_guard = self.lock_backend()?;
-        backend_guard.put(entry)?;
+        backend_guard.put(crate::backend::VerificationStatus::Unverified, entry)?;
 
         Ok(id)
     }

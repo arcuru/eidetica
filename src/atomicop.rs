@@ -1,11 +1,11 @@
 use crate::Error;
 use crate::Result;
 use crate::auth::crypto::sign_entry;
-use crate::auth::types::AuthId;
-use crate::auth::types::AuthInfo;
+use crate::auth::types::{AuthId, AuthInfo, Operation};
+use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::data::CRDT;
-use crate::data::KVOverWrite;
+use crate::data::NestedValue;
 use crate::entry::Entry;
 use crate::entry::{EntryBuilder, ID};
 use crate::subtree::SubTree;
@@ -98,6 +98,24 @@ impl AtomicOp {
         self.auth_key_id.as_deref()
     }
 
+    /// Set the tree root field for the entry being built.
+    ///
+    /// This is primarily used during tree creation to ensure the root entry
+    /// has an empty tree.root field, making it a proper top-level root.
+    ///
+    /// # Arguments
+    /// * `root` - The tree root ID to set (use empty string for top-level roots)
+    pub(crate) fn set_entry_root(&self, root: &str) -> Result<()> {
+        let mut builder_ref = self.entry_builder.borrow_mut();
+        let builder = builder_ref.as_mut().ok_or_else(|| {
+            Error::Io(std::io::Error::other(
+                "Operation has already been committed",
+            ))
+        })?;
+        builder.set_root_mut(root.to_string());
+        Ok(())
+    }
+
     /// Stages an update for a specific subtree within this atomic operation.
     ///
     /// This method is primarily intended for internal use by `SubTree` implementations
@@ -124,6 +142,7 @@ impl AtomicOp {
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
+
         if !subtrees.contains(&subtree.to_string()) {
             let backend_guard = self.tree.lock_backend()?;
             // FIXME: we should get the subtree tips while still using the parent pointers
@@ -169,6 +188,7 @@ impl AtomicOp {
 
             // If we haven't cached the tips for this subtree yet, get them now
             let subtrees = builder.subtrees();
+
             if !subtrees.contains(&subtree_name.to_string()) {
                 let backend_guard = self.tree.lock_backend()?;
                 // FIXME: we should get the subtree tips while still using the parent pointers
@@ -292,9 +312,10 @@ impl AtomicOp {
     /// 4. Sets authentication if configured
     /// 5. Builds the immutable `Entry` using `EntryBuilder::build()`
     /// 6. Signs the entry if authentication is configured
-    /// 7. Calculates the entry's content-addressable ID
-    /// 8. Persists the entry to the backend
-    /// 9. Returns the ID of the newly created entry
+    /// 7. Validates authentication if present
+    /// 8. Calculates the entry's content-addressable ID
+    /// 9. Persists the entry to the backend
+    /// 10. Returns the ID of the newly created entry
     ///
     /// After commit, the operation cannot be used again, as the internal
     /// `EntryBuilder` has been consumed.
@@ -302,19 +323,31 @@ impl AtomicOp {
     /// # Returns
     /// A `Result<ID>` containing the ID of the committed entry.
     pub fn commit(self) -> Result<ID> {
+        // Check if this is a settings subtree update and get the effective settings before any borrowing
+        let has_settings_update = {
+            let builder_cell = self.entry_builder.borrow();
+            let builder = builder_cell.as_ref().ok_or_else(|| {
+                Error::Io(std::io::Error::other(
+                    "Operation has already been committed",
+                ))
+            })?;
+            builder.subtrees().contains(&SETTINGS.to_string())
+        };
+
+        // Get the settings state from the historical parents. This will be used to validate the current commit
+        let effective_settings_for_validation =
+            self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
-        let builder = builder_cell.as_ref().ok_or_else(|| {
+        let builder_from_cell = builder_cell.as_ref().ok_or_else(|| {
             Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;
 
-        // Clone the builder since we can't easily take ownership
-        let mut builder = builder.clone();
-
-        // Check if this is a settings subtree update
-        let has_settings_update = builder.subtrees().contains(&SETTINGS.to_string());
+        // Clone the builder since we can't easily take ownership from RefCell<Option<>>
+        let mut builder = builder_from_cell.clone();
 
         // If this is not a settings update, add metadata with settings tips
         if !has_settings_update {
@@ -327,7 +360,7 @@ impl AtomicOp {
 
             if !settings_tips.is_empty() {
                 // Create a KVOverWrite with settings tips
-                let mut metadata = KVOverWrite::new();
+                let mut metadata = crate::data::KVOverWrite::new();
 
                 // Convert the tips vector to a JSON string
                 let tips_json = serde_json::to_string(&settings_tips)?;
@@ -341,7 +374,7 @@ impl AtomicOp {
             }
         }
 
-        // Handle authentication if configured
+        // Handle authentication configuration before building
         let signing_key = if let Some(key_id) = &self.auth_key_id {
             // Set auth ID on the entry builder (without signature initially)
             builder.set_auth_mut(AuthInfo {
@@ -359,6 +392,37 @@ impl AtomicOp {
                 ))));
             }
 
+            // Check if we need to bootstrap auth configuration
+            let auth_configured = matches!(effective_settings_for_validation.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+
+            if !auth_configured {
+                // Bootstrap auth configuration by adding this key as admin:0
+                let public_key = signing_key.as_ref().unwrap().verifying_key();
+
+                let mut auth_settings = crate::auth::settings::AuthSettings::new();
+                let super_user_auth_key = crate::auth::types::AuthKey {
+                    key: crate::auth::crypto::format_public_key(&public_key),
+                    permissions: crate::auth::types::Permission::Admin(0), // Highest priority
+                    status: crate::auth::types::KeyStatus::Active,
+                };
+                auth_settings.add_key(key_id.clone(), super_user_auth_key)?;
+
+                // Update the settings subtree to include auth configuration
+                // We need to merge with existing settings and add the auth section
+                let mut updated_settings = effective_settings_for_validation.clone();
+                updated_settings.set_map("auth", auth_settings.as_kvnested().clone());
+
+                // Update the SETTINGS subtree data in the entry builder
+                let settings_json = serde_json::to_string(&updated_settings)?;
+                builder.set_subtree_data_mut(SETTINGS.to_string(), settings_json);
+
+                // Make sure we track that this is now a settings update
+                // Note: we don't change has_settings_update here since it was calculated earlier
+                // and is used for metadata logic
+            }
+            // If auth is already configured, the validation will check if the key exists
+            // and fail appropriately if it doesn't
+
             signing_key
         } else {
             None
@@ -373,12 +437,84 @@ impl AtomicOp {
             entry.auth.signature = Some(signature);
         }
 
+        // Determine verification status by validating authentication
+        let verification_status = if entry.auth.id != AuthId::default() {
+            // Entry has authentication - validate it
+            let mut validator = AuthValidator::new();
+
+            // Get the final settings state for validation
+            // IMPORTANT: For permission checking, we must use the historical auth configuration
+            // (before this operation), not the auth configuration from the current entry.
+            // This prevents operations from modifying their own permission requirements.
+            let settings_for_validation = effective_settings_for_validation.clone();
+
+            match validator.validate_entry(&entry, &settings_for_validation) {
+                Ok(true) => {
+                    // Authentication validation succeeded.
+                    // Check if we have auth configuration to determine if we should check permissions
+                    match settings_for_validation.get("auth") {
+                        Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
+                            // We have auth configuration, so check permissions
+                            let operation_type = if has_settings_update
+                                || entry.subtrees().contains(&SETTINGS.to_string())
+                            {
+                                Operation::WriteSettings // Modifying settings is a settings operation
+                            } else {
+                                Operation::WriteData // Default to write for other data modifications
+                            };
+
+                            let resolved_auth = validator
+                                .resolve_auth_key(&entry.auth.id, &settings_for_validation)?;
+
+                            let has_permission =
+                                validator.check_permissions(&resolved_auth, &operation_type)?;
+
+                            if has_permission {
+                                crate::backend::VerificationStatus::Verified
+                            } else {
+                                return Err(Error::Authentication(
+                                    "authentication validation failed: insufficient permissions"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                        _ => {
+                            // This should not happen after bootstrapping, but handle gracefully
+                            crate::backend::VerificationStatus::Unverified
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // Signature verification failed
+                    return Err(Error::Authentication(
+                        "authentication validation failed: signature verification failed"
+                            .to_string(),
+                    ));
+                }
+                Err(e) => {
+                    // This should not happen after bootstrapping, but handle gracefully
+                    let error_msg = e.to_string();
+                    if error_msg.contains("No auth configuration found")
+                        || error_msg.contains("no authentication configuration")
+                    {
+                        // This should not happen after bootstrapping
+                        crate::backend::VerificationStatus::Unverified
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        } else {
+            // Entry is unsigned - store as unverified for backward compatibility
+            crate::backend::VerificationStatus::Unverified
+        };
+
         // Get the entry's ID
         let id = entry.id();
 
-        // Store in the backend
+        // Store in the backend with the determined verification status
         let mut backend_guard = self.tree.lock_backend()?;
-        backend_guard.put(entry)?;
+        backend_guard.put(verification_status, entry)?;
 
         Ok(id)
     }

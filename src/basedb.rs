@@ -11,6 +11,7 @@ use crate::entry::ID;
 use crate::tree::Tree;
 use crate::{Error, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use rand::Rng;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Database implementation on top of the backend.
@@ -56,12 +57,27 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
     pub fn new_tree(&self, settings: KVNested) -> Result<Tree> {
-        Tree::new(settings, Arc::clone(&self.backend))
+        Tree::new(settings, Arc::clone(&self.backend), None)
     }
 
     /// Create a new tree with default empty settings
     pub fn new_tree_default(&self) -> Result<Tree> {
-        self.new_tree(KVNested::new())
+        let mut settings = KVNested::new();
+
+        // Add a unique tree identifier to ensure each tree gets a unique root ID
+        // This prevents content-addressable collision when creating multiple trees
+        // with identical settings
+        let unique_id = format!(
+            "tree_{}",
+            rand::thread_rng()
+                .sample_iter(&rand::distributions::Alphanumeric)
+                .take(16)
+                .map(char::from)
+                .collect::<String>()
+        );
+        settings.set_string("tree_id", unique_id);
+
+        self.new_tree(settings)
     }
 
     /// Load an existing tree from the database by its root ID.

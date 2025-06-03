@@ -208,7 +208,7 @@ fn test_atomicop_nested_values() {
     // Create a backend and a tree
     let backend = Box::new(InMemoryBackend::new());
     let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend))).unwrap();
+    let tree = Tree::new(settings, Arc::new(Mutex::new(backend)), None).unwrap();
 
     // Create an operation
     let op1 = tree.new_operation().unwrap();
@@ -266,7 +266,7 @@ fn test_metadata_for_settings_entries() {
     // Create a new tree with some settings
     let mut settings = KVNested::new();
     settings.set_string("name".to_string(), "test_tree".to_string());
-    let tree = Tree::new(settings, backend.clone()).unwrap();
+    let tree = Tree::new(settings, backend.clone(), None).unwrap();
 
     // Create a settings update
     let settings_op = tree.new_operation().unwrap();

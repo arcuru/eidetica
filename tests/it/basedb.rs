@@ -10,7 +10,13 @@ fn test_new_db_and_tree() {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
     let tree_result = db.new_tree_default();
-    assert!(tree_result.is_ok());
+    match tree_result {
+        Ok(_) => println!("Tree creation succeeded"),
+        Err(e) => {
+            println!("Tree creation failed with error: {e:?}");
+            panic!("Tree creation failed: {e:?}");
+        }
+    }
 }
 
 #[test]
@@ -53,7 +59,7 @@ fn test_all_trees() {
     }
     op.commit().expect("Failed to commit");
 
-    let trees = db.all_trees().expect("Failed to get all trees");
+    let trees: Vec<eidetica::Tree> = db.all_trees().expect("Failed to get all trees");
     assert_eq!(trees.len(), 2);
 
     let found_ids: Vec<String> = trees.iter().map(|t| t.root_id().clone()).collect();

@@ -1,7 +1,6 @@
-use crate::Error;
-use crate::Result;
-use crate::backend::Backend;
+use crate::backend::{Backend, VerificationStatus};
 use crate::entry::{Entry, ID};
+use crate::{Error, Result};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::any::Any;
@@ -24,6 +23,8 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct InMemoryBackend {
     entries: HashMap<ID, Entry>,
+    /// Verification status for each entry
+    verification_status: HashMap<ID, VerificationStatus>,
     /// Private key storage for authentication
     ///
     /// **Security Warning**: Keys are stored in memory without encryption.
@@ -36,6 +37,7 @@ pub struct InMemoryBackend {
 #[derive(Serialize, Deserialize)]
 struct SerializableBackend {
     entries: HashMap<ID, Entry>,
+    verification_status: HashMap<ID, VerificationStatus>,
     /// Private keys stored as 32-byte arrays for serialization
     private_keys_bytes: HashMap<String, [u8; 32]>,
 }
@@ -53,6 +55,7 @@ impl Serialize for InMemoryBackend {
 
         let serializable = SerializableBackend {
             entries: self.entries.clone(),
+            verification_status: self.verification_status.clone(),
             private_keys_bytes,
         };
 
@@ -78,6 +81,7 @@ impl<'de> Deserialize<'de> for InMemoryBackend {
 
         Ok(InMemoryBackend {
             entries: serializable.entries,
+            verification_status: serializable.verification_status,
             private_keys,
         })
     }
@@ -94,6 +98,7 @@ impl InMemoryBackend {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            verification_status: HashMap::new(),
             private_keys: HashMap::new(),
         }
     }
@@ -395,10 +400,69 @@ impl Backend for InMemoryBackend {
         self.entries.get(id).ok_or(Error::NotFound)
     }
 
-    /// Inserts or updates an entry in the internal `HashMap`.
-    fn put(&mut self, entry: Entry) -> Result<()> {
-        self.entries.insert(entry.id(), entry);
+    /// Gets the verification status of an entry.
+    fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
+        // Check if entry exists first
+        if !self.entries.contains_key(id) {
+            return Err(Error::NotFound);
+        }
+
+        // Return the verification status, defaulting to Unverified if not set
+        Ok(self
+            .verification_status
+            .get(id)
+            .copied()
+            .unwrap_or_default())
+    }
+
+    /// Stores an entry in the backend with the specified verification status.
+    fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
+        let entry_id = entry.id();
+
+        // Store the entry
+        self.entries.insert(entry_id.clone(), entry);
+
+        // Store the verification status
+        self.verification_status
+            .insert(entry_id, verification_status);
+
         Ok(())
+    }
+
+    /// Updates the verification status of an existing entry.
+    fn update_verification_status(
+        &mut self,
+        id: &ID,
+        verification_status: VerificationStatus,
+    ) -> Result<()> {
+        // Check if entry exists
+        if !self.entries.contains_key(id) {
+            return Err(Error::NotFound);
+        }
+
+        // Update the verification status
+        self.verification_status
+            .insert(id.clone(), verification_status);
+
+        Ok(())
+    }
+
+    /// Gets all entries with a specific verification status.
+    fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
+        let mut matching_entries = Vec::new();
+
+        for entry_id in self.entries.keys() {
+            let entry_status = self
+                .verification_status
+                .get(entry_id)
+                .copied()
+                .unwrap_or_default();
+            if entry_status == status {
+                matching_entries.push(entry_id.clone());
+            }
+        }
+
+        Ok(matching_entries)
     }
 
     /// Finds the tip entries for the specified tree.
