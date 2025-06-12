@@ -9,4 +9,7 @@ allow = ["BSD-3-Clause", "MIT", "Apache-2.0", "Unicode-3.0"]
 # [possible values: any between 0.0 and 1.0].
 confidence-threshold = 0.95
 # List of exceptions to the license rules
-exceptions = [{ allow = ["AGPL-3.0"], crate = "eidetica" }]
+exceptions = [
+  { allow = ["AGPL-3.0"], crate = "eidetica" },
+  { allow = ["AGPL-3.0"], crate = "eidetica-bin" }
+]

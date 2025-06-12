@@ -6,6 +6,8 @@ This guide provides a practical walkthrough for developers starting with Eidetic
 
 Eidetica organizes data differently from traditional relational databases. Here's a breakdown of the key components you'll interact with, illustrated by the Todo example (`examples/todo/src/main.rs`).
 
+Note: This example uses the Eidetica library from the workspace at `crates/lib/`.
+
 ### 1. The Database (`BaseDB`)
 
 The `BaseDB` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "backend") and provides access to data structures called Trees.

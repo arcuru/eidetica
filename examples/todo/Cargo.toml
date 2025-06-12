@@ -5,8 +5,11 @@ edition = "2021"
 description = "A simple CLI todo list app using Eidetica"
 publish = false
 
+# This is a standalone example, not part of the workspace
+[workspace]
+
 [dependencies]
-eidetica = { path = "../..", features = ["y-crdt"] }
+eidetica = { path = "../../crates/lib", features = ["y-crdt"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.4", features = ["derive"] }

@@ -1,0 +1,30 @@
+[package]
+name = "eidetica"
+version = "0.1.0"
+edition = "2024"
+authors = ["Patrick Jackson <patrick@jackson.dev>"]
+readme = "../../README.md"
+license = "AGPL-3.0-or-later"
+description = "Remember everything."
+repository = "https://github.com/arcuru/eidetica"
+homepage = "https://eidetica.dev"
+
+[features]
+default = []
+y-crdt = ["yrs"]
+
+[dependencies]
+chrono = { workspace = true }
+base64ct = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+typetag = { workspace = true }
+uuid = { workspace = true }
+yrs = { version = "0.23", optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

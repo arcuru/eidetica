@@ -250,12 +250,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "signal-hook",
  "tempfile",
  "thiserror 1.0.69",
  "typetag",
  "uuid",
  "yrs",
+]
+
+[[package]]
+name = "eidetica-bin"
+version = "0.1.0"
+dependencies = [
+ "eidetica",
+ "signal-hook",
 ]
 
 [[package]]

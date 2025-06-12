@@ -10,14 +10,14 @@ The main categories of testing activities are:
 
 ### Comprehensive Integration Tests
 
-All tests for the Eidetica crate are located in the `tests/it/` directory. These tests verify both:
+All tests for the Eidetica crate are located in the `crates/lib/tests/it/` directory. These tests verify both:
 
 - **Component behavior**: Validating individual components through their public interfaces
 - **System behavior**: Ensuring different components interact correctly when used together
 
 This unified suite is organized as a single integration test binary, following the pattern described by [matklad](https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html).
 
-The module structure within `tests/it/` mirrors the main library structure from `src/`; `tests/it/subtree.rs` contains tests for `src/subtree.rs`, etc.
+The module structure within `crates/lib/tests/it/` mirrors the main library structure from `crates/lib/src/`; `crates/lib/tests/it/subtree.rs` contains tests for `crates/lib/src/subtree.rs`, etc.
 
 ### Example Applications as Tests
 
@@ -50,7 +50,7 @@ We exclusively test through public interfaces. This approach ensures API stabili
 
 ### Test Helpers
 
-Eidetica provides a comprehensive set of test helpers in the `tests/it/helpers.rs` module to simplify test setup and common assertions:
+Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/it/helpers.rs` module to simplify test setup and common assertions:
 
 - **Tree Setup Helpers**:
 
@@ -175,12 +175,12 @@ cargo tarpaulin --workspace --skip-clean --include-tests --all-features --output
 
 When adding features or fixing bugs:
 
-1. Add focused tests to the appropriate module within the `tests/it/` directory. These tests should cover:
+1. Add focused tests to the appropriate module within the `crates/lib/tests/it/` directory. These tests should cover:
    - Specific functionality of the component or module being changed through its public interface.
    - Interactions between the component and other parts of the system.
 2. Consider adding example code in the `examples/` directory for significant new features to demonstrate usage and provide further validation.
 3. Test both normal operation ("happy path") and error cases.
-4. Use the test helpers in `tests/it/helpers.rs` to simplify test setup and assertions. Consider adding new helpers for common patterns.
+4. Use the test helpers in `crates/lib/tests/it/helpers.rs` to simplify test setup and assertions. Consider adding new helpers for common patterns.
 
 ## Best Practices
 

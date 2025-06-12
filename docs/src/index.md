@@ -1,6 +1,14 @@
 # Eidetica Documentation
 
-Welcome to the official documentation for Eidetica.
+Welcome to the official documentation for Eidetica - a decentralized database built on Merkle-CRDT principles.
+
+## Project Structure
+
+Eidetica is organized as a Cargo workspace:
+
+- **Library** (`crates/lib/`): The core Eidetica library crate
+- **CLI Binary** (`crates/bin/`): Command-line interface using the library
+- **Examples** (`examples/`): Standalone applications demonstrating usage
 
 Choose a section to get started:
 

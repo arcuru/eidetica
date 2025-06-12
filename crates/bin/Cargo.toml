@@ -1,0 +1,16 @@
+[package]
+name = "eidetica-bin"
+version = "0.1.0"
+edition = "2024"
+authors = ["Patrick Jackson <patrick@jackson.dev>"]
+license = "AGPL-3.0-or-later"
+description = "Eidetica CLI binary"
+publish = false
+
+[[bin]]
+name = "eidetica"
+path = "src/main.rs"
+
+[dependencies]
+eidetica = { path = "../lib" }
+signal-hook = { workspace = true }

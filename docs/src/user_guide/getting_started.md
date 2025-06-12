@@ -11,6 +11,8 @@ Add Eidetica to your project dependencies:
 ```toml
 [dependencies]
 eidetica = "0.1.0"  # Update version as appropriate
+# Or if using from a local workspace:
+# eidetica = { path = "path/to/eidetica/crates/lib" }
 ```
 
 ## Setting up the Database

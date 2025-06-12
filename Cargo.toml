@@ -1,19 +1,9 @@
-[package]
-name = "eidetica"
-version = "0.1.0"
-edition = "2024"
-authors = ["Patrick Jackson <patrick@jackson.dev>"]
-readme = "README.md"
-license = "AGPL-3.0-or-later"
-description = "Remember everything."
-repository = "https://github.com/arcuru/eidetica"
-homepage = "https://eidetica.dev"
+[workspace]
+members = ["crates/lib", "crates/bin"]
+resolver = "2"
 
-[features]
-default = []
-y-crdt = ["yrs"]
-
-[dependencies]
+[workspace.dependencies]
+# Shared dependencies
 chrono = ">= 0.3"
 base64ct = { version = "1.6", features = ["std"] }
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
@@ -24,16 +14,9 @@ sha2 = ">= 0.9"
 thiserror = "1"
 typetag = "0.2.2"
 uuid = { version = "1", features = ["v4"] }
-yrs = { version = "0.23", optional = true }
-# Dependencies for the binary
-signal-hook = { version = "0.3", optional = true }
-
-[dev-dependencies]
+yrs = "0.23"
+signal-hook = "0.3"
 tempfile = "3.0"
-
-[[bin]]
-name = "eidetica"
-required-features = ["signal-hook"]
 
 # Profile configuration for optimizing builds
 [profile.dev]
