@@ -33,3 +33,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "benchmarks"
 harness = false
+
+[[bench]]
+name = "backend_benchmarks"
+harness = false
