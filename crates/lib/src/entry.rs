@@ -553,6 +553,15 @@ impl EntryBuilder {
         self
     }
 
+    /// Get a reference to the current parent IDs for the main tree history.
+    pub fn parents(&self) -> Option<&Vec<ID>> {
+        if self.tree.parents.is_empty() {
+            None
+        } else {
+            Some(&self.tree.parents)
+        }
+    }
+
     /// Set the parent IDs for a specific named subtree's history.
     /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
     /// If the subtree does not exist, it will be created with empty data ("{}").

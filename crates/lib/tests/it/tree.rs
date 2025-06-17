@@ -1,6 +1,10 @@
 use crate::helpers::*;
+use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::constants::SETTINGS;
+use eidetica::data::KVNested;
 use eidetica::subtree::KVStore;
+use eidetica::tree::Tree;
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn test_insert_into_tree() {
@@ -379,5 +383,436 @@ fn test_setup_tree_with_multiple_kvstores() {
             .get_string("comment1")
             .expect("Failed to get comment1"),
         "Great post!"
+    );
+}
+
+#[test]
+fn test_get_tips() {
+    let tree = setup_tree();
+
+    // Initially, the tree should have one tip (the root entry)
+    let initial_tips = tree.get_tips().expect("Failed to get initial tips");
+    assert_eq!(
+        initial_tips.len(),
+        1,
+        "Tree should have exactly one initial tip"
+    );
+
+    // Create and commit first entry
+    let op1 = tree.new_operation().expect("Failed to create operation 1");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store 1");
+    store1.set("key1", "value1").expect("Failed to set key1");
+    let entry1_id = op1.commit().expect("Failed to commit operation 1");
+
+    // Tips should now include entry1_id
+    let tips_after_op1 = tree.get_tips().expect("Failed to get tips after op1");
+    assert_eq!(
+        tips_after_op1.len(),
+        1,
+        "Should have exactly one tip after op1"
+    );
+    assert!(
+        tips_after_op1.contains(&entry1_id),
+        "Tips should contain entry1_id"
+    );
+    assert!(
+        !tips_after_op1.contains(&initial_tips[0]),
+        "Initial tip should no longer be a tip"
+    );
+
+    // Create and commit second entry
+    let op2 = tree.new_operation().expect("Failed to create operation 2");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store 2");
+    store2.set("key2", "value2").expect("Failed to set key2");
+    let entry2_id = op2.commit().expect("Failed to commit operation 2");
+
+    // Tips should now include entry2_id
+    let tips_after_op2 = tree.get_tips().expect("Failed to get tips after op2");
+    assert_eq!(
+        tips_after_op2.len(),
+        1,
+        "Should have exactly one tip after op2"
+    );
+    assert!(
+        tips_after_op2.contains(&entry2_id),
+        "Tips should contain entry2_id"
+    );
+    assert!(
+        !tips_after_op2.contains(&entry1_id),
+        "Entry1 should no longer be a tip"
+    );
+}
+
+#[test]
+fn test_new_operation_with_tips() {
+    let tree = setup_tree();
+
+    // Create first entry
+    let op1 = tree.new_operation().expect("Failed to create operation 1");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store 1");
+    store1.set("key1", "value1").expect("Failed to set key1");
+    let entry1_id = op1.commit().expect("Failed to commit operation 1");
+
+    // Create second entry
+    let op2 = tree.new_operation().expect("Failed to create operation 2");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store 2");
+    store2.set("key2", "value2").expect("Failed to set key2");
+    let entry2_id = op2.commit().expect("Failed to commit operation 2");
+
+    // Verify that normal operations use current tips (should see both keys)
+    let normal_op = tree
+        .new_operation()
+        .expect("Failed to create normal operation");
+    let normal_store = normal_op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get normal store");
+    let normal_state = normal_store.get_all().expect("Failed to get normal state");
+    assert!(
+        normal_state.get("key1").is_some(),
+        "Normal operation should see key1"
+    );
+    assert!(
+        normal_state.get("key2").is_some(),
+        "Normal operation should see key2"
+    );
+
+    // Create operation with custom tips (using entry1 instead of current tip)
+    let custom_op = tree
+        .new_operation_with_tips(&[entry1_id.clone()])
+        .expect("Failed to create custom operation");
+    let custom_store = custom_op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get custom store");
+    let custom_state = custom_store.get_all().expect("Failed to get custom state");
+    assert!(
+        custom_state.get("key1").is_some(),
+        "Custom operation should see key1"
+    );
+    assert!(
+        custom_state.get("key2").is_none(),
+        "Custom operation should not see key2"
+    );
+
+    // Commit the custom operation to create a branch
+    custom_store
+        .set("custom_key", "custom_value")
+        .expect("Failed to set custom_key");
+    let custom_entry_id = custom_op
+        .commit()
+        .expect("Failed to commit custom operation");
+
+    // Now we should have two tips: entry2_id and custom_entry_id
+    let tips_after_branch = tree.get_tips().expect("Failed to get tips after branch");
+    assert_eq!(
+        tips_after_branch.len(),
+        2,
+        "Should have exactly two tips after branching"
+    );
+    assert!(
+        tips_after_branch.contains(&entry2_id),
+        "Tips should contain entry2_id"
+    );
+    assert!(
+        tips_after_branch.contains(&custom_entry_id),
+        "Tips should contain custom_entry_id"
+    );
+
+    // Create a merge operation that should see both branches
+    let merge_op = tree
+        .new_operation()
+        .expect("Failed to create merge operation");
+    let merge_store = merge_op
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get merge store");
+    let merge_state = merge_store.get_all().expect("Failed to get merge state");
+
+    // Merge operation should see data from all paths
+    assert!(merge_state.get("key1").is_some(), "Merge should see key1");
+    assert!(merge_state.get("key2").is_some(), "Merge should see key2");
+    assert!(
+        merge_state.get("custom_key").is_some(),
+        "Merge should see custom_key"
+    );
+}
+
+#[test]
+fn test_new_operation_with_specific_tips() {
+    let tree = setup_tree();
+
+    // Create a chain of entries: A -> B -> C
+    let op_a = tree.new_operation().expect("Failed to create operation A");
+    let store_a = op_a
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store A");
+    store_a
+        .set("from_a", "value_a")
+        .expect("Failed to set from_a");
+    let entry_a_id = op_a.commit().expect("Failed to commit operation A");
+
+    let op_b = tree.new_operation().expect("Failed to create operation B");
+    let store_b = op_b
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store B");
+    store_b
+        .set("from_b", "value_b")
+        .expect("Failed to set from_b");
+    let entry_b_id = op_b.commit().expect("Failed to commit operation B");
+
+    let op_c = tree.new_operation().expect("Failed to create operation C");
+    let store_c = op_c
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store C");
+    store_c
+        .set("from_c", "value_c")
+        .expect("Failed to set from_c");
+    let entry_c_id = op_c.commit().expect("Failed to commit operation C");
+
+    // Create operation starting from entry A (should see only A)
+    let op_from_a = tree
+        .new_operation_with_tips(&[entry_a_id.clone()])
+        .expect("Failed to create op from A");
+    let store_from_a = op_from_a
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store from A");
+    let state_from_a = store_from_a.get_all().expect("Failed to get state from A");
+
+    assert!(
+        state_from_a.get("from_a").is_some(),
+        "Should see data from A"
+    );
+    assert!(
+        state_from_a.get("from_b").is_none(),
+        "Should not see data from B"
+    );
+    assert!(
+        state_from_a.get("from_c").is_none(),
+        "Should not see data from C"
+    );
+
+    // Create operation starting from entry B (should see A and B but not C)
+    let op_from_b = tree
+        .new_operation_with_tips(&[entry_b_id.clone()])
+        .expect("Failed to create op from B");
+    let store_from_b = op_from_b
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store from B");
+    let state_from_b = store_from_b.get_all().expect("Failed to get state from B");
+
+    assert!(
+        state_from_b.get("from_a").is_some(),
+        "Should see data from A"
+    );
+    assert!(
+        state_from_b.get("from_b").is_some(),
+        "Should see data from B"
+    );
+    assert!(
+        state_from_b.get("from_c").is_none(),
+        "Should not see data from C"
+    );
+
+    // Create operation starting from entry C (should see all)
+    let op_from_c = tree
+        .new_operation_with_tips(&[entry_c_id.clone()])
+        .expect("Failed to create op from C");
+    let store_from_c = op_from_c
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store from C");
+    let state_from_c = store_from_c.get_all().expect("Failed to get state from C");
+
+    assert!(
+        state_from_c.get("from_a").is_some(),
+        "Should see data from A"
+    );
+    assert!(
+        state_from_c.get("from_b").is_some(),
+        "Should see data from B"
+    );
+    assert!(
+        state_from_c.get("from_c").is_some(),
+        "Should see data from C"
+    );
+
+    // Test branching from an earlier point
+    let op_branch = tree
+        .new_operation_with_tips(&[entry_a_id.clone()])
+        .expect("Failed to create branch from A");
+    let store_branch = op_branch
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store branch");
+    store_branch
+        .set("branch_data", "branch_value")
+        .expect("Failed to set branch_data");
+    let branch_id = op_branch.commit().expect("Failed to commit branch");
+
+    // Verify the branch only sees data from A
+    let op_verify_branch = tree
+        .new_operation_with_tips(&[branch_id.clone()])
+        .expect("Failed to create verify op");
+    let store_verify_branch = op_verify_branch
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get verify store");
+    let state_verify_branch = store_verify_branch
+        .get_all()
+        .expect("Failed to get verify state");
+
+    assert!(
+        state_verify_branch.get("from_a").is_some(),
+        "Branch should see data from A"
+    );
+    assert!(
+        state_verify_branch.get("branch_data").is_some(),
+        "Branch should see its own data"
+    );
+    assert!(
+        state_verify_branch.get("from_b").is_none(),
+        "Branch should not see data from B"
+    );
+    assert!(
+        state_verify_branch.get("from_c").is_none(),
+        "Branch should not see data from C"
+    );
+}
+
+#[test]
+fn test_new_operation_with_multiple_tips() {
+    let tree = setup_tree();
+
+    // Create initial entry
+    let op_base = tree
+        .new_operation()
+        .expect("Failed to create base operation");
+    let store_base = op_base
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get base store");
+    store_base.set("base", "value").expect("Failed to set base");
+    let base_id = op_base.commit().expect("Failed to commit base operation");
+
+    // Create two parallel branches from base
+    let op_branch1 = tree
+        .new_operation_with_tips(&[base_id.clone()])
+        .expect("Failed to create branch1");
+    let store_branch1 = op_branch1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get branch1 store");
+    store_branch1
+        .set("branch1", "value1")
+        .expect("Failed to set branch1");
+    let branch1_id = op_branch1.commit().expect("Failed to commit branch1");
+
+    let op_branch2 = tree
+        .new_operation_with_tips(&[base_id.clone()])
+        .expect("Failed to create branch2");
+    let store_branch2 = op_branch2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get branch2 store");
+    store_branch2
+        .set("branch2", "value2")
+        .expect("Failed to set branch2");
+    let branch2_id = op_branch2.commit().expect("Failed to commit branch2");
+
+    // Create operation with multiple tips (merge operation)
+    let merge_tips = vec![branch1_id.clone(), branch2_id.clone()];
+    let op_merge = tree
+        .new_operation_with_tips(&merge_tips)
+        .expect("Failed to create merge operation");
+    let store_merge = op_merge
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get merge store");
+    let state_merge = store_merge.get_all().expect("Failed to get merge state");
+
+    // Merge operation should see data from all branches
+    assert!(
+        state_merge.get("base").is_some(),
+        "Merge should see base data"
+    );
+    assert!(
+        state_merge.get("branch1").is_some(),
+        "Merge should see branch1 data"
+    );
+    assert!(
+        state_merge.get("branch2").is_some(),
+        "Merge should see branch2 data"
+    );
+
+    // Commit merge operation
+    store_merge
+        .set("merged", "final")
+        .expect("Failed to set merged");
+    let merge_id = op_merge.commit().expect("Failed to commit merge");
+
+    // Verify the merge operation correctly set up parents
+    let backend = tree.backend();
+    let backend_guard = backend.lock().unwrap();
+    let merge_entry = backend_guard
+        .get(&merge_id)
+        .expect("Failed to get merge entry");
+    let merge_parents = merge_entry.parents().expect("Failed to get merge parents");
+
+    assert_eq!(
+        merge_parents.len(),
+        2,
+        "Merge entry should have two parents"
+    );
+    assert!(
+        merge_parents.contains(&branch1_id),
+        "Merge should have branch1 as parent"
+    );
+    assert!(
+        merge_parents.contains(&branch2_id),
+        "Merge should have branch2 as parent"
+    );
+}
+
+#[test]
+fn test_new_operation_with_empty_tips_validation() {
+    let tree = setup_tree();
+
+    // Attempting to create operation with empty tips should return an error
+    let result = tree.new_operation_with_tips(&[]);
+    assert!(
+        result.is_err(),
+        "Creating operation with empty tips should be an error"
+    );
+}
+
+#[test]
+fn test_new_operation_with_invalid_tree_tips() {
+    // Use the same backend for both trees
+    let backend = Arc::new(Mutex::new(
+        Box::new(InMemoryBackend::new()) as Box<dyn Backend>
+    ));
+
+    // Create tree1
+    let mut tree1_settings = KVNested::new();
+    tree1_settings.set_string("name".to_string(), "tree1".to_string());
+    let tree1 = Tree::new(tree1_settings, backend.clone(), None).expect("Failed to create tree1");
+
+    // Create tree2 with same backend but different root
+    let mut tree2_settings = KVNested::new();
+    tree2_settings.set_string("name".to_string(), "tree2".to_string());
+    let tree2 = Tree::new(tree2_settings, backend.clone(), None).expect("Failed to create tree2");
+
+    // Create an entry in tree1
+    let op1 = tree1.new_operation().expect("Failed to create operation");
+    let store1 = op1
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get store");
+    store1.set("key1", "value1").expect("Failed to set key1");
+    let entry1_id = op1.commit().expect("Failed to commit");
+
+    // Try to use entry from tree1 as tip for operation in tree2 - should fail
+    let result = tree2.new_operation_with_tips(&[entry1_id]);
+    assert!(
+        result.is_err(),
+        "Using tip from different tree should be an error"
     );
 }

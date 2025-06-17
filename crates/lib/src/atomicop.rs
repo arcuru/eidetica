@@ -40,27 +40,60 @@ pub struct AtomicOp {
 }
 
 impl AtomicOp {
-    /// Creates a new atomic operation for a specific `Tree`.
+    /// Creates a new atomic operation for a specific `Tree` with custom parent tips.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
-    /// current tips of the target `Tree`. This captures the state upon which
-    /// the operation builds.
+    /// specified tips instead of the current tree tips. This allows creating
+    /// operations that branch from specific points in the tree history.
     ///
-    /// This is typically called internally by `Tree::new_operation()`.
+    /// This enables creating diamond patterns and other complex DAG structures
+    /// for testing and advanced use cases.
     ///
     /// # Arguments
     /// * `tree` - The `Tree` this operation will modify.
-    pub(crate) fn new(tree: &Tree) -> Result<Self> {
+    /// * `tips` - The specific parent tips to use for this operation. Must contain at least one tip.
+    ///
+    /// # Returns
+    /// A `Result<Self>` containing the new operation or an error if tips are empty or invalid.
+    pub(crate) fn new_with_tips(tree: &Tree, tips: &[ID]) -> Result<Self> {
+        // Validate that tips are not empty, unless we're creating the root entry
+        if tips.is_empty() {
+            // Check if this is a root entry creation by seeing if the tree root exists in backend
+            let backend_guard = tree.lock_backend()?;
+            let root_exists = backend_guard.get(tree.root_id()).is_ok();
+            drop(backend_guard);
+
+            if root_exists {
+                return Err(Error::Io(std::io::Error::other(
+                    "Cannot create operation with empty tips. Operations must have at least one parent. Only tree roots (created via Tree::new()) can have no parents.",
+                )));
+            }
+            // If root doesn't exist, this is valid (creating the root entry)
+        }
+
+        // Validate that all tips belong to the same tree
+        {
+            let backend_guard = tree.lock_backend()?;
+            for tip_id in tips {
+                let entry = backend_guard.get(tip_id)?;
+                if !entry.in_tree(tree.root_id()) {
+                    return Err(Error::Io(std::io::Error::other(format!(
+                        "Tip entry '{}' does not belong to tree '{}'",
+                        tip_id,
+                        tree.root_id()
+                    ))));
+                }
+            }
+        }
+
         // Start with a basic entry linked to the tree's root.
         // Data and parents will be filled based on the operation type.
         let mut builder = Entry::builder(tree.root_id().clone(), "".to_string());
 
-        // Get current tree tips
-        let tree_tips = {
-            let backend_guard = tree.lock_backend()?;
-            backend_guard.get_tips(tree.root_id())?
-        };
-        builder.set_parents_mut(tree_tips);
+        // Use the provided tips as parents (only if not empty)
+        if !tips.is_empty() {
+            builder.set_parents_mut(tips.to_vec());
+        }
 
         Ok(Self {
             entry_builder: Rc::new(RefCell::new(Some(builder))),
@@ -191,8 +224,21 @@ impl AtomicOp {
 
             if !subtrees.contains(&subtree_name.to_string()) {
                 let backend_guard = self.tree.lock_backend()?;
-                // FIXME: we should get the subtree tips while still using the parent pointers
-                let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?;
+                // Check if this operation was created with custom tips vs current tips
+                let main_parents = builder.parents().cloned().unwrap_or_default();
+                let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
+
+                let tips = if main_parents == current_tree_tips {
+                    // This operation uses current tree tips - use old behavior
+                    backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?
+                } else {
+                    // This operation uses custom tips - use new behavior
+                    backend_guard.get_subtree_tips_up_to_entries(
+                        self.tree.root_id(),
+                        subtree_name,
+                        &main_parents,
+                    )?
+                };
                 builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
                 builder.set_subtree_parents_mut(subtree_name, tips);
             }
@@ -272,8 +318,21 @@ impl AtomicOp {
         let subtrees = builder.subtrees();
         if !subtrees.contains(&subtree_name.to_string()) {
             let backend_guard = self.tree.lock_backend()?;
-            // FIXME: we should get the subtree tips while still using the parent pointers
-            let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?;
+            // Check if this operation was created with custom tips vs current tips
+            let main_parents = builder.parents().cloned().unwrap_or_default();
+            let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
+
+            let tips = if main_parents == current_tree_tips {
+                // This operation uses current tree tips - use old behavior
+                backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?
+            } else {
+                // This operation uses custom tips - use new behavior
+                backend_guard.get_subtree_tips_up_to_entries(
+                    self.tree.root_id(),
+                    subtree_name,
+                    &main_parents,
+                )?
+            };
             builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
             builder.set_subtree_parents_mut(subtree_name, tips);
         }

@@ -256,7 +256,23 @@ impl Tree {
     /// # Returns
     /// A `Result<AtomicOp>` containing the new atomic operation
     pub fn new_operation(&self) -> Result<AtomicOp> {
-        let mut op = AtomicOp::new(self)?;
+        let tips = self.get_tips()?;
+        self.new_operation_with_tips(&tips)
+    }
+
+    /// Create a new atomic operation on this tree with specific parent tips
+    ///
+    /// This creates a new atomic operation that will have the specified entries as parents
+    /// instead of using the current tree tips. This allows creating complex DAG structures
+    /// like diamond patterns for testing and advanced use cases.
+    ///
+    /// # Arguments
+    /// * `tips` - The specific parent tips to use for this operation
+    ///
+    /// # Returns
+    /// A `Result<AtomicOp>` containing the new atomic operation
+    pub fn new_operation_with_tips(&self, tips: &[ID]) -> Result<AtomicOp> {
+        let mut op = AtomicOp::new_with_tips(self, tips)?;
 
         // Set default authentication if configured
         if let Some(ref key_id) = self.default_auth_key {
