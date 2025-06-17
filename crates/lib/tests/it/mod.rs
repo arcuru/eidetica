@@ -1,5 +1,5 @@
 pub mod atomicop;
-pub mod auth_integration;
+pub mod auth;
 pub mod backend;
 pub mod basedb;
 pub mod data;

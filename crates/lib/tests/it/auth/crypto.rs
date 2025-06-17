@@ -1,0 +1,287 @@
+use super::helpers::*;
+use crate::create_auth_keys;
+use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
+use eidetica::auth::types::{AuthId, KeyStatus, Permission};
+use eidetica::backend::InMemoryBackend;
+use eidetica::basedb::BaseDB;
+use eidetica::data::KVNested;
+
+#[test]
+fn test_key_management() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Initially no keys
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert!(keys.is_empty());
+
+    // Add a key
+    let key_id = "TEST_KEY";
+    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+
+    // List keys should now show one key
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], key_id);
+
+    // Add another key
+    let key_id2 = "TEST_KEY_2";
+    let public_key2 = db.add_private_key(key_id2).expect("Failed to add key");
+
+    // List keys should now show both keys
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&key_id.to_string()));
+    assert!(keys.contains(&key_id2.to_string()));
+
+    // Keys should be different
+    assert_ne!(
+        format_public_key(&public_key),
+        format_public_key(&public_key2)
+    );
+
+    // Test signing and verification
+    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let op = tree
+        .new_authenticated_operation(key_id)
+        .expect("Failed to create operation");
+    let store = op
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Verify the entry was signed correctly
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+
+    assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
+    assert!(entry.auth.signature.is_some());
+
+    // Verify signature with correct key
+    assert!(verify_entry_signature(entry, &public_key).expect("Failed to verify"));
+    // Verify signature fails with wrong key
+    assert!(!verify_entry_signature(entry, &public_key2).expect("Failed to verify"));
+}
+
+#[test]
+fn test_import_private_key() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Generate a key externally
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Import the key
+    let key_id = "IMPORTED_KEY";
+    db.import_private_key(key_id, signing_key.clone())
+        .expect("Failed to import key");
+
+    // The key should be in the list
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], key_id);
+
+    // Test that we can sign with the imported key
+    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let op = tree
+        .new_authenticated_operation(key_id)
+        .expect("Failed to create operation");
+    let store = op
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Verify the entry was signed correctly
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+
+    assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
+    assert!(verify_entry_signature(entry, &verifying_key).expect("Failed to verify"));
+}
+
+#[test]
+fn test_backend_serialization() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Add initial key
+    let key_id = "TEST_KEY";
+    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+
+    // Add another key with import
+    let signing_key2 = SigningKey::generate(&mut OsRng);
+    let key_id2 = "IMPORTED_KEY";
+    db.import_private_key(key_id2, signing_key2.clone())
+        .expect("Failed to import key");
+    let public_key2 = signing_key2.verifying_key();
+
+    // Set up authentication settings with both keys
+    let keys = [
+        (key_id, Permission::Write(10), KeyStatus::Active),
+        (key_id2, Permission::Write(20), KeyStatus::Active),
+    ];
+    let public_keys = vec![public_key, public_key2];
+    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+
+    // Create an entry with first key
+    let op = tree
+        .new_authenticated_operation(key_id)
+        .expect("Failed to create operation");
+    let store = op
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Verify entry can be retrieved and is properly signed
+    {
+        let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+        let entry = backend_guard.get(&entry_id).expect("Entry not found");
+
+        assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
+        assert!(entry.auth.signature.is_some());
+        assert!(verify_entry_signature(entry, &public_key).expect("Failed to verify"));
+    } // Release the backend lock here
+
+    // Create another entry with the imported key
+    let op2 = tree
+        .new_authenticated_operation(key_id2)
+        .expect("Failed to create operation");
+    let store2 = op2
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store2.set("test2", "value2").expect("Failed to set value");
+
+    let entry_id2 = op2.commit().expect("Failed to commit");
+
+    // Verify second entry (get new lock after commit)
+    {
+        let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+        let entry2 = backend_guard.get(&entry_id2).expect("Entry2 not found");
+        assert_eq!(entry2.auth.id, AuthId::Direct(key_id2.to_string()));
+        assert!(verify_entry_signature(entry2, &public_key2).expect("Failed to verify"));
+    }
+}
+
+#[test]
+fn test_overwrite_existing_key() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Add initial key
+    let key_id = "TEST_KEY";
+    let public_key1 = db.add_private_key(key_id).expect("Failed to add key");
+
+    // Overwrite with a new key
+    // TODO: This behavior should be changed so that keys are unique to the tree, not the db.
+    let signing_key2 = SigningKey::generate(&mut OsRng);
+    db.import_private_key(key_id, signing_key2.clone())
+        .expect("Failed to import key");
+    let public_key2 = signing_key2.verifying_key();
+
+    // Should be different keys
+    assert_ne!(public_key1, public_key2);
+
+    // Should still only have one key ID
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], key_id);
+
+    // New key should work for signing
+    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let op = tree
+        .new_authenticated_operation(key_id)
+        .expect("Failed to create operation");
+    let store = op
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+
+    let entry_id = op.commit().expect("Failed to commit");
+
+    // Verify with new key
+    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
+    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+    assert!(verify_entry_signature(entry, &public_key2).expect("Failed to verify"));
+
+    // Should fail with old key
+    assert!(!verify_entry_signature(entry, &public_key1).expect("Failed to verify"));
+}
+
+#[test]
+fn test_remove_nonexistent_key() {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = BaseDB::new(backend);
+
+    // Remove a key that doesn't exist - should succeed silently
+    let result = db.remove_private_key("NONEXISTENT_KEY");
+    assert!(result.is_ok());
+
+    // List should still be empty
+    let keys = db.list_private_keys().expect("Failed to list keys");
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn test_multiple_authenticated_entries() {
+    let keys = create_auth_keys![
+        ("USER1", Permission::Write(10), KeyStatus::Active),
+        ("USER2", Permission::Write(10), KeyStatus::Active)
+    ];
+    let (db, public_keys) = setup_test_db_with_keys(&keys);
+    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+
+    // Create first authenticated entry
+    let op1 = tree
+        .new_authenticated_operation("USER1")
+        .expect("Failed to create operation");
+    let store1 = op1
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store1
+        .set("user1_data", "hello")
+        .expect("Failed to set value");
+    let entry_id1 = op1.commit().expect("Failed to commit");
+
+    // Create second authenticated entry
+    let op2 = tree
+        .new_authenticated_operation("USER2")
+        .expect("Failed to create operation");
+    let store2 = op2
+        .get_subtree::<eidetica::subtree::KVStore>("data")
+        .expect("Failed to get subtree");
+    store2
+        .set("user2_data", "world")
+        .expect("Failed to set value");
+    let entry_id2 = op2.commit().expect("Failed to commit");
+
+    // Verify both entries are properly signed
+    let backend_guard = db.backend().lock().expect("Failed to lock backend");
+
+    let entry1 = backend_guard.get(&entry_id1).expect("Entry1 not found");
+    assert_eq!(entry1.auth.id, AuthId::Direct("USER1".to_string()));
+    assert!(verify_entry_signature(entry1, &public_keys[0]).expect("Failed to verify"));
+
+    let entry2 = backend_guard.get(&entry_id2).expect("Entry2 not found");
+    assert_eq!(entry2.auth.id, AuthId::Direct("USER2".to_string()));
+    assert!(verify_entry_signature(entry2, &public_keys[1]).expect("Failed to verify"));
+
+    // Verify cross-validation fails (entry1 with key2 should fail)
+    assert!(!verify_entry_signature(entry1, &public_keys[1]).expect("Failed to verify"));
+    assert!(!verify_entry_signature(entry2, &public_keys[0]).expect("Failed to verify"));
+}
