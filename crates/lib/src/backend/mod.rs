@@ -141,6 +141,25 @@ pub trait Backend: Send + Sync + Any {
     /// A `Result` containing a vector of tip entry IDs for the subtree or an error.
     fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>>;
 
+    /// Gets the subtree tips that exist up to a specific set of main tree entries.
+    ///
+    /// This method finds all subtree entries that are reachable from the specified
+    /// main tree entries, then filters to find which of those are tips within the subtree.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the parent tree.
+    /// * `subtree` - The name of the subtree for which to find tips.
+    /// * `main_entries` - The main tree entry IDs to use as the boundary.
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of subtree tip entry IDs up to the main entries.
+    fn get_subtree_tips_up_to_entries(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        main_entries: &[ID],
+    ) -> Result<Vec<ID>>;
+
     /// Retrieves the IDs of all top-level root entries stored in the backend.
     ///
     /// Top-level roots are entries that are themselves roots of a tree

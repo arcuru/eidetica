@@ -481,18 +481,10 @@ impl Backend for InMemoryBackend {
     }
 
     /// Finds the tip entries for the specified subtree.
-    /// Iterates through all entries, checking if they belong to the subtree and if `is_subtree_tip` returns true.
+    /// Delegates to get_subtree_tips_up_to_entries using current tree tips.
     fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
-        let mut tips = Vec::new();
-        for (id, entry) in &self.entries {
-            if entry.in_tree(tree)
-                && entry.in_subtree(subtree)
-                && self.is_subtree_tip(tree, subtree, id)
-            {
-                tips.push(id.clone());
-            }
-        }
-        Ok(tips)
+        let tree_tips = self.get_tips(tree)?;
+        self.get_subtree_tips_up_to_entries(tree, subtree, &tree_tips)
     }
 
     /// Finds all entries that are top-level roots (i.e., `entry.is_toplevel_root()` is true).
@@ -707,5 +699,72 @@ impl Backend for InMemoryBackend {
     fn remove_private_key(&mut self, key_id: &str) -> Result<()> {
         self.private_keys.remove(key_id);
         Ok(())
+    }
+
+    /// Gets the subtree tips that exist up to a specific set of main tree entries.
+    ///
+    /// This method finds all subtree entries that are reachable from the specified
+    /// main tree entries, then filters to find which of those are tips within the subtree.
+    fn get_subtree_tips_up_to_entries(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        main_entries: &[ID],
+    ) -> Result<Vec<ID>> {
+        if main_entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Special case: if main_entries represents current tree tips (i.e., we want all subtree tips),
+        // use the original algorithm that checks all entries
+        let current_tree_tips = self.get_tips(tree)?;
+        if main_entries == current_tree_tips {
+            // Use original algorithm for current tips case
+            let mut tips = Vec::new();
+            for (id, entry) in &self.entries {
+                if entry.in_tree(tree)
+                    && entry.in_subtree(subtree)
+                    && self.is_subtree_tip(tree, subtree, id)
+                {
+                    tips.push(id.clone());
+                }
+            }
+            return Ok(tips);
+        }
+
+        // For custom tips: Get all tree entries reachable from the main entries,
+        // then filter to those that are in the specified subtree
+        let all_tree_entries = self.get_tree_from_tips(tree, main_entries)?;
+        let subtree_entries: Vec<_> = all_tree_entries
+            .into_iter()
+            .filter(|entry| entry.in_subtree(subtree))
+            .collect();
+
+        // If no subtree entries found, return empty
+        if subtree_entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Find which of these are tips within the subtree scope
+        let mut tips = Vec::new();
+        for entry in &subtree_entries {
+            let entry_id = entry.id();
+
+            // Check if this entry is a tip by seeing if any other entry in our scope
+            // has it as a subtree parent
+            let is_tip = !subtree_entries.iter().any(|other_entry| {
+                if let Ok(parents) = other_entry.subtree_parents(subtree) {
+                    parents.contains(&entry_id)
+                } else {
+                    false
+                }
+            });
+
+            if is_tip {
+                tips.push(entry_id);
+            }
+        }
+
+        Ok(tips)
     }
 }
