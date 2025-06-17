@@ -234,6 +234,22 @@ pub struct AuthInfo {
     pub signature: Option<String>,
 }
 
+impl AuthInfo {
+    /// Check if this entry is signed by a specific key ID.
+    ///
+    /// Verifies both that the entry claims to be signed by the given key ID
+    /// and that it actually has a signature.
+    ///
+    /// # Arguments
+    /// * `key_id` - The key ID to check for
+    ///
+    /// # Returns
+    /// `true` if the entry is signed by the specified key
+    pub fn is_signed_by(&self, key_id: &str) -> bool {
+        self.id == AuthId::Direct(key_id.to_string()) && self.signature.is_some()
+    }
+}
+
 /// Resolved authentication information after validation
 #[derive(Debug, Clone)]
 pub struct ResolvedAuth {
@@ -798,6 +814,39 @@ mod tests {
         let parsed = AuthInfo::try_from(nested).unwrap();
         assert_eq!(original.id, parsed.id);
         assert_eq!(original.signature, parsed.signature);
+    }
+
+    #[test]
+    fn test_auth_info_is_signed_by() {
+        // Test signed entry with matching key
+        let auth_info_signed = AuthInfo {
+            id: AuthId::Direct("TEST_KEY".to_string()),
+            signature: Some("signature_data".to_string()),
+        };
+        assert!(auth_info_signed.is_signed_by("TEST_KEY"));
+        assert!(!auth_info_signed.is_signed_by("OTHER_KEY"));
+
+        // Test signed entry without signature
+        let auth_info_no_sig = AuthInfo {
+            id: AuthId::Direct("TEST_KEY".to_string()),
+            signature: None,
+        };
+        assert!(!auth_info_no_sig.is_signed_by("TEST_KEY"));
+
+        // Test default (unsigned) auth info
+        let auth_info_default = AuthInfo::default();
+        assert!(!auth_info_default.is_signed_by("ANY_KEY"));
+
+        // Test User Tree auth (should return false since it's not Direct)
+        let auth_info_user_tree = AuthInfo {
+            id: AuthId::UserTree {
+                id: "user_tree".to_string(),
+                tips: vec!["tip1".to_string()],
+                key: Box::new(AuthId::Direct("nested_key".to_string())),
+            },
+            signature: Some("signature".to_string()),
+        };
+        assert!(!auth_info_user_tree.is_signed_by("nested_key"));
     }
 
     #[test]

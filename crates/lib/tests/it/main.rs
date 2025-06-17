@@ -24,3 +24,4 @@ mod helpers;
 mod parent_aware_merge;
 mod subtree;
 mod tree;
+mod tree_api;
