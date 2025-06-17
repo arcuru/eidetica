@@ -40,11 +40,12 @@ impl AuthValidator {
     pub fn validate_entry(&mut self, entry: &Entry, settings_state: &KVNested) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key ID and no signature
-        if let AuthId::Direct(key_id) = &entry.auth.id {
-            if key_id.is_empty() && entry.auth.signature.is_none() {
-                // This is an unsigned entry - allow it to pass without authentication
-                return Ok(true);
-            }
+        if let AuthId::Direct(key_id) = &entry.auth.id
+            && key_id.is_empty()
+            && entry.auth.signature.is_none()
+        {
+            // This is an unsigned entry - allow it to pass without authentication
+            return Ok(true);
         }
 
         // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.

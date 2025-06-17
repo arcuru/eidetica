@@ -75,10 +75,10 @@ where
         let local_data: Result<KVOverWrite> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
-        if let Ok(data) = local_data {
-            if let Some(value) = data.get(key) {
-                return Ok(serde_json::from_str(value)?);
-            }
+        if let Ok(data) = local_data
+            && let Some(value) = data.get(key)
+        {
+            return Ok(serde_json::from_str(value)?);
         }
 
         // Otherwise, get the full state from the backend

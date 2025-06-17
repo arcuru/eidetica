@@ -143,10 +143,10 @@ impl BaseDB {
 
         for tree in all_trees {
             // Attempt to get the name from the tree's settings
-            if let Ok(tree_name) = tree.get_name() {
-                if tree_name == name {
-                    matching_trees.push(tree);
-                }
+            if let Ok(tree_name) = tree.get_name()
+                && tree_name == name
+            {
+                matching_trees.push(tree);
             }
             // Ignore trees where getting the name fails or doesn't match
         }
