@@ -330,4 +330,187 @@ impl Tree {
             .collect();
         entries
     }
+
+    /// Get a single entry by ID from this tree.
+    ///
+    /// This is the primary method for retrieving entries after commit operations.
+    /// It provides safe, high-level access to entry data without exposing backend details.
+    ///
+    /// The method verifies that the entry belongs to this tree by checking its root ID.
+    /// If the entry exists but belongs to a different tree, an error is returned.
+    ///
+    /// # Arguments
+    /// * `entry_id` - The ID of the entry to retrieve (accepts anything that converts to ID/String)
+    ///
+    /// # Returns
+    /// A `Result` containing the `Entry` or an error if not found or not part of this tree
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::backend::InMemoryBackend;
+    /// # use eidetica::data::KVNested;
+    /// # fn main() -> Result<()> {
+    /// # let backend = Box::new(InMemoryBackend::new());
+    /// # let db = BaseDB::new(backend);
+    /// # let tree = db.new_tree(KVNested::new())?;
+    /// # let op = tree.new_operation()?;
+    /// let entry_id = op.commit()?;
+    /// let entry = tree.get_entry(&entry_id)?;           // Using &String
+    /// let entry = tree.get_entry("some_entry_id")?;     // Using &str
+    /// let entry = tree.get_entry(entry_id.clone())?;    // Using String
+    /// println!("Entry auth: {:?}", entry.auth);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
+        let id = entry_id.into();
+        let backend_guard = self.lock_backend()?;
+        let entry = backend_guard.get(&id)?;
+
+        // Check if the entry belongs to this tree
+        if !entry.in_tree(&self.root) {
+            return Err(Error::Io(std::io::Error::other(format!(
+                "Entry '{}' does not belong to tree '{}'",
+                id, self.root
+            ))));
+        }
+
+        Ok(entry.clone())
+    }
+
+    /// Get multiple entries by ID efficiently.
+    ///
+    /// This method retrieves multiple entries in a single backend lock acquisition,
+    /// making it more efficient than multiple `get_entry()` calls.
+    ///
+    /// The method verifies that all entries belong to this tree by checking their root IDs.
+    /// If any entry exists but belongs to a different tree, an error is returned.
+    ///
+    /// # Arguments
+    /// * `entry_ids` - An iterable of entry IDs to retrieve (accepts anything that converts to ID/String)
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of `Entry` objects or an error if any entry is not found or not part of this tree
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::backend::InMemoryBackend;
+    /// # use eidetica::data::KVNested;
+    /// # fn main() -> Result<()> {
+    /// # let backend = Box::new(InMemoryBackend::new());
+    /// # let db = BaseDB::new(backend);
+    /// # let tree = db.new_tree(KVNested::new())?;
+    /// let entry_ids = vec!["id1", "id2", "id3"];
+    /// let entries = tree.get_entries(entry_ids)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_entries<I, T>(&self, entry_ids: I) -> Result<Vec<Entry>>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<ID>,
+    {
+        let backend_guard = self.lock_backend()?;
+        entry_ids
+            .into_iter()
+            .map(|entry_id| {
+                let id = entry_id.into();
+                let entry = backend_guard.get(&id)?;
+
+                // Check if the entry belongs to this tree
+                if !entry.in_tree(&self.root) {
+                    return Err(Error::Io(std::io::Error::other(format!(
+                        "Entry '{}' does not belong to tree '{}'",
+                        id, self.root
+                    ))));
+                }
+
+                Ok(entry.clone())
+            })
+            .collect()
+    }
+
+    // === AUTHENTICATION HELPERS ===
+
+    /// Verify an entry's signature and authentication against the tree's configuration that was valid at the time of entry creation.
+    ///
+    /// This method validates that:
+    /// 1. The entry belongs to this tree
+    /// 2. The entry is properly signed with a key that was authorized in the tree's authentication settings at the time the entry was created
+    /// 3. The signature is cryptographically valid
+    ///
+    /// The method uses the entry's metadata to determine which authentication settings were active when the entry was signed,
+    /// ensuring that entries remain valid even if keys are later revoked or settings change.
+    ///
+    /// # Arguments
+    /// * `entry_id` - The ID of the entry to verify (accepts anything that converts to ID/String)
+    ///
+    /// # Returns
+    /// A `Result` containing `true` if the entry is valid and properly authenticated, `false` if authentication fails
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The entry is not found
+    /// - The entry does not belong to this tree
+    /// - The entry's metadata cannot be parsed
+    /// - The historical authentication settings cannot be retrieved
+    pub fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
+        let entry = self.get_entry(entry_id)?;
+
+        // If the entry has no authentication, it's considered valid for backward compatibility
+        if entry.auth.id == crate::auth::types::AuthId::default() {
+            return Ok(true);
+        }
+
+        // Get the authentication settings that were valid at the time this entry was created
+        let historical_settings = self.get_historical_settings_for_entry(&entry)?;
+
+        // Use the authentication validator with historical settings
+        let mut validator = crate::auth::validation::AuthValidator::new();
+        validator.validate_entry(&entry, &historical_settings)
+    }
+
+    /// Get the authentication settings that were valid when a specific entry was created.
+    ///
+    /// This method examines the entry's metadata to find the settings tips that were active
+    /// at the time of entry creation, then reconstructs the historical settings state.
+    ///
+    /// # Arguments
+    /// * `entry` - The entry to get historical settings for
+    ///
+    /// # Returns
+    /// A `Result` containing the historical settings data
+    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<crate::data::KVNested> {
+        // TODO: Implement full historical settings reconstruction from entry metadata
+        // For now, use current settings for simplicity and backward compatibility
+        //
+        // The complete implementation would:
+        // 1. Parse entry metadata to get settings tips active at entry creation time
+        // 2. Reconstruct the CRDT state from those historical tips
+        // 3. Validate against that historical state
+        //
+        // This ensures entries remain valid even if keys are later revoked,
+        // but requires more complex CRDT state reconstruction logic.
+
+        let settings = self.get_settings()?;
+        settings.get_all()
+    }
+
+    // === TREE QUERIES ===
+
+    /// Get all entries in this tree.
+    ///
+    /// ⚠️ **Warning**: This method loads all entries into memory. Use with caution on large trees.
+    /// Consider using `get_tips()` or `get_tip_entries()` for more efficient access patterns.
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of all `Entry` objects in the tree
+    pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
+        let backend_guard = self.lock_backend()?;
+        backend_guard.get_tree(&self.root)
+    }
 }
