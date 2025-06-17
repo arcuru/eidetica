@@ -23,10 +23,9 @@ fn test_backend_authentication_validation() {
     store.set("test", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit");
 
-    // Verify the entry was stored
-    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
-    let entry = backend_guard.get(&entry_id).expect("Entry not found");
-    assert_eq!(entry.auth.id, AuthId::Direct("TEST_KEY".to_string()));
+    // Verify the entry was stored and signed
+    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
+    assert!(entry.auth.is_signed_by("TEST_KEY"));
 }
 
 #[test]
@@ -126,8 +125,7 @@ fn test_unsigned_entries_still_work() {
     let entry_id = op.commit().expect("Unsigned entries should still work");
 
     // Verify the entry was stored and is unsigned
-    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
-    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     assert_eq!(entry.auth.id, AuthId::default());
 }
 
@@ -174,14 +172,15 @@ fn test_mixed_authenticated_and_unsigned_entries() {
     let entry_id2 = op2.commit().expect("Failed to commit signed");
 
     // Verify both entries
-    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
-
-    let entry1 = backend_guard.get(&entry_id1).expect("Entry1 not found");
+    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
     assert_eq!(entry1.auth.id, AuthId::default());
 
-    let entry2 = backend_guard.get(&entry_id2).expect("Entry2 not found");
-    assert_eq!(entry2.auth.id, AuthId::Direct("TEST_KEY".to_string()));
-    assert!(verify_entry_signature(entry2, &public_key).expect("Failed to verify"));
+    let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
+    assert!(entry2.auth.is_signed_by("TEST_KEY"));
+    assert!(
+        tree.verify_entry_signature(&entry_id2)
+            .expect("Failed to verify")
+    );
 }
 
 #[test]

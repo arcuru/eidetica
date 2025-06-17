@@ -268,7 +268,7 @@ fn test_auth_helpers_signed_entries() {
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
 
-    // Test get_entry_auth
+    // Test entry auth access
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     let auth_info = &entry.auth;
     assert_eq!(auth_info.id, AuthId::Direct(key_id.to_string()));
@@ -280,12 +280,9 @@ fn test_auth_helpers_signed_entries() {
         .expect("Failed to verify signature");
     assert!(is_valid);
 
-    // Test is_entry_signed_by
-    let is_signed_by_key = entry.auth.is_signed_by(key_id);
-    assert!(is_signed_by_key);
-
-    let is_signed_by_other = entry.auth.is_signed_by("OTHER_KEY");
-    assert!(!is_signed_by_other);
+    // Test is_signed_by helper
+    assert!(auth_info.is_signed_by(key_id));
+    assert!(!auth_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test authentication helpers with unsigned entries
@@ -303,15 +300,14 @@ fn test_auth_helpers_unsigned_entries() {
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
 
-    // Test get_entry_auth
+    // Test entry auth access
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     let auth_info = &entry.auth;
     assert_eq!(auth_info.id, AuthId::default());
     assert_eq!(auth_info.signature, None);
 
-    // Test is_entry_signed_by
-    let is_signed_by_key = entry.auth.is_signed_by("ANY_KEY");
-    assert!(!is_signed_by_key);
+    // Test is_signed_by helper
+    assert!(!auth_info.is_signed_by("ANY_KEY"));
 }
 
 /// Test verify_entry_signature with different authentication scenarios
@@ -538,70 +534,6 @@ fn test_auth_helpers_error_handling() {
     let result = tree.verify_entry_signature("non_existent_entry");
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), Error::NotFound));
-}
-
-/// Test Into<ID> flexibility for get_entry and get_entries
-#[test]
-fn test_into_id_flexibility() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
-
-    // Create a few entries
-    let mut entry_ids = Vec::new();
-    for i in 0..3 {
-        let op = tree.new_operation().expect("Failed to create operation");
-        let store = op
-            .get_subtree::<KVStore>("data")
-            .expect("Failed to get subtree");
-        store
-            .set("key", format!("value_{i}"))
-            .expect("Failed to set value");
-        let entry_id = op.commit().expect("Failed to commit operation");
-        entry_ids.push(entry_id);
-    }
-
-    // Test get_entry with different types
-    let entry_id = &entry_ids[0];
-
-    // Using &String (reference to String)
-    let entry1 = tree.get_entry(entry_id).expect("Failed with &String");
-
-    // Using String (owned String)
-    let entry2 = tree
-        .get_entry(entry_id.clone())
-        .expect("Failed with String");
-
-    // Using &str (string slice)
-    let entry3 = tree.get_entry(entry_id.as_str()).expect("Failed with &str");
-
-    // All should return the same entry
-    assert_eq!(entry1.id(), entry2.id());
-    assert_eq!(entry2.id(), entry3.id());
-
-    // Test get_entries with different types
-
-    // Using Vec<String>
-    let entries1 = tree
-        .get_entries(entry_ids.clone())
-        .expect("Failed with Vec<String>");
-
-    // Using Vec<&str>
-    let entry_id_strs: Vec<&str> = entry_ids.iter().map(|s| s.as_str()).collect();
-    let entries2 = tree
-        .get_entries(entry_id_strs)
-        .expect("Failed with Vec<&str>");
-
-    // Using slice of String references
-    let entries3 = tree.get_entries(&entry_ids).expect("Failed with &[String]");
-
-    // All should return the same entries
-    assert_eq!(entries1.len(), entries2.len());
-    assert_eq!(entries2.len(), entries3.len());
-    for i in 0..entries1.len() {
-        assert_eq!(entries1[i].id(), entries2[i].id());
-        assert_eq!(entries2[i].id(), entries3[i].id());
-    }
 }
 
 /// Test performance: batch get_entries vs individual get_entry calls

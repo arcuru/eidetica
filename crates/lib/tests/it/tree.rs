@@ -23,14 +23,11 @@ fn test_insert_into_tree() {
     assert!(tips.contains(&id2));
     assert!(!tips.contains(&id1)); // id1 should no longer be a tip
 
-    // Verify retrieval through backend directly
-    let backend = tree.backend();
-    let backend_guard = backend.lock().unwrap();
-
-    let retrieved_entry1 = backend_guard.get(&id1).expect("Failed to get entry 1");
+    // Verify retrieval through Tree API
+    let retrieved_entry1 = tree.get_entry(&id1).expect("Failed to get entry 1");
     assert_eq!(retrieved_entry1.id(), id1);
 
-    let retrieved_entry2 = backend_guard.get(&id2).expect("Failed to get entry 2");
+    let retrieved_entry2 = tree.get_entry(&id2).expect("Failed to get entry 2");
     assert_eq!(retrieved_entry2.id(), id2);
     assert_eq!(retrieved_entry2.parents().unwrap(), vec![id1]);
 }
