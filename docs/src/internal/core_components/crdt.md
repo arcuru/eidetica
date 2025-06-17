@@ -110,3 +110,67 @@ Tombstones are an important concept in CRDTs to ensure proper deletion propagati
 2. Tombstones are retained and synchronized between replicas
 3. This ensures that a deletion in one replica eventually propagates to all replicas
 4. Both `KVOverWrite` and `KVNested` use tombstones to represent deleted entries
+
+### CRDT Merge Algorithm Implementation
+
+Eidetica uses a **recursive LCA-based merge algorithm** to compute CRDT states efficiently:
+
+#### State Computation Process
+
+When `AtomicOp::get_full_state<T>()` is called for a subtree:
+
+1. **Parent Resolution**: Identifies parent entries (tips) for the subtree
+2. **LCA-Based Computation**: If multiple parents, finds their LCA and computes state from there
+3. **Path Merging**: Merges all entries from LCA to each parent tip into the LCA state
+
+#### Individual Entry State Computation
+
+Each entry's CRDT state is computed via `compute_single_entry_state_recursive()`:
+
+```rust
+fn compute_single_entry_state_recursive<T>(&self, subtree_name: &str, entry_id: &str) -> Result<T>
+where T: CRDT + Clone
+{
+    // 1. Check cache first
+    if let Some(cached_state) = backend.get_cached_crdt_state(entry_id, subtree_name)? {
+        return Ok(serde_json::from_str(&cached_state)?);
+    }
+
+    // 2. Get LCA state recursively
+    let lca_state = match parents.len() {
+        0 => T::default(),                              // Root entry
+        1 => self.compute_single_entry_state_recursive(subtree_name, &parents[0])?, // Single parent
+        _ => {
+            let lca_id = backend.find_lca(tree_root, subtree_name, &parents)?;
+            self.compute_single_entry_state_recursive(subtree_name, &lca_id)?  // Multiple parents
+        }
+    };
+
+    // 3. Merge all paths from LCA to all parents (deduplicated and sorted)
+    let path_entries = backend.get_path_from_to(tree_root, subtree_name, &lca_id, &parents)?;
+    let result = self.merge_path_entries(subtree_name, lca_state, &path_entries)?;
+
+    // 4. Cache and return
+    backend.cache_crdt_state(entry_id, subtree_name, serde_json::to_string(&result)?)?;
+    Ok(result)
+}
+```
+
+#### Caching Integration
+
+- **Cache Keys**: `(Entry_ID, Subtree)` uniquely identify computed states
+- **Automatic Caching**: Every computed state is automatically cached after calculation
+- **Cache Validity**: Immutable entries ensure cached states never become invalid
+- **Performance**: Dramatic performance improvement for repeated access patterns
+
+#### Backend Methods
+
+The algorithm relies on new backend methods:
+
+- `find_lca()`: Finds Lowest Common Ancestor of multiple entries
+- `get_path_from_to()`: Gets all entries from LCA to multiple target entries (deduplicated and sorted)
+- `get_cached_crdt_state()`: Retrieves cached CRDT state if available
+- `cache_crdt_state()`: Stores computed CRDT state for future use
+- `clear_crdt_cache()`: Clears cache when needed (e.g., during testing)
+
+This implementation ensures that CRDT merge operations are both **correct** (proper LCA-based computation) and **efficient** (automatic caching eliminates redundant work).

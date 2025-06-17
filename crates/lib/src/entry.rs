@@ -393,6 +393,12 @@ impl EntryBuilder {
             .ok_or(Error::NotFound)
     }
 
+    /// Get the IDs of the parent entries for the main tree.
+    /// The parent IDs are returned in alphabetical order.
+    pub fn parents(&self) -> Result<Vec<ID>> {
+        Ok(self.tree.parents.clone())
+    }
+
     /// Get the IDs of the parent entries specific to a named subtree's history.
     /// The parent IDs are returned in alphabetical order.
     pub fn subtree_parents(&self, subtree_name: &str) -> Result<Vec<ID>> {
@@ -554,7 +560,7 @@ impl EntryBuilder {
     }
 
     /// Get a reference to the current parent IDs for the main tree history.
-    pub fn parents(&self) -> Option<&Vec<ID>> {
+    pub fn get_parents(&self) -> Option<&Vec<ID>> {
         if self.tree.parents.is_empty() {
             None
         } else {

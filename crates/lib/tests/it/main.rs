@@ -21,5 +21,6 @@ mod basedb;
 mod data;
 mod entry;
 mod helpers;
+mod parent_aware_merge;
 mod subtree;
 mod tree;
