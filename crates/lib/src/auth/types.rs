@@ -234,22 +234,6 @@ pub struct AuthInfo {
     pub signature: Option<String>,
 }
 
-impl AuthInfo {
-    /// Check if this entry is signed by a specific key ID.
-    ///
-    /// Verifies both that the entry claims to be signed by the given key ID
-    /// and that it actually has a signature.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key ID to check for
-    ///
-    /// # Returns
-    /// `true` if the entry is signed by the specified key
-    pub fn is_signed_by(&self, key_id: &str) -> bool {
-        self.id == AuthId::Direct(key_id.to_string()) && self.signature.is_some()
-    }
-}
-
 /// Resolved authentication information after validation
 #[derive(Debug, Clone)]
 pub struct ResolvedAuth {
@@ -509,6 +493,22 @@ impl TryFrom<NestedValue> for AuthInfo {
             NestedValue::String(s) => Err(format!("Cannot convert string to AuthInfo: {s}")),
             NestedValue::Deleted => Err("Cannot convert deleted value to AuthInfo".to_string()),
         }
+    }
+}
+
+impl AuthInfo {
+    /// Check if this entry is signed by a specific key ID.
+    ///
+    /// Returns `true` if the entry is signed by the given key ID and has a signature,
+    /// `false` otherwise.
+    ///
+    /// # Arguments
+    /// * `key_id` - The key ID to check against
+    ///
+    /// # Returns
+    /// `true` if signed by the key and has a signature, `false` otherwise
+    pub fn is_signed_by(&self, key_id: &str) -> bool {
+        self.id == AuthId::Direct(key_id.to_string()) && self.signature.is_some()
     }
 }
 

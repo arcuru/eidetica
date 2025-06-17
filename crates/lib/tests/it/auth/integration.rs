@@ -36,10 +36,8 @@ fn test_authenticated_operations() {
     let entry_id = op.commit().expect("Failed to commit");
 
     // Verify the entry is signed
-    let backend_guard = db.backend().lock().expect("Failed to lock backend");
-    let entry = backend_guard.get(&entry_id).expect("Entry not found");
-    assert_eq!(entry.auth.id, AuthId::Direct("TEST_KEY".to_string()));
-    assert!(entry.auth.signature.is_some());
+    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
+    assert!(entry.auth.is_signed_by("TEST_KEY"));
 }
 
 #[test]
@@ -124,8 +122,7 @@ fn test_unsigned_operations() {
     let entry_id = op.commit().expect("Failed to commit");
 
     // Verify the entry is unsigned
-    let backend_guard = db.backend().lock().expect("Failed to lock backend");
-    let entry = backend_guard.get(&entry_id).expect("Entry not found");
+    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     assert_eq!(entry.auth.id, AuthId::default());
     assert_eq!(entry.auth.signature, None);
 }
@@ -226,12 +223,10 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     let entry_id2 = op2.commit().expect("Failed to commit with KEY2");
 
     // Verify both entries exist and are properly signed
-    let backend_guard = tree.lock_backend().expect("Failed to lock backend");
-    let entry1 = backend_guard.get(&entry_id1).expect("Entry1 not found");
-    let entry2 = backend_guard.get(&entry_id2).expect("Entry2 not found");
-
-    assert_eq!(entry1.auth.id, AuthId::Direct("KEY1".to_string()));
-    assert_eq!(entry2.auth.id, AuthId::Direct("KEY2".to_string()));
+    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
+    assert!(entry1.auth.is_signed_by("KEY1"));
+    let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
+    assert!(entry2.auth.is_signed_by("KEY2"));
 }
 
 #[test]
