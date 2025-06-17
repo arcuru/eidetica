@@ -31,6 +31,8 @@ pub struct InMemoryBackend {
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
     private_keys: HashMap<String, SigningKey>,
+    /// Generic key-value cache for frequently computed results
+    cache: HashMap<String, String>,
 }
 
 /// Serializable version of InMemoryBackend for persistence
@@ -40,6 +42,9 @@ struct SerializableBackend {
     verification_status: HashMap<ID, VerificationStatus>,
     /// Private keys stored as 32-byte arrays for serialization
     private_keys_bytes: HashMap<String, [u8; 32]>,
+    /// Generic key-value cache (not serialized - cache is rebuilt on load)
+    #[serde(default)]
+    cache: HashMap<String, String>,
 }
 
 impl Serialize for InMemoryBackend {
@@ -57,6 +62,7 @@ impl Serialize for InMemoryBackend {
             entries: self.entries.clone(),
             verification_status: self.verification_status.clone(),
             private_keys_bytes,
+            cache: self.cache.clone(),
         };
 
         serializable.serialize(serializer)
@@ -83,6 +89,7 @@ impl<'de> Deserialize<'de> for InMemoryBackend {
             entries: serializable.entries,
             verification_status: serializable.verification_status,
             private_keys,
+            cache: serializable.cache,
         })
     }
 }
@@ -100,6 +107,7 @@ impl InMemoryBackend {
             entries: HashMap::new(),
             verification_status: HashMap::new(),
             private_keys: HashMap::new(),
+            cache: HashMap::new(),
         }
     }
 
@@ -174,12 +182,12 @@ impl InMemoryBackend {
 
         // Check if any other entry has this entry as its subtree parent
         for other_entry in self.entries.values() {
-            if other_entry.in_tree(tree) && other_entry.in_subtree(subtree) {
-                if let Ok(parents) = other_entry.subtree_parents(subtree) {
-                    if parents.contains(entry_id) {
-                        return false; // Found a child in the subtree
-                    }
-                }
+            if other_entry.in_tree(tree)
+                && other_entry.in_subtree(subtree)
+                && let Ok(parents) = other_entry.subtree_parents(subtree)
+                && parents.contains(entry_id)
+            {
+                return false; // Found a child in the subtree
             }
         }
         true
@@ -342,6 +350,11 @@ impl InMemoryBackend {
         Ok(heights)
     }
 
+    /// Creates a cache key for CRDT state from entry ID and subtree.
+    fn create_crdt_cache_key(&self, entry_id: &ID, subtree: &str) -> String {
+        format!("crdt:{entry_id}:{subtree}")
+    }
+
     /// Sorts entries by their height (longest path from a root) within a tree.
     ///
     /// Entries with lower height (closer to a root) appear before entries with higher height.
@@ -500,6 +513,11 @@ impl Backend for InMemoryBackend {
 
     /// Returns `self` as a `&dyn Any` reference.
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    /// Returns `self` as a `&mut dyn Any` reference.
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -766,5 +784,229 @@ impl Backend for InMemoryBackend {
         }
 
         Ok(tips)
+    }
+
+    /// Get cached CRDT state for a subtree at a specific entry.
+    fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
+        let key = self.create_crdt_cache_key(entry_id, subtree);
+        Ok(self.cache.get(&key).cloned())
+    }
+
+    /// Cache CRDT state for a subtree at a specific entry.
+    fn cache_crdt_state(&mut self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
+        let key = self.create_crdt_cache_key(entry_id, subtree);
+        self.cache.insert(key, state);
+        Ok(())
+    }
+
+    /// Clear all cached CRDT states.
+    fn clear_crdt_cache(&mut self) -> Result<()> {
+        self.cache.clear();
+        Ok(())
+    }
+
+    /// Get the subtree parent IDs for a specific entry and subtree, sorted by height then ID.
+    fn get_sorted_subtree_parents(
+        &self,
+        tree_id: &ID,
+        entry_id: &ID,
+        subtree: &str,
+    ) -> Result<Vec<ID>> {
+        let entry = self.entries.get(entry_id).ok_or(Error::NotFound)?;
+
+        if !entry.in_tree(tree_id) || !entry.in_subtree(subtree) {
+            return Ok(Vec::new());
+        }
+
+        let mut parents = match entry.subtree_parents(subtree) {
+            Ok(parents) => parents,
+            Err(_) => return Ok(Vec::new()),
+        };
+
+        // Sort parents by height (ascending), then by ID for determinism
+        if !parents.is_empty() {
+            let heights = self.calculate_heights(tree_id, Some(subtree))?;
+            parents.sort_by(|a, b| {
+                let a_height = *heights.get(a).unwrap_or(&0);
+                let b_height = *heights.get(b).unwrap_or(&0);
+                a_height.cmp(&b_height).then_with(|| a.cmp(b))
+            });
+        }
+
+        Ok(parents)
+    }
+
+    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[String]) -> Result<String> {
+        use std::collections::HashMap;
+
+        if entry_ids.is_empty() {
+            return Err(Error::Io(std::io::Error::other(
+                "No entry IDs provided for LCA",
+            )));
+        }
+
+        if entry_ids.len() == 1 {
+            return Ok(entry_ids[0].clone());
+        }
+
+        // For each entry, build the complete path from tree root to that entry
+        let mut entry_paths: HashMap<String, Vec<String>> = HashMap::new();
+
+        for entry_id in entry_ids {
+            let path = self.build_path_from_root(tree, subtree, entry_id)?;
+            entry_paths.insert(entry_id.clone(), path);
+        }
+
+        // Find the longest common prefix among all paths
+        let paths: Vec<&Vec<String>> = entry_paths.values().collect();
+        let first_path = &paths[0];
+
+        let mut lca_index = 0;
+        for i in 0..first_path.len() {
+            let candidate = &first_path[i];
+            let is_common = paths
+                .iter()
+                .all(|path| i < path.len() && &path[i] == candidate);
+
+            if is_common {
+                lca_index = i;
+            } else {
+                break;
+            }
+        }
+
+        if lca_index < first_path.len() {
+            Ok(first_path[lca_index].clone())
+        } else {
+            Err(Error::Io(std::io::Error::other("No common ancestor found")))
+        }
+    }
+
+    fn collect_root_to_target(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        target_entry: &str,
+    ) -> Result<Vec<String>> {
+        self.build_path_from_root(tree, subtree, target_entry)
+    }
+
+    fn get_path_from_to(
+        &self,
+        tree_id: &ID,
+        subtree: &str,
+        from_id: &ID,
+        to_ids: &[ID],
+    ) -> Result<Vec<ID>> {
+        if to_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // If any target is the same as from_id, we still process others
+        // Use breadth-first search to find ALL entries between from_id and any of the to_ids
+        let mut result = Vec::new();
+        let mut to_process = std::collections::VecDeque::new();
+        let mut processed = std::collections::HashSet::new();
+
+        // Start from all to_ids
+        for to_id in to_ids {
+            if to_id != from_id {
+                to_process.push_back(to_id.clone());
+            }
+        }
+
+        while let Some(current) = to_process.pop_front() {
+            // Skip if already processed
+            if processed.contains(&current) {
+                continue;
+            }
+
+            // If we've reached the from_id, stop processing this path
+            if current == *from_id {
+                processed.insert(current);
+                continue;
+            }
+
+            // Add current to result (unless it's the from_id)
+            result.push(current.clone());
+            processed.insert(current.clone());
+
+            // Get parents in the subtree
+            let parents = self.get_sorted_subtree_parents(tree_id, &current, subtree)?;
+
+            // Add all parents to be processed
+            for parent in parents {
+                if !processed.contains(&parent) {
+                    to_process.push_back(parent);
+                }
+            }
+        }
+
+        // Deduplicate and sort result by height then ID for deterministic ordering
+        result.sort();
+        result.dedup();
+
+        if !result.is_empty() {
+            let heights = self.calculate_heights(tree_id, Some(subtree))?;
+            result.sort_by(|a, b| {
+                let a_height = *heights.get(a).unwrap_or(&0);
+                let b_height = *heights.get(b).unwrap_or(&0);
+                a_height.cmp(&b_height).then_with(|| a.cmp(b))
+            });
+        }
+
+        Ok(result)
+    }
+}
+
+impl InMemoryBackend {
+    /// Helper method to build the complete path from tree root to a target entry
+    fn build_path_from_root(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        target_entry: &str,
+    ) -> Result<Vec<String>> {
+        let mut path = Vec::new();
+        let mut current = target_entry.to_string();
+        let mut visited = std::collections::HashSet::new();
+
+        // Build path by following parents back to root
+        loop {
+            if visited.contains(&current) {
+                return Err(Error::Io(std::io::Error::other("Cycle detected in DAG")));
+            }
+            visited.insert(current.clone());
+            path.push(current.clone());
+
+            // Get the entry
+            let entry = self.get(&current)?;
+
+            // Check if we've reached the tree root
+            if current == *tree || entry.is_root() {
+                break;
+            }
+
+            // Get subtree parents for this entry
+            let parents = if let Ok(parents) = entry.subtree_parents(subtree) {
+                parents
+            } else {
+                // If no subtree parents, follow main parents
+                entry.parents()?
+            };
+
+            if parents.is_empty() {
+                // No parents - this must be a root entry
+                break;
+            } else {
+                // Follow the first parent (in height/ID sorted order)
+                current = parents[0].clone();
+            }
+        }
+
+        // Reverse to get root-to-target order
+        path.reverse();
+
+        Ok(path)
     }
 }

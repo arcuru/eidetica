@@ -172,11 +172,52 @@ pub trait Backend: Send + Sync + Any {
     /// A `Result` containing a vector of top-level root entry IDs or an error.
     fn all_roots(&self) -> Result<Vec<ID>>;
 
+    /// Finds the Lowest Common Ancestor (LCA) of the given entry IDs within a subtree.
+    ///
+    /// The LCA is the deepest entry that is an ancestor of all the given entries
+    /// within the specified subtree context. This is used to determine optimal
+    /// computation boundaries for CRDT state calculation.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree
+    /// * `subtree` - The name of the subtree context
+    /// * `entry_ids` - The entry IDs to find the LCA for
+    ///
+    /// # Returns
+    /// A `Result` containing the LCA entry ID, or an error if no common ancestor exists
+    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[String]) -> Result<String>;
+
+    /// Collects all entries from the tree root down to the target entry within a subtree.
+    ///
+    /// This method performs a complete traversal from the tree root to the target entry,
+    /// collecting all entries that are ancestors of the target within the specified subtree.
+    /// The result includes the tree root and the target entry itself.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree
+    /// * `subtree` - The name of the subtree context
+    /// * `target_entry` - The target entry to collect ancestors for
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of entry IDs from root to target, sorted by height
+    fn collect_root_to_target(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        target_entry: &str,
+    ) -> Result<Vec<String>>;
+
     /// Returns a reference to the backend instance as a dynamic `Any` type.
     ///
     /// This allows for downcasting to a concrete backend implementation if necessary,
     /// enabling access to implementation-specific methods. Use with caution.
     fn as_any(&self) -> &dyn Any;
+
+    /// Returns a mutable reference to the backend instance as a dynamic `Any` type.
+    ///
+    /// This allows for downcasting to a concrete backend implementation if necessary,
+    /// enabling access to implementation-specific mutable methods. Use with caution.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Retrieves all entries belonging to a specific tree, sorted topologically.
     ///
@@ -287,4 +328,83 @@ pub trait Backend: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
     fn remove_private_key(&mut self, key_id: &str) -> Result<()>;
+
+    // === CRDT State Cache Methods ===
+    //
+    // These methods provide caching for computed CRDT state at specific
+    // entry+subtree combinations. This optimizes repeated computations
+    // of the same subtree state from the same set of tip entries.
+
+    /// Get cached CRDT state for a subtree at a specific entry.
+    ///
+    /// # Arguments
+    /// * `entry_id` - The entry ID where the state is cached
+    /// * `subtree` - The name of the subtree
+    ///
+    /// # Returns
+    /// A `Result` containing an `Option<String>`. Returns `None` if not cached.
+    fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>>;
+
+    /// Cache CRDT state for a subtree at a specific entry.
+    ///
+    /// # Arguments
+    /// * `entry_id` - The entry ID where the state should be cached
+    /// * `subtree` - The name of the subtree
+    /// * `state` - The serialized CRDT state to cache
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    fn cache_crdt_state(&mut self, entry_id: &ID, subtree: &str, state: String) -> Result<()>;
+
+    /// Clear all cached CRDT states.
+    ///
+    /// This is used when the CRDT computation algorithm changes and existing
+    /// cached states may have been computed incorrectly.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during the clear operation.
+    fn clear_crdt_cache(&mut self) -> Result<()>;
+
+    /// Get the subtree parent IDs for a specific entry and subtree, sorted by height then ID.
+    ///
+    /// This method retrieves the parent entry IDs for a given entry in a specific subtree
+    /// context, sorted using the same deterministic ordering used throughout the system
+    /// (height ascending, then ID ascending for ties).
+    ///
+    /// # Arguments
+    /// * `tree_id` - The ID of the tree containing the entry
+    /// * `entry_id` - The ID of the entry to get parents for
+    /// * `subtree` - The name of the subtree context
+    ///
+    /// # Returns
+    /// A `Result` containing a `Vec<ID>` of parent entry IDs sorted by (height, ID).
+    /// Returns empty vec if the entry has no parents in the subtree.
+    fn get_sorted_subtree_parents(
+        &self,
+        tree_id: &ID,
+        entry_id: &ID,
+        subtree: &str,
+    ) -> Result<Vec<ID>>;
+
+    /// Gets all entries between one entry and multiple target entries (exclusive of start, inclusive of targets).
+    ///
+    /// This function correctly handles diamond patterns by finding ALL entries that are
+    /// reachable from any of the to_ids by following parents back to from_id, not just single paths.
+    /// The results are deduplicated and sorted by height then ID for deterministic CRDT merge ordering.
+    ///
+    /// # Arguments
+    /// * `tree_id` - The ID of the tree containing the entries
+    /// * `subtree` - The name of the subtree context
+    /// * `from_id` - The starting entry ID (not included in result)
+    /// * `to_ids` - The target entry IDs (all included in result)
+    ///
+    /// # Returns
+    /// A `Result<Vec<ID>>` containing all entry IDs between from and any of the targets, deduplicated and sorted by height then ID
+    fn get_path_from_to(
+        &self,
+        tree_id: &ID,
+        subtree: &str,
+        from_id: &ID,
+        to_ids: &[ID],
+    ) -> Result<Vec<ID>>;
 }

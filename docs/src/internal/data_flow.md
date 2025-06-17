@@ -29,7 +29,14 @@ sequenceDiagram
     Note over Operation: Optional: with_auth("key_id")
     Operation->>RowStore_Todo_: get_subtree("todos")
     RowStore_Todo_->>Backend: Load relevant entries
-    Backend->>RowStore_Todo_: Return entries/data
+    Note over Backend: Check CRDT cache (Entry_ID, Subtree)
+    alt Cache Hit
+        Backend->>RowStore_Todo_: Return cached CRDT state
+    else Cache Miss
+        Backend->>Backend: Compute state via recursive LCA algorithm
+        Backend->>Backend: Cache computed state
+        Backend->>RowStore_Todo_: Return computed CRDT state
+    end
     User->>Operation: (via RowStore handle) insert(Todo{title:"Buy Milk"})
     Operation->>RowStore_Todo_: Serialize Todo, generate ID
     Operation->>EntryBuilder: Initialize with updated RowStore data & parents
@@ -51,7 +58,14 @@ sequenceDiagram
     Tree->>Operation: new_operation()
     Operation->>RowStore_Todo_: get_subtree("todos")
     RowStore_Todo_->>Backend: Load relevant entries
-    Backend->>RowStore_Todo_: Return entries/data
+    Note over Backend: Check CRDT cache (Entry_ID, Subtree)
+    alt Cache Hit (likely for repeated queries)
+        Backend->>RowStore_Todo_: Return cached CRDT state
+    else Cache Miss (first-time query)
+        Backend->>Backend: Compute state via recursive LCA algorithm
+        Backend->>Backend: Cache computed state for future use
+        Backend->>RowStore_Todo_: Return computed CRDT state
+    end
     User->>Operation: (via RowStore handle) search(...)
     RowStore_Todo_->>User: Return Vec<(ID, Todo)>
 ```
@@ -66,3 +80,22 @@ When authentication is enabled, the commit process includes additional steps:
 4. **Verification Status**: Entries are stored with a verification status (Verified/Unverified) based on validation results
 
 This ensures data integrity and access control while maintaining backward compatibility with unsigned entries.
+
+### CRDT Caching Flow
+
+The recursive LCA-based merge algorithm introduces an efficient caching layer:
+
+1. **Cache Lookup**: Every CRDT state computation first checks the cache using `(Entry_ID, Subtree)` as the key
+2. **Cache Miss Handling**: If no cached state exists, the recursive LCA algorithm computes the state:
+   - Finds Lowest Common Ancestor (LCA) of parent entries
+   - Recursively computes LCA state (which may itself hit the cache)
+   - Merges path from LCA to target entry
+   - Automatically caches the result
+3. **Cache Hit Benefits**: Subsequent queries for the same `(Entry_ID, Subtree)` return instantly from cache
+4. **Performance Impact**: Dramatic reduction in computation for repeated queries, especially beneficial for complex DAG structures
+
+The caching system scales particularly well because:
+
+- Cache keys are precise and never become invalid (entries are immutable)
+- Cache hit rates approach 100% for repeated access patterns
+- Memory usage is controlled (only computed states are cached)

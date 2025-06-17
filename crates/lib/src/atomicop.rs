@@ -225,7 +225,7 @@ impl AtomicOp {
             if !subtrees.contains(&subtree_name.to_string()) {
                 let backend_guard = self.tree.lock_backend()?;
                 // Check if this operation was created with custom tips vs current tips
-                let main_parents = builder.parents().cloned().unwrap_or_default();
+                let main_parents = builder.parents().unwrap_or_default();
                 let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
 
                 let tips = if main_parents == current_tree_tips {
@@ -304,7 +304,7 @@ impl AtomicOp {
     /// if the subtree has no history prior to this operation.
     pub(crate) fn get_full_state<T>(&self, subtree_name: &str) -> Result<T>
     where
-        T: CRDT,
+        T: CRDT + Clone,
     {
         // Get the entry builder to get parent pointers
         let mut builder_ref = self.entry_builder.borrow_mut();
@@ -319,7 +319,7 @@ impl AtomicOp {
         if !subtrees.contains(&subtree_name.to_string()) {
             let backend_guard = self.tree.lock_backend()?;
             // Check if this operation was created with custom tips vs current tips
-            let main_parents = builder.parents().cloned().unwrap_or_default();
+            let main_parents = builder.parents().unwrap_or_default();
             let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
 
             let tips = if main_parents == current_tree_tips {
@@ -345,21 +345,210 @@ impl AtomicOp {
             return Ok(T::default());
         }
 
-        // Get the entries from the backend up to these parent pointers
-        let backend_guard = self.tree.lock_backend()?;
-        let entries =
-            backend_guard.get_subtree_from_tips(self.tree.root_id(), subtree_name, &parents)?;
+        // Compute the CRDT state using LCA-based ROOT-to-target computation
+        self.compute_subtree_state_lca_based(subtree_name, &parents)
+    }
 
-        // Merge all the entries
-        let mut result = T::default();
-        for entry in entries {
-            if let Ok(data) = entry.data(subtree_name) {
-                let parsed: T = serde_json::from_str(data)?;
-                result = result.merge(&parsed)?;
+    /// Computes the CRDT state for a subtree using correct recursive LCA-based algorithm.
+    ///
+    /// Algorithm:
+    /// 1. If no entries, return default state
+    /// 2. If single entry, compute its state recursively  
+    /// 3. If multiple entries, find their LCA and compute state from that LCA
+    ///
+    /// # Type Parameters
+    /// * `T` - The CRDT type to compute the state for
+    ///
+    /// # Arguments
+    /// * `subtree_name` - The name of the subtree
+    /// * `entry_ids` - The entry IDs to compute the merged state for (tips)
+    ///
+    /// # Returns
+    /// A `Result<T>` containing the computed CRDT state
+    fn compute_subtree_state_lca_based<T>(
+        &self,
+        subtree_name: &str,
+        entry_ids: &[String],
+    ) -> Result<T>
+    where
+        T: CRDT + Clone,
+    {
+        // Base case: no entries
+        if entry_ids.is_empty() {
+            return Ok(T::default());
+        }
+
+        // If we have a single entry, compute its state recursively
+        if entry_ids.len() == 1 {
+            return self.compute_single_entry_state_recursive(subtree_name, &entry_ids[0]);
+        }
+
+        // Multiple entries: find LCA and compute state from there
+        let backend_guard = self.tree.lock_backend()?;
+        let lca_id = backend_guard.find_lca(self.tree.root_id(), subtree_name, entry_ids)?;
+        drop(backend_guard);
+
+        // Get the LCA state recursively
+        let mut result = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
+
+        // Get all entries from LCA to all tip entries (deduplicated and sorted)
+        let path_entries = {
+            let backend_guard = self.tree.lock_backend()?;
+            backend_guard.get_path_from_to(self.tree.root_id(), subtree_name, &lca_id, entry_ids)?
+        };
+
+        // Merge all path entries in order
+        result = self.merge_path_entries(subtree_name, result, &path_entries)?;
+
+        Ok(result)
+    }
+
+    /// Computes the CRDT state for a single entry using correct recursive LCA algorithm.
+    ///
+    /// Algorithm:
+    /// 1. Check if entry state is cached → return it
+    /// 2. Find LCA of parents and get its state (recursively)  
+    /// 3. Merge all entries from LCA to current entry into that state
+    ///
+    /// # Type Parameters
+    /// * `T` - The CRDT type to compute the state for
+    ///
+    /// # Arguments
+    /// * `subtree_name` - The name of the subtree
+    /// * `entry_id` - The entry ID to compute the state for
+    ///
+    /// # Returns
+    /// A `Result<T>` containing the computed CRDT state for the entry
+    fn compute_single_entry_state_recursive<T>(
+        &self,
+        subtree_name: &str,
+        entry_id: &str,
+    ) -> Result<T>
+    where
+        T: CRDT + Clone,
+    {
+        // Step 1: Check if already cached
+        {
+            let backend_guard = self.tree.lock_backend()?;
+            if let Some(cached_state) =
+                backend_guard.get_cached_crdt_state(&entry_id.to_string(), subtree_name)?
+            {
+                let result: T = serde_json::from_str(&cached_state)?;
+                return Ok(result);
             }
         }
 
+        // Get the parents of this entry in the subtree
+        let parents = {
+            let backend_guard = self.tree.lock_backend()?;
+            backend_guard.get_sorted_subtree_parents(
+                self.tree.root_id(),
+                &entry_id.to_string(),
+                subtree_name,
+            )?
+        };
+
+        // Step 2: Compute LCA state recursively
+        let (lca_state, lca_id_opt) = if parents.is_empty() {
+            // No parents - this is a root, start with default
+            (T::default(), None)
+        } else if parents.len() == 1 {
+            // Single parent - recursively get its state
+            (
+                self.compute_single_entry_state_recursive(subtree_name, &parents[0])?,
+                None,
+            )
+        } else {
+            // Multiple parents - find LCA and get its state
+            let lca_id = {
+                let backend_guard = self.tree.lock_backend()?;
+                backend_guard.find_lca(self.tree.root_id(), subtree_name, &parents)?
+            };
+            let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
+            (lca_state, Some(lca_id))
+        };
+
+        // Step 3: Merge entries from LCA to current entry
+        let mut result = lca_state;
+
+        // If we have multiple parents, we need to merge paths from LCA to all parents
+        if let Some(lca_id) = lca_id_opt {
+            // Get all entries from LCA to all parents (deduplicated and sorted)
+            let path_entries = {
+                let backend_guard = self.tree.lock_backend()?;
+                backend_guard.get_path_from_to(
+                    self.tree.root_id(),
+                    subtree_name,
+                    &lca_id,
+                    &parents,
+                )?
+            };
+
+            // Merge all path entries in order
+            result = self.merge_path_entries(subtree_name, result, &path_entries)?;
+        }
+
+        // Finally, merge the current entry's local data
+        let local_data = {
+            let backend_guard = self.tree.lock_backend()?;
+            let entry = backend_guard.get(&entry_id.to_string())?;
+            if let Ok(data) = entry.data(subtree_name) {
+                serde_json::from_str::<T>(data)?
+            } else {
+                T::default()
+            }
+        };
+
+        result = result.merge(&local_data)?;
+
+        // Cache the result
+        {
+            let mut backend_guard = self.tree.lock_backend()?;
+            let serialized_state = serde_json::to_string(&result)?;
+            backend_guard.cache_crdt_state(
+                &entry_id.to_string(),
+                subtree_name,
+                serialized_state,
+            )?;
+        }
+
         Ok(result)
+    }
+
+    /// Merges a sequence of entries into a CRDT state.
+    ///
+    /// # Arguments
+    /// * `subtree_name` - The name of the subtree
+    /// * `initial_state` - The initial CRDT state to merge into
+    /// * `entry_ids` - The entry IDs to merge in order
+    ///
+    /// # Returns
+    /// A `Result<T>` containing the merged CRDT state
+    fn merge_path_entries<T>(
+        &self,
+        subtree_name: &str,
+        mut state: T,
+        entry_ids: &[String],
+    ) -> Result<T>
+    where
+        T: CRDT + Clone,
+    {
+        let backend_guard = self.tree.lock_backend()?;
+
+        for entry_id in entry_ids {
+            let entry = backend_guard.get(entry_id)?;
+
+            // Get local data for this entry in the subtree
+            let local_data = if let Ok(data) = entry.data(subtree_name) {
+                serde_json::from_str::<T>(data)?
+            } else {
+                T::default()
+            };
+
+            state = state.merge(&local_data)?;
+        }
+
+        Ok(state)
     }
 
     /// Commits the operation, finalizing and persisting the entry to the backend.

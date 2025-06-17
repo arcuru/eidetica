@@ -342,7 +342,7 @@ fn test_backend_get_tree_from_tips() {
 
     // --- Test with single tip e2a ---
     let tree_e2a = backend
-        .get_tree_from_tips(&root_id, &[e2a_id.clone()])
+        .get_tree_from_tips(&root_id, std::slice::from_ref(&e2a_id))
         .expect("Failed to get tree from tip e2a");
     assert_eq!(tree_e2a.len(), 3, "Tree from e2a should have root, e1, e2a");
     let ids_e2a: Vec<_> = tree_e2a.iter().map(|e| e.id()).collect();
@@ -391,7 +391,7 @@ fn test_backend_get_tree_from_tips() {
     // --- Test with non-existent tree root ---
     let bad_root_string = "bad_root".to_string();
     let tree_bad_root = backend
-        .get_tree_from_tips(&bad_root_string, &[e1_id.clone()])
+        .get_tree_from_tips(&bad_root_string, std::slice::from_ref(&e1_id))
         .expect("Failed to get tree with non-existent root");
     assert!(
         tree_bad_root.is_empty(),
@@ -451,7 +451,11 @@ fn test_backend_get_subtree_from_tips() {
 
     // --- Test with single tip e2a ---
     let subtree_e2a = backend
-        .get_subtree_from_tips(&root_entry_id, &subtree_name_string, &[e2a_id.clone()])
+        .get_subtree_from_tips(
+            &root_entry_id,
+            &subtree_name_string,
+            std::slice::from_ref(&e2a_id),
+        )
         .expect("Failed to get subtree from tip e2a");
     // Should contain root and e2a (which have the subtree), but not e1 (no subtree) or e2b (not in history of tip e2a)
     assert_eq!(
@@ -497,8 +501,11 @@ fn test_backend_get_subtree_from_tips() {
 
     // --- Test with non-existent subtree name ---
     let bad_name_string = "bad_name".to_string();
-    let subtree_bad_name =
-        backend.get_subtree_from_tips(&root_entry_id, &bad_name_string, &[e2a_id.clone()]);
+    let subtree_bad_name = backend.get_subtree_from_tips(
+        &root_entry_id,
+        &bad_name_string,
+        std::slice::from_ref(&e2a_id),
+    );
     assert!(
         subtree_bad_name.is_ok(),
         "Getting subtree with bad name should be ok..."
@@ -523,7 +530,11 @@ fn test_backend_get_subtree_from_tips() {
     // --- Test with non-existent tree root ---
     let bad_root_string_2 = "bad_root".to_string();
     let subtree_bad_root = backend
-        .get_subtree_from_tips(&bad_root_string_2, &subtree_name_string, &[e1_id.clone()])
+        .get_subtree_from_tips(
+            &bad_root_string_2,
+            &subtree_name_string,
+            std::slice::from_ref(&e1_id),
+        )
         .expect("Failed to get subtree with non-existent root");
     assert!(
         subtree_bad_root.is_empty(),
@@ -605,7 +616,7 @@ fn test_calculate_entry_height() {
 
     // Check the full tree contains all 7 entries
     let tree = backend
-        .get_tree_from_tips(&root_id, &[id_d.clone()])
+        .get_tree_from_tips(&root_id, std::slice::from_ref(&id_d))
         .unwrap();
     assert_eq!(tree.len(), 7, "Tree should contain all 7 entries");
 
