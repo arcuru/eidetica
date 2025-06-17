@@ -48,10 +48,10 @@ impl KVStore {
         let local_data: Result<KVNested> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
-        if let Ok(data) = local_data {
-            if let Some(value) = data.get(&key_s) {
-                return Ok(value.clone());
-            }
+        if let Ok(data) = local_data
+            && let Some(value) = data.get(&key_s)
+        {
+            return Ok(value.clone());
         }
 
         // Otherwise, get the full state from the backend
