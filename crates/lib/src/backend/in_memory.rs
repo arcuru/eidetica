@@ -7,6 +7,17 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
+use std::sync::RwLock;
+
+/// Heights cache: entry_id -> (tree_height, subtree_name -> subtree_height)
+type TreeHeightsCache = HashMap<ID, (usize, HashMap<String, usize>)>;
+
+/// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct TreeTipsCache {
+    tree_tips: HashSet<ID>,
+    subtree_tips: HashMap<String, HashSet<ID>>,
+}
 
 /// A simple in-memory backend implementation using a `HashMap` for storage.
 ///
@@ -33,18 +44,30 @@ pub struct InMemoryBackend {
     private_keys: HashMap<String, SigningKey>,
     /// Generic key-value cache for frequently computed results
     cache: HashMap<String, String>,
+    /// Cached heights grouped by tree: tree_id -> (entry_id -> (tree_height, subtree_name -> subtree_height))
+    heights: RwLock<HashMap<ID, TreeHeightsCache>>,
+    /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
+    tips: RwLock<HashMap<ID, TreeTipsCache>>,
 }
 
 /// Serializable version of InMemoryBackend for persistence
 #[derive(Serialize, Deserialize)]
 struct SerializableBackend {
     entries: HashMap<ID, Entry>,
+    #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
     /// Private keys stored as 32-byte arrays for serialization
+    #[serde(default)]
     private_keys_bytes: HashMap<String, [u8; 32]>,
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
     cache: HashMap<String, String>,
+    /// Cached heights grouped by tree
+    #[serde(default)]
+    heights: HashMap<ID, TreeHeightsCache>,
+    /// Cached tips grouped by tree
+    #[serde(default)]
+    tips: HashMap<ID, TreeTipsCache>,
 }
 
 impl Serialize for InMemoryBackend {
@@ -58,11 +81,16 @@ impl Serialize for InMemoryBackend {
             .map(|(k, v)| (k.clone(), v.to_bytes()))
             .collect();
 
+        let heights = self.heights.read().unwrap().clone();
+        let tips = self.tips.read().unwrap().clone();
+
         let serializable = SerializableBackend {
             entries: self.entries.clone(),
             verification_status: self.verification_status.clone(),
             private_keys_bytes,
             cache: self.cache.clone(),
+            heights,
+            tips,
         };
 
         serializable.serialize(serializer)
@@ -90,6 +118,8 @@ impl<'de> Deserialize<'de> for InMemoryBackend {
             verification_status: serializable.verification_status,
             private_keys,
             cache: serializable.cache,
+            heights: RwLock::new(serializable.heights),
+            tips: RwLock::new(serializable.tips),
         })
     }
 }
@@ -108,6 +138,8 @@ impl InMemoryBackend {
             verification_status: HashMap::new(),
             private_keys: HashMap::new(),
             cache: HashMap::new(),
+            heights: RwLock::new(HashMap::new()),
+            tips: RwLock::new(HashMap::new()),
         }
     }
 
@@ -193,7 +225,68 @@ impl InMemoryBackend {
         true
     }
 
+    /// Helper function to update cached heights for a newly added entry.
+    /// This function updates both tree heights and subtree heights if the parents are cached.
+    fn update_cached_heights(cache: &mut TreeHeightsCache, entry: &Entry, entry_id: &ID) {
+        let mut tree_height = None;
+        let mut subtree_heights = HashMap::new();
+
+        // Calculate tree height if parents are cached
+        if let Ok(parents) = entry.parents() {
+            if parents.is_empty() {
+                // Root entry has height 0
+                tree_height = Some(0);
+            } else {
+                // Check if all parents have cached heights
+                let parent_heights: Vec<usize> = parents
+                    .iter()
+                    .filter_map(|p| cache.get(p).map(|(h, _)| *h))
+                    .collect();
+
+                if parent_heights.len() == parents.len() {
+                    // All parents are cached, compute new entry's height
+                    let max_parent_height = parent_heights.into_iter().max().unwrap_or(0);
+                    tree_height = Some(max_parent_height + 1);
+                }
+            }
+        }
+
+        // Calculate subtree heights for each subtree the entry belongs to
+        for subtree_name in entry.subtrees() {
+            if let Ok(subtree_parents) = entry.subtree_parents(&subtree_name) {
+                if subtree_parents.is_empty() {
+                    // Subtree root has height 0
+                    subtree_heights.insert(subtree_name.clone(), 0);
+                } else {
+                    // Check if all subtree parents have cached heights
+                    let parent_heights: Vec<usize> = subtree_parents
+                        .iter()
+                        .filter_map(|p| {
+                            cache
+                                .get(p)
+                                .and_then(|(_, sh)| sh.get(&subtree_name).copied())
+                        })
+                        .collect();
+
+                    if parent_heights.len() == subtree_parents.len() {
+                        // All parents are cached, compute new entry's height
+                        let max_parent_height = parent_heights.into_iter().max().unwrap_or(0);
+                        subtree_heights.insert(subtree_name.clone(), max_parent_height + 1);
+                    }
+                }
+            }
+        }
+
+        // Only insert if we calculated a tree height
+        if let Some(height) = tree_height {
+            cache.insert(entry_id.clone(), (height, subtree_heights));
+        }
+    }
+
     /// Calculates the height of each entry within a specified tree or subtree.
+    ///
+    /// Uses lazy caching - computes heights on first access and caches results.
+    /// Subsequent calls return cached values for O(1) lookups.
     ///
     /// Height is defined as the length of the longest path from a root node
     /// (a node with no parents *within the specified context*) to the entry.
@@ -210,6 +303,125 @@ impl InMemoryBackend {
     /// A `Result` containing a `HashMap` mapping entry IDs (within the context) to their
     /// calculated height, or an error if data is inconsistent (e.g., parent references).
     pub fn calculate_heights(
+        &self,
+        tree: &ID,
+        subtree: Option<&str>,
+    ) -> Result<HashMap<ID, usize>> {
+        // Get all entries in the tree context
+        let entries_in_tree: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.in_tree(tree))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        match subtree {
+            None => {
+                // Tree context - check if we have tree heights cached
+                let heights_cache = self.heights.read().unwrap();
+                if let Some(tree_cache) = heights_cache.get(tree) {
+                    // Check if all entries are cached
+                    let mut all_cached = true;
+                    let mut result = HashMap::new();
+
+                    for id in &entries_in_tree {
+                        if let Some((height, _)) = tree_cache.get(id) {
+                            result.insert(id.clone(), *height);
+                        } else {
+                            all_cached = false;
+                            break;
+                        }
+                    }
+
+                    if all_cached {
+                        return Ok(result);
+                    }
+                }
+                drop(heights_cache);
+
+                // Compute heights and cache them
+                let computed_heights = self.calculate_heights_original(tree, subtree)?;
+
+                // Update cache
+                let mut heights_cache = self.heights.write().unwrap();
+                let tree_cache = heights_cache.entry(tree.clone()).or_default();
+
+                // Update tree heights for each entry
+                for (id, height) in &computed_heights {
+                    tree_cache
+                        .entry(id.clone())
+                        .and_modify(|(h, _)| *h = *height)
+                        .or_insert((*height, HashMap::new()));
+                }
+                drop(heights_cache);
+
+                Ok(computed_heights)
+            }
+            Some(subtree_name) => {
+                // Subtree context - check if we have subtree heights cached
+                let entries_in_subtree: Vec<_> = entries_in_tree
+                    .iter()
+                    .filter(|id| {
+                        if let Some(entry) = self.entries.get(*id) {
+                            entry.in_subtree(subtree_name)
+                        } else {
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+
+                let heights_cache = self.heights.read().unwrap();
+                if let Some(tree_cache) = heights_cache.get(tree) {
+                    // Check if all entries are cached
+                    let mut all_cached = true;
+                    let mut result = HashMap::new();
+
+                    for id in &entries_in_subtree {
+                        if let Some((_, subtree_map)) = tree_cache.get(id) {
+                            if let Some(&height) = subtree_map.get(subtree_name) {
+                                result.insert(id.clone(), height);
+                            } else {
+                                all_cached = false;
+                                break;
+                            }
+                        } else {
+                            all_cached = false;
+                            break;
+                        }
+                    }
+
+                    if all_cached {
+                        return Ok(result);
+                    }
+                }
+                drop(heights_cache);
+
+                // Compute heights and cache them
+                let computed_heights = self.calculate_heights_original(tree, subtree)?;
+
+                // Update cache
+                let mut heights_cache = self.heights.write().unwrap();
+                let tree_cache = heights_cache.entry(tree.clone()).or_default();
+
+                // Update subtree heights for each entry
+                for (id, height) in &computed_heights {
+                    tree_cache
+                        .entry(id.clone())
+                        .and_modify(|(_, sh)| {
+                            sh.insert(subtree_name.to_string(), *height);
+                        })
+                        .or_insert((0, [(subtree_name.to_string(), *height)].into()));
+                }
+                drop(heights_cache);
+
+                Ok(computed_heights)
+            }
+        }
+    }
+
+    /// Original height calculation implementation (fallback)
+    fn calculate_heights_original(
         &self,
         tree: &ID,
         subtree: Option<&str>,
@@ -431,13 +643,62 @@ impl Backend for InMemoryBackend {
     /// Stores an entry in the backend with the specified verification status.
     fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
         let entry_id = entry.id();
+        let tree_id = entry.root();
 
         // Store the entry
-        self.entries.insert(entry_id.clone(), entry);
+        self.entries.insert(entry_id.clone(), entry.clone());
 
         // Store the verification status
         self.verification_status
-            .insert(entry_id, verification_status);
+            .insert(entry_id.clone(), verification_status);
+
+        // Smart cache update for heights
+        {
+            let mut heights_cache = self.heights.write().unwrap();
+            if let Some(cache) = heights_cache.get_mut(tree_id) {
+                Self::update_cached_heights(cache, &entry, &entry_id);
+            }
+        }
+
+        // Smart cache update for tips
+        {
+            let mut tips_cache = self.tips.write().unwrap();
+            if let Some(cache) = tips_cache.get_mut(tree_id) {
+                // Update tree tips
+                if let Ok(parents) = entry.parents() {
+                    if parents.is_empty() {
+                        // Root entry is also a tip initially
+                        cache.tree_tips.insert(entry_id.clone());
+                    } else {
+                        // Remove parents from tips if they exist (they're no longer tips)
+                        for parent in &parents {
+                            cache.tree_tips.remove(parent);
+                        }
+                        // Add the new entry as a tip (it has no children yet)
+                        cache.tree_tips.insert(entry_id.clone());
+                    }
+                }
+
+                // Update subtree tips for each subtree
+                for subtree_name in entry.subtrees() {
+                    if let Some(subtree_tips) = cache.subtree_tips.get_mut(&subtree_name) {
+                        if let Ok(subtree_parents) = entry.subtree_parents(&subtree_name) {
+                            if subtree_parents.is_empty() {
+                                // Subtree root is also a tip initially
+                                subtree_tips.insert(entry_id.clone());
+                            } else {
+                                // Remove parents from subtree tips if they exist
+                                for parent in &subtree_parents {
+                                    subtree_tips.remove(parent);
+                                }
+                                // Add the new entry as a subtree tip
+                                subtree_tips.insert(entry_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -479,8 +740,16 @@ impl Backend for InMemoryBackend {
     }
 
     /// Finds the tip entries for the specified tree.
-    /// Iterates through all entries, checking if they belong to the tree and if `is_tip` returns true.
+    /// Uses lazy cached tips for O(1) performance after first computation.
     fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
+        // Check if we have cached tree tips
+        let tips_cache = self.tips.read().unwrap();
+        if let Some(cache) = tips_cache.get(tree) {
+            return Ok(cache.tree_tips.iter().cloned().collect());
+        }
+        drop(tips_cache);
+
+        // Compute tips lazily
         let mut tips = Vec::new();
         for (id, entry) in &self.entries {
             if entry.root() == *tree && self.is_tip(tree, id) {
@@ -490,14 +759,41 @@ impl Backend for InMemoryBackend {
                 tips.push(id.clone());
             }
         }
+
+        // Cache the result
+        let tips_set: HashSet<ID> = tips.iter().cloned().collect();
+        let mut tips_cache = self.tips.write().unwrap();
+        let cache = tips_cache.entry(tree.clone()).or_default();
+        cache.tree_tips = tips_set;
+        drop(tips_cache);
+
         Ok(tips)
     }
 
     /// Finds the tip entries for the specified subtree.
-    /// Delegates to get_subtree_tips_up_to_entries using current tree tips.
+    /// Uses lazy cached subtree tips for O(1) performance after first computation.
     fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+        // Check if we have cached subtree tips
+        let tips_cache = self.tips.read().unwrap();
+        if let Some(cache) = tips_cache.get(tree) {
+            if let Some(subtree_tips) = cache.subtree_tips.get(subtree) {
+                return Ok(subtree_tips.iter().cloned().collect());
+            }
+        }
+        drop(tips_cache);
+
+        // Compute subtree tips lazily
         let tree_tips = self.get_tips(tree)?;
-        self.get_subtree_tips_up_to_entries(tree, subtree, &tree_tips)
+        let subtree_tips = self.get_subtree_tips_up_to_entries(tree, subtree, &tree_tips)?;
+
+        // Cache the result
+        let tips_set: HashSet<ID> = subtree_tips.iter().cloned().collect();
+        let mut tips_cache = self.tips.write().unwrap();
+        let cache = tips_cache.entry(tree.clone()).or_default();
+        cache.subtree_tips.insert(subtree.to_string(), tips_set);
+        drop(tips_cache);
+
+        Ok(subtree_tips)
     }
 
     /// Finds all entries that are top-level roots (i.e., `entry.is_toplevel_root()` is true).
@@ -538,7 +834,12 @@ impl Backend for InMemoryBackend {
         }
 
         // Sort entries by tree height
-        self.sort_entries_by_height(tree, &mut entries)?;
+        let heights = self.calculate_heights(tree, None)?;
+        entries.sort_by(|a, b| {
+            let a_height = *heights.get(&a.id()).unwrap_or(&0);
+            let b_height = *heights.get(&b.id()).unwrap_or(&0);
+            a_height.cmp(&b_height).then_with(|| a.id().cmp(&b.id()))
+        });
 
         Ok(entries)
     }
@@ -561,7 +862,12 @@ impl Backend for InMemoryBackend {
         }
 
         // Sort entries by subtree height
-        self.sort_entries_by_subtree_height(tree, subtree, &mut entries)?;
+        let heights = self.calculate_heights(tree, Some(subtree))?;
+        entries.sort_by(|a, b| {
+            let a_height = *heights.get(&a.id()).unwrap_or(&0);
+            let b_height = *heights.get(&b.id()).unwrap_or(&0);
+            a_height.cmp(&b_height).then_with(|| a.id().cmp(&b.id()))
+        });
 
         Ok(entries)
     }
@@ -622,7 +928,12 @@ impl Backend for InMemoryBackend {
 
         // Sort the result by height within the tree context
         if !result.is_empty() {
-            self.sort_entries_by_height(tree, &mut result)?;
+            let heights = self.calculate_heights(tree, None)?;
+            result.sort_by(|a, b| {
+                let a_height = *heights.get(&a.id()).unwrap_or(&0);
+                let b_height = *heights.get(&b.id()).unwrap_or(&0);
+                a_height.cmp(&b_height).then_with(|| a.id().cmp(&b.id()))
+            });
         }
 
         Ok(result)
@@ -685,7 +996,13 @@ impl Backend for InMemoryBackend {
             }
         }
 
-        self.sort_entries_by_subtree_height(tree, subtree, &mut result)?;
+        // Sort the result by height within the subtree context
+        let heights = self.calculate_heights(tree, Some(subtree))?;
+        result.sort_by(|a, b| {
+            let a_height = *heights.get(&a.id()).unwrap_or(&0);
+            let b_height = *heights.get(&b.id()).unwrap_or(&0);
+            a_height.cmp(&b_height).then_with(|| a.id().cmp(&b.id()))
+        });
 
         Ok(result)
     }
@@ -837,7 +1154,7 @@ impl Backend for InMemoryBackend {
     }
 
     fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[String]) -> Result<String> {
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet, VecDeque};
 
         if entry_ids.is_empty() {
             return Err(Error::Io(std::io::Error::other(
@@ -849,37 +1166,74 @@ impl Backend for InMemoryBackend {
             return Ok(entry_ids[0].clone());
         }
 
-        // For each entry, build the complete path from tree root to that entry
-        let mut entry_paths: HashMap<String, Vec<String>> = HashMap::new();
-
+        // Verify that all entries exist and belong to the specified tree
         for entry_id in entry_ids {
-            let path = self.build_path_from_root(tree, subtree, entry_id)?;
-            entry_paths.insert(entry_id.clone(), path);
+            match self.get(entry_id) {
+                Ok(entry) => {
+                    if !entry.in_tree(tree) {
+                        return Err(Error::Io(std::io::Error::other(format!(
+                            "Entry {entry_id} is not in tree {tree}"
+                        ))));
+                    }
+                }
+                Err(_) => {
+                    return Err(Error::Io(std::io::Error::other(format!(
+                        "Entry {entry_id} not found"
+                    ))));
+                }
+            }
         }
 
-        // Find the longest common prefix among all paths
-        let paths: Vec<&Vec<String>> = entry_paths.values().collect();
-        let first_path = &paths[0];
+        // Track which entries can reach each ancestor
+        let mut ancestors: HashMap<String, HashSet<usize>> = HashMap::new();
+        let mut queues: Vec<VecDeque<String>> = Vec::new();
 
-        let mut lca_index = 0;
-        for i in 0..first_path.len() {
-            let candidate = &first_path[i];
-            let is_common = paths
-                .iter()
-                .all(|path| i < path.len() && &path[i] == candidate);
+        // Initialize BFS from each entry
+        for (idx, entry_id) in entry_ids.iter().enumerate() {
+            let mut queue = VecDeque::new();
+            queue.push_back(entry_id.clone());
+            ancestors.entry(entry_id.clone()).or_default().insert(idx);
+            queues.push(queue);
+        }
 
-            if is_common {
-                lca_index = i;
-            } else {
+        // BFS upward until we find common ancestor
+        loop {
+            let mut any_progress = false;
+
+            for (idx, queue) in queues.iter_mut().enumerate() {
+                if let Some(current) = queue.pop_front() {
+                    any_progress = true;
+
+                    // Check if this ancestor is reachable by all entries
+                    let reachable_by = ancestors.entry(current.clone()).or_default();
+                    reachable_by.insert(idx);
+
+                    if reachable_by.len() == entry_ids.len() {
+                        // Found LCA!
+                        return Ok(current);
+                    }
+
+                    // Add parents to queue
+                    if let Ok(entry) = self.get(&current) {
+                        let parents = if let Ok(parents) = entry.subtree_parents(subtree) {
+                            parents
+                        } else {
+                            entry.parents()?
+                        };
+
+                        for parent in parents {
+                            queue.push_back(parent);
+                        }
+                    }
+                }
+            }
+
+            if !any_progress {
                 break;
             }
         }
 
-        if lca_index < first_path.len() {
-            Ok(first_path[lca_index].clone())
-        } else {
-            Err(Error::Io(std::io::Error::other("No common ancestor found")))
-        }
+        Err(Error::Io(std::io::Error::other("No common ancestor found")))
     }
 
     fn collect_root_to_target(
