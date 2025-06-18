@@ -8,7 +8,8 @@ tasks:
     silent: true
   ci:full:
     desc: Run CI locally in containers
-    cmd: act
+    cmds:
+      - act --workflows .github/workflows/rust.yml
   ci:local:
     desc: Run CI locally
     aliases: [ci]
