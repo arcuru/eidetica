@@ -12,16 +12,24 @@ env:
 jobs:
   coverage:
     runs-on: ubuntu-latest
-    container:
-      image: xd009642/tarpaulin:latest
-      options: --security-opt seccomp=unconfined
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
       - name: Build Coverage
-        run: cargo tarpaulin --verbose --all-features --include-tests --out lcov
+        run: |
+          echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
+          cargo tarpaulin --verbose --all-features --include-tests --out lcov
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
