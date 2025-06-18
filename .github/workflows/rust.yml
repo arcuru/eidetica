@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
       - name: Rust Cache
@@ -34,7 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
@@ -48,7 +48,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
