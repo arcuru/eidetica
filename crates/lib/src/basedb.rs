@@ -50,18 +50,27 @@ impl BaseDB {
     ///
     /// A `Tree` represents a collection of related entries, analogous to a table.
     /// It is initialized with settings defined by a `KVNested` CRDT.
+    /// All trees must now be created with authentication.
     ///
     /// # Arguments
     /// * `settings` - The initial settings for the tree, typically including metadata like a name.
+    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: KVNested) -> Result<Tree> {
-        Tree::new(settings, Arc::clone(&self.backend), None)
+    pub fn new_tree(&self, settings: KVNested, signing_key_id: &str) -> Result<Tree> {
+        Tree::new(settings, Arc::clone(&self.backend), signing_key_id)
     }
 
     /// Create a new tree with default empty settings
-    pub fn new_tree_default(&self) -> Result<Tree> {
+    /// All trees must now be created with authentication.
+    ///
+    /// # Arguments
+    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
+    ///
+    /// # Returns
+    /// A `Result` containing the newly created `Tree` or an error.
+    pub fn new_tree_default(&self, signing_key_id: &str) -> Result<Tree> {
         let mut settings = KVNested::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
@@ -77,7 +86,7 @@ impl BaseDB {
         );
         settings.set_string("tree_id", unique_id);
 
-        self.new_tree(settings)
+        self.new_tree(settings, signing_key_id)
     }
 
     /// Load an existing tree from the database by its root ID.

@@ -5,6 +5,7 @@ use crate::auth::types::{AuthId, AuthInfo, Operation};
 use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::data::CRDT;
+use crate::data::KVNested;
 use crate::data::NestedValue;
 use crate::entry::Entry;
 use crate::entry::{EntryBuilder, ID};
@@ -583,8 +584,26 @@ impl AtomicOp {
         };
 
         // Get the settings state from the historical parents. This will be used to validate the current commit
-        let effective_settings_for_validation =
-            self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+        let historical_settings = self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+
+        // However, if this is a settings update and there's no historical auth but staged auth exists,
+        // use the staged settings for validation (this handles initial tree creation with auth)
+        let effective_settings_for_validation = if has_settings_update {
+            let historical_has_auth = matches!(historical_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            if !historical_has_auth {
+                let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
+                let staged_has_auth = matches!(staged_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+                if staged_has_auth {
+                    staged_settings
+                } else {
+                    historical_settings
+                }
+            } else {
+                historical_settings
+            }
+        } else {
+            historical_settings
+        };
 
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
@@ -623,6 +642,7 @@ impl AtomicOp {
         }
 
         // Handle authentication configuration before building
+        // All entries must now be authenticated - fail if no auth key is configured
         let signing_key = if let Some(key_id) = &self.auth_key_id {
             // Set auth ID on the entry builder (without signature initially)
             builder.set_auth_mut(AuthInfo {
@@ -641,7 +661,17 @@ impl AtomicOp {
             }
 
             // Check if we need to bootstrap auth configuration
-            let auth_configured = matches!(effective_settings_for_validation.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            // First check if auth is configured in the historical settings
+            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+
+            // If not configured historically, check if this entry is setting up auth for the first time
+            let auth_configured = if !auth_configured_historical && has_settings_update {
+                // Check if the staged settings contain auth configuration
+                let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
+                matches!(staged_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+            } else {
+                auth_configured_historical
+            };
 
             if !auth_configured {
                 // Bootstrap auth configuration by adding this key as admin:0
@@ -673,7 +703,10 @@ impl AtomicOp {
 
             signing_key
         } else {
-            None
+            // No authentication key configured - this is no longer allowed
+            return Err(Error::Authentication(
+                "All entries must be authenticated. No authentication key configured for this operation.".to_string()
+            ));
         };
 
         // Remove empty subtrees and build the final immutable Entry
@@ -685,76 +718,95 @@ impl AtomicOp {
             entry.auth.signature = Some(signature);
         }
 
-        // Determine verification status by validating authentication
-        let verification_status = if entry.auth.id != AuthId::default() {
-            // Entry has authentication - validate it
-            let mut validator = AuthValidator::new();
+        // Validate authentication (all entries must be authenticated)
+        let mut validator = AuthValidator::new();
 
-            // Get the final settings state for validation
-            // IMPORTANT: For permission checking, we must use the historical auth configuration
-            // (before this operation), not the auth configuration from the current entry.
-            // This prevents operations from modifying their own permission requirements.
-            let settings_for_validation = effective_settings_for_validation.clone();
+        // Get the final settings state for validation
+        // IMPORTANT: For permission checking, we must use the historical auth configuration
+        // (before this operation), not the auth configuration from the current entry.
+        // This prevents operations from modifying their own permission requirements.
+        let settings_for_validation = effective_settings_for_validation.clone();
 
-            match validator.validate_entry(&entry, &settings_for_validation) {
-                Ok(true) => {
-                    // Authentication validation succeeded.
-                    // Check if we have auth configuration to determine if we should check permissions
-                    match settings_for_validation.get("auth") {
-                        Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
-                            // We have auth configuration, so check permissions
-                            let operation_type = if has_settings_update
-                                || entry.subtrees().contains(&SETTINGS.to_string())
-                            {
-                                Operation::WriteSettings // Modifying settings is a settings operation
-                            } else {
-                                Operation::WriteData // Default to write for other data modifications
-                            };
+        let verification_status = match validator.validate_entry(&entry, &settings_for_validation) {
+            Ok(true) => {
+                // Authentication validation succeeded - check permissions
+                match settings_for_validation.get("auth") {
+                    Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
+                        // We have auth configuration, so check permissions
+                        let operation_type = if has_settings_update
+                            || entry.subtrees().contains(&SETTINGS.to_string())
+                        {
+                            Operation::WriteSettings // Modifying settings is a settings operation
+                        } else {
+                            Operation::WriteData // Default to write for other data modifications
+                        };
 
-                            let resolved_auth = validator
-                                .resolve_auth_key(&entry.auth.id, &settings_for_validation)?;
+                        let resolved_auth =
+                            validator.resolve_auth_key(&entry.auth.id, &settings_for_validation)?;
 
-                            let has_permission =
-                                validator.check_permissions(&resolved_auth, &operation_type)?;
+                        let has_permission =
+                            validator.check_permissions(&resolved_auth, &operation_type)?;
 
-                            if has_permission {
-                                crate::backend::VerificationStatus::Verified
+                        if has_permission {
+                            crate::backend::VerificationStatus::Verified
+                        } else {
+                            return Err(Error::Authentication(
+                                "authentication validation failed: insufficient permissions"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        // No auth configuration found in historical settings
+                        // Check if this is a bootstrap operation (adding auth config for the first time)
+                        if has_settings_update || entry.subtrees().contains(&SETTINGS.to_string()) {
+                            // This operation is updating settings - check if it's adding auth configuration
+                            if let Ok(settings_data) = entry.data(SETTINGS) {
+                                if let Ok(new_settings) =
+                                    serde_json::from_str::<KVNested>(settings_data)
+                                {
+                                    if matches!(new_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+                                    {
+                                        // This is a bootstrap operation - adding auth config for the first time
+                                        // Allow it since it's setting up authentication
+                                        crate::backend::VerificationStatus::Verified
+                                    } else {
+                                        return Err(Error::Authentication(
+                                            "No authentication configuration found - all entries must be authenticated"
+                                                .to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    return Err(Error::Authentication(
+                                        "No authentication configuration found - all entries must be authenticated"
+                                            .to_string(),
+                                    ));
+                                }
                             } else {
                                 return Err(Error::Authentication(
-                                    "authentication validation failed: insufficient permissions"
+                                    "No authentication configuration found - all entries must be authenticated"
                                         .to_string(),
                                 ));
                             }
+                        } else {
+                            return Err(Error::Authentication(
+                                "No authentication configuration found - all entries must be authenticated"
+                                    .to_string(),
+                            ));
                         }
-                        _ => {
-                            // This should not happen after bootstrapping, but handle gracefully
-                            crate::backend::VerificationStatus::Unverified
-                        }
-                    }
-                }
-                Ok(false) => {
-                    // Signature verification failed
-                    return Err(Error::Authentication(
-                        "authentication validation failed: signature verification failed"
-                            .to_string(),
-                    ));
-                }
-                Err(e) => {
-                    // This should not happen after bootstrapping, but handle gracefully
-                    let error_msg = e.to_string();
-                    if error_msg.contains("No auth configuration found")
-                        || error_msg.contains("no authentication configuration")
-                    {
-                        // This should not happen after bootstrapping
-                        crate::backend::VerificationStatus::Unverified
-                    } else {
-                        return Err(e);
                     }
                 }
             }
-        } else {
-            // Entry is unsigned - store as unverified for backward compatibility
-            crate::backend::VerificationStatus::Unverified
+            Ok(false) => {
+                // Signature verification failed
+                return Err(Error::Authentication(
+                    "authentication validation failed: signature verification failed".to_string(),
+                ));
+            }
+            Err(e) => {
+                // Authentication validation error
+                return Err(e);
+            }
         };
 
         // Get the entry's ID

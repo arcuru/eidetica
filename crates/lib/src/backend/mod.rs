@@ -18,17 +18,24 @@ pub use in_memory::InMemoryBackend;
 /// This enum tracks whether an entry has been cryptographically verified
 /// by the higher-level authentication system. The backend stores this status
 /// but does not perform verification itself - that's handled by the Tree/Operation layers.
+///
+/// Currently all local entries must be authenticated (Verified), but this enum
+/// is designed to support future sync scenarios where entries may be received
+/// before verification is complete.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
 )]
 pub enum VerificationStatus {
-    /// Entry has not been verified
+    /// Entry has been cryptographically verified as authentic.
+    /// This is the default for all locally created entries.
     #[default]
-    Unverified,
-    /// Entry has been cryptographically verified as authentic
     Verified,
-    /// Entry failed verification (invalid signature, revoked key, etc.)
+    /// Entry failed verification (invalid signature, revoked key, etc.).
+    /// Also used temporarily for entries awaiting verification during sync.
     Failed,
+    // Future: Add `Unverified` when implementing remote sync:
+    // /// Entry received from remote source, awaiting verification
+    // Unverified,
 }
 
 /// Backend trait abstracting the underlying storage mechanism for Eidetica entries.
@@ -83,6 +90,35 @@ pub trait Backend: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or an error during storage.
     fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
+
+    /// Stores an entry with verified status (convenience method for local entries).
+    ///
+    /// This is a convenience method that calls `put(VerificationStatus::Verified, entry)`.
+    /// Use this for locally created and signed entries.
+    ///
+    /// # Arguments
+    /// * `entry` - The `Entry` to store as verified.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    fn put_verified(&mut self, entry: Entry) -> Result<()> {
+        self.put(VerificationStatus::Verified, entry)
+    }
+
+    /// Stores an entry with failed verification status (convenience method for sync scenarios).
+    ///
+    /// This is a convenience method that calls `put(VerificationStatus::Failed, entry)`.
+    /// Use this for entries that failed verification or are pending verification from sync.
+    /// In the future, this may use a dedicated `Unverified` status.
+    ///
+    /// # Arguments
+    /// * `entry` - The `Entry` to store as failed/unverified.
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    fn put_unverified(&mut self, entry: Entry) -> Result<()> {
+        self.put(VerificationStatus::Failed, entry)
+    }
 
     /// Updates the verification status of an existing entry.
     ///

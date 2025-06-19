@@ -1,16 +1,13 @@
+use crate::helpers::*;
 use eidetica::Error;
 use eidetica::auth::types::{AuthId, AuthKey, KeyStatus, Permission};
-use eidetica::backend::InMemoryBackend;
-use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
 use eidetica::subtree::KVStore;
 
 /// Test basic entry retrieval functionality
 #[test]
 fn test_get_entry_basic() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let tree = setup_tree_with_key("test_key");
 
     // Create an operation and commit it
     let op = tree.new_operation().expect("Failed to create operation");
@@ -25,16 +22,14 @@ fn test_get_entry_basic() {
     // Test get_entry
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.auth.id, AuthId::default());
-    assert_eq!(entry.auth.signature, None);
+    assert_eq!(entry.auth.id, AuthId::Direct("test_key".to_string()));
+    assert!(entry.auth.signature.is_some());
 }
 
 /// Test get_entry with non-existent entry
 #[test]
 fn test_get_entry_not_found() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Try to get non-existent entry
     let result = tree.get_entry("non_existent_entry");
@@ -45,9 +40,7 @@ fn test_get_entry_not_found() {
 /// Test get_entries with multiple entries
 #[test]
 fn test_get_entries_multiple() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Create multiple entries
     let mut entry_ids = Vec::new();
@@ -75,9 +68,7 @@ fn test_get_entries_multiple() {
 /// Test get_entries with non-existent entry
 #[test]
 fn test_get_entries_not_found() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Create one valid entry
     let op = tree.new_operation().expect("Failed to create operation");
@@ -97,9 +88,7 @@ fn test_get_entries_not_found() {
 /// Test entry existence checking via get_entry
 #[test]
 fn test_entry_existence_checking() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Create an entry
     let op = tree.new_operation().expect("Failed to create operation");
@@ -121,17 +110,20 @@ fn test_entry_existence_checking() {
 /// Test tree validation - entries from different trees should be rejected
 #[test]
 fn test_tree_validation_rejects_foreign_entries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = KVNested::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
-    let tree1 = db.new_tree(settings1).expect("Failed to create tree1");
+    let tree1 = db
+        .new_tree(settings1, "test_key")
+        .expect("Failed to create tree1");
 
     let mut settings2 = KVNested::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
-    let tree2 = db.new_tree(settings2).expect("Failed to create tree2");
+    let tree2 = db
+        .new_tree(settings2, "test_key")
+        .expect("Failed to create tree2");
 
     // Create an entry in tree1
     let op1 = tree1
@@ -179,17 +171,20 @@ fn test_tree_validation_rejects_foreign_entries() {
 /// Test tree validation with get_entries
 #[test]
 fn test_tree_validation_get_entries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = KVNested::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
-    let tree1 = db.new_tree(settings1).expect("Failed to create tree1");
+    let tree1 = db
+        .new_tree(settings1, "test_key")
+        .expect("Failed to create tree1");
 
     let mut settings2 = KVNested::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
-    let tree2 = db.new_tree(settings2).expect("Failed to create tree2");
+    let tree2 = db
+        .new_tree(settings2, "test_key")
+        .expect("Failed to create tree2");
 
     // Create entries in tree1
     let mut tree1_entries = Vec::new();
@@ -236,9 +231,7 @@ fn test_tree_validation_get_entries() {
 /// Test authentication helpers with signed entries
 #[test]
 fn test_auth_helpers_signed_entries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
+    let db = setup_db();
     // Add a private key
     let key_id = "TEST_KEY";
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
@@ -250,13 +243,15 @@ fn test_auth_helpers_signed_entries() {
         key_id.to_string(),
         AuthKey {
             key: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Write(10),
+            permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, key_id)
+        .expect("Failed to create tree");
 
     // Create signed entry
     let op = tree
@@ -285,14 +280,12 @@ fn test_auth_helpers_signed_entries() {
     assert!(!auth_info.is_signed_by("OTHER_KEY"));
 }
 
-/// Test authentication helpers with unsigned entries
+/// Test authentication helpers with default authenticated entries
 #[test]
-fn test_auth_helpers_unsigned_entries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+fn test_auth_helpers_default_authenticated_entries() {
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
-    // Create unsigned entry
+    // Create entry using default authentication
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
         .get_subtree::<KVStore>("data")
@@ -300,22 +293,21 @@ fn test_auth_helpers_unsigned_entries() {
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
 
-    // Test entry auth access
+    // Test entry auth access - should be signed with default key
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     let auth_info = &entry.auth;
-    assert_eq!(auth_info.id, AuthId::default());
-    assert_eq!(auth_info.signature, None);
+    assert_eq!(auth_info.id, AuthId::Direct("test_key".to_string()));
+    assert!(auth_info.signature.is_some());
 
     // Test is_signed_by helper
-    assert!(!auth_info.is_signed_by("ANY_KEY"));
+    assert!(auth_info.is_signed_by("test_key"));
+    assert!(!auth_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test verify_entry_signature with different authentication scenarios
 #[test]
 fn test_verify_entry_signature_auth_scenarios() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
+    let db = setup_db();
     // Add a key
     let key_id = "TEST_KEY";
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
@@ -327,13 +319,15 @@ fn test_verify_entry_signature_auth_scenarios() {
         key_id.to_string(),
         AuthKey {
             key: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Write(10),
+            permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, key_id)
+        .expect("Failed to create tree");
 
     // Test 1: Create entry signed with valid key
     let op1 = tree
@@ -369,9 +363,7 @@ fn test_verify_entry_signature_auth_scenarios() {
 /// Test verify_entry_signature with unauthorized key
 #[test]
 fn test_verify_entry_signature_unauthorized_key() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
+    let db = setup_db();
     // Add two keys to the backend
     let authorized_key_id = "AUTHORIZED_KEY";
     let unauthorized_key_id = "UNAUTHORIZED_KEY";
@@ -389,13 +381,15 @@ fn test_verify_entry_signature_unauthorized_key() {
         authorized_key_id.to_string(),
         AuthKey {
             key: eidetica::auth::crypto::format_public_key(&authorized_public_key),
-            permissions: Permission::Write(10),
+            permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, authorized_key_id)
+        .expect("Failed to create tree");
 
     // Test with authorized key (should succeed)
     let op1 = tree
@@ -433,9 +427,7 @@ fn test_verify_entry_signature_unauthorized_key() {
 /// Test that verify_entry_signature validates against tree auth configuration
 #[test]
 fn test_verify_entry_signature_validates_tree_auth() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
+    let db = setup_db();
     // Add a key
     let key_id = "VALID_KEY";
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
@@ -447,13 +439,15 @@ fn test_verify_entry_signature_validates_tree_auth() {
         key_id.to_string(),
         AuthKey {
             key: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Write(10),
+            permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, key_id)
+        .expect("Failed to create tree");
 
     // Create a signed entry
     let op = tree
@@ -483,9 +477,7 @@ fn test_verify_entry_signature_validates_tree_auth() {
 /// Test tree queries functionality
 #[test]
 fn test_tree_queries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Get initial entries
     let initial_entries = tree
@@ -522,9 +514,7 @@ fn test_tree_queries() {
 /// Test error handling for auth helpers
 #[test]
 fn test_auth_helpers_error_handling() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Test with non-existent entry
     let result = tree.get_entry("non_existent_entry");
@@ -539,9 +529,7 @@ fn test_auth_helpers_error_handling() {
 /// Test performance: batch get_entries vs individual get_entry calls
 #[test]
 fn test_batch_vs_individual_retrieval() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
     // Create multiple entries
     let mut entry_ids = Vec::new();

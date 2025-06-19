@@ -1,22 +1,17 @@
 use super::helpers::*;
 use crate::create_auth_keys;
+use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{AuthId, AuthKey, KeyStatus, Permission};
-use eidetica::backend::InMemoryBackend;
-use eidetica::basedb::BaseDB;
+use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::data::KVNested;
 use eidetica::subtree::KVStore;
 
 #[test]
 fn test_authenticated_operations() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-
-    // Generate a key for testing
-    let _public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
-
-    // Create a tree
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let db = setup_db_with_key("TEST_KEY");
+    let tree = db
+        .new_tree(KVNested::new(), "TEST_KEY")
+        .expect("Failed to create tree");
 
     // Create an authenticated operation
     let op = tree
@@ -42,15 +37,18 @@ fn test_authenticated_operations() {
 
 #[test]
 fn test_operation_auth_methods() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     // Generate keys for testing
     let _public_key1 = db.add_private_key("KEY1").expect("Failed to add key1");
     let _public_key2 = db.add_private_key("KEY2").expect("Failed to add key2");
 
-    // Create a tree
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    // Add test key and create a tree
+    db.add_private_key("TEST_KEY")
+        .expect("Failed to add test key");
+    let tree = db
+        .new_tree(KVNested::new(), "TEST_KEY")
+        .expect("Failed to create tree");
 
     // Test operations with different auth key IDs
     let op1 = tree
@@ -58,82 +56,91 @@ fn test_operation_auth_methods() {
         .expect("Failed to create operation");
     assert_eq!(op1.auth_key_id(), Some("KEY1"));
 
-    // Test set_auth_key method (mutable)
+    // Test set_auth_key method (mutable) - overrides default auth key
     let mut op2 = tree.new_operation().expect("Failed to create operation");
-    assert_eq!(op2.auth_key_id(), None);
+    assert_eq!(op2.auth_key_id(), Some("TEST_KEY")); // Gets default auth key
     op2.set_auth_key("KEY2");
-    assert_eq!(op2.auth_key_id(), Some("KEY2"));
+    assert_eq!(op2.auth_key_id(), Some("KEY2")); // Override with KEY2
 }
 
 #[test]
 fn test_tree_default_authentication() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     // Generate a key for testing
     let _public_key = db
         .add_private_key("DEFAULT_KEY")
         .expect("Failed to add key");
 
-    // Create a tree
-    let mut tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    // Create a tree - automatically sets default auth key
+    let mut tree = db
+        .new_tree(KVNested::new(), "DEFAULT_KEY")
+        .expect("Failed to create tree");
 
-    // Initially no default auth key
-    assert_eq!(tree.default_auth_key(), None);
-
-    // Set a default auth key
-    tree.set_default_auth_key("DEFAULT_KEY");
+    // Tree should have the provided key as default
     assert_eq!(tree.default_auth_key(), Some("DEFAULT_KEY"));
 
     // Operations should inherit the default key
     let op = tree.new_operation().expect("Failed to create operation");
     assert_eq!(op.auth_key_id(), Some("DEFAULT_KEY"));
 
+    // Change the default to a different key
+    db.add_private_key("OTHER_KEY")
+        .expect("Failed to add other key");
+    tree.set_default_auth_key("OTHER_KEY");
+    assert_eq!(tree.default_auth_key(), Some("OTHER_KEY"));
+
+    let op2 = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op2.auth_key_id(), Some("OTHER_KEY"));
+
     // Clear the default
     tree.clear_default_auth_key();
     assert_eq!(tree.default_auth_key(), None);
 
-    // New operations should not have a key
-    let op2 = tree.new_operation().expect("Failed to create operation");
-    assert_eq!(op2.auth_key_id(), None);
+    // New operations should not have a key and should fail at commit
+    let op3 = tree.new_operation().expect("Failed to create operation");
+    assert_eq!(op3.auth_key_id(), None);
+
+    // Try to use the operation - should fail at commit
+    let store = op3
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store.set("test", "value").expect("Failed to set value");
+    let result = op3.commit();
+    assert!(result.is_err(), "Should fail without authentication");
 }
 
 #[test]
-fn test_unsigned_operations() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+fn test_mandatory_authentication() {
+    let (_db, tree) = setup_db_and_tree_with_key("TEST_KEY");
 
-    // Create a tree
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
-
-    // Create an unsigned operation
+    // Create an operation - should automatically get the default auth key
     let op = tree.new_operation().expect("Failed to create operation");
 
-    // Should have no auth key ID
-    assert_eq!(op.auth_key_id(), None);
+    // Should have the default auth key ID set automatically
+    assert_eq!(op.auth_key_id(), Some("TEST_KEY"));
 
-    // Should still be able to use it
+    // Should be able to use it normally
     let store = op
         .get_subtree::<KVStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
-    // Commit should work
-    let entry_id = op.commit().expect("Failed to commit");
-
-    // Verify the entry is unsigned
-    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.auth.id, AuthId::default());
-    assert_eq!(entry.auth.signature, None);
+    // Commit should succeed with authentication
+    let result = op.commit();
+    assert!(result.is_ok(), "Should succeed with authentication");
 }
 
 #[test]
 fn test_missing_authentication_key_error() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
-    // Create a tree
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    // Add test key and create a tree
+    db.add_private_key("TEST_KEY")
+        .expect("Failed to add test key");
+    let tree = db
+        .new_tree(KVNested::new(), "TEST_KEY")
+        .expect("Failed to create tree");
 
     // Create an authenticated operation with a non-existent key (this succeeds)
     let op = tree
@@ -154,8 +161,7 @@ fn test_missing_authentication_key_error() {
 
 #[test]
 fn test_validation_pipeline_with_concurrent_settings_changes() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     // Generate keys for testing
     let key1 = db.add_private_key("KEY1").expect("Failed to add key1");
@@ -174,7 +180,9 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, "KEY1")
+        .expect("Failed to create tree");
 
     // Create operation that adds KEY2 to auth settings
     let op1 = tree
@@ -231,8 +239,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
 
 #[test]
 fn test_validation_pipeline_with_corrupted_auth_data() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     let valid_key = db.add_private_key("VALID_KEY").expect("Failed to add key");
 
@@ -249,7 +256,9 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     );
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, "VALID_KEY")
+        .expect("Failed to create tree");
 
     // Valid operation should work
     test_operation_succeeds(&tree, "VALID_KEY", "data", "Valid key before corruption");
@@ -316,20 +325,25 @@ fn test_validation_pipeline_settings_protection() {
 
 #[test]
 fn test_validation_pipeline_with_missing_keys() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
-    // Create tree with no auth keys configured
+    // Add test key and create tree
+    db.add_private_key("TEST_KEY")
+        .expect("Failed to add test key");
     let settings = KVNested::new();
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let mut tree = db
+        .new_tree(settings, "TEST_KEY")
+        .expect("Failed to create tree");
 
-    // Unsigned operations should work
+    // Clear default auth to test operations without authentication
+    tree.clear_default_auth_key();
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
         .get_subtree::<KVStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
-    let _entry_id = op.commit().expect("Unsigned operation should work");
+    let result = op.commit();
+    assert!(result.is_err(), "Should fail without authentication");
 
     // Authenticated operations should fail at commit time due to missing key
     let op = tree
@@ -351,19 +365,27 @@ fn test_validation_pipeline_entry_level_validation() {
     let mut entries = Vec::new();
 
     // Create a backend and some test entries
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     // Generate keys
+    let admin_key = db.add_private_key("ADMIN_KEY").expect("Failed to add key");
     let active_key = db.add_private_key("ACTIVE_KEY").expect("Failed to add key");
     let revoked_key = db
         .add_private_key("REVOKED_KEY")
         .expect("Failed to add key");
 
-    // Create auth settings with active and revoked keys
+    // Create auth settings with admin, active and revoked keys
     let mut settings = KVNested::new();
     let mut auth_settings = KVNested::new();
 
+    auth_settings.set(
+        "ADMIN_KEY".to_string(),
+        AuthKey {
+            key: format_public_key(&admin_key),
+            permissions: Permission::Admin(0),
+            status: KeyStatus::Active,
+        },
+    );
     auth_settings.set(
         "ACTIVE_KEY".to_string(),
         AuthKey {
@@ -382,7 +404,9 @@ fn test_validation_pipeline_entry_level_validation() {
     );
 
     settings.set_map("auth", auth_settings);
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let tree = db
+        .new_tree(settings, "ADMIN_KEY")
+        .expect("Failed to create tree");
 
     // Create entries with various keys
     for i in 0..5 {
