@@ -59,6 +59,12 @@ fn main() -> io::Result<()> {
     // Initialize BaseDB with the loaded or new backend
     let db = BaseDB::new(backend);
 
+    // Add a default key for CLI operations (all entries must now be authenticated)
+    const DEFAULT_CLI_KEY: &str = "cli_default_key";
+    if db.add_private_key(DEFAULT_CLI_KEY).is_err() {
+        // Key might already exist, which is fine
+    }
+
     // Store trees by name
     let mut trees: HashMap<String, Tree> = HashMap::new();
 
@@ -135,7 +141,7 @@ fn main() -> io::Result<()> {
 
                 let name = args[1];
 
-                match db.new_tree_default() {
+                match db.new_tree_default(DEFAULT_CLI_KEY) {
                     Ok(tree) => {
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         trees.insert(name.to_string(), tree);

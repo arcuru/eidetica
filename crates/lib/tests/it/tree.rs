@@ -1,10 +1,7 @@
 use crate::helpers::*;
-use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::constants::SETTINGS;
 use eidetica::data::KVNested;
 use eidetica::subtree::KVStore;
-use eidetica::tree::Tree;
-use std::sync::{Arc, Mutex};
 
 #[test]
 fn test_insert_into_tree() {
@@ -783,20 +780,23 @@ fn test_new_operation_with_empty_tips_validation() {
 
 #[test]
 fn test_new_operation_with_invalid_tree_tips() {
-    // Use the same backend for both trees
-    let backend = Arc::new(Mutex::new(
-        Box::new(InMemoryBackend::new()) as Box<dyn Backend>
-    ));
+    const TEST_KEY1: &str = "test_key1";
+    const TEST_KEY2: &str = "test_key2";
+    let db = setup_db_with_keys(&[TEST_KEY1, TEST_KEY2]);
 
     // Create tree1
     let mut tree1_settings = KVNested::new();
     tree1_settings.set_string("name".to_string(), "tree1".to_string());
-    let tree1 = Tree::new(tree1_settings, backend.clone(), None).expect("Failed to create tree1");
+    let tree1 = db
+        .new_tree(tree1_settings, TEST_KEY1)
+        .expect("Failed to create tree1");
 
     // Create tree2 with same backend but different root
     let mut tree2_settings = KVNested::new();
     tree2_settings.set_string("name".to_string(), "tree2".to_string());
-    let tree2 = Tree::new(tree2_settings, backend.clone(), None).expect("Failed to create tree2");
+    let tree2 = db
+        .new_tree(tree2_settings, TEST_KEY2)
+        .expect("Failed to create tree2");
 
     // Create an entry in tree1
     let op1 = tree1.new_operation().expect("Failed to create operation");

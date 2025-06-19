@@ -1,28 +1,88 @@
 use eidetica::backend::InMemoryBackend;
-use eidetica::basedb::BaseDB;
 use eidetica::data::{KVNested, NestedValue};
 use eidetica::subtree::KVStore;
 
-/// Creates a basic tree using an InMemoryBackend
-pub fn setup_tree() -> eidetica::Tree {
+const DEFAULT_TEST_KEY_ID: &str = "test_key";
+
+/// Creates a basic authenticated database with the default test key
+pub fn setup_db() -> eidetica::basedb::BaseDB {
     let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    db.new_tree_default()
+    let db = eidetica::basedb::BaseDB::new(backend);
+    db.add_private_key(DEFAULT_TEST_KEY_ID)
+        .expect("Failed to add default test key");
+    db
+}
+
+/// Creates a database without any default keys (for tests that manage keys manually)
+pub fn setup_empty_db() -> eidetica::basedb::BaseDB {
+    let backend = Box::new(InMemoryBackend::new());
+    eidetica::basedb::BaseDB::new(backend)
+}
+
+/// Creates an authenticated database with a specific key
+pub fn setup_db_with_key(key_id: &str) -> eidetica::basedb::BaseDB {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = eidetica::basedb::BaseDB::new(backend);
+    db.add_private_key(key_id).expect("Failed to add test key");
+    db
+}
+
+/// Creates an authenticated database with multiple keys
+pub fn setup_db_with_keys(key_ids: &[&str]) -> eidetica::basedb::BaseDB {
+    let backend = Box::new(InMemoryBackend::new());
+    let db = eidetica::basedb::BaseDB::new(backend);
+    for key_id in key_ids {
+        db.add_private_key(key_id).expect("Failed to add test key");
+    }
+    db
+}
+
+/// Creates a basic tree using an InMemoryBackend with authentication
+pub fn setup_tree() -> eidetica::Tree {
+    let db = setup_db();
+    db.new_tree_default(DEFAULT_TEST_KEY_ID)
         .expect("Failed to create tree for testing")
 }
 
-/// Creates a tree with initial settings using KVNested
+/// Creates a tree with a specific key
+pub fn setup_tree_with_key(key_id: &str) -> eidetica::Tree {
+    let db = setup_db_with_key(key_id);
+    db.new_tree_default(key_id)
+        .expect("Failed to create tree for testing")
+}
+
+/// Creates a tree and database with a specific key
+pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, eidetica::Tree) {
+    let db = setup_db_with_key(key_id);
+    let tree = db
+        .new_tree_default(key_id)
+        .expect("Failed to create tree for testing");
+    (db, tree)
+}
+
+/// Creates a tree with initial settings using KVNested with authentication
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
-    let mut kv_nested = KVNested::new();
+    let db = setup_db();
+    let tree = db
+        .new_tree_default(DEFAULT_TEST_KEY_ID)
+        .expect("Failed to create tree");
 
-    for (key, value) in settings {
-        kv_nested.set_string(*key, *value);
+    // Add the user settings through an operation
+    let op = tree.new_operation().expect("Failed to create operation");
+    {
+        let settings_store = op
+            .get_subtree::<KVStore>("_settings")
+            .expect("Failed to get settings subtree");
+
+        for (key, value) in settings {
+            settings_store
+                .set(*key, *value)
+                .expect("Failed to set setting");
+        }
     }
+    op.commit().expect("Failed to commit settings");
 
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    db.new_tree(kv_nested)
-        .expect("Failed to create tree with settings")
+    tree
 }
 
 /// Creates a KVNested with the specified key-value pairs

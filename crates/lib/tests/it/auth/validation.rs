@@ -1,15 +1,17 @@
 use super::helpers::*;
 use crate::create_auth_keys;
+use crate::helpers::*;
 use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
-use eidetica::auth::types::{AuthId, AuthKey, KeyStatus, Permission};
-use eidetica::backend::InMemoryBackend;
-use eidetica::basedb::BaseDB;
+use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::data::{KVNested, NestedValue};
 use eidetica::subtree::KVStore;
 
 #[test]
 fn test_backend_authentication_validation() {
-    let keys = create_auth_keys![("TEST_KEY", Permission::Write(10), KeyStatus::Active)];
+    let keys = create_auth_keys![
+        ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
+        ("TEST_KEY", Permission::Write(10), KeyStatus::Active)
+    ];
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
@@ -30,7 +32,10 @@ fn test_backend_authentication_validation() {
 
 #[test]
 fn test_authentication_validation_revoked_key() {
-    let keys = create_auth_keys![("REVOKED_KEY", Permission::Write(10), KeyStatus::Revoked)];
+    let keys = create_auth_keys![
+        ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
+        ("REVOKED_KEY", Permission::Write(10), KeyStatus::Revoked)
+    ];
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
@@ -54,8 +59,13 @@ fn test_authentication_validation_revoked_key() {
 #[test]
 fn test_permission_checking_admin_operations() {
     let keys = create_auth_keys![
+        ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("WRITE_KEY", Permission::Write(10), KeyStatus::Active),
-        ("ADMIN_KEY", Permission::Admin(1), KeyStatus::Active)
+        (
+            "SECONDARY_ADMIN_KEY",
+            Permission::Admin(1),
+            KeyStatus::Active
+        )
     ];
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
@@ -69,15 +79,15 @@ fn test_permission_checking_admin_operations() {
     );
     test_operation_succeeds(
         &tree,
-        "ADMIN_KEY",
+        "SECONDARY_ADMIN_KEY",
         "data",
-        "Admin key should be able to write data",
+        "Secondary admin key should be able to write data",
     );
     test_operation_succeeds(
         &tree,
-        "ADMIN_KEY",
+        "SECONDARY_ADMIN_KEY",
         "_settings",
-        "Admin key should be able to modify settings",
+        "Secondary admin key should be able to modify settings",
     );
     test_operation_fails(
         &tree,
@@ -103,36 +113,46 @@ fn test_permission_checking_admin_operations() {
 }
 
 #[test]
-fn test_unsigned_entries_still_work() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+fn test_mandatory_authentication_enforcement() {
+    let db = setup_db();
 
-    // Create a tree with authentication enabled
+    // Add test key and create tree
+    db.add_private_key("TEST_KEY")
+        .expect("Failed to add test key");
     let mut settings = KVNested::new();
     let auth_settings = KVNested::new();
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let mut tree = db
+        .new_tree(settings, "TEST_KEY")
+        .expect("Failed to create tree");
 
-    // Create an operation without authentication (should still work for backward compatibility)
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
+    // Test 1: Normal operation with default auth should succeed
+    let op1 = tree.new_operation().expect("Failed to create operation");
+    let store1 = op1
         .get_subtree::<KVStore>("data")
         .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
+    store1.set("test", "value").expect("Failed to set value");
+    let result1 = op1.commit();
+    assert!(
+        result1.is_ok(),
+        "Operation with default auth should succeed"
+    );
 
-    // This should succeed - unsigned entries are allowed for backward compatibility
-    let entry_id = op.commit().expect("Unsigned entries should still work");
-
-    // Verify the entry was stored and is unsigned
-    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.auth.id, AuthId::default());
+    // Test 2: Clear default auth and try again - should fail
+    tree.clear_default_auth_key();
+    let op2 = tree.new_operation().expect("Failed to create operation");
+    let store2 = op2
+        .get_subtree::<KVStore>("data")
+        .expect("Failed to get subtree");
+    store2.set("test2", "value2").expect("Failed to set value");
+    let result2 = op2.commit();
+    assert!(result2.is_err(), "Operation without auth should fail");
 }
 
 #[test]
-fn test_mixed_authenticated_and_unsigned_entries() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+fn test_multiple_authenticated_entries() {
+    let db = setup_db();
 
     // Generate a key for testing
     let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
@@ -143,15 +163,18 @@ fn test_mixed_authenticated_and_unsigned_entries() {
 
     let auth_key = AuthKey {
         key: format_public_key(&public_key),
-        permissions: Permission::Write(10),
+        permissions: Permission::Admin(0), // Admin needed to create tree with auth
         status: KeyStatus::Active,
     };
     auth_settings.set("TEST_KEY".to_string(), auth_key);
     settings.set_map("auth", auth_settings);
 
-    let tree = db.new_tree(settings).expect("Failed to create tree");
+    let mut tree = db
+        .new_tree(settings, "TEST_KEY")
+        .expect("Failed to create tree");
 
-    // Create an unsigned entry first
+    // Clear default auth to test unsigned operation (should fail)
+    tree.clear_default_auth_key();
     let op1 = tree.new_operation().expect("Failed to create operation");
     let store1 = op1
         .get_subtree::<KVStore>("data")
@@ -159,9 +182,10 @@ fn test_mixed_authenticated_and_unsigned_entries() {
     store1
         .set("unsigned", "value")
         .expect("Failed to set value");
-    let entry_id1 = op1.commit().expect("Failed to commit unsigned");
+    let result1 = op1.commit();
+    assert!(result1.is_err(), "Unsigned operation should fail");
 
-    // Create a signed entry
+    // Create a signed entry (should succeed)
     let op2 = tree
         .new_authenticated_operation("TEST_KEY")
         .expect("Failed to create authenticated operation");
@@ -171,10 +195,7 @@ fn test_mixed_authenticated_and_unsigned_entries() {
     store2.set("signed", "value").expect("Failed to set value");
     let entry_id2 = op2.commit().expect("Failed to commit signed");
 
-    // Verify both entries
-    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
-    assert_eq!(entry1.auth.id, AuthId::default());
-
+    // Verify the signed entry was stored correctly
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
     assert!(entry2.auth.is_signed_by("TEST_KEY"));
     assert!(
@@ -226,6 +247,7 @@ fn test_entry_validation_with_corrupted_auth_section() {
 #[test]
 fn test_entry_validation_with_mixed_key_states() {
     let keys = create_auth_keys![
+        ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("ACTIVE_KEY", Permission::Write(10), KeyStatus::Active),
         ("REVOKED_KEY", Permission::Write(20), KeyStatus::Revoked),
     ];

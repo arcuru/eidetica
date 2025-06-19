@@ -7,7 +7,10 @@ use eidetica::subtree::KVStore;
 fn setup_tree() -> eidetica::Tree {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    db.new_tree_default().expect("Failed to create tree")
+    db.add_private_key("BENCH_KEY")
+        .expect("Failed to add benchmark key");
+    db.new_tree_default("BENCH_KEY")
+        .expect("Failed to create tree")
 }
 
 /// Create a linear chain of entries for testing LCA performance

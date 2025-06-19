@@ -1,11 +1,7 @@
 use crate::helpers::*;
-use eidetica::backend::Backend;
-use eidetica::backend::InMemoryBackend;
 use eidetica::constants::SETTINGS;
 use eidetica::data::{KVNested, NestedValue};
 use eidetica::subtree::{KVStore, SubTree};
-use eidetica::tree::Tree;
-use std::sync::{Arc, Mutex};
 
 #[test]
 fn test_atomicop_through_kvstore() {
@@ -205,10 +201,8 @@ fn test_atomicop_with_delete() {
 
 #[test]
 fn test_atomicop_nested_values() {
-    // Create a backend and a tree
-    let backend = Box::new(InMemoryBackend::new());
-    let settings = KVNested::new();
-    let tree = Tree::new(settings, Arc::new(Mutex::new(backend)), None).unwrap();
+    const TEST_KEY: &str = "test_key";
+    let (_db, tree) = setup_db_and_tree_with_key(TEST_KEY);
 
     // Create an operation
     let op1 = tree.new_operation().unwrap();
@@ -258,15 +252,7 @@ fn test_atomicop_nested_values() {
 
 #[test]
 fn test_metadata_for_settings_entries() {
-    // Create a new in-memory backend
-    let backend = Arc::new(Mutex::new(
-        Box::new(InMemoryBackend::new()) as Box<dyn Backend>
-    ));
-
-    // Create a new tree with some settings
-    let mut settings = KVNested::new();
-    settings.set_string("name".to_string(), "test_tree".to_string());
-    let tree = Tree::new(settings, backend.clone(), None).unwrap();
+    let tree = setup_tree_with_settings(&[("name", "test_tree")]);
 
     // Create a settings update
     let settings_op = tree.new_operation().unwrap();
@@ -280,10 +266,9 @@ fn test_metadata_for_settings_entries() {
     data_subtree.set("key1", "value1").unwrap();
     let data_id = data_op.commit().unwrap();
 
-    // Get both entries from the backend
-    let backend_guard = backend.lock().unwrap();
-    let settings_entry = backend_guard.get(&settings_id).unwrap();
-    let data_entry = backend_guard.get(&data_id).unwrap();
+    // Get both entries from the backend through the tree
+    let settings_entry = tree.get_entry(&settings_id).unwrap();
+    let data_entry = tree.get_entry(&data_id).unwrap();
 
     // Verify settings entry has no metadata (as it's a settings update)
     assert!(settings_entry.get_metadata().is_none());

@@ -53,7 +53,18 @@ pub fn setup_authenticated_tree(
     }
 
     settings.set_map("auth", auth_settings);
-    db.new_tree(settings).expect("Failed to create tree")
+
+    // Find the first key with Admin permissions for tree creation
+    let admin_key = keys
+        .iter()
+        .find(|(_, permission, _)| matches!(permission, Permission::Admin(_)))
+        .map(|(key_id, _, _)| *key_id)
+        .unwrap_or_else(|| {
+            panic!("setup_authenticated_tree requires at least one key with Admin permissions for tree creation")
+        });
+
+    db.new_tree(settings, admin_key)
+        .expect("Failed to create tree")
 }
 
 /// Test that an operation succeeds

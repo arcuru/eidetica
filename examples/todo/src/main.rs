@@ -12,6 +12,9 @@ use eidetica::y_crdt::{Map, Transact};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// Default authentication key ID for the todo app
+const TODO_APP_KEY_ID: &str = "TODO_APP_USER";
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -136,13 +139,32 @@ fn main() -> Result<()> {
 }
 
 fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
-    if path.exists() {
+    let db = if path.exists() {
         let backend = backend::InMemoryBackend::load_from_file(path)?;
-        Ok(BaseDB::new(Box::new(backend)))
+        BaseDB::new(Box::new(backend))
     } else {
         let backend = backend::InMemoryBackend::new();
-        Ok(BaseDB::new(Box::new(backend)))
+        BaseDB::new(Box::new(backend))
+    };
+
+    // Ensure the todo app authentication key exists
+    // First check if the key already exists
+    let existing_keys = db.list_private_keys().unwrap_or_default();
+    if !existing_keys.contains(&TODO_APP_KEY_ID.to_string()) {
+        // Add the key if it doesn't exist
+        match db.add_private_key(TODO_APP_KEY_ID) {
+            Ok(_) => {
+                println!("✓ New authentication key created");
+            }
+            Err(e) => {
+                println!("Warning: Could not create authentication key: {e}");
+            }
+        }
+    } else {
+        println!("✓ Authentication key loaded from database");
     }
+
+    Ok(db)
 }
 
 fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
@@ -163,11 +185,11 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
     let tree_name = "todo".to_string();
 
     // Try to find the tree by name
-    match db.find_tree(&tree_name) {
+    let mut tree = match db.find_tree(&tree_name) {
         Ok(mut trees) => {
             // If multiple trees with the same name exist, pop will return one arbitrarily.
             // We might want more robust handling later (e.g., error or config option).
-            Ok(trees.pop().unwrap()) // unwrap is safe because find_tree errors if empty
+            trees.pop().unwrap() // unwrap is safe because find_tree errors if empty
         }
         Err(Error::NotFound) => {
             // If not found, create a new one
@@ -175,19 +197,23 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             let mut settings = KVNested::new();
             settings.set_string("name", tree_name.clone());
 
-            let tree = db.new_tree(settings)?;
-
-            Ok(tree)
+            db.new_tree(settings, TODO_APP_KEY_ID)?
         }
         Err(e) => {
             // Propagate other errors
-            Err(e.into())
+            return Err(e.into());
         }
-    }
+    };
+
+    // Set the default authentication key for this tree
+    // This means all subsequent new_operation() calls will automatically use this key
+    tree.set_default_auth_key(TODO_APP_KEY_ID);
+
+    Ok(tree)
 }
 
 fn add_todo(tree: &Tree, title: String) -> Result<()> {
-    // Start an atomic operation
+    // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'todos' RowStore subtree
@@ -209,7 +235,7 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
 }
 
 fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
-    // Start an atomic operation
+    // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'todos' RowStore subtree
@@ -235,7 +261,7 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
 }
 
 fn list_todos(tree: &Tree) -> Result<()> {
-    // Start an atomic operation (for read-only)
+    // Start an atomic operation (for read-only, uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'todos' RowStore subtree
@@ -268,7 +294,7 @@ fn set_user_info(
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
-    // Start an atomic operation
+    // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'user_info' YrsStore subtree
@@ -299,7 +325,7 @@ fn set_user_info(
 }
 
 fn show_user_info(tree: &Tree) -> Result<()> {
-    // Start an atomic operation (for read-only)
+    // Start an atomic operation (for read-only, uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'user_info' YrsStore subtree
@@ -334,7 +360,7 @@ fn show_user_info(tree: &Tree) -> Result<()> {
 }
 
 fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
-    // Start an atomic operation
+    // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
     // Get a handle to the 'user_prefs' YrsStore subtree

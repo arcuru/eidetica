@@ -1,15 +1,13 @@
 use super::helpers::*;
 use crate::create_auth_keys;
+use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthId, KeyStatus, Permission};
-use eidetica::backend::InMemoryBackend;
-use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
 
 #[test]
 fn test_key_management() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_empty_db();
 
     // Initially no keys
     let keys = db.list_private_keys().expect("Failed to list keys");
@@ -41,7 +39,9 @@ fn test_key_management() {
     );
 
     // Test signing and verification
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let tree = db
+        .new_tree(KVNested::new(), key_id)
+        .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
@@ -70,8 +70,7 @@ fn test_import_private_key() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_empty_db();
 
     // Generate a key externally
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -87,7 +86,9 @@ fn test_import_private_key() {
     assert_eq!(keys[0], key_id);
 
     // Test that we can sign with the imported key
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let tree = db
+        .new_tree(KVNested::new(), key_id)
+        .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
@@ -112,8 +113,7 @@ fn test_backend_serialization() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db();
 
     // Add initial key
     let key_id = "TEST_KEY";
@@ -127,8 +127,9 @@ fn test_backend_serialization() {
     let public_key2 = signing_key2.verifying_key();
 
     // Set up authentication settings with both keys
+    // Note: First key needs admin permission to create tree with auth settings
     let keys = [
-        (key_id, Permission::Write(10), KeyStatus::Active),
+        (key_id, Permission::Admin(0), KeyStatus::Active),
         (key_id2, Permission::Write(20), KeyStatus::Active),
     ];
     let public_keys = vec![public_key, public_key2];
@@ -179,8 +180,7 @@ fn test_overwrite_existing_key() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_empty_db();
 
     // Add initial key
     let key_id = "TEST_KEY";
@@ -202,7 +202,9 @@ fn test_overwrite_existing_key() {
     assert_eq!(keys[0], key_id);
 
     // New key should work for signing
-    let tree = db.new_tree(KVNested::new()).expect("Failed to create tree");
+    let tree = db
+        .new_tree(KVNested::new(), key_id)
+        .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
@@ -224,8 +226,7 @@ fn test_overwrite_existing_key() {
 
 #[test]
 fn test_remove_nonexistent_key() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_empty_db();
 
     // Remove a key that doesn't exist - should succeed silently
     let result = db.remove_private_key("NONEXISTENT_KEY");
@@ -239,7 +240,7 @@ fn test_remove_nonexistent_key() {
 #[test]
 fn test_multiple_authenticated_entries() {
     let keys = create_auth_keys![
-        ("USER1", Permission::Write(10), KeyStatus::Active),
+        ("USER1", Permission::Admin(0), KeyStatus::Active), // Admin needed to create tree with auth
         ("USER2", Permission::Write(10), KeyStatus::Active)
     ];
     let (db, public_keys) = setup_test_db_with_keys(&keys);

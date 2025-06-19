@@ -1,3 +1,4 @@
+use crate::helpers::*;
 use eidetica::Error;
 use eidetica::backend::Backend;
 use eidetica::backend::InMemoryBackend;
@@ -5,11 +6,20 @@ use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
 use eidetica::subtree::KVStore;
 
-#[test]
-fn test_new_db_and_tree() {
+const TEST_KEY: &str = "test_key";
+
+fn setup_authenticated_db() -> BaseDB {
     let backend = Box::new(InMemoryBackend::new());
     let db = BaseDB::new(backend);
-    let tree_result = db.new_tree_default();
+    db.add_private_key(TEST_KEY)
+        .expect("Failed to add test key");
+    db
+}
+
+#[test]
+fn test_new_db_and_tree() {
+    let db = setup_authenticated_db();
+    let tree_result = db.new_tree_default(TEST_KEY);
     match tree_result {
         Ok(_) => println!("Tree creation succeeded"),
         Err(e) => {
@@ -21,9 +31,10 @@ fn test_new_db_and_tree() {
 
 #[test]
 fn test_load_tree() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let db = setup_authenticated_db();
+    let tree = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree");
     let root_id = tree.root_id().clone();
 
     // Drop the original tree instance
@@ -38,13 +49,16 @@ fn test_load_tree() {
 
 #[test]
 fn test_all_trees() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_authenticated_db();
 
-    let tree1 = db.new_tree_default().expect("Failed to create tree 1");
+    let tree1 = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 1");
     let root_id1 = tree1.root_id().clone();
 
-    let tree2 = db.new_tree_default().expect("Failed to create tree 2");
+    let tree2 = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 2");
     let root_id2 = tree2.root_id().clone();
 
     // Set the tree name through the Tree API
@@ -78,11 +92,12 @@ fn test_get_backend() {
 
 #[test]
 fn test_create_tree_with_initial_settings() {
-    let backend: Box<dyn Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db_with_key(TEST_KEY);
 
     // Create an empty tree first
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let tree = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree");
 
     // Then set the settings through operations
     let op = tree.new_operation().expect("Failed to start operation");
@@ -125,9 +140,7 @@ fn test_create_tree_with_initial_settings() {
 
 #[test]
 fn test_basic_subtree_modification() {
-    let backend: Box<dyn Backend> = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
-    let tree = db.new_tree_default().expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key(TEST_KEY);
 
     let op = tree.new_operation().expect("Failed to start operation");
     {
@@ -181,14 +194,16 @@ fn test_basic_subtree_modification() {
 
 #[test]
 fn test_find_tree() {
-    let backend = Box::new(InMemoryBackend::new());
-    let db = BaseDB::new(backend);
+    let db = setup_db_with_key(TEST_KEY);
 
     // Tree 1: No name
-    db.new_tree_default().expect("Failed to create tree 1");
+    db.new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 1");
 
     // Tree 2: Name "Tree2"
-    let tree2 = db.new_tree_default().expect("Failed to create tree 2");
+    let tree2 = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 2");
     let op2 = tree2.new_operation().expect("Failed to start operation");
     {
         let settings = op2
@@ -201,7 +216,9 @@ fn test_find_tree() {
     op2.commit().expect("Failed to commit");
 
     // Tree 3: Name "Tree3"
-    let tree3 = db.new_tree_default().expect("Failed to create tree 3");
+    let tree3 = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 3");
     let op3 = tree3.new_operation().expect("Failed to start operation");
     {
         let settings = op3
@@ -214,7 +231,9 @@ fn test_find_tree() {
     op3.commit().expect("Failed to commit");
 
     // Tree 4: Name "Tree3" (duplicate name)
-    let tree4 = db.new_tree_default().expect("Failed to create tree 4");
+    let tree4 = db
+        .new_tree_default(TEST_KEY)
+        .expect("Failed to create tree 4");
     let op4 = tree4.new_operation().expect("Failed to start operation");
     {
         let settings = op4

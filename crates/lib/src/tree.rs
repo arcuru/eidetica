@@ -35,31 +35,29 @@ impl Tree {
     /// Creates a new `Tree` instance.
     ///
     /// Initializes the tree by creating a root `Entry` containing the provided settings
-    /// and storing it in the backend.
+    /// and storing it in the backend. All trees must now be created with authentication.
     ///
     /// # Arguments
     /// * `settings` - A `KVNested` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
-    /// * `signing_key_id_opt` - Optional authentication key ID to use for the initial commit.
-    ///   If None, creates an unsigned tree (default for backward compatibility).
+    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
         initial_settings: KVNested,
         backend: Arc<Mutex<Box<dyn Backend>>>,
-        signing_key_id_opt: Option<&str>,
+        signing_key_id: &str,
     ) -> Result<Self> {
         // Check if auth is configured in the initial settings
         let auth_configured = matches!(initial_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
-        let (super_user_key_id_opt, final_tree_settings) = if auth_configured {
-            // Auth settings are already provided - use them as-is
-            // If a specific signing key is provided, use it; otherwise no default auth
-            (signing_key_id_opt.map(|s| s.to_string()), initial_settings)
-        } else if let Some(key_id) = signing_key_id_opt {
-            // User explicitly wants authentication but no auth config provided
-            // Verify the key exists and bootstrap auth config with it
+        let (super_user_key_id, final_tree_settings) = if auth_configured {
+            // Auth settings are already provided - use them as-is with the provided signing key
+            (signing_key_id.to_string(), initial_settings)
+        } else {
+            // No auth config provided - bootstrap auth configuration with the provided key
+            // Verify the key exists first
             {
                 let backend_guard = backend.lock().map_err(|_| {
                     Error::Io(std::io::Error::other(
@@ -67,15 +65,17 @@ impl Tree {
                     ))
                 })?;
 
-                let _private_key = backend_guard.get_private_key(key_id)?.ok_or_else(|| {
-                    Error::Authentication(format!(
-                        "Provided signing key ID '{key_id}' not found in backend"
-                    ))
-                })?;
+                let _private_key =
+                    backend_guard
+                        .get_private_key(signing_key_id)?
+                        .ok_or_else(|| {
+                            Error::Authentication(format!(
+                                "Provided signing key ID '{signing_key_id}' not found in backend"
+                            ))
+                        })?;
             } // backend_guard is dropped here
 
             // Bootstrap auth configuration with the provided key
-            let super_user_key_id: String;
             let public_key: ed25519_dalek::VerifyingKey;
 
             {
@@ -85,9 +85,8 @@ impl Tree {
                     ))
                 })?;
 
-                let private_key = backend_guard.get_private_key(key_id)?.unwrap();
+                let private_key = backend_guard.get_private_key(signing_key_id)?.unwrap();
                 public_key = private_key.verifying_key();
-                super_user_key_id = key_id.to_string();
             } // backend_guard is dropped here
 
             // Create auth settings with the provided key
@@ -97,16 +96,13 @@ impl Tree {
                 permissions: Permission::Admin(0), // Highest priority
                 status: KeyStatus::Active,
             };
-            auth_settings_handler.add_key(super_user_key_id.clone(), super_user_auth_key)?;
+            auth_settings_handler.add_key(signing_key_id.to_string(), super_user_auth_key)?;
 
             // Prepare final tree settings for the initial commit
             let mut final_tree_settings = initial_settings.clone();
             final_tree_settings.set_map("auth", auth_settings_handler.as_kvnested().clone());
 
-            (Some(super_user_key_id), final_tree_settings)
-        } else {
-            // No authentication needed - use original settings as-is
-            (None, initial_settings)
+            (signing_key_id.to_string(), final_tree_settings)
         };
 
         // Create the initial root entry using a temporary Tree and AtomicOp
@@ -123,7 +119,7 @@ impl Tree {
         let temp_tree_for_bootstrap = Tree {
             root: bootstrap_placeholder_id.clone(),
             backend: backend.clone(),
-            default_auth_key: super_user_key_id_opt.clone(),
+            default_auth_key: Some(super_user_key_id.clone()),
         };
 
         // Create the operation. If we have an auth key, it will be used automatically
@@ -144,7 +140,7 @@ impl Tree {
         Ok(Self {
             root: new_root_id,
             backend,
-            default_auth_key: super_user_key_id_opt,
+            default_auth_key: Some(super_user_key_id),
         })
     }
 
@@ -284,11 +280,13 @@ impl Tree {
 
     /// Insert an entry into the tree without modifying it.
     /// This is primarily for testing purposes or when you need full control over the entry.
+    /// Note: Since all entries must now be authenticated, this method assumes the entry
+    /// is already properly signed and verified.
     pub fn insert_raw(&self, entry: Entry) -> Result<ID> {
         let id = entry.id();
 
         let mut backend_guard = self.lock_backend()?;
-        backend_guard.put(crate::backend::VerificationStatus::Unverified, entry)?;
+        backend_guard.put_verified(entry)?;
 
         Ok(id)
     }
@@ -354,7 +352,8 @@ impl Tree {
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
     /// # let db = BaseDB::new(backend);
-    /// # let tree = db.new_tree(KVNested::new())?;
+    /// # db.add_private_key("TEST_KEY")?;
+    /// # let tree = db.new_tree(KVNested::new(), "TEST_KEY")?;
     /// # let op = tree.new_operation()?;
     /// let entry_id = op.commit()?;
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
@@ -403,7 +402,8 @@ impl Tree {
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
     /// # let db = BaseDB::new(backend);
-    /// # let tree = db.new_tree(KVNested::new())?;
+    /// # db.add_private_key("TEST_KEY")?;
+    /// # let tree = db.new_tree(KVNested::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
     /// let entries = tree.get_entries(entry_ids)?;
     /// # Ok(())
