@@ -2,6 +2,8 @@
 
 In Eidetica, all modifications to the data stored within a `Tree`'s `Subtree`s happen through an **`Operation`**. This is a fundamental concept ensuring atomicity and providing a consistent mechanism for interacting with your data.
 
+**Authentication Note**: All operations in Eidetica are authenticated by default. Every operation uses the tree's default signing key to ensure that all changes are cryptographically verified and can be traced to their source.
+
 Internally, the `Operation` corresponds to the `AtomicOp` struct.
 
 ## Why Operations?
@@ -11,16 +13,17 @@ Operations provide several key benefits:
 - **Atomicity**: Changes made to multiple `Subtree`s within a single `Operation` are committed together as one atomic unit. If the `commit()` fails, no changes are persisted. This is similar to transactions in traditional databases.
 - **Consistency**: An `Operation` captures a snapshot of the `Tree`'s state (specifically, the tips of the relevant `Subtree`s) when it's created or when a `Subtree` is first accessed within it. All reads and writes within that `Operation` occur relative to this consistent state.
 - **Change Staging**: Modifications made via `Subtree` handles are staged within the `Operation` object itself, not written directly to the backend until `commit()` is called.
+- **Authentication**: All operations are automatically authenticated using the tree's default signing key, ensuring data integrity and access control.
 - **History Creation**: A successful `commit()` results in the creation of a _new `Entry`_ in the `Tree`, containing the staged changes and linked to the previous state (the tips the `Operation` was based on). This is how history is built.
 
 ## The Operation Lifecycle
 
 Using an `Operation` follows a distinct lifecycle:
 
-1.  **Creation**: Start an operation from a `Tree` instance.
+1.  **Creation**: Start an authenticated operation from a `Tree` instance.
     ```rust
     let tree: Tree = /* obtain Tree instance */;
-    let op = tree.new_operation()?;
+    let op = tree.new_operation()?; // Automatically uses the tree's default signing key
     ```
 2.  **Subtree Access**: Get handles to the specific `Subtree`s you want to interact with. This implicitly loads the current state (tips) of that subtree into the operation if accessed for the first time.
     ```rust
@@ -35,7 +38,7 @@ Using an `Operation` follows a distinct lifecycle:
     config_store.set("last_updated", Utc::now().to_rfc3339())?;
     ```
     _Note: `get` methods within an operation read from the staged state, reflecting any changes already made within the same operation._
-4.  **Commit**: Finalize the changes. This consumes the `Operation` object, calculates the final `Entry` content based on staged changes, writes the new `Entry` to the `Backend`, and returns the `ID` of the newly created `Entry`.
+4.  **Commit**: Finalize the changes. This consumes the `Operation` object, calculates the final `Entry` content based on staged changes, cryptographically signs the entry, writes the new `Entry` to the `Backend`, and returns the `ID` of the newly created `Entry`.
     ```rust
     let new_entry_id = op.commit()?;
     println!("Changes committed. New state represented by Entry: {}", new_entry_id);
