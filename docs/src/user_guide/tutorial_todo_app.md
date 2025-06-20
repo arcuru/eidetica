@@ -24,11 +24,16 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     if path.exists() {
         // Load existing DB from file
         let backend = InMemoryBackend::load_from_file(path)?;
-        Ok(BaseDB::new(Box::new(backend)))
+        let db = BaseDB::new(Box::new(backend));
+        // Authentication keys are automatically loaded with the database
+        Ok(db)
     } else {
         // Create a new in-memory backend
         let backend = InMemoryBackend::new();
-        Ok(BaseDB::new(Box::new(backend)))
+        let db = BaseDB::new(Box::new(backend));
+        // Add authentication key (required for all operations)
+        db.add_private_key("todo_app_key")?;
+        Ok(db)
     }
 }
 
@@ -64,6 +69,7 @@ use anyhow::Result;
 
 fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
     let tree_name = "todo";
+    let auth_key = "todo_app_key"; // Must match the key added to the database
 
     // Attempt to find an existing tree by name using find_tree
     match db.find_tree(tree_name) {
@@ -77,9 +83,9 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(eidetica::Error::NotFound) => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eidetica::data::KVOverWrite::new(); // Tree settings
-            settings.set("name", tree_name);
-            let tree = db.new_tree(settings)?;
+            let mut settings = eidetica::data::KVNested::new(); // Tree settings
+            settings.set_string("name", tree_name);
+            let tree = db.new_tree(settings, auth_key)?;
 
             // No initial commit needed here as subtrees like RowStore handle
             // their creation upon first access within an operation.
@@ -101,17 +107,19 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
 
 All modifications to a `Tree`'s data happen within an `Operation`. Operations ensure atomicity – similar to transactions in traditional databases. Changes made within an operation are only applied to the Tree when the operation is successfully committed.
 
+Every operation is automatically authenticated using the tree's default signing key. This ensures that all changes are cryptographically verified and traceable.
+
 ```rust
 use eidetica::Tree;
 use anyhow::Result;
 
 fn some_data_modification(tree: &Tree) -> Result<()> {
-    // Start an atomic operation
-    let op = tree.new_operation()?;
+    // Start an authenticated atomic operation
+    let op = tree.new_operation()?; // Automatically uses the tree's default signing key
 
     // ... perform data changes using the 'op' handle ...
 
-    // Commit the changes atomically
+    // Commit the changes atomically (automatically signed)
     op.commit()?;
 
     Ok(())
@@ -173,7 +181,7 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
 }
 
 fn list_todos(tree: &Tree) -> Result<()> {
-    let op = tree.new_operation()?; // Read operation
+    let op = tree.new_operation()?;
     let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
     // Search/scan the subtree
     let todos_with_ids = todos_store.search(|_| true)?; // Get all

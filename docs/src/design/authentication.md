@@ -1,4 +1,4 @@
-**Document Status**: Draft - Authentication system not yet implemented
+**Document Status**: Direct Keys (stored in Tree Settings) are Implemented, User Authentication Tree support is In Progress.
 
 # Authentication Design
 
@@ -58,17 +58,20 @@ This document outlines the authentication and authorization scheme for Eidetica,
 
 Eidetica's authentication scheme is designed to leverage the same CRDT and Merkle-DAG principles that power the core database while providing robust access control for distributed environments. Unlike traditional authentication systems, this design must handle authorization conflicts that can arise from network partitions and concurrent modifications to access control rules.
 
+**As of the current implementation, authentication is mandatory for all entries.** All database operations require valid Ed25519 signatures, eliminating the concept of unsigned entries. This ensures data integrity and provides a consistent security model across all operations.
+
 The authentication system is **not** implemented as a pure consumer of the database API but is tightly integrated with the core system. This integration enables efficient validation and conflict resolution during entry creation and tree merging operations.
 
 ## Design Goals and Principles
 
 ### Primary Goals
 
-1. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
-2. **Cryptographic Security**: All authentication based on public/private key cryptography, with upgradable algorithms
-3. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
-4. **User Autonomy**: Users can manage their own keys without requiring admin intervention
-5. **Auditability**: All authentication changes are tracked in the immutable DAG history
+1. **Mandatory Authentication**: All entries must be cryptographically signed - no unsigned entries allowed
+2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
+3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
+4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
+5. **User Autonomy**: Users can manage their own keys without requiring admin intervention
+6. **Auditability**: All authentication changes are tracked in the immutable DAG history
 
 ### Non-Goals
 

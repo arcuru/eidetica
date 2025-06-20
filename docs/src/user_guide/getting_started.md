@@ -21,23 +21,28 @@ To start using Eidetica, you need to:
 
 1. Choose and initialize a **Backend** (storage mechanism)
 2. Create a **BaseDB** instance (the main entry point)
-3. Create or access a **Tree** (logical container for data)
+3. **Add authentication keys** (required for all operations)
+4. Create or access a **Tree** (logical container for data)
 
 Here's a simple example:
 
 ```rust
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
+use eidetica::data::KVNested;
 use std::path::PathBuf;
 
 // Create a new in-memory database
 let backend = InMemoryBackend::new();
 let db = BaseDB::new(Box::new(backend));
 
+// Add an authentication key (required for all operations)
+db.add_private_key("my_key")?;
+
 // Create a tree to store data
-let mut settings = eidetica::data::KVOverWrite::new();
-settings.set("name", "my_tree");
-let tree = db.new_tree(settings)?;
+let mut settings = KVNested::new();
+settings.set_string("name", "my_tree");
+let tree = db.new_tree(settings, "my_key")?;
 ```
 
 The backend determines how your data is stored. The example above uses `InMemoryBackend`, which keeps everything in memory but can save to a file:
@@ -57,7 +62,13 @@ You can load a previously saved database:
 let path = PathBuf::from("my_database.json");
 let backend = InMemoryBackend::load_from_file(&path)?;
 let db = BaseDB::new(Box::new(backend));
+
+// Note: Authentication keys are automatically loaded with the database
 ```
+
+## Authentication Requirements
+
+**Important:** All operations in Eidetica require authentication. Every entry created in the database must be cryptographically signed with a valid Ed25519 private key. This ensures data integrity and provides a consistent security model.
 
 ## Working with Data
 
@@ -84,7 +95,7 @@ All operations in Eidetica happen within an atomic **Operation**:
 **Inserting Data:**
 
 ```rust
-// Start an operation
+// Start an authenticated operation
 let op = tree.new_operation()?;
 
 // Get or create a RowStore subtree
@@ -94,7 +105,7 @@ let people = op.get_subtree::<eidetica::subtree::RowStore<Person>>("people")?;
 let person = Person { name: "Alice".to_string(), age: 30 };
 let id = people.insert(person)?;
 
-// Commit the changes
+// Commit the changes (automatically signed with the tree's default key)
 op.commit()?;
 ```
 

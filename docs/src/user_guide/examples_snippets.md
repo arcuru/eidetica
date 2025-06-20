@@ -38,10 +38,11 @@ if db_path.exists() {
 ## 2. Creating or Loading a Tree
 
 ```rust
-use eidetica::data::KVOverWrite;
+use eidetica::data::KVNested;
 
 let db: BaseDB = /* obtained from step 1 */;
 let tree_name = "my_app_data";
+let auth_key = "my_key"; // Must match a key added to the database
 
 let tree = match db.find_tree(tree_name) {
     Ok(mut trees) => {
@@ -50,9 +51,9 @@ let tree = match db.find_tree(tree_name) {
     }
     Err(Error::NotFound) => {
         println!("Creating new tree: {}", tree_name);
-        let mut settings = KVOverWrite::new();
-        settings.set("name", tree_name);
-        db.new_tree(settings)?
+        let mut settings = KVNested::new();
+        settings.set_string("name", tree_name);
+        db.new_tree(settings, auth_key)? // All trees require authentication
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };
@@ -67,7 +68,7 @@ use eidetica::subtree::KVStore;
 
 let tree: Tree = /* obtained from step 2 */;
 
-// Start an operation
+// Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
 {
@@ -104,7 +105,7 @@ struct Task {
 
 let tree: Tree = /* obtained from step 2 */;
 
-// Start an operation
+// Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 let inserted_id;
 
@@ -206,7 +207,7 @@ use eidetica::subtree::{KVStore, NestedValue, KVNested};
 
 let tree: Tree = /* obtained from step 2 */;
 
-// Start an operation
+// Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
 // Get the KVStore subtree handle
@@ -325,7 +326,7 @@ use eidetica::y_crdt::{Map, Transact};
 
 let tree: Tree = /* obtained from step 2 */;
 
-// Start an operation
+// Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
 // Get the YrsStore subtree handle
