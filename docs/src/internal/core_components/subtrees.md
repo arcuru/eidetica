@@ -47,7 +47,7 @@ classDiagram
 **Features:**
 
 - **Record Management**: Stores instances of a user-defined type `T` (where `T: Serialize + Deserialize`).
-- **Automatic ID Generation**: Automatically generates a unique UUID (`String`) for each record inserted via `insert()`. This ID is used for subsequent `get()` and `set()` operations.
+- **Automatic ID Generation**: Automatically generates a unique UUID (as `String`) for each record inserted via `insert()`. This ID is used for subsequent `get()` and `set()` operations. Note: These are RowStore-specific record IDs, distinct from Eidetica's main `ID` type.
 - **CRUD Operations**: Provides `insert`, `get`, `set`, and `search` methods for managing records.
 - **Typed Access**: Accessed via `Operation::get_subtree::<RowStore<T>>("subtree_name")?`, providing type safety.
 
