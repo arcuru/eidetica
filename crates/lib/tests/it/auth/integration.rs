@@ -290,11 +290,12 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
         .set("after_corruption", "value")
         .expect("Failed to set value");
 
-    // The commit might fail due to corrupted auth data, which is expected behavior
+    // The commit should fail due to corrupted auth data
     let result = op2.commit();
-    // We don't assert success/failure here as it depends on implementation details
-    // The important thing is that it doesn't crash
-    let _entry_id = result.unwrap_or_else(|_| "corruption_handled".to_string());
+    assert!(
+        result.is_err(),
+        "Commit should fail due to corrupted auth settings, but it succeeded"
+    );
 }
 
 #[test]
