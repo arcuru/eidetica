@@ -37,9 +37,9 @@ impl<T> SubTree for RowStore<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
-    fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self> {
+    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.to_string(),
+            name: subtree_name.as_ref().to_string(),
             atomic_op: op.clone(),
             phantom: PhantomData,
         })
@@ -70,7 +70,8 @@ where
     /// Returns an error if:
     /// * The record doesn't exist (`Error::NotFound`)
     /// * There's a serialization/deserialization error
-    pub fn get(&self, key: &str) -> Result<T> {
+    pub fn get(&self, key: impl AsRef<str>) -> Result<T> {
+        let key = key.as_ref();
         // First check if there's any data in the atomic op itself
         let local_data: Result<KVOverWrite> = self.atomic_op.get_local_data(&self.name);
 
@@ -145,7 +146,8 @@ where
     ///
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
-    pub fn set(&self, key: &str, row: T) -> Result<()> {
+    pub fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
+        let key_str = key.as_ref();
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -156,7 +158,7 @@ where
         let serialized_row = serde_json::to_string(&row)?;
 
         // Update the data
-        data.set(key.to_string(), serialized_row);
+        data.set(key_str.to_string(), serialized_row);
 
         // Serialize and update the atomic op
         let serialized_data = serde_json::to_string(&data)?;
@@ -197,7 +199,7 @@ where
 
                 // Check if the row matches the query
                 if query(&row) {
-                    result.push((key.to_string(), row));
+                    result.push((key.clone(), row));
                 }
             }
         }

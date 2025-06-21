@@ -47,8 +47,9 @@ impl Tree {
     pub fn new(
         initial_settings: KVNested,
         backend: Arc<Mutex<Box<dyn Backend>>>,
-        signing_key_id: &str,
+        signing_key_id: impl AsRef<str>,
     ) -> Result<Self> {
+        let signing_key_id = signing_key_id.as_ref();
         // Check if auth is configured in the initial settings
         let auth_configured = matches!(initial_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
@@ -170,8 +171,8 @@ impl Tree {
     ///
     /// # Arguments
     /// * `key_id` - The identifier of the private key to use by default
-    pub fn set_default_auth_key(&mut self, key_id: &str) {
-        self.default_auth_key = Some(key_id.to_string());
+    pub fn set_default_auth_key(&mut self, key_id: impl AsRef<str>) {
+        self.default_auth_key = Some(key_id.as_ref().to_string());
     }
 
     /// Clear the default authentication key for this tree.
@@ -194,9 +195,9 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new authenticated operation
-    pub fn new_authenticated_operation(&self, key_id: &str) -> Result<AtomicOp> {
+    pub fn new_authenticated_operation(&self, key_id: impl AsRef<str>) -> Result<AtomicOp> {
         let op = self.new_operation()?;
-        Ok(op.with_auth(key_id))
+        Ok(op.with_auth(key_id.as_ref()))
     }
 
     /// Helper function to lock the backend mutex.
@@ -296,7 +297,7 @@ impl Tree {
     ///
     /// The returned subtree should NOT be used to modify the tree, as it intentionally does not
     /// expose the AtomicOp.
-    pub fn get_subtree_viewer<T>(&self, name: &str) -> Result<T>
+    pub fn get_subtree_viewer<T>(&self, name: impl AsRef<str>) -> Result<T>
     where
         T: SubTree,
     {

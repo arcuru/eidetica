@@ -58,7 +58,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: KVNested, signing_key_id: &str) -> Result<Tree> {
+    pub fn new_tree(&self, settings: KVNested, signing_key_id: impl AsRef<str>) -> Result<Tree> {
         Tree::new(settings, Arc::clone(&self.backend), signing_key_id)
     }
 
@@ -70,7 +70,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree_default(&self, signing_key_id: &str) -> Result<Tree> {
+    pub fn new_tree_default(&self, signing_key_id: impl AsRef<str>) -> Result<Tree> {
         let mut settings = KVNested::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
@@ -146,7 +146,8 @@ impl BaseDB {
     ///
     /// # Errors
     /// Returns `Error::NotFound` if no trees with the specified name are found.
-    pub fn find_tree(&self, name: &str) -> Result<Vec<Tree>> {
+    pub fn find_tree(&self, name: impl AsRef<str>) -> Result<Vec<Tree>> {
+        let name = name.as_ref();
         let all_trees = self.all_trees()?;
         let mut matching_trees = Vec::new();
 
@@ -196,7 +197,8 @@ impl BaseDB {
     /// println!("Generated public key: {}", eidetica::auth::crypto::format_public_key(&public_key));
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn add_private_key(&self, key_id: &str) -> Result<VerifyingKey> {
+    pub fn add_private_key(&self, key_id: impl AsRef<str>) -> Result<VerifyingKey> {
+        let key_id = key_id.as_ref();
         let (signing_key, verifying_key) = generate_keypair();
 
         let mut backend_guard = self.lock_backend()?;
@@ -215,9 +217,13 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` indicating success or an error.
-    pub fn import_private_key(&self, key_id: &str, private_key: SigningKey) -> Result<()> {
+    pub fn import_private_key(
+        &self,
+        key_id: impl AsRef<str>,
+        private_key: SigningKey,
+    ) -> Result<()> {
         let mut backend_guard = self.lock_backend()?;
-        backend_guard.store_private_key(key_id, private_key)
+        backend_guard.store_private_key(key_id.as_ref(), private_key)
     }
 
     /// Get the public key corresponding to a stored private key.
@@ -230,9 +236,9 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing `Some(VerifyingKey)` if the key exists, `None` if not found.
-    pub fn get_public_key(&self, key_id: &str) -> Result<Option<VerifyingKey>> {
+    pub fn get_public_key(&self, key_id: impl AsRef<str>) -> Result<Option<VerifyingKey>> {
         let backend_guard = self.lock_backend()?;
-        if let Some(signing_key) = backend_guard.get_private_key(key_id)? {
+        if let Some(signing_key) = backend_guard.get_private_key(key_id.as_ref())? {
             Ok(Some(signing_key.verifying_key()))
         } else {
             Ok(None)
@@ -261,9 +267,9 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` indicating success. Succeeds even if the key doesn't exist.
-    pub fn remove_private_key(&self, key_id: &str) -> Result<()> {
+    pub fn remove_private_key(&self, key_id: impl AsRef<str>) -> Result<()> {
         let mut backend_guard = self.lock_backend()?;
-        backend_guard.remove_private_key(key_id)
+        backend_guard.remove_private_key(key_id.as_ref())
     }
 
     /// Get a formatted public key string for a stored private key.
@@ -275,7 +281,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the formatted public key string if found.
-    pub fn get_formatted_public_key(&self, key_id: &str) -> Result<Option<String>> {
+    pub fn get_formatted_public_key(&self, key_id: impl AsRef<str>) -> Result<Option<String>> {
         if let Some(public_key) = self.get_public_key(key_id)? {
             Ok(Some(format_public_key(&public_key)))
         } else {

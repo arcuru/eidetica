@@ -38,8 +38,7 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<String>, String) {
     let kv_a = op_a
         .get_subtree::<KVStore>("data")
         .expect("Failed to get KVStore");
-    kv_a.set("key_a".to_string(), "value_a".to_string())
-        .expect("Failed to set value");
+    kv_a.set("key_a", "value_a").expect("Failed to set value");
     let entry_a = op_a.commit().expect("Failed to commit");
 
     // Create B and C from A
@@ -49,8 +48,7 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<String>, String) {
     let kv_b = op_b
         .get_subtree::<KVStore>("data")
         .expect("Failed to get KVStore");
-    kv_b.set("key_b".to_string(), "value_b".to_string())
-        .expect("Failed to set value");
+    kv_b.set("key_b", "value_b").expect("Failed to set value");
     let entry_b = op_b.commit().expect("Failed to commit");
 
     let op_c = tree
@@ -59,8 +57,7 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<String>, String) {
     let kv_c = op_c
         .get_subtree::<KVStore>("data")
         .expect("Failed to get KVStore");
-    kv_c.set("key_c".to_string(), "value_c".to_string())
-        .expect("Failed to set value");
+    kv_c.set("key_c", "value_c").expect("Failed to set value");
     let entry_c = op_c.commit().expect("Failed to commit");
 
     // Return B and C for LCA testing (LCA should be A)
@@ -98,11 +95,8 @@ fn create_branching_tree(
             let kv = op
                 .get_subtree::<KVStore>("data")
                 .expect("Failed to get KVStore");
-            kv.set(
-                format!("branch_{branch_idx}_entry_{entry_idx}"),
-                "value".to_string(),
-            )
-            .expect("Failed to set value");
+            kv.set(format!("branch_{branch_idx}_entry_{entry_idx}"), "value")
+                .expect("Failed to set value");
             let entry_id = op.commit().expect("Failed to commit");
             branch_entries.push(entry_id.clone());
             current_tip = entry_id; // Update tip for next entry in this branch
@@ -417,7 +411,7 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                             .expect("Failed to get KVStore");
 
                         // Perform a simple operation that requires CRDT computation
-                        kv.set("test_key".to_string(), "test_value".to_string())
+                        kv.set("test_key", "test_value")
                             .expect("Failed to set value");
                         let result = op.commit().expect("Failed to commit");
                         black_box(result);
