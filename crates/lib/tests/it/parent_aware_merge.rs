@@ -276,10 +276,7 @@ fn test_incorrect_parent_merging_would_fail() {
     op4.commit().unwrap();
 
     // Clear cache to force computation
-    {
-        let mut backend = tree.lock_backend().unwrap();
-        backend.clear_crdt_cache().unwrap();
-    }
+    tree.backend().clear_crdt_cache().unwrap();
 
     // Read the final state - this exercises the complex merge algorithm
     let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
@@ -430,7 +427,7 @@ fn test_true_diamond_pattern() {
 
     // Verify parent relationships - both B and C should have A as their only parent
     {
-        let backend = tree.lock_backend().unwrap();
+        let backend = tree.backend();
         let entry_b = backend.get(&entry_b_id).unwrap();
         let entry_c = backend.get(&entry_c_id).unwrap();
 
@@ -447,10 +444,7 @@ fn test_true_diamond_pattern() {
     }
 
     // Clear cache to force fresh computation
-    {
-        let mut backend = tree.lock_backend().unwrap();
-        backend.clear_crdt_cache().unwrap();
-    }
+    tree.backend().clear_crdt_cache().unwrap();
 
     // Step 3: Create merge operation D that automatically gets both B and C as parents
     let op_d = tree.new_operation().unwrap(); // Uses current tips [B, C]
@@ -461,7 +455,7 @@ fn test_true_diamond_pattern() {
 
     // Verify D has both B and C as parents (the diamond merge)
     {
-        let backend = tree.lock_backend().unwrap();
+        let backend = tree.backend();
         let entry_d = backend.get(&entry_d_id).unwrap();
         let parents = entry_d.parents().unwrap();
 

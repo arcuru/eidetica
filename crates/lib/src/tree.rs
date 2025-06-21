@@ -17,7 +17,7 @@ use crate::auth::settings::AuthSettings;
 use crate::auth::types::{AuthKey, KeyStatus, Permission};
 use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 /// Represents a collection of related entries, analogous to a table or a branch in a version control system.
 ///
@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[derive(Clone)]
 pub struct Tree {
     root: ID,
-    backend: Arc<Mutex<Box<dyn Backend>>>,
+    backend: Arc<dyn Backend>,
     /// Default authentication key ID for operations on this tree
     default_auth_key: Option<String>,
 }
@@ -46,7 +46,7 @@ impl Tree {
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
         initial_settings: KVNested,
-        backend: Arc<Mutex<Box<dyn Backend>>>,
+        backend: Arc<dyn Backend>,
         signing_key_id: impl AsRef<str>,
     ) -> Result<Self> {
         let signing_key_id = signing_key_id.as_ref();
@@ -59,36 +59,15 @@ impl Tree {
         } else {
             // No auth config provided - bootstrap auth configuration with the provided key
             // Verify the key exists first
-            {
-                let backend_guard = backend.lock().map_err(|_| {
-                    Error::Io(std::io::Error::other(
-                        "Failed to lock backend for initial key setup",
-                    ))
-                })?;
-
-                let _private_key =
-                    backend_guard
-                        .get_private_key(signing_key_id)?
-                        .ok_or_else(|| {
-                            Error::Authentication(format!(
-                                "Provided signing key ID '{signing_key_id}' not found in backend"
-                            ))
-                        })?;
-            } // backend_guard is dropped here
+            let _private_key = backend.get_private_key(signing_key_id)?.ok_or_else(|| {
+                Error::Authentication(format!(
+                    "Provided signing key ID '{signing_key_id}' not found in backend"
+                ))
+            })?;
 
             // Bootstrap auth configuration with the provided key
-            let public_key: ed25519_dalek::VerifyingKey;
-
-            {
-                let backend_guard = backend.lock().map_err(|_| {
-                    Error::Io(std::io::Error::other(
-                        "Failed to lock backend for key retrieval",
-                    ))
-                })?;
-
-                let private_key = backend_guard.get_private_key(signing_key_id)?.unwrap();
-                public_key = private_key.verifying_key();
-            } // backend_guard is dropped here
+            let private_key = backend.get_private_key(signing_key_id)?.unwrap();
+            let public_key = private_key.verifying_key();
 
             // Create auth settings with the provided key
             let mut auth_settings_handler = AuthSettings::new();
@@ -147,16 +126,16 @@ impl Tree {
 
     /// Creates a new `Tree` instance from an existing ID.
     ///
-    /// This constructor takes an existing `ID` and an `Arc<Mutex<Box<dyn Backend>>>`
+    /// This constructor takes an existing `ID` and an `Arc<dyn Backend>`
     /// and constructs a `Tree` instance with the specified root ID.
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
-    /// * `backend` - An `Arc<Mutex<Box<dyn Backend>>>` protected reference to the backend where the tree's entries will be stored.
+    /// * `backend` - An `Arc<dyn Backend>` reference to the backend where the tree's entries will be stored.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
-    pub(crate) fn new_from_id(id: ID, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
+    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn Backend>) -> Result<Self> {
         Ok(Self {
             root: id,
             backend,
@@ -200,29 +179,19 @@ impl Tree {
         Ok(op.with_auth(key_id.as_ref()))
     }
 
-    /// Helper function to lock the backend mutex.
-    pub fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
-        self.backend.lock().map_err(|_| {
-            Error::Io(std::io::Error::other(
-                "Failed to lock backend in Tree::lock_backend",
-            ))
-        })
-    }
-
     /// Get the ID of the root entry
     pub fn root_id(&self) -> &ID {
         &self.root
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<Mutex<Box<dyn Backend>>> {
+    pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.backend
     }
 
     /// Retrieve the root entry from the backend
     pub fn get_root(&self) -> Result<Entry> {
-        let backend_guard = self.lock_backend()?;
-        backend_guard.get(&self.root).cloned()
+        self.backend.get(&self.root)
     }
 
     /// Get a settings store for the tree.
@@ -286,8 +255,7 @@ impl Tree {
     pub fn insert_raw(&self, entry: Entry) -> Result<ID> {
         let id = entry.id();
 
-        let mut backend_guard = self.lock_backend()?;
-        backend_guard.put_verified(entry)?;
+        self.backend.put_verified(entry)?;
 
         Ok(id)
     }
@@ -312,8 +280,7 @@ impl Tree {
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
     pub fn get_tips(&self) -> Result<Vec<ID>> {
-        let backend_guard = self.lock_backend()?;
-        backend_guard.get_tips(&self.root)
+        self.backend.get_tips(&self.root)
     }
 
     /// Get the full `Entry` objects for the current tips of the main tree branch.
@@ -321,12 +288,8 @@ impl Tree {
     /// # Returns
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
     pub fn get_tip_entries(&self) -> Result<Vec<Entry>> {
-        let backend_guard = self.lock_backend()?;
-        let tips = backend_guard.get_tips(&self.root)?;
-        let entries: Result<Vec<_>> = tips
-            .iter()
-            .map(|id| backend_guard.get(id).cloned())
-            .collect();
+        let tips = self.backend.get_tips(&self.root)?;
+        let entries: Result<Vec<_>> = tips.iter().map(|id| self.backend.get(id)).collect();
         entries
     }
 
@@ -366,8 +329,7 @@ impl Tree {
     /// ```
     pub fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
         let id = entry_id.into();
-        let backend_guard = self.lock_backend()?;
-        let entry = backend_guard.get(&id)?;
+        let entry = self.backend.get(&id)?;
 
         // Check if the entry belongs to this tree
         if !entry.in_tree(&self.root) {
@@ -377,7 +339,7 @@ impl Tree {
             ))));
         }
 
-        Ok(entry.clone())
+        Ok(entry)
     }
 
     /// Get multiple entries by ID efficiently.
@@ -415,12 +377,11 @@ impl Tree {
         I: IntoIterator<Item = T>,
         T: Into<ID>,
     {
-        let backend_guard = self.lock_backend()?;
         entry_ids
             .into_iter()
             .map(|entry_id| {
                 let id = entry_id.into();
-                let entry = backend_guard.get(&id)?;
+                let entry = self.backend.get(&id)?;
 
                 // Check if the entry belongs to this tree
                 if !entry.in_tree(&self.root) {
@@ -430,7 +391,7 @@ impl Tree {
                     ))));
                 }
 
-                Ok(entry.clone())
+                Ok(entry)
             })
             .collect()
     }
@@ -511,7 +472,6 @@ impl Tree {
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the tree
     pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
-        let backend_guard = self.lock_backend()?;
-        backend_guard.get_tree(&self.root)
+        self.backend.get_tree(&self.root)
     }
 }

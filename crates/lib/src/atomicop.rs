@@ -60,9 +60,7 @@ impl AtomicOp {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the tree root exists in backend
-            let backend_guard = tree.lock_backend()?;
-            let root_exists = backend_guard.get(tree.root_id()).is_ok();
-            drop(backend_guard);
+            let root_exists = tree.backend().get(tree.root_id()).is_ok();
 
             if root_exists {
                 return Err(Error::Io(std::io::Error::other(
@@ -73,17 +71,14 @@ impl AtomicOp {
         }
 
         // Validate that all tips belong to the same tree
-        {
-            let backend_guard = tree.lock_backend()?;
-            for tip_id in tips {
-                let entry = backend_guard.get(tip_id)?;
-                if !entry.in_tree(tree.root_id()) {
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "Tip entry '{}' does not belong to tree '{}'",
-                        tip_id,
-                        tree.root_id()
-                    ))));
-                }
+        for tip_id in tips {
+            let entry = tree.backend().get(tip_id)?;
+            if !entry.in_tree(tree.root_id()) {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "Tip entry '{}' does not belong to tree '{}'",
+                    tip_id,
+                    tree.root_id()
+                ))));
             }
         }
 
@@ -184,9 +179,11 @@ impl AtomicOp {
         let subtrees = builder.subtrees();
 
         if !subtrees.contains(&subtree.to_string()) {
-            let backend_guard = self.tree.lock_backend()?;
             // FIXME: we should get the subtree tips while still using the parent pointers
-            let tips = backend_guard.get_subtree_tips(self.tree.root_id(), subtree)?;
+            let tips = self
+                .tree
+                .backend()
+                .get_subtree_tips(self.tree.root_id(), subtree)?;
             builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
             builder.set_subtree_parents_mut(subtree, tips);
         } else {
@@ -231,17 +228,18 @@ impl AtomicOp {
             let subtrees = builder.subtrees();
 
             if !subtrees.contains(&subtree_name.to_string()) {
-                let backend_guard = self.tree.lock_backend()?;
                 // Check if this operation was created with custom tips vs current tips
                 let main_parents = builder.parents().unwrap_or_default();
-                let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
+                let current_tree_tips = self.tree.backend().get_tips(self.tree.root_id())?;
 
                 let tips = if main_parents == current_tree_tips {
                     // This operation uses current tree tips - use old behavior
-                    backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?
+                    self.tree
+                        .backend()
+                        .get_subtree_tips(self.tree.root_id(), subtree_name)?
                 } else {
                     // This operation uses custom tips - use new behavior
-                    backend_guard.get_subtree_tips_up_to_entries(
+                    self.tree.backend().get_subtree_tips_up_to_entries(
                         self.tree.root_id(),
                         subtree_name,
                         &main_parents,
@@ -327,17 +325,18 @@ impl AtomicOp {
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
         if !subtrees.contains(&subtree_name.to_string()) {
-            let backend_guard = self.tree.lock_backend()?;
             // Check if this operation was created with custom tips vs current tips
             let main_parents = builder.parents().unwrap_or_default();
-            let current_tree_tips = backend_guard.get_tips(self.tree.root_id())?;
+            let current_tree_tips = self.tree.backend().get_tips(self.tree.root_id())?;
 
             let tips = if main_parents == current_tree_tips {
                 // This operation uses current tree tips - use old behavior
-                backend_guard.get_subtree_tips(self.tree.root_id(), subtree_name)?
+                self.tree
+                    .backend()
+                    .get_subtree_tips(self.tree.root_id(), subtree_name)?
             } else {
                 // This operation uses custom tips - use new behavior
-                backend_guard.get_subtree_tips_up_to_entries(
+                self.tree.backend().get_subtree_tips_up_to_entries(
                     self.tree.root_id(),
                     subtree_name,
                     &main_parents,
@@ -396,17 +395,22 @@ impl AtomicOp {
         }
 
         // Multiple entries: find LCA and compute state from there
-        let backend_guard = self.tree.lock_backend()?;
-        let lca_id = backend_guard.find_lca(self.tree.root_id(), subtree_name, entry_ids)?;
-        drop(backend_guard);
+        let lca_id = self
+            .tree
+            .backend()
+            .find_lca(self.tree.root_id(), subtree_name, entry_ids)?;
 
         // Get the LCA state recursively
         let mut result = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
 
         // Get all entries from LCA to all tip entries (deduplicated and sorted)
         let path_entries = {
-            let backend_guard = self.tree.lock_backend()?;
-            backend_guard.get_path_from_to(self.tree.root_id(), subtree_name, &lca_id, entry_ids)?
+            self.tree.backend().get_path_from_to(
+                self.tree.root_id(),
+                subtree_name,
+                &lca_id,
+                entry_ids,
+            )?
         };
 
         // Merge all path entries in order
@@ -441,9 +445,10 @@ impl AtomicOp {
     {
         // Step 1: Check if already cached
         {
-            let backend_guard = self.tree.lock_backend()?;
-            if let Some(cached_state) =
-                backend_guard.get_cached_crdt_state(&entry_id.to_string(), subtree_name)?
+            if let Some(cached_state) = self
+                .tree
+                .backend()
+                .get_cached_crdt_state(&entry_id.to_string(), subtree_name)?
             {
                 let result: T = serde_json::from_str(&cached_state)?;
                 return Ok(result);
@@ -452,8 +457,7 @@ impl AtomicOp {
 
         // Get the parents of this entry in the subtree
         let parents = {
-            let backend_guard = self.tree.lock_backend()?;
-            backend_guard.get_sorted_subtree_parents(
+            self.tree.backend().get_sorted_subtree_parents(
                 self.tree.root_id(),
                 &entry_id.to_string(),
                 subtree_name,
@@ -473,8 +477,9 @@ impl AtomicOp {
         } else {
             // Multiple parents - find LCA and get its state
             let lca_id = {
-                let backend_guard = self.tree.lock_backend()?;
-                backend_guard.find_lca(self.tree.root_id(), subtree_name, &parents)?
+                self.tree
+                    .backend()
+                    .find_lca(self.tree.root_id(), subtree_name, &parents)?
             };
             let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
             (lca_state, Some(lca_id))
@@ -487,8 +492,7 @@ impl AtomicOp {
         if let Some(lca_id) = lca_id_opt {
             // Get all entries from LCA to all parents (deduplicated and sorted)
             let path_entries = {
-                let backend_guard = self.tree.lock_backend()?;
-                backend_guard.get_path_from_to(
+                self.tree.backend().get_path_from_to(
                     self.tree.root_id(),
                     subtree_name,
                     &lca_id,
@@ -502,8 +506,7 @@ impl AtomicOp {
 
         // Finally, merge the current entry's local data
         let local_data = {
-            let backend_guard = self.tree.lock_backend()?;
-            let entry = backend_guard.get(&entry_id.to_string())?;
+            let entry = self.tree.backend().get(&entry_id.to_string())?;
             if let Ok(data) = entry.data(subtree_name) {
                 serde_json::from_str::<T>(data)?
             } else {
@@ -515,9 +518,8 @@ impl AtomicOp {
 
         // Cache the result
         {
-            let mut backend_guard = self.tree.lock_backend()?;
             let serialized_state = serde_json::to_string(&result)?;
-            backend_guard.cache_crdt_state(
+            self.tree.backend().cache_crdt_state(
                 &entry_id.to_string(),
                 subtree_name,
                 serialized_state,
@@ -545,10 +547,8 @@ impl AtomicOp {
     where
         T: CRDT + Clone,
     {
-        let backend_guard = self.tree.lock_backend()?;
-
         for entry_id in entry_ids {
-            let entry = backend_guard.get(entry_id)?;
+            let entry = self.tree.backend().get(entry_id)?;
 
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
@@ -633,8 +633,10 @@ impl AtomicOp {
             // FIXME: We should get the subtree tips relative to the parent pointers of this entry
             // rather than the current tips of the tree. This ensures the metadata accurately reflects
             // the settings at the point this entry was created, even in concurrent modification scenarios.
-            let backend_guard = self.tree.lock_backend()?;
-            let settings_tips = backend_guard.get_subtree_tips(self.tree.root_id(), SETTINGS)?;
+            let settings_tips = self
+                .tree
+                .backend()
+                .get_subtree_tips(self.tree.root_id(), SETTINGS)?;
 
             if !settings_tips.is_empty() {
                 // Create a KVOverWrite with settings tips
@@ -662,8 +664,7 @@ impl AtomicOp {
             });
 
             // Get the private key from backend for signing
-            let backend_guard = self.tree.lock_backend()?;
-            let signing_key = backend_guard.get_private_key(key_id)?;
+            let signing_key = self.tree.backend().get_private_key(key_id)?;
 
             if signing_key.is_none() {
                 return Err(Error::Io(std::io::Error::other(format!(
@@ -824,8 +825,7 @@ impl AtomicOp {
         let id = entry.id();
 
         // Store in the backend with the determined verification status
-        let mut backend_guard = self.tree.lock_backend()?;
-        backend_guard.put(verification_status, entry)?;
+        self.tree.backend().put(verification_status, entry)?;
 
         Ok(id)
     }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[test]
 fn test_in_memory_backend_basic_operations() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create and insert a test entry
     let data = "test_data".to_string();
@@ -34,7 +34,7 @@ fn test_in_memory_backend_basic_operations() {
 
 #[test]
 fn test_in_memory_backend_tree_operations() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a root entry
     let root_data = "root_data".to_string();
@@ -79,7 +79,7 @@ fn test_in_memory_backend_tree_operations() {
 
 #[test]
 fn test_in_memory_backend_subtree_operations() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a root entry with a subtree
     let root_data = "root_data".to_string();
@@ -121,7 +121,7 @@ fn test_in_memory_backend_save_and_load() {
 
     // Setup: Create a backend with some data
     {
-        let mut backend = InMemoryBackend::new();
+        let backend = InMemoryBackend::new();
         let entry = Entry::root_builder("test_data".to_string()).build();
         backend.put_verified(entry).unwrap();
 
@@ -187,7 +187,7 @@ fn test_in_memory_backend_error_handling() {
 
 #[test]
 fn test_in_memory_backend_complex_tree_structure() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a root entry
     let root_data = "root_data".to_string();
@@ -261,7 +261,7 @@ fn test_in_memory_backend_complex_tree_structure() {
 
 #[test]
 fn test_backend_get_tree_from_tips() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
     let root_id = "tree_root".to_string();
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -350,7 +350,7 @@ fn test_backend_get_tree_from_tips() {
 
 #[test]
 fn test_backend_get_subtree_from_tips() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
     let subtree_name_string = "my_subtree".to_string();
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -482,7 +482,7 @@ fn test_backend_get_subtree_from_tips() {
 
 #[test]
 fn test_calculate_entry_height() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a simple tree:
     // root -> A -> B -> C\
@@ -610,7 +610,7 @@ fn test_save_load_with_various_entries() {
     let file_path = test_dir.join("test_various_entries.json");
 
     // Setup a tree with multiple entries
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Top-level root
     let root_entry = Entry::root_builder("root_data".to_string()).build();
@@ -692,7 +692,7 @@ fn test_save_load_with_various_entries() {
 
 #[test]
 fn test_sort_entries() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a simple tree with mixed order
     let root = Entry::root_builder("{}".to_string()).build();
@@ -751,7 +751,7 @@ fn test_save_load_in_memory_backend() {
     fs::create_dir_all(&test_dir).unwrap();
     let path = test_dir.join("test_save_load.json");
 
-    let mut backend1 = InMemoryBackend::new();
+    let backend1 = InMemoryBackend::new();
     let entry1 = Entry::root_builder("{\"key\":\"value1\"}".to_string()).build();
     let entry2 = Entry::root_builder("{\"key\":\"value2\"}".to_string()).build();
 
@@ -768,8 +768,8 @@ fn test_save_load_in_memory_backend() {
     let backend2 = InMemoryBackend::load_from_file(&path).unwrap();
 
     // Verify contents
-    assert_eq!(backend2.get(&id1).unwrap(), &entry1);
-    assert_eq!(backend2.get(&id2).unwrap(), &entry2);
+    assert_eq!(backend2.get(&id1).unwrap(), entry1);
+    assert_eq!(backend2.get(&id2).unwrap(), entry2);
 
     // Clean up
     fs::remove_file(path).unwrap();
@@ -777,7 +777,7 @@ fn test_save_load_in_memory_backend() {
 
 #[test]
 fn test_all_roots() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Initially, there should be no roots
     assert!(backend.all_roots().unwrap().is_empty());
@@ -812,7 +812,7 @@ fn test_all_roots() {
 
 #[test]
 fn test_get_tips() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a simple tree structure:
     // Root -> A -> B
@@ -887,7 +887,7 @@ fn test_get_tips() {
 
 #[test]
 fn test_put_get_entry() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Test putting and getting an entry
     let entry = Entry::root_builder("test data".to_string()).build();
@@ -904,7 +904,7 @@ fn test_put_get_entry() {
     let get_result = backend.get(&id);
     assert!(get_result.is_ok());
     let retrieved = get_result.unwrap();
-    assert_eq!(retrieved, &entry);
+    assert_eq!(retrieved, entry);
 
     // Try to get a non-existent ID
     let non_existent = "non_existent_id".to_string();
@@ -914,7 +914,7 @@ fn test_put_get_entry() {
 
 #[test]
 fn test_get_subtree_tips() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a tree with subtrees
     let root = Entry::root_builder("root data".to_string()).build();
@@ -995,7 +995,7 @@ fn test_get_subtree_tips() {
 
 #[test]
 fn test_get_tree() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a simple tree with three entries
     let root = Entry::root_builder("root data".to_string()).build();
@@ -1046,7 +1046,7 @@ fn test_get_tree() {
 
 #[test]
 fn test_get_subtree() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a tree with a subtree
     let root = Entry::root_builder("root data".to_string()).build();
@@ -1131,7 +1131,7 @@ fn test_get_subtree() {
 
 #[test]
 fn test_calculate_subtree_height() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a tree with a subtree that has a different structure
     let root = Entry::root_builder("root data".to_string()).build();
@@ -1209,7 +1209,7 @@ fn test_calculate_subtree_height() {
 
 #[test]
 fn test_verification_status_basic_operations() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a test entry
     let entry = Entry::builder("root".to_string(), "data".to_string()).build();
@@ -1250,7 +1250,7 @@ fn test_verification_status_basic_operations() {
 
 #[test]
 fn test_verification_status_default_behavior() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create a test entry
     let entry = Entry::builder("root".to_string(), "data".to_string()).build();
@@ -1275,7 +1275,7 @@ fn test_verification_status_default_behavior() {
 
 #[test]
 fn test_verification_status_multiple_entries() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create multiple test entries
     let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
@@ -1320,7 +1320,7 @@ fn test_verification_status_not_found_errors() {
     assert!(matches!(result.unwrap_err(), Error::NotFound));
 
     // Test updating status for nonexistent entry
-    let mut mutable_backend = backend;
+    let mutable_backend = backend;
     let result =
         mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified);
     assert!(result.is_err());
@@ -1329,7 +1329,7 @@ fn test_verification_status_not_found_errors() {
 
 #[test]
 fn test_verification_status_serialization() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Create test entries with different verification statuses
     let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
@@ -1369,7 +1369,7 @@ fn test_verification_status_serialization() {
 
 #[test]
 fn test_backend_verification_helpers() {
-    let mut backend = InMemoryBackend::new();
+    let backend = InMemoryBackend::new();
 
     // Test the convenience methods
     let entry1 = Entry::root_builder("verified_data".to_string()).build();

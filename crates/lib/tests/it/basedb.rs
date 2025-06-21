@@ -87,7 +87,7 @@ fn test_get_backend() {
     let db = BaseDB::new(backend);
 
     let retrieved_backend = db.backend();
-    assert!(retrieved_backend.lock().unwrap().all_roots().is_ok());
+    assert!(retrieved_backend.all_roots().is_ok());
 }
 
 #[test]

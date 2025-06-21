@@ -330,8 +330,7 @@ fn test_atomicop_with_custom_tips() {
 
     // Verify the branch entry has correct parent relationship
     let backend = tree.backend();
-    let backend_guard = backend.lock().unwrap();
-    let branch_entry = backend_guard.get(&branch_id).unwrap();
+    let branch_entry = backend.get(&branch_id).unwrap();
     let branch_parents = branch_entry.parents().unwrap();
 
     assert_eq!(branch_parents.len(), 1, "Branch should have one parent");
@@ -386,8 +385,7 @@ fn test_atomicop_diamond_pattern() {
 
     // Verify merge has correct parents
     let backend = tree.backend();
-    let backend_guard = backend.lock().unwrap();
-    let merge_entry = backend_guard.get(&merge_id).unwrap();
+    let merge_entry = backend.get(&merge_id).unwrap();
     let merge_parents = merge_entry.parents().unwrap();
 
     assert_eq!(merge_parents.len(), 2, "Merge should have two parents");

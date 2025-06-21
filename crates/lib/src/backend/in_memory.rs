@@ -33,17 +33,18 @@ struct TreeTipsCache {
 /// without proper encryption or hardware security module integration.
 #[derive(Debug)]
 pub struct InMemoryBackend {
-    entries: HashMap<ID, Entry>,
+    /// Entries storage with read-write lock for concurrent access
+    entries: RwLock<HashMap<ID, Entry>>,
     /// Verification status for each entry
-    verification_status: HashMap<ID, VerificationStatus>,
+    verification_status: RwLock<HashMap<ID, VerificationStatus>>,
     /// Private key storage for authentication
     ///
     /// **Security Warning**: Keys are stored in memory without encryption.
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
-    private_keys: HashMap<String, SigningKey>,
+    private_keys: RwLock<HashMap<String, SigningKey>>,
     /// Generic key-value cache for frequently computed results
-    cache: HashMap<String, String>,
+    cache: RwLock<HashMap<String, String>>,
     /// Cached heights grouped by tree: tree_id -> (entry_id -> (tree_height, subtree_name -> subtree_height))
     heights: RwLock<HashMap<ID, TreeHeightsCache>>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
@@ -75,20 +76,22 @@ impl Serialize for InMemoryBackend {
     where
         S: Serializer,
     {
-        let private_keys_bytes = self
-            .private_keys
+        let entries = self.entries.read().unwrap().clone();
+        let verification_status = self.verification_status.read().unwrap().clone();
+        let private_keys = self.private_keys.read().unwrap();
+        let private_keys_bytes = private_keys
             .iter()
             .map(|(k, v)| (k.clone(), v.to_bytes()))
             .collect();
-
+        let cache = self.cache.read().unwrap().clone();
         let heights = self.heights.read().unwrap().clone();
         let tips = self.tips.read().unwrap().clone();
 
         let serializable = SerializableBackend {
-            entries: self.entries.clone(),
-            verification_status: self.verification_status.clone(),
+            entries,
+            verification_status,
             private_keys_bytes,
-            cache: self.cache.clone(),
+            cache,
             heights,
             tips,
         };
@@ -114,10 +117,10 @@ impl<'de> Deserialize<'de> for InMemoryBackend {
             .collect();
 
         Ok(InMemoryBackend {
-            entries: serializable.entries,
-            verification_status: serializable.verification_status,
-            private_keys,
-            cache: serializable.cache,
+            entries: RwLock::new(serializable.entries),
+            verification_status: RwLock::new(serializable.verification_status),
+            private_keys: RwLock::new(private_keys),
+            cache: RwLock::new(serializable.cache),
             heights: RwLock::new(serializable.heights),
             tips: RwLock::new(serializable.tips),
         })
@@ -134,10 +137,10 @@ impl InMemoryBackend {
     /// Creates a new, empty `InMemoryBackend`.
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
-            verification_status: HashMap::new(),
-            private_keys: HashMap::new(),
-            cache: HashMap::new(),
+            entries: RwLock::new(HashMap::new()),
+            verification_status: RwLock::new(HashMap::new()),
+            private_keys: RwLock::new(HashMap::new()),
+            cache: RwLock::new(HashMap::new()),
             heights: RwLock::new(HashMap::new()),
             tips: RwLock::new(HashMap::new()),
         }
@@ -179,7 +182,8 @@ impl InMemoryBackend {
 
     /// Returns a vector containing the IDs of all entries currently stored in the backend.
     pub fn all_ids(&self) -> Vec<ID> {
-        self.entries.keys().cloned().collect()
+        let entries = self.entries.read().unwrap();
+        entries.keys().cloned().collect()
     }
 
     /// Helper function to check if an entry is a tip within its tree.
@@ -187,7 +191,8 @@ impl InMemoryBackend {
     /// An entry is a tip if no other entry in the same tree lists it as a parent.
     pub fn is_tip(&self, tree: &ID, entry_id: &ID) -> bool {
         // Check if any other entry has this entry as its parent
-        for other_entry in self.entries.values() {
+        let entries = self.entries.read().unwrap();
+        for other_entry in entries.values() {
             if other_entry.root() == tree
                 && other_entry.parents().unwrap_or_default().contains(entry_id)
             {
@@ -203,7 +208,8 @@ impl InMemoryBackend {
     /// *within the same subtree* lists it as a parent for that subtree.
     pub fn is_subtree_tip(&self, tree: &ID, subtree: &str, entry_id: &ID) -> bool {
         // First, check if the entry is in the subtree
-        let entry = match self.entries.get(entry_id) {
+        let entries = self.entries.read().unwrap();
+        let entry = match entries.get(entry_id) {
             Some(e) => e,
             None => return false, // Entry doesn't exist
         };
@@ -213,7 +219,7 @@ impl InMemoryBackend {
         }
 
         // Check if any other entry has this entry as its subtree parent
-        for other_entry in self.entries.values() {
+        for other_entry in entries.values() {
             if other_entry.in_tree(tree)
                 && other_entry.in_subtree(subtree)
                 && let Ok(parents) = other_entry.subtree_parents(subtree)
@@ -308,8 +314,8 @@ impl InMemoryBackend {
         subtree: Option<&str>,
     ) -> Result<HashMap<ID, usize>> {
         // Get all entries in the tree context
-        let entries_in_tree: Vec<_> = self
-            .entries
+        let entries = self.entries.read().unwrap();
+        let entries_in_tree: Vec<_> = entries
             .iter()
             .filter(|(_, entry)| entry.in_tree(tree))
             .map(|(id, _)| id.clone())
@@ -362,7 +368,7 @@ impl InMemoryBackend {
                 let entries_in_subtree: Vec<_> = entries_in_tree
                     .iter()
                     .filter(|id| {
-                        if let Some(entry) = self.entries.get(*id) {
+                        if let Some(entry) = entries.get(*id) {
                             entry.in_subtree(subtree_name)
                         } else {
                             false
@@ -434,7 +440,8 @@ impl InMemoryBackend {
         let mut nodes_in_context: HashSet<ID> = HashSet::new();
 
         // 1. Build graph structure (children_map, in_degree) for the context
-        for (id, entry) in &self.entries {
+        let entries = self.entries.read().unwrap();
+        for (id, entry) in entries.iter() {
             // Check if entry is in the context (tree or tree+subtree)
             let in_context = match subtree {
                 Some(subtree_name) => entry.in_tree(tree) && entry.in_subtree(subtree_name),
@@ -459,7 +466,7 @@ impl InMemoryBackend {
             for parent_id in parents {
                 // Check if the parent is ALSO in the context
                 let parent_in_context =
-                    self.entries
+                    entries
                         .get(&parent_id)
                         .is_some_and(|p_entry| match subtree {
                             Some(subtree_name) => {
@@ -621,41 +628,46 @@ impl InMemoryBackend {
 
 impl Backend for InMemoryBackend {
     /// Retrieves an entry by ID from the internal `HashMap`.
-    fn get(&self, id: &ID) -> Result<&Entry> {
-        self.entries.get(id).ok_or(Error::NotFound)
+    fn get(&self, id: &ID) -> Result<Entry> {
+        let entries = self.entries.read().unwrap();
+        entries.get(id).cloned().ok_or(Error::NotFound)
     }
 
     /// Gets the verification status of an entry.
     fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
+        let entries = self.entries.read().unwrap();
+        let verification_status = self.verification_status.read().unwrap();
+
         // Check if entry exists first
-        if !self.entries.contains_key(id) {
+        if !entries.contains_key(id) {
             return Err(Error::NotFound);
         }
 
-        // Return the verification status, defaulting to Unverified if not set
-        Ok(self
-            .verification_status
-            .get(id)
-            .copied()
-            .unwrap_or_default())
+        // Return the verification status, defaulting to Verified if not set
+        Ok(verification_status.get(id).copied().unwrap_or_default())
     }
 
     /// Stores an entry in the backend with the specified verification status.
-    fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
+    fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
         let entry_id = entry.id();
-        let tree_id = entry.root();
+        let tree_id = entry.root().to_string();
 
         // Store the entry
-        self.entries.insert(entry_id.clone(), entry.clone());
+        {
+            let mut entries = self.entries.write().unwrap();
+            entries.insert(entry_id.clone(), entry.clone());
+        }
 
         // Store the verification status
-        self.verification_status
-            .insert(entry_id.clone(), verification_status);
+        {
+            let mut verification_status_map = self.verification_status.write().unwrap();
+            verification_status_map.insert(entry_id.clone(), verification_status);
+        }
 
         // Smart cache update for heights
         {
             let mut heights_cache = self.heights.write().unwrap();
-            if let Some(cache) = heights_cache.get_mut(tree_id) {
+            if let Some(cache) = heights_cache.get_mut(&tree_id) {
                 Self::update_cached_heights(cache, &entry, &entry_id);
             }
         }
@@ -663,7 +675,7 @@ impl Backend for InMemoryBackend {
         // Smart cache update for tips
         {
             let mut tips_cache = self.tips.write().unwrap();
-            if let Some(cache) = tips_cache.get_mut(tree_id) {
+            if let Some(cache) = tips_cache.get_mut(&tree_id) {
                 // Update tree tips
                 if let Ok(parents) = entry.parents() {
                     if parents.is_empty() {
@@ -705,18 +717,23 @@ impl Backend for InMemoryBackend {
 
     /// Updates the verification status of an existing entry.
     fn update_verification_status(
-        &mut self,
+        &self,
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
         // Check if entry exists
-        if !self.entries.contains_key(id) {
-            return Err(Error::NotFound);
+        {
+            let entries = self.entries.read().unwrap();
+            if !entries.contains_key(id) {
+                return Err(Error::NotFound);
+            }
         }
 
         // Update the verification status
-        self.verification_status
-            .insert(id.clone(), verification_status);
+        {
+            let mut status_map = self.verification_status.write().unwrap();
+            status_map.insert(id.clone(), verification_status);
+        }
 
         Ok(())
     }
@@ -724,10 +741,11 @@ impl Backend for InMemoryBackend {
     /// Gets all entries with a specific verification status.
     fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
         let mut matching_entries = Vec::new();
+        let entries = self.entries.read().unwrap();
+        let verification_status = self.verification_status.read().unwrap();
 
-        for entry_id in self.entries.keys() {
-            let entry_status = self
-                .verification_status
+        for entry_id in entries.keys() {
+            let entry_status = verification_status
                 .get(entry_id)
                 .copied()
                 .unwrap_or_default();
@@ -751,7 +769,8 @@ impl Backend for InMemoryBackend {
 
         // Compute tips lazily
         let mut tips = Vec::new();
-        for (id, entry) in &self.entries {
+        let entries = self.entries.read().unwrap();
+        for (id, entry) in entries.iter() {
             if entry.root() == *tree && self.is_tip(tree, id) {
                 tips.push(id.clone());
             } else if entry.is_root() && entry.id() == *tree && self.is_tip(tree, id) {
@@ -799,7 +818,8 @@ impl Backend for InMemoryBackend {
     /// Finds all entries that are top-level roots (i.e., `entry.is_toplevel_root()` is true).
     fn all_roots(&self) -> Result<Vec<ID>> {
         let mut roots = Vec::new();
-        for (id, entry) in &self.entries {
+        let entries = self.entries.read().unwrap();
+        for (id, entry) in entries.iter() {
             if entry.is_toplevel_root() {
                 roots.push(id.clone());
             }
@@ -809,11 +829,6 @@ impl Backend for InMemoryBackend {
 
     /// Returns `self` as a `&dyn Any` reference.
     fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    /// Returns `self` as a `&mut dyn Any` reference.
-    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -827,7 +842,8 @@ impl Backend for InMemoryBackend {
     fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
         // Fill this tree vec with all entries in the tree
         let mut entries = Vec::new();
-        for entry in self.entries.values() {
+        let all_entries = self.entries.read().unwrap();
+        for entry in all_entries.values() {
             if entry.in_tree(tree) {
                 entries.push(entry.clone());
             }
@@ -855,7 +871,8 @@ impl Backend for InMemoryBackend {
     /// Entries that belong to the tree but not the subtree are excluded.
     fn get_subtree(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
-        for entry in self.entries.values() {
+        let all_entries = self.entries.read().unwrap();
+        for entry in all_entries.values() {
             if entry.in_tree(tree) && entry.in_subtree(subtree) {
                 entries.push(entry.clone());
             }
@@ -891,8 +908,9 @@ impl Backend for InMemoryBackend {
         let mut processed = HashSet::new();
 
         // Initialize with tips
+        let entries = self.entries.read().unwrap();
         for tip in tips {
-            if let Some(entry) = self.entries.get(tip) {
+            if let Some(entry) = entries.get(tip) {
                 // Only include entries that are part of the specified tree
                 if entry.in_tree(tree) {
                     to_process.push_back(tip.clone());
@@ -907,7 +925,7 @@ impl Backend for InMemoryBackend {
                 continue;
             }
 
-            if let Some(entry) = self.entries.get(&current_id) {
+            if let Some(entry) = entries.get(&current_id) {
                 // Entry must be in the specified tree to be included
                 if entry.in_tree(tree) {
                     // Add parents to be processed
@@ -925,6 +943,7 @@ impl Backend for InMemoryBackend {
                 }
             }
         }
+        drop(entries);
 
         // Sort the result by height within the tree context
         if !result.is_empty() {
@@ -961,8 +980,9 @@ impl Backend for InMemoryBackend {
         let mut processed = HashSet::new();
 
         // Initialize with tips
+        let entries = self.entries.read().unwrap();
         for tip in tips {
-            if let Some(entry) = self.entries.get(tip) {
+            if let Some(entry) = entries.get(tip) {
                 // Only include entries that are part of both the tree and the subtree
                 if entry.in_tree(tree) && entry.in_subtree(subtree) {
                     to_process.push_back(tip.clone());
@@ -977,7 +997,7 @@ impl Backend for InMemoryBackend {
                 continue;
             }
 
-            if let Some(entry) = self.entries.get(&current_id) {
+            if let Some(entry) = entries.get(&current_id) {
                 // Strict inclusion criteria: entry must be in BOTH the specific tree AND subtree
                 if entry.in_subtree(subtree) && entry.in_tree(tree) {
                     // Get subtree parents to process, if available
@@ -995,6 +1015,7 @@ impl Backend for InMemoryBackend {
                 }
             }
         }
+        drop(entries);
 
         // Sort the result by height within the subtree context
         let heights = self.calculate_heights(tree, Some(subtree))?;
@@ -1013,26 +1034,30 @@ impl Backend for InMemoryBackend {
     ///
     /// **Security Warning**: Keys are stored in plaintext memory without encryption.
     /// This implementation is suitable for development and testing only.
-    fn store_private_key(&mut self, key_id: &str, private_key: SigningKey) -> Result<()> {
-        self.private_keys.insert(key_id.to_string(), private_key);
+    fn store_private_key(&self, key_id: &str, private_key: SigningKey) -> Result<()> {
+        let mut keys = self.private_keys.write().unwrap();
+        keys.insert(key_id.to_string(), private_key);
         Ok(())
     }
 
     /// Retrieve a private key from local memory storage.
     fn get_private_key(&self, key_id: &str) -> Result<Option<SigningKey>> {
-        Ok(self.private_keys.get(key_id).cloned())
+        let keys = self.private_keys.read().unwrap();
+        Ok(keys.get(key_id).cloned())
     }
 
     /// List all stored private key identifiers.
     fn list_private_keys(&self) -> Result<Vec<String>> {
-        Ok(self.private_keys.keys().cloned().collect())
+        let keys = self.private_keys.read().unwrap();
+        Ok(keys.keys().cloned().collect())
     }
 
     /// Remove a private key from local memory storage.
     ///
     /// Returns Ok even if the key doesn't exist.
-    fn remove_private_key(&mut self, key_id: &str) -> Result<()> {
-        self.private_keys.remove(key_id);
+    fn remove_private_key(&self, key_id: &str) -> Result<()> {
+        let mut keys = self.private_keys.write().unwrap();
+        keys.remove(key_id);
         Ok(())
     }
 
@@ -1056,7 +1081,8 @@ impl Backend for InMemoryBackend {
         if main_entries == current_tree_tips {
             // Use original algorithm for current tips case
             let mut tips = Vec::new();
-            for (id, entry) in &self.entries {
+            let entries = self.entries.read().unwrap();
+            for (id, entry) in entries.iter() {
                 if entry.in_tree(tree)
                     && entry.in_subtree(subtree)
                     && self.is_subtree_tip(tree, subtree, id)
@@ -1106,19 +1132,22 @@ impl Backend for InMemoryBackend {
     /// Get cached CRDT state for a subtree at a specific entry.
     fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
         let key = self.create_crdt_cache_key(entry_id, subtree);
-        Ok(self.cache.get(&key).cloned())
+        let cache = self.cache.read().unwrap();
+        Ok(cache.get(&key).cloned())
     }
 
     /// Cache CRDT state for a subtree at a specific entry.
-    fn cache_crdt_state(&mut self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
+    fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
         let key = self.create_crdt_cache_key(entry_id, subtree);
-        self.cache.insert(key, state);
+        let mut cache = self.cache.write().unwrap();
+        cache.insert(key, state);
         Ok(())
     }
 
     /// Clear all cached CRDT states.
-    fn clear_crdt_cache(&mut self) -> Result<()> {
-        self.cache.clear();
+    fn clear_crdt_cache(&self) -> Result<()> {
+        let mut cache = self.cache.write().unwrap();
+        cache.clear();
         Ok(())
     }
 
@@ -1129,7 +1158,8 @@ impl Backend for InMemoryBackend {
         entry_id: &ID,
         subtree: &str,
     ) -> Result<Vec<ID>> {
-        let entry = self.entries.get(entry_id).ok_or(Error::NotFound)?;
+        let entries = self.entries.read().unwrap();
+        let entry = entries.get(entry_id).ok_or(Error::NotFound)?;
 
         if !entry.in_tree(tree_id) || !entry.in_subtree(subtree) {
             return Ok(Vec::new());

@@ -745,10 +745,7 @@ fn test_new_operation_with_multiple_tips() {
 
     // Verify the merge operation correctly set up parents
     let backend = tree.backend();
-    let backend_guard = backend.lock().unwrap();
-    let merge_entry = backend_guard
-        .get(&merge_id)
-        .expect("Failed to get merge entry");
+    let merge_entry = backend.get(&merge_id).expect("Failed to get merge entry");
     let merge_parents = merge_entry.parents().expect("Failed to get merge parents");
 
     assert_eq!(
