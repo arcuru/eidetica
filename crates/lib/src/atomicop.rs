@@ -114,8 +114,8 @@ impl AtomicOp {
     ///
     /// # Returns
     /// Self for method chaining
-    pub fn with_auth(mut self, key_id: &str) -> Self {
-        self.auth_key_id = Some(key_id.to_string());
+    pub fn with_auth(mut self, key_id: impl AsRef<str>) -> Self {
+        self.auth_key_id = Some(key_id.as_ref().to_string());
         self
     }
 
@@ -123,8 +123,8 @@ impl AtomicOp {
     ///
     /// # Arguments
     /// * `key_id` - The identifier of the private key to use for signing
-    pub fn set_auth_key(&mut self, key_id: &str) {
-        self.auth_key_id = Some(key_id.to_string());
+    pub fn set_auth_key(&mut self, key_id: impl AsRef<str>) {
+        self.auth_key_id = Some(key_id.as_ref().to_string());
     }
 
     /// Get the current authentication key ID for this operation.
@@ -139,14 +139,14 @@ impl AtomicOp {
     ///
     /// # Arguments
     /// * `root` - The tree root ID to set (use empty string for top-level roots)
-    pub(crate) fn set_entry_root(&self, root: &str) -> Result<()> {
+    pub(crate) fn set_entry_root(&self, root: impl AsRef<str>) -> Result<()> {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref.as_mut().ok_or_else(|| {
             Error::Io(std::io::Error::other(
                 "Operation has already been committed",
             ))
         })?;
-        builder.set_root_mut(root.to_string());
+        builder.set_root_mut(root.as_ref().to_string());
         Ok(())
     }
 
@@ -166,7 +166,13 @@ impl AtomicOp {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error.
-    pub(crate) fn update_subtree(&self, subtree: &str, data: &str) -> Result<()> {
+    pub(crate) fn update_subtree(
+        &self,
+        subtree: impl AsRef<str>,
+        data: impl AsRef<str>,
+    ) -> Result<()> {
+        let subtree = subtree.as_ref();
+        let data = data.as_ref();
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref.as_mut().ok_or_else(|| {
             Error::Io(std::io::Error::other(
@@ -208,10 +214,11 @@ impl AtomicOp {
     ///
     /// # Returns
     /// A `Result<T>` containing the `SubTree` handle.
-    pub fn get_subtree<T>(&self, subtree_name: &str) -> Result<T>
+    pub fn get_subtree<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: SubTree,
     {
+        let subtree_name = subtree_name.as_ref();
         {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref.as_mut().ok_or_else(|| {
@@ -264,10 +271,11 @@ impl AtomicOp {
     /// # Returns
     /// A `Result<T>` containing the deserialized staged data. Returns `Ok(T::default())`
     /// if no data has been staged for this subtree in this operation yet.
-    pub fn get_local_data<T>(&self, subtree_name: &str) -> Result<T>
+    pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: serde::de::DeserializeOwned + Default,
     {
+        let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.borrow();
         let builder = builder_ref.as_ref().ok_or_else(|| {
             Error::Io(std::io::Error::other(
@@ -303,10 +311,11 @@ impl AtomicOp {
     /// # Returns
     /// A `Result<T>` containing the merged historical data of type `T`. Returns `Ok(T::default())`
     /// if the subtree has no history prior to this operation.
-    pub(crate) fn get_full_state<T>(&self, subtree_name: &str) -> Result<T>
+    pub(crate) fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: CRDT + Clone,
     {
+        let subtree_name = subtree_name.as_ref();
         // Get the entry builder to get parent pointers
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref.as_mut().ok_or_else(|| {
@@ -368,7 +377,7 @@ impl AtomicOp {
     /// A `Result<T>` containing the computed CRDT state
     fn compute_subtree_state_lca_based<T>(
         &self,
-        subtree_name: &str,
+        subtree_name: impl AsRef<str>,
         entry_ids: &[String],
     ) -> Result<T>
     where
@@ -378,6 +387,8 @@ impl AtomicOp {
         if entry_ids.is_empty() {
             return Ok(T::default());
         }
+
+        let subtree_name = subtree_name.as_ref();
 
         // If we have a single entry, compute its state recursively
         if entry_ids.len() == 1 {

@@ -179,9 +179,9 @@ pub struct YrsStore {
 }
 
 impl SubTree for YrsStore {
-    fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self> {
+    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.to_string(),
+            name: subtree_name.as_ref().to_string(),
             atomic_op: op.clone(),
             cached_backend_data: RefCell::new(None),
         })
