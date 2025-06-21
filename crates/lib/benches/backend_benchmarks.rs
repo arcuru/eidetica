@@ -74,15 +74,13 @@ fn create_branching_tree(
 
     // Get the root entry to branch from
     let backend = tree.backend();
-    let backend_guard = backend.lock().unwrap();
-    let root_entries = backend_guard
+    let root_entries = backend
         .get_tree(tree.root_id())
         .expect("Failed to get tree");
     let root_entry = root_entries
         .first()
         .expect("Tree should have at least one entry")
         .id();
-    drop(backend_guard);
 
     for branch_idx in 0..num_branches {
         let mut branch_entries = Vec::new();
@@ -130,15 +128,13 @@ fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str)
             // Create many siblings from root
             // Get the root entry to branch from
             let backend = tree.backend();
-            let backend_guard = backend.lock().unwrap();
-            let root_entries = backend_guard
+            let root_entries = backend
                 .get_tree(tree.root_id())
                 .expect("Failed to get tree");
             let root_entry = root_entries
                 .first()
                 .expect("Tree should have at least one entry")
                 .id();
-            drop(backend_guard);
 
             for i in 0..num_entries {
                 let op = tree
@@ -194,8 +190,7 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
 
                         // Access backend to call find_lca
                         let backend = tree.backend();
-                        let backend_guard = backend.lock().unwrap();
-                        let in_memory = backend_guard
+                        let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemoryBackend>()
                             .expect("Failed to downcast backend");
@@ -227,8 +222,7 @@ pub fn bench_lca_diamond_merge(c: &mut Criterion) {
             },
             |(tree, test_entries, expected_lca)| {
                 let backend = tree.backend();
-                let backend_guard = backend.lock().unwrap();
-                let in_memory = backend_guard
+                let in_memory = backend
                     .as_any()
                     .downcast_ref::<InMemoryBackend>()
                     .expect("Failed to downcast backend");
@@ -259,8 +253,7 @@ pub fn bench_tree_heights(c: &mut Criterion) {
                 },
                 |tree| {
                     let backend = tree.backend();
-                    let backend_guard = backend.lock().unwrap();
-                    let in_memory = backend_guard
+                    let in_memory = backend
                         .as_any()
                         .downcast_ref::<InMemoryBackend>()
                         .expect("Failed to downcast backend");
@@ -295,8 +288,7 @@ pub fn bench_height_calculation_overhead(c: &mut Criterion) {
                     },
                     |tree| {
                         let backend = tree.backend();
-                        let backend_guard = backend.lock().unwrap();
-                        let in_memory = backend_guard
+                        let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemoryBackend>()
                             .expect("Failed to downcast backend");
@@ -334,8 +326,7 @@ pub fn bench_tips_finding(c: &mut Criterion) {
                     },
                     |tree| {
                         let backend = tree.backend();
-                        let backend_guard = backend.lock().unwrap();
-                        let tips = backend_guard
+                        let tips = backend
                             .get_tips(tree.root_id())
                             .expect("Failed to get tips");
                         black_box(tips);
@@ -371,8 +362,7 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                         },
                         |tree| {
                             let backend = tree.backend();
-                            let backend_guard = backend.lock().unwrap();
-                            let entries = backend_guard
+                            let entries = backend
                                 .get_tree(tree.root_id())
                                 .expect("Failed to get tree");
                             black_box(entries);
@@ -442,8 +432,7 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                     },
                     |(tree, last_entry_id)| {
                         let backend = tree.backend();
-                        let backend_guard = backend.lock().unwrap();
-                        let in_memory = backend_guard
+                        let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemoryBackend>()
                             .expect("Failed to downcast backend");

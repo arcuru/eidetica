@@ -65,8 +65,9 @@ pub trait Backend: Send + Sync + Any {
     /// * `id` - The ID of the entry to retrieve.
     ///
     /// # Returns
-    /// A `Result` containing a reference to the `Entry` if found, or an `Error::NotFound` otherwise.
-    fn get(&self, id: &ID) -> Result<&Entry>;
+    /// A `Result` containing the `Entry` if found, or an `Error::NotFound` otherwise.
+    /// Returns an owned copy to support concurrent access with internal synchronization.
+    fn get(&self, id: &ID) -> Result<Entry>;
 
     /// Gets the verification status of an entry.
     ///
@@ -89,7 +90,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put(&mut self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
+    fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
 
     /// Stores an entry with verified status (convenience method for local entries).
     ///
@@ -101,7 +102,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put_verified(&mut self, entry: Entry) -> Result<()> {
+    fn put_verified(&self, entry: Entry) -> Result<()> {
         self.put(VerificationStatus::Verified, entry)
     }
 
@@ -116,7 +117,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put_unverified(&mut self, entry: Entry) -> Result<()> {
+    fn put_unverified(&self, entry: Entry) -> Result<()> {
         self.put(VerificationStatus::Failed, entry)
     }
 
@@ -132,7 +133,7 @@ pub trait Backend: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or `Error::NotFound` if the entry doesn't exist.
     fn update_verification_status(
-        &mut self,
+        &self,
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()>;
@@ -249,12 +250,6 @@ pub trait Backend: Send + Sync + Any {
     /// enabling access to implementation-specific methods. Use with caution.
     fn as_any(&self) -> &dyn Any;
 
-    /// Returns a mutable reference to the backend instance as a dynamic `Any` type.
-    ///
-    /// This allows for downcasting to a concrete backend implementation if necessary,
-    /// enabling access to implementation-specific mutable methods. Use with caution.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-
     /// Retrieves all entries belonging to a specific tree, sorted topologically.
     ///
     /// The entries are sorted primarily by their height (distance from the root)
@@ -339,7 +334,7 @@ pub trait Backend: Send + Sync + Any {
     /// # Security Note
     /// This is a basic implementation suitable for development and testing.
     /// Production systems should consider encryption at rest and hardware security modules.
-    fn store_private_key(&mut self, key_id: &str, private_key: SigningKey) -> Result<()>;
+    fn store_private_key(&self, key_id: &str, private_key: SigningKey) -> Result<()>;
 
     /// Retrieve a private key from the backend's local key storage.
     ///
@@ -363,7 +358,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    fn remove_private_key(&mut self, key_id: &str) -> Result<()>;
+    fn remove_private_key(&self, key_id: &str) -> Result<()>;
 
     // === CRDT State Cache Methods ===
     //
@@ -390,7 +385,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn cache_crdt_state(&mut self, entry_id: &ID, subtree: &str, state: String) -> Result<()>;
+    fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()>;
 
     /// Clear all cached CRDT states.
     ///
@@ -399,7 +394,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during the clear operation.
-    fn clear_crdt_cache(&mut self) -> Result<()>;
+    fn clear_crdt_cache(&self) -> Result<()>;
 
     /// Get the subtree parent IDs for a specific entry and subtree, sorted by height then ID.
     ///

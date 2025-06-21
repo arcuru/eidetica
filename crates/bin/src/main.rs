@@ -13,18 +13,14 @@ const DB_FILE: &str = "eidetica.json";
 // Helper function to save the database
 fn save_database(db: &BaseDB) {
     println!("Saving database to {DB_FILE}...");
-    if let Ok(backend_guard) = db.backend().lock() {
-        let backend_any = backend_guard.as_any();
-        if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemoryBackend>() {
-            match in_memory_backend.save_to_file(DB_FILE) {
-                Ok(_) => println!("Database saved successfully."),
-                Err(e) => println!("Failed to save database: {e:?}"),
-            }
-        } else {
-            println!("Failed to downcast backend to InMemoryBackend for saving.");
+    let backend_any = db.backend().as_any();
+    if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemoryBackend>() {
+        match in_memory_backend.save_to_file(DB_FILE) {
+            Ok(_) => println!("Database saved successfully."),
+            Err(e) => println!("Failed to save database: {e:?}"),
         }
     } else {
-        println!("Failed to lock backend for saving.");
+        println!("Failed to downcast backend to InMemoryBackend for saving.");
     }
 }
 

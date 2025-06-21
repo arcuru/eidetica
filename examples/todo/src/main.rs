@@ -169,10 +169,9 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
 
 fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
     let backend = db.backend();
-    let backend_guard = backend.lock().unwrap();
 
     // Cast the backend to InMemoryBackend to access save_to_file
-    let in_memory_backend = backend_guard
+    let in_memory_backend = backend
         .as_any()
         .downcast_ref::<backend::InMemoryBackend>()
         .ok_or(anyhow!("Failed to downcast backend to InMemoryBackend"))?;

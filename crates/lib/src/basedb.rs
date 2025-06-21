@@ -12,7 +12,7 @@ use crate::tree::Tree;
 use crate::{Error, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 /// Database implementation on top of the backend.
 ///
@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
 pub struct BaseDB {
     /// The backend used by the database.
-    backend: Arc<Mutex<Box<dyn Backend>>>,
+    backend: Arc<dyn Backend>,
     // Blob storage will be separate, maybe even just an extension
     // storage: IPFS;
 }
@@ -30,20 +30,13 @@ pub struct BaseDB {
 impl BaseDB {
     pub fn new(backend: Box<dyn Backend>) -> Self {
         Self {
-            backend: Arc::new(Mutex::new(backend)),
+            backend: Arc::from(backend),
         }
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<Mutex<Box<dyn Backend>>> {
+    pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.backend
-    }
-
-    /// Helper function to lock the backend mutex.
-    fn lock_backend(&self) -> Result<MutexGuard<'_, Box<dyn Backend>>> {
-        self.backend
-            .lock()
-            .map_err(|_| Error::Io(std::io::Error::other("Failed to lock backend")))
     }
 
     /// Create a new tree in the database.
@@ -98,11 +91,8 @@ impl BaseDB {
     /// A `Result` containing the loaded `Tree` or an error if the root ID is not found.
     pub fn load_tree(&self, root_id: &ID) -> Result<Tree> {
         // First validate the root_id exists in the backend
-        {
-            let backend_guard = self.lock_backend()?;
-            // Make sure the entry exists
-            backend_guard.get(root_id)?;
-        }
+        // Make sure the entry exists
+        self.backend.get(root_id)?;
 
         // Create a tree object with the given root_id
         Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))
@@ -116,10 +106,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a vector of all `Tree` instances or an error.
     pub fn all_trees(&self) -> Result<Vec<Tree>> {
-        let root_ids = {
-            let backend_guard = self.lock_backend()?;
-            backend_guard.all_roots()?
-        };
+        let root_ids = self.backend.all_roots()?;
         let mut trees = Vec::new();
 
         for root_id in root_ids {
@@ -201,8 +188,7 @@ impl BaseDB {
         let key_id = key_id.as_ref();
         let (signing_key, verifying_key) = generate_keypair();
 
-        let mut backend_guard = self.lock_backend()?;
-        backend_guard.store_private_key(key_id, signing_key)?;
+        self.backend.store_private_key(key_id, signing_key)?;
 
         Ok(verifying_key)
     }
@@ -222,8 +208,7 @@ impl BaseDB {
         key_id: impl AsRef<str>,
         private_key: SigningKey,
     ) -> Result<()> {
-        let mut backend_guard = self.lock_backend()?;
-        backend_guard.store_private_key(key_id.as_ref(), private_key)
+        self.backend.store_private_key(key_id.as_ref(), private_key)
     }
 
     /// Get the public key corresponding to a stored private key.
@@ -237,8 +222,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing `Some(VerifyingKey)` if the key exists, `None` if not found.
     pub fn get_public_key(&self, key_id: impl AsRef<str>) -> Result<Option<VerifyingKey>> {
-        let backend_guard = self.lock_backend()?;
-        if let Some(signing_key) = backend_guard.get_private_key(key_id.as_ref())? {
+        if let Some(signing_key) = self.backend.get_private_key(key_id.as_ref())? {
             Ok(Some(signing_key.verifying_key()))
         } else {
             Ok(None)
@@ -253,8 +237,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a vector of key identifiers.
     pub fn list_private_keys(&self) -> Result<Vec<String>> {
-        let backend_guard = self.lock_backend()?;
-        backend_guard.list_private_keys()
+        self.backend.list_private_keys()
     }
 
     /// Remove a private key from local storage.
@@ -268,8 +251,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` indicating success. Succeeds even if the key doesn't exist.
     pub fn remove_private_key(&self, key_id: impl AsRef<str>) -> Result<()> {
-        let mut backend_guard = self.lock_backend()?;
-        backend_guard.remove_private_key(key_id.as_ref())
+        self.backend.remove_private_key(key_id.as_ref())
     }
 
     /// Get a formatted public key string for a stored private key.
