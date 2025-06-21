@@ -222,7 +222,7 @@ pub trait Backend: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing the LCA entry ID, or an error if no common ancestor exists
-    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[String]) -> Result<String>;
+    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID>;
 
     /// Collects all entries from the tree root down to the target entry within a subtree.
     ///
@@ -241,8 +241,8 @@ pub trait Backend: Send + Sync + Any {
         &self,
         tree: &ID,
         subtree: &str,
-        target_entry: &str,
-    ) -> Result<Vec<String>>;
+        target_entry: &ID,
+    ) -> Result<Vec<ID>>;
 
     /// Returns a reference to the backend instance as a dynamic `Any` type.
     ///

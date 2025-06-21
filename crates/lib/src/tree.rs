@@ -97,7 +97,7 @@ impl Tree {
         );
 
         let temp_tree_for_bootstrap = Tree {
-            root: bootstrap_placeholder_id.clone(),
+            root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
             default_auth_key: Some(super_user_key_id.clone()),
         };

@@ -377,7 +377,7 @@ impl AtomicOp {
     fn compute_subtree_state_lca_based<T>(
         &self,
         subtree_name: impl AsRef<str>,
-        entry_ids: &[String],
+        entry_ids: &[ID],
     ) -> Result<T>
     where
         T: CRDT + Clone,
@@ -438,7 +438,7 @@ impl AtomicOp {
     fn compute_single_entry_state_recursive<T>(
         &self,
         subtree_name: &str,
-        entry_id: &str,
+        entry_id: &ID,
     ) -> Result<T>
     where
         T: CRDT + Clone,
@@ -448,7 +448,7 @@ impl AtomicOp {
             if let Some(cached_state) = self
                 .tree
                 .backend()
-                .get_cached_crdt_state(&entry_id.to_string(), subtree_name)?
+                .get_cached_crdt_state(entry_id, subtree_name)?
             {
                 let result: T = serde_json::from_str(&cached_state)?;
                 return Ok(result);
@@ -459,7 +459,7 @@ impl AtomicOp {
         let parents = {
             self.tree.backend().get_sorted_subtree_parents(
                 self.tree.root_id(),
-                &entry_id.to_string(),
+                entry_id,
                 subtree_name,
             )?
         };
@@ -506,7 +506,7 @@ impl AtomicOp {
 
         // Finally, merge the current entry's local data
         let local_data = {
-            let entry = self.tree.backend().get(&entry_id.to_string())?;
+            let entry = self.tree.backend().get(entry_id)?;
             if let Ok(data) = entry.data(subtree_name) {
                 serde_json::from_str::<T>(data)?
             } else {
@@ -519,11 +519,9 @@ impl AtomicOp {
         // Cache the result
         {
             let serialized_state = serde_json::to_string(&result)?;
-            self.tree.backend().cache_crdt_state(
-                &entry_id.to_string(),
-                subtree_name,
-                serialized_state,
-            )?;
+            self.tree
+                .backend()
+                .cache_crdt_state(entry_id, subtree_name, serialized_state)?;
         }
 
         Ok(result)
@@ -538,12 +536,7 @@ impl AtomicOp {
     ///
     /// # Returns
     /// A `Result<T>` containing the merged CRDT state
-    fn merge_path_entries<T>(
-        &self,
-        subtree_name: &str,
-        mut state: T,
-        entry_ids: &[String],
-    ) -> Result<T>
+    fn merge_path_entries<T>(&self, subtree_name: &str, mut state: T, entry_ids: &[ID]) -> Result<T>
     where
         T: CRDT + Clone,
     {

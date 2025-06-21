@@ -276,7 +276,7 @@ fn test_metadata_for_settings_entries() {
     // Verify data entry has metadata that includes the settings ID
     let metadata = data_entry.get_metadata().unwrap();
     assert!(
-        metadata.contains(&settings_id),
+        metadata.contains(settings_id.as_str()),
         "Metadata should include settings ID"
     );
 }

@@ -4,6 +4,7 @@ use eidetica::backend::Backend;
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
+use eidetica::entry::ID;
 use eidetica::subtree::KVStore;
 
 const TEST_KEY: &str = "test_key";
@@ -76,7 +77,7 @@ fn test_all_trees() {
     let trees: Vec<eidetica::Tree> = db.all_trees().expect("Failed to get all trees");
     assert_eq!(trees.len(), 2);
 
-    let found_ids: Vec<String> = trees.iter().map(|t| t.root_id().clone()).collect();
+    let found_ids: Vec<ID> = trees.iter().map(|t| t.root_id().clone()).collect();
     assert!(found_ids.contains(&root_id1));
     assert!(found_ids.contains(&root_id2));
 }

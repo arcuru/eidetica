@@ -1,6 +1,6 @@
 use eidetica::Error;
 use eidetica::backend::{Backend, InMemoryBackend, VerificationStatus};
-use eidetica::entry::Entry;
+use eidetica::entry::{Entry, ID};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -71,7 +71,7 @@ fn test_in_memory_backend_tree_operations() {
     assert_eq!(tree.len(), 3); // root + 2 children
 
     // Verify tree contains all three entries
-    let tree_ids: Vec<String> = tree.iter().map(|e| e.id()).collect();
+    let tree_ids: Vec<ID> = tree.iter().map(|e| e.id()).collect();
     assert!(tree_ids.contains(&root_id));
     assert!(tree_ids.contains(&child1_id));
     assert!(tree_ids.contains(&child2_id));
@@ -151,7 +151,7 @@ fn test_in_memory_backend_error_handling() {
     let backend = InMemoryBackend::new();
 
     // Test retrieving a non-existent entry
-    let non_existent_id = "non_existent_id".to_string();
+    let non_existent_id: ID = "non_existent_id".into();
     let get_result = backend.get(&non_existent_id);
     assert!(get_result.is_err());
 
@@ -241,7 +241,7 @@ fn test_in_memory_backend_complex_tree_structure() {
 
     // Verify A and B are in between (order between them could vary)
     // FIXME: This will be consistent once the API is defined. Update this test once the total ordering is fully implemented.
-    let middle_ids: Vec<String> = vec![tree[1].id(), tree[2].id()];
+    let middle_ids: Vec<ID> = vec![tree[1].id(), tree[2].id()];
     assert!(middle_ids.contains(&a_id));
     assert!(middle_ids.contains(&b_id));
 
@@ -262,7 +262,7 @@ fn test_in_memory_backend_complex_tree_structure() {
 #[test]
 fn test_backend_get_tree_from_tips() {
     let backend = InMemoryBackend::new();
-    let root_id = "tree_root".to_string();
+    let root_id: ID = "tree_root".into();
 
     // Create entries: root -> e1 -> e2a, e2b
     let root_entry = Entry::builder(root_id.clone(), "root_data".to_string())
@@ -330,7 +330,7 @@ fn test_backend_get_tree_from_tips() {
 
     // --- Test with non-existent tip ---
     let tree_bad_tip = backend
-        .get_tree_from_tips(&root_id, &["bad_tip_id".to_string()])
+        .get_tree_from_tips(&root_id, &["bad_tip_id".to_string().into()])
         .expect("Failed to get tree with non-existent tip");
     assert!(
         tree_bad_tip.is_empty(),
@@ -338,9 +338,9 @@ fn test_backend_get_tree_from_tips() {
     );
 
     // --- Test with non-existent tree root ---
-    let bad_root_string = "bad_root".to_string();
+    let bad_root_id: ID = "bad_root".into();
     let tree_bad_root = backend
-        .get_tree_from_tips(&bad_root_string, std::slice::from_ref(&e1_id))
+        .get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id))
         .expect("Failed to get tree with non-existent root");
     assert!(
         tree_bad_root.is_empty(),
@@ -457,7 +457,7 @@ fn test_backend_get_subtree_from_tips() {
         .get_subtree_from_tips(
             &root_entry_id,
             &subtree_name_string,
-            &["bad_tip_id".to_string()],
+            &["bad_tip_id".to_string().into()],
         )
         .expect("Failed to get subtree with non-existent tip");
     assert!(
@@ -466,10 +466,10 @@ fn test_backend_get_subtree_from_tips() {
     );
 
     // --- Test with non-existent tree root ---
-    let bad_root_string_2 = "bad_root".to_string();
+    let bad_root_id_2: ID = "bad_root".into();
     let subtree_bad_root = backend
         .get_subtree_from_tips(
-            &bad_root_string_2,
+            &bad_root_id_2,
             &subtree_name_string,
             std::slice::from_ref(&e1_id),
         )
@@ -907,7 +907,7 @@ fn test_put_get_entry() {
     assert_eq!(retrieved, entry);
 
     // Try to get a non-existent ID
-    let non_existent = "non_existent_id".to_string();
+    let non_existent: ID = "non_existent_id".into();
     let invalid_get = backend.get(&non_existent);
     assert!(matches!(invalid_get, Err(Error::NotFound)));
 }
@@ -1120,7 +1120,7 @@ fn test_get_subtree() {
     assert_eq!(subtree.len(), 3);
 
     // Check that the right entries are included
-    let entry_ids: Vec<String> = subtree.iter().map(|e| e.id().clone()).collect();
+    let entry_ids: Vec<ID> = subtree.iter().map(|e| e.id()).collect();
     assert!(entry_ids.contains(&child1_id));
     assert!(entry_ids.contains(&gc1_id));
     assert!(entry_ids.contains(&grandchild2_id));
@@ -1312,7 +1312,7 @@ fn test_verification_status_multiple_entries() {
 fn test_verification_status_not_found_errors() {
     let backend = InMemoryBackend::new();
 
-    let nonexistent_id = "nonexistent".to_string();
+    let nonexistent_id: ID = "nonexistent".into();
 
     // Test getting status for nonexistent entry
     let result = backend.get_verification_status(&nonexistent_id);
