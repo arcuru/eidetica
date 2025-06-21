@@ -11,11 +11,143 @@ use crate::auth::types::AuthInfo;
 use crate::constants::ROOT;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// A content-addressable identifier for an `Entry` or other database object.
 ///
-/// Currently represented as a hex-encoded SHA-256 hash string.
-pub type ID = String;
+/// Represents a hex-encoded SHA-256 hash string using `Arc<str>` for efficient sharing
+/// across thread boundaries and reduced memory overhead compared to String.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ID(Arc<str>);
+
+impl Default for ID {
+    fn default() -> Self {
+        Self(Arc::from(""))
+    }
+}
+
+impl ID {
+    /// Creates a new ID from any string-like input.
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into().into())
+    }
+
+    /// Returns the ID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns true if the ID is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<String> for ID {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<&str> for ID {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<&ID> for ID {
+    fn from(id: &ID) -> Self {
+        id.clone()
+    }
+}
+
+impl AsRef<str> for ID {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.0)
+    }
+}
+
+impl std::ops::Deref for ID {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for ID {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0 == other
+    }
+}
+
+impl PartialEq<&str> for ID {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
+
+impl PartialEq<String> for ID {
+    fn eq(&self, other: &String) -> bool {
+        &*self.0 == other
+    }
+}
+
+impl PartialEq<ID> for str {
+    fn eq(&self, other: &ID) -> bool {
+        self == &*other.0
+    }
+}
+
+impl PartialEq<ID> for &str {
+    fn eq(&self, other: &ID) -> bool {
+        *self == &*other.0
+    }
+}
+
+impl PartialEq<ID> for String {
+    fn eq(&self, other: &ID) -> bool {
+        self == &*other.0
+    }
+}
+
+impl From<ID> for String {
+    fn from(id: ID) -> Self {
+        id.0.to_string()
+    }
+}
+
+impl From<&ID> for String {
+    fn from(id: &ID) -> Self {
+        id.0.to_string()
+    }
+}
+
+// Manual Serialize/Deserialize implementations for Arc<str>
+impl serde::Serialize for ID {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ID {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(ID(Arc::from(s)))
+    }
+}
 
 /// Represents serialized data, typically JSON, provided by the user.
 ///
@@ -149,7 +281,7 @@ impl Entry {
         // convert the hash to a string
         let hash = hasher.finalize();
         // convert the hash to a hex string
-        format!("{hash:x}")
+        format!("{hash:x}").into()
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
@@ -319,7 +451,7 @@ impl EntryBuilder {
     pub fn new(root: impl Into<String>, data: RawData) -> Self {
         Self {
             tree: TreeNode {
-                root: root.into(),
+                root: root.into().into(),
                 parents: Vec::new(),
                 data,
                 metadata: None,
@@ -487,7 +619,7 @@ impl EntryBuilder {
     /// # Returns
     /// A mutable reference to self for method chaining.
     pub fn set_root(mut self, root: impl Into<String>) -> Self {
-        self.tree.root = root.into();
+        self.tree.root = root.into().into();
         self
     }
 
@@ -500,7 +632,7 @@ impl EntryBuilder {
     /// # Returns
     /// A mutable reference to self for method chaining.
     pub fn set_root_mut(&mut self, root: impl Into<String>) -> &mut Self {
-        self.tree.root = root.into();
+        self.tree.root = root.into().into();
         self
     }
 
@@ -547,7 +679,7 @@ impl EntryBuilder {
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
     pub fn add_parent(mut self, parent_id: impl Into<String>) -> Self {
-        self.tree.parents.push(parent_id.into());
+        self.tree.parents.push(parent_id.into().into());
         self
     }
 
@@ -555,7 +687,7 @@ impl EntryBuilder {
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
     pub fn add_parent_mut(&mut self, parent_id: impl Into<String>) -> &mut Self {
-        self.tree.parents.push(parent_id.into());
+        self.tree.parents.push(parent_id.into().into());
         self
     }
 
@@ -639,12 +771,12 @@ impl EntryBuilder {
             .iter_mut()
             .find(|node| node.name == subtree_name)
         {
-            node.parents.push(parent_id);
+            node.parents.push(parent_id.into());
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
                 data: "{}".to_string(),
-                parents: vec![parent_id],
+                parents: vec![parent_id.into()],
             });
         }
         self
@@ -667,12 +799,12 @@ impl EntryBuilder {
             .iter_mut()
             .find(|node| node.name == subtree_name)
         {
-            node.parents.push(parent_id);
+            node.parents.push(parent_id.into());
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
                 data: "{}".to_string(),
-                parents: vec![parent_id],
+                parents: vec![parent_id.into()],
             });
         }
         self

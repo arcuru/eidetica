@@ -650,7 +650,7 @@ impl Backend for InMemoryBackend {
     /// Stores an entry in the backend with the specified verification status.
     fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
         let entry_id = entry.id();
-        let tree_id = entry.root().to_string();
+        let tree_id = ID::from(entry.root());
 
         // Store the entry
         {
@@ -1183,7 +1183,7 @@ impl Backend for InMemoryBackend {
         Ok(parents)
     }
 
-    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[String]) -> Result<String> {
+    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
         use std::collections::{HashMap, HashSet, VecDeque};
 
         if entry_ids.is_empty() {
@@ -1215,8 +1215,8 @@ impl Backend for InMemoryBackend {
         }
 
         // Track which entries can reach each ancestor
-        let mut ancestors: HashMap<String, HashSet<usize>> = HashMap::new();
-        let mut queues: Vec<VecDeque<String>> = Vec::new();
+        let mut ancestors: HashMap<ID, HashSet<usize>> = HashMap::new();
+        let mut queues: Vec<VecDeque<ID>> = Vec::new();
 
         // Initialize BFS from each entry
         for (idx, entry_id) in entry_ids.iter().enumerate() {
@@ -1270,8 +1270,8 @@ impl Backend for InMemoryBackend {
         &self,
         tree: &ID,
         subtree: &str,
-        target_entry: &str,
-    ) -> Result<Vec<String>> {
+        target_entry: &ID,
+    ) -> Result<Vec<ID>> {
         self.build_path_from_root(tree, subtree, target_entry)
     }
 
@@ -1345,14 +1345,9 @@ impl Backend for InMemoryBackend {
 
 impl InMemoryBackend {
     /// Helper method to build the complete path from tree root to a target entry
-    fn build_path_from_root(
-        &self,
-        tree: &ID,
-        subtree: &str,
-        target_entry: &str,
-    ) -> Result<Vec<String>> {
+    fn build_path_from_root(&self, tree: &ID, subtree: &str, target_entry: &ID) -> Result<Vec<ID>> {
         let mut path = Vec::new();
-        let mut current = target_entry.to_string();
+        let mut current = target_entry.clone();
         let mut visited = std::collections::HashSet::new();
 
         // Build path by following parents back to root

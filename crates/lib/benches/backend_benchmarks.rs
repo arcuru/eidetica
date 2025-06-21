@@ -1,6 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use eidetica::backend::{Backend, InMemoryBackend};
 use eidetica::basedb::BaseDB;
+use eidetica::entry::ID;
 use eidetica::subtree::KVStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
@@ -14,7 +15,7 @@ fn setup_tree() -> eidetica::Tree {
 }
 
 /// Create a linear chain of entries for testing LCA performance
-fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<String> {
+fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
@@ -32,7 +33,7 @@ fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<String> {
 }
 
 /// Create a diamond pattern for testing merge scenarios  
-fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<String>, String) {
+fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
     // Create root A
     let op_a = tree.new_operation().expect("Failed to create op");
     let kv_a = op_a
@@ -69,7 +70,7 @@ fn create_branching_tree(
     tree: &eidetica::Tree,
     num_branches: usize,
     entries_per_branch: usize,
-) -> Vec<Vec<String>> {
+) -> Vec<Vec<ID>> {
     let mut branches = Vec::new();
 
     // Get the root entry to branch from
@@ -107,7 +108,7 @@ fn create_branching_tree(
 }
 
 /// Create a large tree with specified structure
-fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str) -> Vec<String> {
+fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     match structure {
