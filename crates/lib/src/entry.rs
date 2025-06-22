@@ -206,8 +206,8 @@ struct SubTreeNode {
 /// # use eidetica::entry::Entry;
 ///
 /// // Create a new entry using Entry::builder()
-/// let entry = Entry::builder("tree_root".to_string(), r#"{"settings":true}"#.to_string())
-///     .set_subtree_data("users".to_string(), r#"{"user1":"data"}"#.to_string())
+/// let entry = Entry::builder("tree_root", r#"{"settings":true}"#)
+///     .set_subtree_data("users", r#"{"user1":"data"}"#)
 ///     .build();
 ///
 /// // Access entry data
@@ -249,8 +249,8 @@ impl Entry {
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
-    /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
-    pub fn builder(root: impl Into<String>, data: RawData) -> EntryBuilder {
+    /// * `data` - Data that will be converted to `RawData` (serialized string) for the main tree node (`tree.data`).
+    pub fn builder(root: impl Into<ID>, data: impl Into<RawData>) -> EntryBuilder {
         EntryBuilder::new(root, data)
     }
 
@@ -262,7 +262,7 @@ impl Entry {
     ///
     /// # Arguments
     /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    pub fn root_builder(data: impl Into<String>) -> EntryBuilder {
+    pub fn root_builder(data: impl Into<RawData>) -> EntryBuilder {
         EntryBuilder::new_top_level(data.into())
     }
 
@@ -393,6 +393,19 @@ impl Entry {
 /// Once finalized with the `build()` method, it produces an immutable `Entry`
 /// with a deterministically calculated ID.
 ///
+/// # Parameter Type Efficiency
+///
+/// The builder uses `impl Into<ID>` and `impl Into<RawData>` for parameters, allowing you to pass
+/// string literals, `&str`, `String`, or the appropriate types without unnecessary conversions:
+///
+/// ```ignore
+/// // Efficient - no unnecessary .to_string() calls needed
+/// let entry = Entry::builder("root_id", "main_data")
+///     .add_parent("parent1")
+///     .set_subtree_data("users", "user_data")
+///     .build();
+/// ```
+///
 /// # Mutable Construction
 ///
 /// The builder provides two patterns for construction:
@@ -424,14 +437,14 @@ impl Entry {
 /// use eidetica::entry::Entry;
 ///
 /// // Create a builder for a regular entry
-/// let entry = Entry::builder("root_id".to_string(), "main_data".to_string())
-///     .add_parent("parent1".to_string())
-///     .set_subtree_data("users".to_string(), "user_data".to_string())
+/// let entry = Entry::builder("root_id", "main_data")
+///     .add_parent("parent1")
+///     .set_subtree_data("users", "user_data")
 ///     .build();
 ///
 /// // Create a builder for a top-level root entry
-/// let root_entry = Entry::root_builder("settings_data".to_string())
-///     .set_subtree_data("users".to_string(), "initial_user_data".to_string())
+/// let root_entry = Entry::root_builder("settings_data")
+///     .set_subtree_data("users", "initial_user_data")
 ///     .build();
 /// ```
 #[derive(Clone)]
@@ -446,16 +459,16 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
-    /// * `data` - `RawData` (serialized string) for the main tree node (`tree.data`).
+    /// * `data` - Data that will be converted to `RawData` (serialized string) for the main tree node (`tree.data`).
     ///
     /// Note: It's generally preferred to use the static `Entry::builder()` method
     /// instead of calling this constructor directly.
-    pub fn new(root: impl Into<String>, data: RawData) -> Self {
+    pub fn new(root: impl Into<ID>, data: impl Into<RawData>) -> Self {
         Self {
             tree: TreeNode {
-                root: root.into().into(),
+                root: root.into(),
                 parents: Vec::new(),
-                data,
+                data: data.into(),
                 metadata: None,
             },
             subtrees: Vec::new(),
@@ -473,10 +486,10 @@ impl EntryBuilder {
     ///
     /// Note: It's generally preferred to use the static `Entry::root_builder()` method
     /// instead of calling this constructor directly.
-    pub fn new_top_level(data: impl Into<String>) -> Self {
-        let mut builder = Self::new("".to_string(), data.into());
+    pub fn new_top_level(data: impl Into<RawData>) -> Self {
+        let mut builder = Self::new("", data.into());
         // Add a special subtree that identifies this as a root entry
-        builder.set_subtree_data_mut(ROOT.to_string(), "".to_string());
+        builder.set_subtree_data_mut(ROOT, "");
         builder
     }
 
@@ -561,14 +574,14 @@ impl EntryBuilder {
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
     /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
-    pub fn set_subtree_data(mut self, name: impl Into<String>, data: RawData) -> Self {
+    pub fn set_subtree_data(mut self, name: impl Into<String>, data: impl Into<RawData>) -> Self {
         let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = data;
+            node.data = data.into();
         } else {
             self.subtrees.push(SubTreeNode {
                 name,
-                data,
+                data: data.into(),
                 parents: vec![],
             });
         }
@@ -582,14 +595,18 @@ impl EntryBuilder {
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
     /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
-    pub fn set_subtree_data_mut(&mut self, name: impl Into<String>, data: RawData) -> &mut Self {
+    pub fn set_subtree_data_mut(
+        &mut self,
+        name: impl Into<String>,
+        data: impl Into<RawData>,
+    ) -> &mut Self {
         let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = data;
+            node.data = data.into();
         } else {
             self.subtrees.push(SubTreeNode {
                 name,
-                data,
+                data: data.into(),
                 parents: vec![],
             });
         }

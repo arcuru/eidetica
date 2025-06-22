@@ -84,7 +84,7 @@ impl AtomicOp {
 
         // Start with a basic entry linked to the tree's root.
         // Data and parents will be filled based on the operation type.
-        let mut builder = Entry::builder(tree.root_id().clone(), "".to_string());
+        let mut builder = Entry::builder(tree.root_id().clone(), "");
 
         // Use the provided tips as parents (only if not empty)
         if !tips.is_empty() {
