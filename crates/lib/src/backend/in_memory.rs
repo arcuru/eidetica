@@ -693,19 +693,19 @@ impl Backend for InMemoryBackend {
 
                 // Update subtree tips for each subtree
                 for subtree_name in entry.subtrees() {
-                    if let Some(subtree_tips) = cache.subtree_tips.get_mut(&subtree_name) {
-                        if let Ok(subtree_parents) = entry.subtree_parents(&subtree_name) {
-                            if subtree_parents.is_empty() {
-                                // Subtree root is also a tip initially
-                                subtree_tips.insert(entry_id.clone());
-                            } else {
-                                // Remove parents from subtree tips if they exist
-                                for parent in &subtree_parents {
-                                    subtree_tips.remove(parent);
-                                }
-                                // Add the new entry as a subtree tip
-                                subtree_tips.insert(entry_id.clone());
+                    if let Some(subtree_tips) = cache.subtree_tips.get_mut(&subtree_name)
+                        && let Ok(subtree_parents) = entry.subtree_parents(&subtree_name)
+                    {
+                        if subtree_parents.is_empty() {
+                            // Subtree root is also a tip initially
+                            subtree_tips.insert(entry_id.clone());
+                        } else {
+                            // Remove parents from subtree tips if they exist
+                            for parent in &subtree_parents {
+                                subtree_tips.remove(parent);
                             }
+                            // Add the new entry as a subtree tip
+                            subtree_tips.insert(entry_id.clone());
                         }
                     }
                 }
@@ -794,10 +794,10 @@ impl Backend for InMemoryBackend {
     fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
         // Check if we have cached subtree tips
         let tips_cache = self.tips.read().unwrap();
-        if let Some(cache) = tips_cache.get(tree) {
-            if let Some(subtree_tips) = cache.subtree_tips.get(subtree) {
-                return Ok(subtree_tips.iter().cloned().collect());
-            }
+        if let Some(cache) = tips_cache.get(tree)
+            && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
+        {
+            return Ok(subtree_tips.iter().cloned().collect());
         }
         drop(tips_cache);
 
