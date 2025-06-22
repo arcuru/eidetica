@@ -507,8 +507,8 @@ impl AuthInfo {
     ///
     /// # Returns
     /// `true` if signed by the key and has a signature, `false` otherwise
-    pub fn is_signed_by(&self, key_id: &str) -> bool {
-        self.id == AuthId::Direct(key_id.to_string()) && self.signature.is_some()
+    pub fn is_signed_by(&self, key_id: impl AsRef<str>) -> bool {
+        self.id == AuthId::Direct(key_id.as_ref().to_string()) && self.signature.is_some()
     }
 }
 

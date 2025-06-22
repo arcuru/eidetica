@@ -362,7 +362,7 @@ impl AtomicOp {
     ///
     /// Algorithm:
     /// 1. If no entries, return default state
-    /// 2. If single entry, compute its state recursively  
+    /// 2. If single entry, compute its state recursively
     /// 3. If multiple entries, find their LCA and compute state from that LCA
     ///
     /// # Type Parameters
@@ -423,7 +423,7 @@ impl AtomicOp {
     ///
     /// Algorithm:
     /// 1. Check if entry state is cached → return it
-    /// 2. Find LCA of parents and get its state (recursively)  
+    /// 2. Find LCA of parents and get its state (recursively)
     /// 3. Merge all entries from LCA to current entry into that state
     ///
     /// # Type Parameters

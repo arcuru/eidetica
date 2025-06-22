@@ -59,7 +59,8 @@ impl AuthSettings {
     }
 
     /// Revoke a key by setting its status to Revoked
-    pub fn revoke_key(&mut self, id: &str) -> Result<()> {
+    pub fn revoke_key(&mut self, id: impl AsRef<str>) -> Result<()> {
+        let id = id.as_ref();
         if let Some(value) = self.inner.get(id) {
             match AuthKey::try_from(value.clone()) {
                 Ok(mut auth_key) => {
@@ -80,16 +81,16 @@ impl AuthSettings {
     }
 
     /// Get a specific key by ID
-    pub fn get_key(&self, id: &str) -> Option<Result<AuthKey>> {
-        self.inner.get(id).map(|value| {
+    pub fn get_key(&self, id: impl AsRef<str>) -> Option<Result<AuthKey>> {
+        self.inner.get(id.as_ref()).map(|value| {
             AuthKey::try_from(value.clone())
                 .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))
         })
     }
 
     /// Get a specific User Auth Tree reference by ID
-    pub fn get_user_tree(&self, id: &str) -> Option<Result<UserAuthTreeRef>> {
-        self.inner.get(id).map(|value| {
+    pub fn get_user_tree(&self, id: impl AsRef<str>) -> Option<Result<UserAuthTreeRef>> {
+        self.inner.get(id.as_ref()).map(|value| {
             UserAuthTreeRef::try_from(value.clone())
                 .map_err(|e| Error::Authentication(format!("Invalid user auth tree format: {e}")))
         })
@@ -152,7 +153,11 @@ impl AuthSettings {
     /// Priority rules apply only to administrative operations:
     /// - Keys can modify keys with equal or lower priority (equal or higher numbers)
     /// - Admin keys can always modify Write keys regardless of priority
-    pub fn can_modify_key(&self, signing_key: &ResolvedAuth, target_key_id: &str) -> Result<bool> {
+    pub fn can_modify_key(
+        &self,
+        signing_key: &ResolvedAuth,
+        target_key_id: impl AsRef<str>,
+    ) -> Result<bool> {
         // Must have admin permissions to modify keys
         if !signing_key.effective_permission.can_admin() {
             return Ok(false);
@@ -165,7 +170,7 @@ impl AuthSettings {
             .unwrap_or(u32::MAX); // Default to lowest priority if None
 
         // Get target key info
-        if let Some(target_result) = self.get_key(target_key_id) {
+        if let Some(target_result) = self.get_key(target_key_id.as_ref()) {
             let target_key = target_result?;
             let target_priority = target_key.permissions.priority().unwrap_or(u32::MAX);
 

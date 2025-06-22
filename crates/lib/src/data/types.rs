@@ -83,8 +83,8 @@ impl KVOverWrite {
 
     /// Remove a key-value pair by inserting a tombstone.
     /// Returns the value if it existed before removal, otherwise None.
-    pub fn remove(&mut self, key: &str) -> Option<String> {
-        self.data.insert(key.to_string(), None).flatten()
+    pub fn remove(&mut self, key: impl AsRef<str>) -> Option<String> {
+        self.data.insert(key.as_ref().to_string(), None).flatten()
     }
 
     /// Get the underlying HashMap, including tombstones (None values).
@@ -224,8 +224,11 @@ impl KVNested {
 
     /// Remove a key-value pair by inserting a tombstone.
     /// Returns the value if it existed (and wasn't already a tombstone) before removal, otherwise None.
-    pub fn remove(&mut self, key: &str) -> Option<NestedValue> {
-        match self.data.insert(key.to_string(), NestedValue::Deleted) {
+    pub fn remove(&mut self, key: impl AsRef<str>) -> Option<NestedValue> {
+        match self
+            .data
+            .insert(key.as_ref().to_string(), NestedValue::Deleted)
+        {
             Some(NestedValue::Deleted) => None, // It was already a tombstone
             Some(old_value) => Some(old_value), // It was String or Map
             None => None,                       // Key didn't exist

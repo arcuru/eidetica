@@ -302,14 +302,16 @@ impl Entry {
     }
 
     /// Check if this entry contains data for a specific named subtree.
-    pub fn in_subtree(&self, subtree_name: &str) -> bool {
-        self.subtrees.iter().any(|node| node.name == subtree_name)
+    pub fn in_subtree(&self, subtree_name: impl AsRef<str>) -> bool {
+        self.subtrees
+            .iter()
+            .any(|node| node.name == subtree_name.as_ref())
     }
 
     /// Check if this entry belongs to a specific tree, identified by its root ID.
-    pub fn in_tree(&self, tree_id: &str) -> bool {
+    pub fn in_tree(&self, tree_id: impl AsRef<str>) -> bool {
         // Entries that are roots exist in both trees
-        self.root() == tree_id || (self.id() == tree_id)
+        self.root() == tree_id.as_ref() || (self.id().as_str() == tree_id.as_ref())
     }
 
     /// Get the names of all subtrees this entry contains data for.
@@ -328,10 +330,10 @@ impl Entry {
     }
 
     /// Get the `RawData` for a specific named subtree within this entry.
-    pub fn data(&self, subtree_name: &str) -> Result<&RawData> {
+    pub fn data(&self, subtree_name: impl AsRef<str>) -> Result<&RawData> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree_name)
+            .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or(Error::NotFound)
     }
@@ -344,10 +346,10 @@ impl Entry {
 
     /// Get the IDs of the parent entries specific to a named subtree's history.
     /// The parent IDs are returned in alphabetical order.
-    pub fn subtree_parents(&self, subtree_name: &str) -> Result<Vec<ID>> {
+    pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree_name)
+            .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or(Error::NotFound)
     }
@@ -517,10 +519,10 @@ impl EntryBuilder {
     }
 
     /// Get the `RawData` for a specific named subtree within this entry builder.
-    pub fn data(&self, subtree_name: &str) -> Result<&RawData> {
+    pub fn data(&self, subtree_name: impl AsRef<str>) -> Result<&RawData> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree_name)
+            .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or(Error::NotFound)
     }
@@ -533,10 +535,10 @@ impl EntryBuilder {
 
     /// Get the IDs of the parent entries specific to a named subtree's history.
     /// The parent IDs are returned in alphabetical order.
-    pub fn subtree_parents(&self, subtree_name: &str) -> Result<Vec<ID>> {
+    pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
             .iter()
-            .find(|node| node.name == subtree_name)
+            .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or(Error::NotFound)
     }
