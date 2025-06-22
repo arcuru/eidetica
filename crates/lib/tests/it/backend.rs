@@ -10,8 +10,7 @@ fn test_in_memory_backend_basic_operations() {
     let backend = InMemoryBackend::new();
 
     // Create and insert a test entry
-    let data = "test_data".to_string();
-    let entry = Entry::root_builder(data).build();
+    let entry = Entry::root_builder("test_data").build();
     let id = entry.id();
 
     // Put the entry using the convenience method
@@ -37,21 +36,18 @@ fn test_in_memory_backend_tree_operations() {
     let backend = InMemoryBackend::new();
 
     // Create a root entry
-    let root_data = "root_data".to_string();
-    let root_entry = Entry::root_builder(root_data).build();
+    let root_entry = Entry::root_builder("root_data").build();
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
     // Create child entries
-    let child1_data = "child1_data".to_string();
-    let child1_entry = Entry::builder(root_id.clone(), child1_data)
+    let child1_entry = Entry::builder(root_id.clone(), "child1_data")
         .add_parent(root_id.clone())
         .build();
     let child1_id = child1_entry.id();
     backend.put_verified(child1_entry).unwrap();
 
-    let child2_data = "child2_data".to_string();
-    let child2_entry = Entry::builder(root_id.clone(), child2_data)
+    let child2_entry = Entry::builder(root_id.clone(), "child2_data")
         .add_parent(child1_id.clone())
         .build();
     let child2_id = child2_entry.id();
@@ -82,18 +78,16 @@ fn test_in_memory_backend_subtree_operations() {
     let backend = InMemoryBackend::new();
 
     // Create a root entry with a subtree
-    let root_data = "root_data".to_string();
-    let root_entry = Entry::root_builder(root_data)
-        .set_subtree_data("subtree1".to_string(), "root_subtree1_data".to_string())
+    let root_entry = Entry::root_builder("root_data")
+        .set_subtree_data("subtree1", "root_subtree1_data")
         .build();
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
     // Create child entry with subtree
-    let child_data = "child_data".to_string();
-    let child_entry = Entry::builder(root_id.clone(), child_data)
+    let child_entry = Entry::builder(root_id.clone(), "child_data")
         .add_parent(root_id.clone())
-        .set_subtree_data("subtree1".to_string(), "child_subtree1_data".to_string())
+        .set_subtree_data("subtree1", "child_subtree1_data")
         .add_subtree_parent("subtree1", root_id.clone())
         .build();
     let child_id = child_entry.id();
@@ -122,7 +116,7 @@ fn test_in_memory_backend_save_and_load() {
     // Setup: Create a backend with some data
     {
         let backend = InMemoryBackend::new();
-        let entry = Entry::root_builder("test_data".to_string()).build();
+        let entry = Entry::root_builder("test_data").build();
         backend.put_verified(entry).unwrap();
 
         // Save to file
@@ -190,30 +184,26 @@ fn test_in_memory_backend_complex_tree_structure() {
     let backend = InMemoryBackend::new();
 
     // Create a root entry
-    let root_data = "root_data".to_string();
-    let root_entry = Entry::root_builder(root_data).build();
+    let root_entry = Entry::root_builder("root_data").build();
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
     // Create a diamond pattern: root -> A, B -> C
     // First level children
-    let a_data = "a_data".to_string();
-    let a_entry = Entry::builder(root_id.clone(), a_data)
+    let a_entry = Entry::builder(root_id.clone(), "a_data")
         .add_parent(root_id.clone())
         .build();
     let a_id = a_entry.id();
     backend.put_verified(a_entry).unwrap();
 
-    let b_data = "b_data".to_string();
-    let b_entry = Entry::builder(root_id.clone(), b_data)
+    let b_entry = Entry::builder(root_id.clone(), "b_data")
         .add_parent(root_id.clone())
         .build();
     let b_id = b_entry.id();
     backend.put_verified(b_entry).unwrap();
 
     // Second level: one child with two parents
-    let c_data = "c_data".to_string();
-    let c_entry = Entry::builder(root_id.clone(), c_data)
+    let c_entry = Entry::builder(root_id.clone(), "c_data")
         .add_parent(a_id.clone())
         .add_parent(b_id.clone())
         .build();
@@ -246,8 +236,7 @@ fn test_in_memory_backend_complex_tree_structure() {
     assert!(middle_ids.contains(&b_id));
 
     // Now test a new entry: add D which has C as a parent
-    let d_data = "d_data".to_string();
-    let d_entry = Entry::builder(root_id.clone(), d_data)
+    let d_entry = Entry::builder(root_id.clone(), "d_data")
         .add_parent(c_id.clone())
         .build();
     let d_id = d_entry.id();
@@ -265,25 +254,25 @@ fn test_backend_get_tree_from_tips() {
     let root_id: ID = "tree_root".into();
 
     // Create entries: root -> e1 -> e2a, e2b
-    let root_entry = Entry::builder(root_id.clone(), "root_data".to_string())
+    let root_entry = Entry::builder(root_id.clone(), "root_data")
         .add_parent(root_id.clone())
         .build();
     let root_entry_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
-    let e1_entry = Entry::builder(root_id.clone(), "e1_data".to_string())
+    let e1_entry = Entry::builder(root_id.clone(), "e1_data")
         .add_parent(root_entry_id.clone())
         .build();
     let e1_id = e1_entry.id();
     backend.put_verified(e1_entry).unwrap();
 
-    let e2a_entry = Entry::builder(root_id.clone(), "e2a_data".to_string())
+    let e2a_entry = Entry::builder(root_id.clone(), "e2a_data")
         .add_parent(e1_id.clone())
         .build();
     let e2a_id = e2a_entry.id();
     backend.put_verified(e2a_entry).unwrap();
 
-    let e2b_entry = Entry::builder(root_id.clone(), "e2b_data".to_string())
+    let e2b_entry = Entry::builder(root_id.clone(), "e2b_data")
         .add_parent(e1_id.clone())
         .build();
     let e2b_id = e2b_entry.id();
@@ -330,7 +319,7 @@ fn test_backend_get_tree_from_tips() {
 
     // --- Test with non-existent tip ---
     let tree_bad_tip = backend
-        .get_tree_from_tips(&root_id, &["bad_tip_id".to_string().into()])
+        .get_tree_from_tips(&root_id, &["bad_tip_id".into()])
         .expect("Failed to get tree with non-existent tip");
     assert!(
         tree_bad_tip.is_empty(),
@@ -351,7 +340,7 @@ fn test_backend_get_tree_from_tips() {
 #[test]
 fn test_backend_get_subtree_from_tips() {
     let backend = InMemoryBackend::new();
-    let subtree_name_string = "my_subtree".to_string();
+    let subtree_name = "my_subtree";
 
     // Create entries: root -> e1 -> e2a, e2b
     // root: has subtree
@@ -359,41 +348,37 @@ fn test_backend_get_subtree_from_tips() {
     // e2a: has subtree
     // e2b: has subtree
 
-    let entry_root = Entry::root_builder("root_data".to_string())
-        .set_subtree_data(subtree_name_string.clone(), "root_sub_data".to_string())
+    let entry_root = Entry::root_builder("root_data")
+        .set_subtree_data(subtree_name, "root_sub_data")
         .build();
     let root_entry_id = entry_root.id();
     backend.put_verified(entry_root).unwrap();
 
-    let e1 = Entry::builder(root_entry_id.clone(), "e1_data".to_string())
+    let e1 = Entry::builder(root_entry_id.clone(), "e1_data")
         .add_parent(root_entry_id.clone())
         .build();
     let e1_id = e1.id();
     backend.put_verified(e1).unwrap();
 
-    let e2a = Entry::builder(root_entry_id.clone(), "e2a_data".to_string())
+    let e2a = Entry::builder(root_entry_id.clone(), "e2a_data")
         .add_parent(e1_id.clone())
-        .set_subtree_data(subtree_name_string.clone(), "e2a_sub_data".to_string())
-        .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
+        .set_subtree_data(subtree_name, "e2a_sub_data")
+        .add_subtree_parent(subtree_name, root_entry_id.clone())
         .build();
     let e2a_id = e2a.id();
     backend.put_verified(e2a).unwrap();
 
-    let e2b = Entry::builder(root_entry_id.clone(), "e2b_data".to_string())
+    let e2b = Entry::builder(root_entry_id.clone(), "e2b_data")
         .add_parent(e1_id.clone())
-        .set_subtree_data(subtree_name_string.clone(), "e2b_sub_data".to_string())
-        .add_subtree_parent(subtree_name_string.as_str(), root_entry_id.clone())
+        .set_subtree_data(subtree_name, "e2b_sub_data")
+        .add_subtree_parent(subtree_name, root_entry_id.clone())
         .build();
     let e2b_id = e2b.id();
     backend.put_verified(e2b).unwrap();
 
     // --- Test with single tip e2a ---
     let subtree_e2a = backend
-        .get_subtree_from_tips(
-            &root_entry_id,
-            &subtree_name_string,
-            std::slice::from_ref(&e2a_id),
-        )
+        .get_subtree_from_tips(&root_entry_id, subtree_name, std::slice::from_ref(&e2a_id))
         .expect("Failed to get subtree from tip e2a");
     // Should contain root and e2a (which have the subtree), but not e1 (no subtree) or e2b (not in history of tip e2a)
     assert_eq!(
@@ -415,7 +400,7 @@ fn test_backend_get_subtree_from_tips() {
     let subtree_both = backend
         .get_subtree_from_tips(
             &root_entry_id,
-            &subtree_name_string,
+            subtree_name,
             &[e2a_id.clone(), e2b_id.clone()],
         )
         .expect("Failed to get subtree from tips e2a, e2b");
@@ -438,12 +423,8 @@ fn test_backend_get_subtree_from_tips() {
     assert!(last_two.contains(&e2b_id));
 
     // --- Test with non-existent subtree name ---
-    let bad_name_string = "bad_name".to_string();
-    let subtree_bad_name = backend.get_subtree_from_tips(
-        &root_entry_id,
-        &bad_name_string,
-        std::slice::from_ref(&e2a_id),
-    );
+    let subtree_bad_name =
+        backend.get_subtree_from_tips(&root_entry_id, "bad_name", std::slice::from_ref(&e2a_id));
     assert!(
         subtree_bad_name.is_ok(),
         "Getting subtree with bad name should be ok..."
@@ -454,11 +435,7 @@ fn test_backend_get_subtree_from_tips() {
     );
     // --- Test with non-existent tip ---
     let subtree_bad_tip = backend
-        .get_subtree_from_tips(
-            &root_entry_id,
-            &subtree_name_string,
-            &["bad_tip_id".to_string().into()],
-        )
+        .get_subtree_from_tips(&root_entry_id, subtree_name, &["bad_tip_id".into()])
         .expect("Failed to get subtree with non-existent tip");
     assert!(
         subtree_bad_tip.is_empty(),
@@ -468,11 +445,7 @@ fn test_backend_get_subtree_from_tips() {
     // --- Test with non-existent tree root ---
     let bad_root_id_2: ID = "bad_root".into();
     let subtree_bad_root = backend
-        .get_subtree_from_tips(
-            &bad_root_id_2,
-            &subtree_name_string,
-            std::slice::from_ref(&e1_id),
-        )
+        .get_subtree_from_tips(&bad_root_id_2, subtree_name, std::slice::from_ref(&e1_id))
         .expect("Failed to get subtree with non-existent root");
     assert!(
         subtree_bad_root.is_empty(),
@@ -489,35 +462,35 @@ fn test_calculate_entry_height() {
     //    \                -> D
     //     \-> E -> F --->/
 
-    let root = Entry::root_builder("{\"name\":\"root\"}".to_string()).build();
+    let root = Entry::root_builder("{\"name\":\"root\"}").build();
     let root_id = root.id();
 
-    let entry_a = Entry::builder(root_id.clone(), "{\"name\":\"A\"}".to_string())
+    let entry_a = Entry::builder(root_id.clone(), "{\"name\":\"A\"}")
         .add_parent(root_id.clone())
         .build();
     let id_a = entry_a.id();
 
-    let entry_b = Entry::builder(root_id.clone(), "{\"name\":\"B\"}".to_string())
+    let entry_b = Entry::builder(root_id.clone(), "{\"name\":\"B\"}")
         .add_parent(id_a.clone())
         .build();
     let id_b = entry_b.id();
 
-    let entry_c = Entry::builder(root_id.clone(), "{\"name\":\"C\"}".to_string())
+    let entry_c = Entry::builder(root_id.clone(), "{\"name\":\"C\"}")
         .add_parent(id_b.clone())
         .build();
     let id_c = entry_c.id();
 
-    let entry_e = Entry::builder(root_id.clone(), "{\"name\":\"E\"}".to_string())
+    let entry_e = Entry::builder(root_id.clone(), "{\"name\":\"E\"}")
         .add_parent(root_id.clone())
         .build();
     let id_e = entry_e.id();
 
-    let entry_f = Entry::builder(root_id.clone(), "{\"name\":\"F\"}".to_string())
+    let entry_f = Entry::builder(root_id.clone(), "{\"name\":\"F\"}")
         .add_parent(id_e.clone())
         .build();
     let id_f = entry_f.id();
 
-    let entry_d = Entry::builder(root_id.clone(), "{\"name\":\"D\"}".to_string())
+    let entry_d = Entry::builder(root_id.clone(), "{\"name\":\"D\"}")
         .add_parent(id_c.clone())
         .add_parent(id_f.clone())
         .build();
@@ -613,34 +586,34 @@ fn test_save_load_with_various_entries() {
     let backend = InMemoryBackend::new();
 
     // Top-level root
-    let root_entry = Entry::root_builder("root_data".to_string()).build();
+    let root_entry = Entry::root_builder("root_data").build();
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
     // Child 1
-    let child1 = Entry::builder(root_id.clone(), "child1_data".to_string())
+    let child1 = Entry::builder(root_id.clone(), "child1_data")
         .add_parent(root_id.clone())
         .build();
     let child1_id = child1.id();
     backend.put_verified(child1).unwrap();
 
     // Child 2
-    let child2 = Entry::builder(root_id.clone(), "child2_data".to_string())
+    let child2 = Entry::builder(root_id.clone(), "child2_data")
         .add_parent(root_id.clone())
         .build();
     let child2_id = child2.id();
     backend.put_verified(child2).unwrap();
 
     // Grandchild (child of child1)
-    let grandchild = Entry::builder(root_id.clone(), "grandchild_data".to_string())
+    let grandchild = Entry::builder(root_id.clone(), "grandchild_data")
         .add_parent(child1_id.clone())
         .build();
     let grandchild_id = grandchild.id();
     backend.put_verified(grandchild).unwrap();
 
     // Entry with subtree
-    let entry_with_subtree = Entry::builder(root_id.clone(), "entry_with_subtree_data".to_string())
-        .set_subtree_data("subtree1".to_string(), "subtree_data".to_string())
+    let entry_with_subtree = Entry::builder(root_id.clone(), "entry_with_subtree_data")
+        .set_subtree_data("subtree1", "subtree_data")
         .build();
     let entry_with_subtree_id = entry_with_subtree.id();
     backend.put_verified(entry_with_subtree).unwrap();
@@ -695,20 +668,20 @@ fn test_sort_entries() {
     let backend = InMemoryBackend::new();
 
     // Create a simple tree with mixed order
-    let root = Entry::root_builder("{}".to_string()).build();
+    let root = Entry::root_builder("{}").build();
     let root_id = root.id();
 
-    let entry_a = Entry::builder(root_id.clone(), "{}".to_string())
+    let entry_a = Entry::builder(root_id.clone(), "{}")
         .add_parent(root_id.clone())
         .build();
     let id_a = entry_a.id();
 
-    let entry_b = Entry::builder(root_id.clone(), "{}".to_string())
+    let entry_b = Entry::builder(root_id.clone(), "{}")
         .add_parent(id_a.clone())
         .build();
     let id_b = entry_b.id();
 
-    let entry_c = Entry::builder(root_id.clone(), "{}".to_string())
+    let entry_c = Entry::builder(root_id.clone(), "{}")
         .add_parent(id_b.clone())
         .build();
 
@@ -752,8 +725,8 @@ fn test_save_load_in_memory_backend() {
     let path = test_dir.join("test_save_load.json");
 
     let backend1 = InMemoryBackend::new();
-    let entry1 = Entry::root_builder("{\"key\":\"value1\"}".to_string()).build();
-    let entry2 = Entry::root_builder("{\"key\":\"value2\"}".to_string()).build();
+    let entry1 = Entry::root_builder("{\"key\":\"value1\"}").build();
+    let entry2 = Entry::root_builder("{\"key\":\"value2\"}").build();
 
     let id1 = entry1.id();
     let id2 = entry2.id();
@@ -783,11 +756,11 @@ fn test_all_roots() {
     assert!(backend.all_roots().unwrap().is_empty());
 
     // Add a simple top-level entry (a root)
-    let root1 = Entry::root_builder("root1 data".to_string()).build();
+    let root1 = Entry::root_builder("root1 data").build();
     let root1_id = root1.id();
     backend.put_verified(root1).unwrap();
 
-    let root2 = Entry::root_builder("root2 data".to_string()).build();
+    let root2 = Entry::root_builder("root2 data").build();
     let root2_id = root2.id();
     backend.put_verified(root2).unwrap();
 
@@ -798,7 +771,7 @@ fn test_all_roots() {
     assert!(roots.contains(&root2_id));
 
     // Add a child under root1
-    let child = Entry::builder(root1_id.clone(), "child data".to_string())
+    let child = Entry::builder(root1_id.clone(), "child data")
         .add_parent(root1_id.clone())
         .build();
     backend.put_verified(child).unwrap();
@@ -818,7 +791,7 @@ fn test_get_tips() {
     // Root -> A -> B
     //    \-> C
 
-    let root = Entry::root_builder("root data".to_string()).build();
+    let root = Entry::root_builder("root data").build();
     let root_id = root.id();
     backend
         .put(
@@ -833,7 +806,7 @@ fn test_get_tips() {
     assert_eq!(tips[0], root_id);
 
     // Add child A
-    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+    let entry_a = Entry::builder(root_id.clone(), "A")
         .add_parent(root_id.clone())
         .build();
     let id_a = entry_a.id();
@@ -850,7 +823,7 @@ fn test_get_tips() {
     assert_eq!(tips[0], id_a);
 
     // Add child B from A
-    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+    let entry_b = Entry::builder(root_id.clone(), "B")
         .add_parent(id_a.clone())
         .build();
     let id_b = entry_b.id();
@@ -867,7 +840,7 @@ fn test_get_tips() {
     assert_eq!(tips[0], id_b);
 
     // Add child C directly from Root (creates a branch)
-    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+    let entry_c = Entry::builder(root_id.clone(), "C")
         .add_parent(root_id.clone())
         .build();
     let id_c = entry_c.id();
@@ -890,7 +863,7 @@ fn test_put_get_entry() {
     let backend = InMemoryBackend::new();
 
     // Test putting and getting an entry
-    let entry = Entry::root_builder("test data".to_string()).build();
+    let entry = Entry::root_builder("test data").build();
     let id = entry.id();
 
     // Put
@@ -917,7 +890,7 @@ fn test_get_subtree_tips() {
     let backend = InMemoryBackend::new();
 
     // Create a tree with subtrees
-    let root = Entry::root_builder("root data".to_string()).build();
+    let root = Entry::root_builder("root data").build();
     let root_id = root.id();
     backend
         .put(
@@ -927,9 +900,9 @@ fn test_get_subtree_tips() {
         .unwrap();
 
     // Add entry A with subtree "sub1"
-    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+    let entry_a = Entry::builder(root_id.clone(), "A")
         .add_parent(root_id.clone())
-        .set_subtree_data("sub1".to_string(), "A sub1 data".to_string())
+        .set_subtree_data("sub1", "A sub1 data")
         .build();
     let id_a = entry_a.id();
     backend.put_verified(entry_a).unwrap();
@@ -940,9 +913,9 @@ fn test_get_subtree_tips() {
     assert_eq!(sub1_tips[0], id_a);
 
     // Add entry B with subtree "sub1" as child of A
-    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+    let entry_b = Entry::builder(root_id.clone(), "B")
         .add_parent(id_a.clone())
-        .set_subtree_data("sub1".to_string(), "B sub1 data".to_string())
+        .set_subtree_data("sub1", "B sub1 data")
         .add_subtree_parent("sub1", id_a.clone())
         .build();
     let id_b = entry_b.id();
@@ -954,9 +927,9 @@ fn test_get_subtree_tips() {
     assert_eq!(sub1_tips[0], id_b);
 
     // Add entry C with subtree "sub2" (different subtree)
-    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+    let entry_c = Entry::builder(root_id.clone(), "C")
         .add_parent(root_id.clone())
-        .set_subtree_data("sub2".to_string(), "C sub2 data".to_string())
+        .set_subtree_data("sub2", "C sub2 data")
         .build();
     let id_c = entry_c.id();
     backend.put_verified(entry_c).unwrap();
@@ -975,9 +948,9 @@ fn test_get_subtree_tips() {
     let entry_d = Entry::builder(root_id.clone(), "D".to_string())
         .add_parent(id_b.clone())
         .add_parent(id_c.clone())
-        .set_subtree_data("sub1".to_string(), "D sub1 data".to_string())
+        .set_subtree_data("sub1", "D sub1 data")
         .add_subtree_parent("sub1", id_b.clone())
-        .set_subtree_data("sub2".to_string(), "D sub2 data".to_string())
+        .set_subtree_data("sub2", "D sub2 data")
         .add_subtree_parent("sub2", id_c.clone())
         .build();
     let id_d = entry_d.id();
@@ -998,7 +971,7 @@ fn test_get_tree() {
     let backend = InMemoryBackend::new();
 
     // Create a simple tree with three entries
-    let root = Entry::root_builder("root data".to_string()).build();
+    let root = Entry::root_builder("root data").build();
     let root_id = root.id();
     backend
         .put(
@@ -1007,7 +980,7 @@ fn test_get_tree() {
         )
         .unwrap();
 
-    let child = Entry::builder(root_id.clone(), "child".to_string())
+    let child = Entry::builder(root_id.clone(), "child")
         .add_parent(root_id.clone())
         .build();
     let child_id = child.id();
@@ -1018,7 +991,7 @@ fn test_get_tree() {
         )
         .unwrap();
 
-    let grandchild = Entry::builder(root_id.clone(), "grandchild".to_string())
+    let grandchild = Entry::builder(root_id.clone(), "grandchild")
         .add_parent(child_id.clone())
         .build();
     backend
@@ -1049,7 +1022,7 @@ fn test_get_subtree() {
     let backend = InMemoryBackend::new();
 
     // Create a tree with a subtree
-    let root = Entry::root_builder("root data".to_string()).build();
+    let root = Entry::root_builder("root data").build();
     let root_id = root.id();
     backend
         .put(
@@ -1063,7 +1036,7 @@ fn test_get_subtree() {
     // Child 1 - with subtree
     let child1 = Entry::builder(root_id.clone(), "child1".to_string())
         .add_parent(root_id.clone())
-        .set_subtree_data("subtree1".to_string(), "child1 data".to_string())
+        .set_subtree_data("subtree1", "child1 data")
         .build();
     let child1_id = child1.id();
     backend
@@ -1074,7 +1047,7 @@ fn test_get_subtree() {
         .unwrap();
 
     // Child 2 - without subtree
-    let child2 = Entry::builder(root_id.clone(), "child2".to_string())
+    let child2 = Entry::builder(root_id.clone(), "child2")
         .add_parent(root_id.clone())
         .build();
     let child2_id = child2.id();
@@ -1088,7 +1061,7 @@ fn test_get_subtree() {
     // Grandchild 1 - with subtree, child of child1
     let grandchild1 = Entry::builder(root_id.clone(), "grandchild1".to_string())
         .add_parent(child1_id.clone())
-        .set_subtree_data("subtree1".to_string(), "grandchild1 data".to_string())
+        .set_subtree_data("subtree1", "grandchild1 data")
         .add_subtree_parent("subtree1", child1_id.clone())
         .build();
     let gc1_id = grandchild1.id();
@@ -1100,9 +1073,9 @@ fn test_get_subtree() {
         .unwrap();
 
     // Grandchild 2 - with subtree, but from different parent (child2)
-    let grandchild2 = Entry::builder(root_id.clone(), "grandchild2".to_string())
+    let grandchild2 = Entry::builder(root_id.clone(), "grandchild2")
         .add_parent(child2_id.clone())
-        .set_subtree_data("subtree1".to_string(), "grandchild2 data".to_string())
+        .set_subtree_data("subtree1", "grandchild2 data")
         .build();
     let grandchild2_id = grandchild2.id();
     // No subtree parent set, so it starts a new subtree branch
@@ -1134,7 +1107,7 @@ fn test_calculate_subtree_height() {
     let backend = InMemoryBackend::new();
 
     // Create a tree with a subtree that has a different structure
-    let root = Entry::root_builder("root data".to_string()).build();
+    let root = Entry::root_builder("root data").build();
     let root_id = root.id();
     backend
         .put(
@@ -1144,9 +1117,9 @@ fn test_calculate_subtree_height() {
         .unwrap();
 
     // A
-    let entry_a = Entry::builder(root_id.clone(), "A".to_string())
+    let entry_a = Entry::builder(root_id.clone(), "A")
         .add_parent(root_id.clone())
-        .set_subtree_data("sub1".to_string(), "A_sub1".to_string())
+        .set_subtree_data("sub1", "A_sub1")
         .build();
     let id_a = entry_a.id();
     backend
@@ -1157,9 +1130,9 @@ fn test_calculate_subtree_height() {
         .unwrap();
 
     // B (after A in main tree)
-    let entry_b = Entry::builder(root_id.clone(), "B".to_string())
+    let entry_b = Entry::builder(root_id.clone(), "B")
         .add_parent(id_a.clone())
-        .set_subtree_data("sub1".to_string(), "B_sub1".to_string())
+        .set_subtree_data("sub1", "B_sub1")
         .build();
     // B is directly under root in subtree (not under A)
     // So we don't set subtree parents
@@ -1172,9 +1145,9 @@ fn test_calculate_subtree_height() {
         .unwrap();
 
     // C (after B in main tree)
-    let entry_c = Entry::builder(root_id.clone(), "C".to_string())
+    let entry_c = Entry::builder(root_id.clone(), "C")
         .add_parent(id_b.clone())
-        .set_subtree_data("sub1".to_string(), "C_sub1".to_string())
+        .set_subtree_data("sub1", "C_sub1")
         .add_subtree_parent("sub1", id_a.clone())
         .add_subtree_parent("sub1", id_b.clone())
         .build();
@@ -1212,7 +1185,7 @@ fn test_verification_status_basic_operations() {
     let backend = InMemoryBackend::new();
 
     // Create a test entry
-    let entry = Entry::builder("root".to_string(), "data".to_string()).build();
+    let entry = Entry::builder("root", "data").build();
     let entry_id = entry.id();
 
     // Test storing with different verification statuses
@@ -1253,7 +1226,7 @@ fn test_verification_status_default_behavior() {
     let backend = InMemoryBackend::new();
 
     // Create a test entry
-    let entry = Entry::builder("root".to_string(), "data".to_string()).build();
+    let entry = Entry::builder("root", "data").build();
     let entry_id = entry.id();
 
     // Store with Verified (default)
@@ -1278,9 +1251,9 @@ fn test_verification_status_multiple_entries() {
     let backend = InMemoryBackend::new();
 
     // Create multiple test entries
-    let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
-    let entry2 = Entry::builder("root2".to_string(), "data2".to_string()).build();
-    let entry3 = Entry::builder("root3".to_string(), "data3".to_string()).build();
+    let entry1 = Entry::builder("root1", "data1").build();
+    let entry2 = Entry::builder("root2", "data2").build();
+    let entry3 = Entry::builder("root3", "data3").build();
 
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
@@ -1332,8 +1305,8 @@ fn test_verification_status_serialization() {
     let backend = InMemoryBackend::new();
 
     // Create test entries with different verification statuses
-    let entry1 = Entry::builder("root1".to_string(), "data1".to_string()).build();
-    let entry2 = Entry::builder("root2".to_string(), "data2".to_string()).build();
+    let entry1 = Entry::builder("root1", "data1").build();
+    let entry2 = Entry::builder("root2", "data2").build();
 
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
@@ -1372,9 +1345,9 @@ fn test_backend_verification_helpers() {
     let backend = InMemoryBackend::new();
 
     // Test the convenience methods
-    let entry1 = Entry::root_builder("verified_data".to_string()).build();
-    let entry2 = Entry::root_builder("unverified_data".to_string()).build();
-    let entry3 = Entry::root_builder("explicit_status_data".to_string()).build();
+    let entry1 = Entry::root_builder("verified_data").build();
+    let entry2 = Entry::root_builder("unverified_data").build();
+    let entry3 = Entry::root_builder("explicit_status_data").build();
 
     let id1 = entry1.id();
     let id2 = entry2.id();

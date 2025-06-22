@@ -1,14 +1,14 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::Error;
-use eidetica::Tree;
 use eidetica::backend;
 use eidetica::basedb::BaseDB;
 use eidetica::data::KVNested;
 use eidetica::subtree::RowStore;
 use eidetica::subtree::YrsStore;
 use eidetica::y_crdt::{Map, Transact};
+use eidetica::Error;
+use eidetica::Tree;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -181,10 +181,10 @@ fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
 }
 
 fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
-    let tree_name = "todo".to_string();
+    let tree_name = "todo";
 
     // Try to find the tree by name
-    let mut tree = match db.find_tree(&tree_name) {
+    let mut tree = match db.find_tree(tree_name) {
         Ok(mut trees) => {
             // If multiple trees with the same name exist, pop will return one arbitrarily.
             // We might want more robust handling later (e.g., error or config option).
@@ -194,7 +194,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
             let mut settings = KVNested::new();
-            settings.set_string("name", tree_name.clone());
+            settings.set_string("name", tree_name);
 
             db.new_tree(settings, TODO_APP_KEY_ID)?
         }

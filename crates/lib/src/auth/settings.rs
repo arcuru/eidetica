@@ -47,13 +47,17 @@ impl AuthSettings {
     }
 
     /// Add or update an authentication key
-    pub fn add_key(&mut self, id: String, key: AuthKey) -> Result<()> {
+    pub fn add_key(&mut self, id: impl Into<String>, key: AuthKey) -> Result<()> {
         self.inner.set(id, key);
         Ok(())
     }
 
     /// Add or update a User Auth Tree reference
-    pub fn add_user_tree(&mut self, id: String, tree_ref: UserAuthTreeRef) -> Result<()> {
+    pub fn add_user_tree(
+        &mut self,
+        id: impl Into<String>,
+        tree_ref: UserAuthTreeRef,
+    ) -> Result<()> {
         self.inner.set(id, tree_ref);
         Ok(())
     }
@@ -211,9 +215,7 @@ mod tests {
             status: KeyStatus::Active,
         };
 
-        settings
-            .add_key("KEY_LAPTOP".to_string(), auth_key.clone())
-            .unwrap();
+        settings.add_key("KEY_LAPTOP", auth_key.clone()).unwrap();
 
         // Retrieve the key
         let retrieved = settings.get_key("KEY_LAPTOP").unwrap().unwrap();
@@ -232,9 +234,7 @@ mod tests {
             status: KeyStatus::Active,
         };
 
-        settings
-            .add_key("KEY_LAPTOP".to_string(), auth_key)
-            .unwrap();
+        settings.add_key("KEY_LAPTOP", auth_key).unwrap();
 
         // Revoke the key
         settings.revoke_key("KEY_LAPTOP").unwrap();
@@ -261,8 +261,8 @@ mod tests {
             status: KeyStatus::Active,
         };
 
-        settings1.add_key("KEY_1".to_string(), key1).unwrap();
-        settings2.add_key("KEY_2".to_string(), key2).unwrap();
+        settings1.add_key("KEY_1", key1).unwrap();
+        settings2.add_key("KEY_2", key2).unwrap();
 
         // Test that we can access the underlying KVNested for merging at higher level
         let kvnested1 = settings1.as_kvnested().clone();
@@ -289,7 +289,7 @@ mod tests {
         };
 
         settings
-            .add_key("ADMIN_KEY".to_string(), high_priority_key.clone())
+            .add_key("ADMIN_KEY", high_priority_key.clone())
             .unwrap();
 
         // Create resolved auth for the admin key
