@@ -309,7 +309,7 @@ mod tests {
         let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
         // Create a test entry using Entry::builder
-        let mut entry = Entry::builder("abc".to_string(), "{}".to_string()).build();
+        let mut entry = Entry::builder("abc", "{}").build();
 
         // Set auth info without signature
         entry.auth = AuthInfo {
@@ -349,7 +349,7 @@ mod tests {
         let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
         // Create a test entry using Entry::builder
-        let mut entry = Entry::builder("abc".to_string(), "{}".to_string()).build();
+        let mut entry = Entry::builder("abc", "{}").build();
 
         // Set auth info without signature
         entry.auth = AuthInfo {
@@ -417,8 +417,7 @@ mod tests {
         let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
         // Create test entry
-        let mut entry =
-            crate::entry::Entry::builder("root123".to_string(), "{}".to_string()).build();
+        let mut entry = crate::entry::Entry::builder("root123", "{}").build();
         entry.auth = AuthInfo {
             id: AuthId::Direct("KEY_LAPTOP".to_string()),
             signature: None,
@@ -440,7 +439,7 @@ mod tests {
         let (signing_key, _verifying_key) = generate_keypair();
 
         // Create an entry with auth info (signed)
-        let mut entry = Entry::builder("root123".to_string(), "{}".to_string()).build();
+        let mut entry = Entry::builder("root123", "{}").build();
         entry.auth = AuthInfo {
             id: AuthId::Direct("SOME_KEY".to_string()),
             signature: None,
