@@ -126,20 +126,12 @@ fn test_permission_hierarchical_key_modification() {
     let low_write = super::helpers::auth_key("ed25519:low_write", Write(10), KeyStatus::Active);
 
     settings
-        .add_key("SUPER_ADMIN".to_string(), super_admin.clone())
+        .add_key("SUPER_ADMIN", super_admin.clone())
         .unwrap();
-    settings
-        .add_key("HIGH_ADMIN".to_string(), high_admin.clone())
-        .unwrap();
-    settings
-        .add_key("LOW_ADMIN".to_string(), low_admin.clone())
-        .unwrap();
-    settings
-        .add_key("HIGH_WRITE".to_string(), high_write.clone())
-        .unwrap();
-    settings
-        .add_key("LOW_WRITE".to_string(), low_write.clone())
-        .unwrap();
+    settings.add_key("HIGH_ADMIN", high_admin.clone()).unwrap();
+    settings.add_key("LOW_ADMIN", low_admin.clone()).unwrap();
+    settings.add_key("HIGH_WRITE", high_write.clone()).unwrap();
+    settings.add_key("LOW_WRITE", low_write.clone()).unwrap();
 
     // Create resolved auth for super admin
     let super_resolved = ResolvedAuth {

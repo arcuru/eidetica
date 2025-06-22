@@ -12,11 +12,9 @@ fn test_admin_hierarchy_enforcement() {
     let high_admin = auth_key("ed25519:high", Permission::Admin(1), KeyStatus::Active);
     let low_admin = auth_key("ed25519:low", Permission::Admin(100), KeyStatus::Active);
 
+    settings.add_key("HIGH_PRIORITY_ADMIN", high_admin).unwrap();
     settings
-        .add_key("HIGH_PRIORITY_ADMIN".to_string(), high_admin)
-        .unwrap();
-    settings
-        .add_key("LOW_PRIORITY_ADMIN".to_string(), low_admin.clone())
+        .add_key("LOW_PRIORITY_ADMIN", low_admin.clone())
         .unwrap();
 
     let low_priority_resolved = ResolvedAuth {
@@ -97,10 +95,10 @@ fn test_admin_hierarchy_complete_enforcement() {
     };
 
     settings
-        .add_key("SUPER_ADMIN".to_string(), super_admin.clone())
+        .add_key("SUPER_ADMIN", super_admin.clone())
         .unwrap();
     settings
-        .add_key("JUNIOR_ADMIN".to_string(), junior_admin.clone())
+        .add_key("JUNIOR_ADMIN", junior_admin.clone())
         .unwrap();
 
     let junior_resolved = ResolvedAuth {
@@ -179,12 +177,8 @@ fn test_privilege_escalation_prevention() {
         KeyStatus::Active,
     );
 
-    settings
-        .add_key("WRITE_USER".to_string(), write_user.clone())
-        .unwrap();
-    settings
-        .add_key("ADMIN_USER".to_string(), admin_user.clone())
-        .unwrap();
+    settings.add_key("WRITE_USER", write_user.clone()).unwrap();
+    settings.add_key("ADMIN_USER", admin_user.clone()).unwrap();
 
     let write_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,

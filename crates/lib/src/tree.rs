@@ -76,7 +76,7 @@ impl Tree {
                 permissions: Permission::Admin(0), // Highest priority
                 status: KeyStatus::Active,
             };
-            auth_settings_handler.add_key(signing_key_id.to_string(), super_user_auth_key)?;
+            auth_settings_handler.add_key(signing_key_id, super_user_auth_key)?;
 
             // Prepare final tree settings for the initial commit
             let mut final_tree_settings = initial_settings.clone();

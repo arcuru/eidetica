@@ -171,7 +171,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     let mut settings = KVNested::new();
     let mut auth_settings = KVNested::new();
     auth_settings.set(
-        "KEY1".to_string(),
+        "KEY1",
         AuthKey {
             key: format_public_key(&key1),
             permissions: Permission::Admin(1),
@@ -195,7 +195,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     // Add KEY2 to auth settings
     let mut new_auth_settings = KVNested::new();
     new_auth_settings.set(
-        "KEY1".to_string(),
+        "KEY1",
         AuthKey {
             key: format_public_key(&key1),
             permissions: Permission::Admin(1),
@@ -203,7 +203,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         },
     );
     new_auth_settings.set(
-        "KEY2".to_string(),
+        "KEY2",
         AuthKey {
             key: format_public_key(&key2),
             permissions: Permission::Write(10),
@@ -247,7 +247,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     let mut settings = KVNested::new();
     let mut auth_settings = KVNested::new();
     auth_settings.set(
-        "VALID_KEY".to_string(),
+        "VALID_KEY",
         AuthKey {
             key: format_public_key(&valid_key),
             permissions: Permission::Admin(1), // Need admin to modify settings
@@ -380,7 +380,7 @@ fn test_validation_pipeline_entry_level_validation() {
     let mut auth_settings = KVNested::new();
 
     auth_settings.set(
-        "ADMIN_KEY".to_string(),
+        "ADMIN_KEY",
         AuthKey {
             key: format_public_key(&admin_key),
             permissions: Permission::Admin(0),
@@ -388,7 +388,7 @@ fn test_validation_pipeline_entry_level_validation() {
         },
     );
     auth_settings.set(
-        "ACTIVE_KEY".to_string(),
+        "ACTIVE_KEY",
         AuthKey {
             key: format_public_key(&active_key),
             permissions: Permission::Write(10),
@@ -396,7 +396,7 @@ fn test_validation_pipeline_entry_level_validation() {
         },
     );
     auth_settings.set(
-        "REVOKED_KEY".to_string(),
+        "REVOKED_KEY",
         AuthKey {
             key: format_public_key(&revoked_key),
             permissions: Permission::Write(20),
@@ -422,8 +422,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .expect("Failed to set value");
 
         // Create entry without committing to test validation
-        let entry_builder =
-            eidetica::entry::Entry::builder(format!("root_{i}"), "{}".to_string()).build();
+        let entry_builder = eidetica::entry::Entry::builder(format!("root_{i}"), "{}").build();
         entries.push(entry_builder);
     }
 

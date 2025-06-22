@@ -783,14 +783,14 @@ fn test_new_operation_with_invalid_tree_tips() {
 
     // Create tree1
     let mut tree1_settings = KVNested::new();
-    tree1_settings.set_string("name".to_string(), "tree1".to_string());
+    tree1_settings.set_string("name", "tree1");
     let tree1 = db
         .new_tree(tree1_settings, TEST_KEY1)
         .expect("Failed to create tree1");
 
     // Create tree2 with same backend but different root
     let mut tree2_settings = KVNested::new();
-    tree2_settings.set_string("name".to_string(), "tree2".to_string());
+    tree2_settings.set_string("name", "tree2");
     let tree2 = db
         .new_tree(tree2_settings, TEST_KEY2)
         .expect("Failed to create tree2");
