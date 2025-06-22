@@ -480,7 +480,7 @@ fn test_new_operation_with_tips() {
 
     // Create operation with custom tips (using entry1 instead of current tip)
     let custom_op = tree
-        .new_operation_with_tips(&[entry1_id.clone()])
+        .new_operation_with_tips([entry1_id])
         .expect("Failed to create custom operation");
     let custom_store = custom_op
         .get_subtree::<KVStore>("data")
@@ -571,7 +571,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry A (should see only A)
     let op_from_a = tree
-        .new_operation_with_tips(&[entry_a_id.clone()])
+        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .expect("Failed to create op from A");
     let store_from_a = op_from_a
         .get_subtree::<KVStore>("data")
@@ -593,7 +593,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry B (should see A and B but not C)
     let op_from_b = tree
-        .new_operation_with_tips(&[entry_b_id.clone()])
+        .new_operation_with_tips([entry_b_id])
         .expect("Failed to create op from B");
     let store_from_b = op_from_b
         .get_subtree::<KVStore>("data")
@@ -615,7 +615,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry C (should see all)
     let op_from_c = tree
-        .new_operation_with_tips(&[entry_c_id.clone()])
+        .new_operation_with_tips([entry_c_id])
         .expect("Failed to create op from C");
     let store_from_c = op_from_c
         .get_subtree::<KVStore>("data")
@@ -637,7 +637,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Test branching from an earlier point
     let op_branch = tree
-        .new_operation_with_tips(&[entry_a_id.clone()])
+        .new_operation_with_tips([entry_a_id])
         .expect("Failed to create branch from A");
     let store_branch = op_branch
         .get_subtree::<KVStore>("data")
@@ -649,7 +649,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Verify the branch only sees data from A
     let op_verify_branch = tree
-        .new_operation_with_tips(&[branch_id.clone()])
+        .new_operation_with_tips([branch_id])
         .expect("Failed to create verify op");
     let store_verify_branch = op_verify_branch
         .get_subtree::<KVStore>("data")
@@ -692,7 +692,7 @@ fn test_new_operation_with_multiple_tips() {
 
     // Create two parallel branches from base
     let op_branch1 = tree
-        .new_operation_with_tips(&[base_id.clone()])
+        .new_operation_with_tips(std::slice::from_ref(&base_id))
         .expect("Failed to create branch1");
     let store_branch1 = op_branch1
         .get_subtree::<KVStore>("data")
@@ -703,7 +703,7 @@ fn test_new_operation_with_multiple_tips() {
     let branch1_id = op_branch1.commit().expect("Failed to commit branch1");
 
     let op_branch2 = tree
-        .new_operation_with_tips(&[base_id.clone()])
+        .new_operation_with_tips([base_id])
         .expect("Failed to create branch2");
     let store_branch2 = op_branch2
         .get_subtree::<KVStore>("data")
@@ -804,7 +804,7 @@ fn test_new_operation_with_invalid_tree_tips() {
     let entry1_id = op1.commit().expect("Failed to commit");
 
     // Try to use entry from tree1 as tip for operation in tree2 - should fail
-    let result = tree2.new_operation_with_tips(&[entry1_id]);
+    let result = tree2.new_operation_with_tips([entry1_id]);
     assert!(
         result.is_err(),
         "Using tip from different tree should be an error"

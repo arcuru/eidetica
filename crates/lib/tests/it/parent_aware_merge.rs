@@ -392,14 +392,18 @@ fn test_true_diamond_pattern() {
     // This creates the diamond fork by having both operations start from the same tip
 
     // Create operation B - starts from A
-    let op_b = tree.new_operation_with_tips(&[entry_a_id.clone()]).unwrap();
+    let op_b = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .unwrap();
     let subtree_b = op_b.get_subtree::<KVStore>("data").unwrap();
     subtree_b.set("shared", "from_B").unwrap(); // Override shared field
     subtree_b.set("b_specific", "B_data").unwrap(); // Add B-specific data
     subtree_b.set("count", "2").unwrap(); // Update count
 
     // Create operation C - also starts from A (same parent!)
-    let op_c = tree.new_operation_with_tips(&[entry_a_id.clone()]).unwrap();
+    let op_c = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .unwrap();
     let subtree_c = op_c.get_subtree::<KVStore>("data").unwrap();
     subtree_c.set("shared", "from_C").unwrap(); // Override shared field differently
     subtree_c.set("c_specific", "C_data").unwrap(); // Add C-specific data  
