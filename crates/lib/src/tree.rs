@@ -237,8 +237,8 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new atomic operation
-    pub fn new_operation_with_tips(&self, tips: &[ID]) -> Result<AtomicOp> {
-        let mut op = AtomicOp::new_with_tips(self, tips)?;
+    pub fn new_operation_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<AtomicOp> {
+        let mut op = AtomicOp::new_with_tips(self, tips.as_ref())?;
 
         // Set default authentication if configured
         if let Some(ref key_id) = self.default_auth_key {

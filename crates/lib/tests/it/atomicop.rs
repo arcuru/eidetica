@@ -305,7 +305,9 @@ fn test_atomicop_with_custom_tips() {
     let _entry_c_id = op_c.commit().unwrap();
 
     // Create operation from entry A using new_operation_with_tips
-    let op_from_a = tree.new_operation_with_tips(&[entry_a_id.clone()]).unwrap();
+    let op_from_a = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .unwrap();
     let store_from_a = op_from_a.get_subtree::<KVStore>("data").unwrap();
 
     // This operation should only see data from A
@@ -351,13 +353,15 @@ fn test_atomicop_diamond_pattern() {
     let base_id = op_base.commit().unwrap();
 
     // Create two branches from base
-    let op_left = tree.new_operation_with_tips(&[base_id.clone()]).unwrap();
+    let op_left = tree
+        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .unwrap();
     let store_left = op_left.get_subtree::<KVStore>("data").unwrap();
     store_left.set("left", "left_value").unwrap();
     store_left.set("shared", "left_version").unwrap();
     let left_id = op_left.commit().unwrap();
 
-    let op_right = tree.new_operation_with_tips(&[base_id.clone()]).unwrap();
+    let op_right = tree.new_operation_with_tips([base_id]).unwrap();
     let store_right = op_right.get_subtree::<KVStore>("data").unwrap();
     store_right.set("right", "right_value").unwrap();
     store_right.set("shared", "right_version").unwrap();
@@ -365,7 +369,7 @@ fn test_atomicop_diamond_pattern() {
 
     // Create merge operation with both branches as tips
     let op_merge = tree
-        .new_operation_with_tips(&[left_id.clone(), right_id.clone()])
+        .new_operation_with_tips([left_id.clone(), right_id.clone()])
         .unwrap();
     let store_merge = op_merge.get_subtree::<KVStore>("data").unwrap();
 
@@ -410,7 +414,9 @@ fn test_atomicop_staged_data_isolation() {
     let entry1_id = op1.commit().unwrap();
 
     // Create operation from entry1
-    let op2 = tree.new_operation_with_tips(&[entry1_id.clone()]).unwrap();
+    let op2 = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry1_id))
+        .unwrap();
     let store2 = op2.get_subtree::<KVStore>("data").unwrap();
 
     // Initially should see committed data
@@ -425,7 +431,7 @@ fn test_atomicop_staged_data_isolation() {
     assert_kvstore_value(&store2, "key2", "new_staged");
 
     // Create another operation from same tip - should not see staged data
-    let op3 = tree.new_operation_with_tips(&[entry1_id.clone()]).unwrap();
+    let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
     let store3 = op3.get_subtree::<KVStore>("data").unwrap();
 
     // Should see original committed data, not staged data from op2
@@ -436,7 +442,7 @@ fn test_atomicop_staged_data_isolation() {
     let entry2_id = op2.commit().unwrap();
 
     // Create operation from entry2 - should see committed staged data
-    let op4 = tree.new_operation_with_tips(&[entry2_id.clone()]).unwrap();
+    let op4 = tree.new_operation_with_tips([entry2_id]).unwrap();
     let store4 = op4.get_subtree::<KVStore>("data").unwrap();
 
     assert_kvstore_value(&store4, "key1", "staged_value");
@@ -457,20 +463,22 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
     let base_id = op_base.commit().unwrap();
 
     // Create branch that only modifies users
-    let op_users = tree.new_operation_with_tips(&[base_id.clone()]).unwrap();
+    let op_users = tree
+        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .unwrap();
     let users_branch = op_users.get_subtree::<KVStore>("users").unwrap();
     users_branch.set("user2", "bob").unwrap();
     let users_id = op_users.commit().unwrap();
 
     // Create branch that only modifies posts
-    let op_posts = tree.new_operation_with_tips(&[base_id.clone()]).unwrap();
+    let op_posts = tree.new_operation_with_tips([base_id]).unwrap();
     let posts_branch = op_posts.get_subtree::<KVStore>("posts").unwrap();
     posts_branch.set("post2", "world").unwrap();
     let posts_id = op_posts.commit().unwrap();
 
     // Create merge operation
     let op_merge = tree
-        .new_operation_with_tips(&[users_id.clone(), posts_id.clone()])
+        .new_operation_with_tips([users_id.clone(), posts_id.clone()])
         .unwrap();
     let users_merge = op_merge.get_subtree::<KVStore>("users").unwrap();
     let posts_merge = op_merge.get_subtree::<KVStore>("posts").unwrap();
@@ -502,7 +510,7 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
     let merge_id = op_merge.commit().unwrap();
 
     // Verify final state has all data
-    let op_final = tree.new_operation_with_tips(&[merge_id.clone()]).unwrap();
+    let op_final = tree.new_operation_with_tips([merge_id]).unwrap();
     let users_final = op_final.get_subtree::<KVStore>("users").unwrap();
     let posts_final = op_final.get_subtree::<KVStore>("posts").unwrap();
 
@@ -528,13 +536,15 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     let entry1_id = op1.commit().unwrap();
 
     // Create a parallel branch that also has subtree data
-    let op2 = tree.new_operation_with_tips(&[entry1_id.clone()]).unwrap();
+    let op2 = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry1_id))
+        .unwrap();
     let store2 = op2.get_subtree::<KVStore>("data").unwrap();
     store2.set("key2", "value2").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another branch that does NOT touch the "data" subtree at all
-    let op3 = tree.new_operation_with_tips(&[entry1_id.clone()]).unwrap();
+    let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
     // Only touch a different subtree
     let settings3 = op3.get_subtree::<KVStore>("settings").unwrap();
     settings3.set("config", "value").unwrap();
@@ -543,7 +553,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     // Create a merge operation using both branches as tips
     // entry2_id has subtree data, entry3_id does NOT have subtree data
     let op4 = tree
-        .new_operation_with_tips(&[entry2_id.clone(), entry3_id.clone()])
+        .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
     let store4 = op4.get_subtree::<KVStore>("data").unwrap();
 
@@ -594,7 +604,7 @@ fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
     // Now use ONLY the entries that don't have "data" subtree as custom tips
     // The "data" subtree should still be accessible from their common ancestor (entry1)
     let op4 = tree
-        .new_operation_with_tips(&[entry2_id.clone(), entry3_id.clone()])
+        .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
     let store4 = op4.get_subtree::<KVStore>("data").unwrap();
 
@@ -634,20 +644,22 @@ fn test_get_path_from_to_diamond_pattern() {
     let entry_a_id = op_a.commit().unwrap();
 
     // B branches from A
-    let op_b = tree.new_operation_with_tips(&[entry_a_id.clone()]).unwrap();
+    let op_b = tree
+        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .unwrap();
     let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
     store_b.set("left", "B").unwrap();
     let entry_b_id = op_b.commit().unwrap();
 
     // C also branches from A (parallel to B)
-    let op_c = tree.new_operation_with_tips(&[entry_a_id.clone()]).unwrap();
+    let op_c = tree.new_operation_with_tips([entry_a_id]).unwrap();
     let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
     store_c.set("right", "C").unwrap();
     let entry_c_id = op_c.commit().unwrap();
 
     // D merges B and C
     let op_d = tree
-        .new_operation_with_tips(&[entry_b_id.clone(), entry_c_id.clone()])
+        .new_operation_with_tips([entry_b_id.clone(), entry_c_id.clone()])
         .unwrap();
     let store_d = op_d.get_subtree::<KVStore>("data").unwrap();
     store_d.set("merged", "D").unwrap();
@@ -659,7 +671,7 @@ fn test_get_path_from_to_diamond_pattern() {
 
     // Create an operation that uses D as tip and access the CRDT state
     // This will internally call get_path_from_to when computing merged state
-    let op_final = tree.new_operation_with_tips(&[entry_d_id.clone()]).unwrap();
+    let op_final = tree.new_operation_with_tips([entry_d_id]).unwrap();
     let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
 
     // Should be able to access all data from the diamond pattern
@@ -695,27 +707,31 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
 
     // Step 2: Create two parallel branches from LCA
     // Branch A
-    let op_a = tree.new_operation_with_tips(&[lca_id.clone()]).unwrap();
+    let op_a = tree
+        .new_operation_with_tips(std::slice::from_ref(&lca_id))
+        .unwrap();
     let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
     store_a.set("branch_a", "modification_A").unwrap();
     let a_id = op_a.commit().unwrap();
 
     // Branch B (parallel to A)
-    let op_b = tree.new_operation_with_tips(&[lca_id.clone()]).unwrap();
+    let op_b = tree
+        .new_operation_with_tips(std::slice::from_ref(&lca_id))
+        .unwrap();
     let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
     store_b.set("branch_b", "modification_B").unwrap(); // Critical: this modification will be missed!
     let b_id = op_b.commit().unwrap();
 
     // Step 3: Create tip C that merges both A and B
     let op_c = tree
-        .new_operation_with_tips(&[a_id.clone(), b_id.clone()])
+        .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
     let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
     store_c.set("tip", "merged_C").unwrap();
     let c_id = op_c.commit().unwrap();
 
     // Step 4: Create another tip D independently
-    let op_d = tree.new_operation_with_tips(&[lca_id.clone()]).unwrap();
+    let op_d = tree.new_operation_with_tips([lca_id]).unwrap();
     let store_d = op_d.get_subtree::<KVStore>("data").unwrap();
     store_d.set("independent", "tip_D").unwrap();
     let d_id = op_d.commit().unwrap();
@@ -726,7 +742,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Either LCA -> A -> C (missing branch B modifications)
     // Or LCA -> B -> C (missing branch A modifications)
     let op_final = tree
-        .new_operation_with_tips(&[c_id.clone(), d_id.clone()])
+        .new_operation_with_tips([c_id.clone(), d_id.clone()])
         .unwrap();
     let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
 
@@ -774,21 +790,25 @@ fn test_correct_lca_and_path_sorting() {
 
     // Step 2: Create three branches from ROOT
     // Branch A (height 1)
-    let op_a = tree.new_operation_with_tips(&[root_id.clone()]).unwrap();
+    let op_a = tree
+        .new_operation_with_tips(std::slice::from_ref(&root_id))
+        .unwrap();
     let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
     store_a.set("step", "1").unwrap();
     store_a.set("branch", "A").unwrap();
     let a_id = op_a.commit().unwrap();
 
     // Branch B (height 1)
-    let op_b = tree.new_operation_with_tips(&[root_id.clone()]).unwrap();
+    let op_b = tree
+        .new_operation_with_tips(std::slice::from_ref(&root_id))
+        .unwrap();
     let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
     store_b.set("step", "1").unwrap();
     store_b.set("branch", "B").unwrap();
     let b_id = op_b.commit().unwrap();
 
     // Branch C (height 1)
-    let op_c = tree.new_operation_with_tips(&[root_id.clone()]).unwrap();
+    let op_c = tree.new_operation_with_tips([root_id]).unwrap();
     let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
     store_c.set("step", "1").unwrap();
     store_c.set("branch", "C").unwrap();
@@ -796,7 +816,7 @@ fn test_correct_lca_and_path_sorting() {
 
     // Step 3: Create merge tip from A and B (height 2)
     let op_merge = tree
-        .new_operation_with_tips(&[a_id.clone(), b_id.clone()])
+        .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
     let store_merge = op_merge.get_subtree::<KVStore>("data").unwrap();
     store_merge.set("step", "2").unwrap();
@@ -804,7 +824,7 @@ fn test_correct_lca_and_path_sorting() {
     let merge_id = op_merge.commit().unwrap();
 
     // Step 4: Create another tip from C (height 2)
-    let op_other = tree.new_operation_with_tips(&[c_id.clone()]).unwrap();
+    let op_other = tree.new_operation_with_tips([c_id]).unwrap();
     let store_other = op_other.get_subtree::<KVStore>("data").unwrap();
     store_other.set("step", "2").unwrap();
     store_other.set("other", "C_extended").unwrap();
@@ -815,7 +835,7 @@ fn test_correct_lca_and_path_sorting() {
     // Path from root to merge should include both A and B modifications
     // Sorting order is critical for deterministic CRDT merge
     let op_final = tree
-        .new_operation_with_tips(&[merge_id.clone(), other_id.clone()])
+        .new_operation_with_tips([merge_id.clone(), other_id.clone()])
         .unwrap();
     let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
 
@@ -837,7 +857,7 @@ fn test_correct_lca_and_path_sorting() {
     // Run the same operation multiple times and verify consistent results
     for _i in 0..5 {
         let op_test = tree
-            .new_operation_with_tips(&[merge_id.clone(), other_id.clone()])
+            .new_operation_with_tips([merge_id.clone(), other_id.clone()])
             .unwrap();
         let store_test = op_test.get_subtree::<KVStore>("data").unwrap();
         let test_state = store_test.get_all().unwrap();
