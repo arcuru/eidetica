@@ -1,11 +1,24 @@
 use crate::helpers::*;
 use eidetica::data::{KVNested, NestedValue};
-use eidetica::subtree::KVStore;
+use eidetica::subtree::{KVStore, RowStore};
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "y-crdt")]
 use eidetica::subtree::YrsStore;
 #[cfg(feature = "y-crdt")]
 use yrs::{Doc, GetString, Map, ReadTxn, Text, Transact};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TestRecord {
+    name: String,
+    age: u32,
+    email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct SimpleRecord {
+    value: i32,
+}
 
 #[test]
 fn test_kvstore_set_and_get_via_op() {
@@ -691,4 +704,565 @@ fn test_yrsstore_apply_external_update() {
             Ok(())
         })
         .expect("Failed to verify external update");
+}
+
+// RowStore Tests
+
+#[test]
+fn test_rowstore_basic_crud_operations() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    let primary_key = {
+        let row_store = op
+            .get_subtree::<RowStore<TestRecord>>("test_records")
+            .expect("Failed to get RowStore");
+
+        let record = TestRecord {
+            name: "John Doe".to_string(),
+            age: 30,
+            email: "john@example.com".to_string(),
+        };
+
+        // Test insert
+        let pk = row_store
+            .insert(record.clone())
+            .expect("Failed to insert record");
+        assert!(!pk.is_empty(), "Primary key should not be empty");
+
+        // Test get within same operation
+        let retrieved = row_store.get(&pk).expect("Failed to get record");
+        assert_eq!(retrieved, record);
+
+        // Test update/set
+        let updated_record = TestRecord {
+            name: "John Smith".to_string(),
+            age: 31,
+            email: "john.smith@example.com".to_string(),
+        };
+        row_store
+            .set(&pk, updated_record.clone())
+            .expect("Failed to update record");
+
+        // Verify update within same operation
+        let retrieved_updated = row_store.get(&pk).expect("Failed to get updated record");
+        assert_eq!(retrieved_updated, updated_record);
+
+        pk
+    };
+
+    // Commit the operation
+    op.commit().expect("Failed to commit operation");
+
+    // Verify persistence after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("test_records")
+        .expect("Failed to get RowStore viewer");
+
+    let retrieved_after_commit = viewer
+        .get(&primary_key)
+        .expect("Failed to get record after commit");
+    let expected = TestRecord {
+        name: "John Smith".to_string(),
+        age: 31,
+        email: "john.smith@example.com".to_string(),
+    };
+    assert_eq!(retrieved_after_commit, expected);
+}
+
+#[test]
+fn test_rowstore_multiple_records() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    let mut inserted_keys = Vec::new();
+    {
+        let row_store = op
+            .get_subtree::<RowStore<SimpleRecord>>("simple_records")
+            .expect("Failed to get RowStore");
+
+        // Insert multiple records
+        for i in 1..=5 {
+            let record = SimpleRecord { value: i * 10 };
+            let key = row_store.insert(record).expect("Failed to insert record");
+            inserted_keys.push(key);
+        }
+
+        // Verify all records can be retrieved
+        for (i, key) in inserted_keys.iter().enumerate() {
+            let record = row_store.get(key).expect("Failed to get record");
+            assert_eq!(record.value, (i as i32 + 1) * 10);
+        }
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Verify all records persist after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<SimpleRecord>>("simple_records")
+        .expect("Failed to get RowStore viewer");
+
+    for (i, key) in inserted_keys.iter().enumerate() {
+        let record = viewer.get(key).expect("Failed to get record after commit");
+        assert_eq!(record.value, (i as i32 + 1) * 10);
+    }
+}
+
+#[test]
+fn test_rowstore_search_functionality() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    {
+        let row_store = op
+            .get_subtree::<RowStore<TestRecord>>("search_records")
+            .expect("Failed to get RowStore");
+
+        // Insert test data
+        let records = vec![
+            TestRecord {
+                name: "Alice Johnson".to_string(),
+                age: 25,
+                email: "alice@example.com".to_string(),
+            },
+            TestRecord {
+                name: "Bob Smith".to_string(),
+                age: 30,
+                email: "bob@company.com".to_string(),
+            },
+            TestRecord {
+                name: "Charlie Brown".to_string(),
+                age: 25,
+                email: "charlie@example.com".to_string(),
+            },
+            TestRecord {
+                name: "Diana Prince".to_string(),
+                age: 35,
+                email: "diana@hero.org".to_string(),
+            },
+        ];
+
+        for record in records {
+            row_store.insert(record).expect("Failed to insert record");
+        }
+
+        // Test search by age
+        let age_25_results = row_store
+            .search(|record| record.age == 25)
+            .expect("Failed to search by age");
+        assert_eq!(age_25_results.len(), 2);
+        for (_, record) in &age_25_results {
+            assert_eq!(record.age, 25);
+        }
+
+        // Test search by email domain
+        let example_domain_results = row_store
+            .search(|record| record.email.contains("example.com"))
+            .expect("Failed to search by email domain");
+        assert_eq!(example_domain_results.len(), 2);
+        for (_, record) in &example_domain_results {
+            assert!(record.email.contains("example.com"));
+        }
+
+        // Test search by name prefix
+        let name_starting_with_b = row_store
+            .search(|record| record.name.starts_with('B'))
+            .expect("Failed to search by name prefix");
+        assert_eq!(name_starting_with_b.len(), 1);
+        assert_eq!(name_starting_with_b[0].1.name, "Bob Smith");
+
+        // Test search with no matches
+        let no_matches = row_store
+            .search(|record| record.age > 100)
+            .expect("Failed to search with no matches");
+        assert_eq!(no_matches.len(), 0);
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Test search after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("search_records")
+        .expect("Failed to get RowStore viewer");
+
+    let age_30_results = viewer
+        .search(|record| record.age == 30)
+        .expect("Failed to search after commit");
+    assert_eq!(age_30_results.len(), 1);
+    assert_eq!(age_30_results[0].1.name, "Bob Smith");
+}
+
+#[test]
+fn test_rowstore_error_handling() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    {
+        let row_store = op
+            .get_subtree::<RowStore<TestRecord>>("error_test")
+            .expect("Failed to get RowStore");
+
+        // Test get with non-existent key
+        let result = row_store.get("non_existent_key");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+
+        // Test get with empty key
+        let result = row_store.get("");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Test error handling after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("error_test")
+        .expect("Failed to get RowStore viewer");
+
+    let result = viewer.get("still_non_existent");
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+}
+
+#[test]
+fn test_rowstore_uuid_generation() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    let mut generated_keys = std::collections::HashSet::new();
+    {
+        let row_store = op
+            .get_subtree::<RowStore<SimpleRecord>>("uuid_test")
+            .expect("Failed to get RowStore");
+
+        // Generate multiple keys and verify they're unique
+        for i in 1..=100 {
+            let record = SimpleRecord { value: i };
+            let key = row_store.insert(record).expect("Failed to insert record");
+
+            // Verify UUID format (should be 36 characters with hyphens)
+            assert_eq!(key.len(), 36);
+            assert_eq!(key.chars().filter(|&c| c == '-').count(), 4);
+
+            // Verify uniqueness
+            assert!(
+                generated_keys.insert(key.clone()),
+                "Duplicate UUID generated: {key}"
+            );
+        }
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Verify all records are retrievable with their unique keys
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<SimpleRecord>>("uuid_test")
+        .expect("Failed to get RowStore viewer");
+
+    for key in &generated_keys {
+        let record = viewer.get(key).expect("Failed to get record by UUID");
+        assert!(record.value >= 1 && record.value <= 100);
+    }
+}
+
+#[test]
+fn test_rowstore_multiple_operations() {
+    let tree = setup_tree();
+
+    // Operation 1: Insert initial records
+    let op1 = tree.new_operation().expect("Op1: Failed to start");
+    let (key1, key2) = {
+        let row_store = op1
+            .get_subtree::<RowStore<TestRecord>>("multi_op_test")
+            .expect("Op1: Failed to get RowStore");
+
+        let record1 = TestRecord {
+            name: "Initial User 1".to_string(),
+            age: 20,
+            email: "user1@initial.com".to_string(),
+        };
+        let record2 = TestRecord {
+            name: "Initial User 2".to_string(),
+            age: 25,
+            email: "user2@initial.com".to_string(),
+        };
+
+        let k1 = row_store
+            .insert(record1)
+            .expect("Op1: Failed to insert record1");
+        let k2 = row_store
+            .insert(record2)
+            .expect("Op1: Failed to insert record2");
+        (k1, k2)
+    };
+    op1.commit().expect("Op1: Failed to commit");
+
+    // Operation 2: Update existing records and add new ones
+    let op2 = tree.new_operation().expect("Op2: Failed to start");
+    let key3 = {
+        let row_store = op2
+            .get_subtree::<RowStore<TestRecord>>("multi_op_test")
+            .expect("Op2: Failed to get RowStore");
+
+        // Update existing record
+        let updated_record1 = TestRecord {
+            name: "Updated User 1".to_string(),
+            age: 21,
+            email: "user1@updated.com".to_string(),
+        };
+        row_store
+            .set(&key1, updated_record1)
+            .expect("Op2: Failed to update record1");
+
+        // Add new record
+        let record3 = TestRecord {
+            name: "New User 3".to_string(),
+            age: 30,
+            email: "user3@new.com".to_string(),
+        };
+        let k3 = row_store
+            .insert(record3)
+            .expect("Op2: Failed to insert record3");
+
+        // Verify we can see updated and new data within operation
+        let retrieved1 = row_store
+            .get(&key1)
+            .expect("Op2: Failed to get updated record1");
+        assert_eq!(retrieved1.name, "Updated User 1");
+        assert_eq!(retrieved1.age, 21);
+
+        let retrieved2 = row_store
+            .get(&key2)
+            .expect("Op2: Failed to get unchanged record2");
+        assert_eq!(retrieved2.name, "Initial User 2");
+        assert_eq!(retrieved2.age, 25);
+
+        k3
+    };
+    op2.commit().expect("Op2: Failed to commit");
+
+    // Verify final state
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("multi_op_test")
+        .expect("Failed to get RowStore viewer");
+
+    // Check updated record
+    let final_record1 = viewer.get(&key1).expect("Failed to get final record1");
+    assert_eq!(final_record1.name, "Updated User 1");
+    assert_eq!(final_record1.age, 21);
+    assert_eq!(final_record1.email, "user1@updated.com");
+
+    // Check unchanged record
+    let final_record2 = viewer.get(&key2).expect("Failed to get final record2");
+    assert_eq!(final_record2.name, "Initial User 2");
+    assert_eq!(final_record2.age, 25);
+    assert_eq!(final_record2.email, "user2@initial.com");
+
+    // Check new record
+    let final_record3 = viewer.get(&key3).expect("Failed to get final record3");
+    assert_eq!(final_record3.name, "New User 3");
+    assert_eq!(final_record3.age, 30);
+    assert_eq!(final_record3.email, "user3@new.com");
+
+    // Verify search across all records
+    let all_records = viewer
+        .search(|_| true)
+        .expect("Failed to search all records");
+    assert_eq!(all_records.len(), 3);
+}
+
+#[test]
+fn test_rowstore_empty_search() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    {
+        let row_store = op
+            .get_subtree::<RowStore<SimpleRecord>>("empty_search_test")
+            .expect("Failed to get RowStore");
+
+        // Search in empty store
+        let results = row_store
+            .search(|_| true)
+            .expect("Failed to search empty store");
+        assert_eq!(results.len(), 0);
+    }
+
+    op.commit().expect("Failed to commit operation");
+
+    // Search in empty store after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<SimpleRecord>>("empty_search_test")
+        .expect("Failed to get RowStore viewer");
+
+    let results = viewer
+        .search(|_| true)
+        .expect("Failed to search empty store after commit");
+    assert_eq!(results.len(), 0);
+}
+
+#[test]
+fn test_rowstore_with_authenticated_tree() {
+    let db = setup_db_with_key("rowstore_auth_key");
+    let tree = db
+        .new_tree_default("rowstore_auth_key")
+        .expect("Failed to create authenticated tree");
+
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    let primary_key = {
+        let row_store = op
+            .get_subtree::<RowStore<TestRecord>>("auth_records")
+            .expect("Failed to get RowStore");
+
+        let record = TestRecord {
+            name: "Authenticated User".to_string(),
+            age: 28,
+            email: "auth@secure.com".to_string(),
+        };
+
+        // Insert record in authenticated tree
+        let pk = row_store
+            .insert(record.clone())
+            .expect("Failed to insert authenticated record");
+
+        // Verify retrieval within same operation
+        let retrieved = row_store
+            .get(&pk)
+            .expect("Failed to get authenticated record");
+        assert_eq!(retrieved, record);
+
+        pk
+    };
+
+    op.commit()
+        .expect("Failed to commit authenticated operation");
+
+    // Verify persistence in authenticated tree
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("auth_records")
+        .expect("Failed to get RowStore viewer for authenticated tree");
+
+    let retrieved_after_commit = viewer
+        .get(&primary_key)
+        .expect("Failed to get authenticated record after commit");
+    assert_eq!(retrieved_after_commit.name, "Authenticated User");
+    assert_eq!(retrieved_after_commit.age, 28);
+    assert_eq!(retrieved_after_commit.email, "auth@secure.com");
+}
+
+#[test]
+fn test_rowstore_complex_data_merging() {
+    let tree = setup_tree();
+
+    // Create base entry with initial data
+    let op_base = tree.new_operation().expect("Base: Failed to start");
+    let key1 = {
+        let row_store = op_base
+            .get_subtree::<RowStore<TestRecord>>("merge_test")
+            .expect("Base: Failed to get RowStore");
+
+        let record = TestRecord {
+            name: "Original User".to_string(),
+            age: 25,
+            email: "original@test.com".to_string(),
+        };
+
+        row_store
+            .insert(record)
+            .expect("Base: Failed to insert record")
+    };
+    let base_entry_id = op_base.commit().expect("Base: Failed to commit");
+
+    // Branch A: Create concurrent modification from base
+    let op_branch_a = tree
+        .new_operation_with_tips([base_entry_id.clone()])
+        .expect("Branch A: Failed to start with custom tips");
+    {
+        let row_store = op_branch_a
+            .get_subtree::<RowStore<TestRecord>>("merge_test")
+            .expect("Branch A: Failed to get RowStore");
+
+        let updated_record = TestRecord {
+            name: "Updated by Branch A".to_string(),
+            age: 26,
+            email: "updated_a@test.com".to_string(),
+        };
+        row_store
+            .set(&key1, updated_record)
+            .expect("Branch A: Failed to update record");
+
+        op_branch_a.commit().expect("Branch A: Failed to commit");
+    }
+
+    // Branch B: Create concurrent modification from same base (parallel to Branch A)
+    let op_branch_b = tree
+        .new_operation_with_tips([base_entry_id])
+        .expect("Branch B: Failed to start with custom tips");
+    {
+        let row_store = op_branch_b
+            .get_subtree::<RowStore<TestRecord>>("merge_test")
+            .expect("Branch B: Failed to get RowStore");
+
+        let updated_record = TestRecord {
+            name: "Updated by Branch B".to_string(),
+            age: 27,
+            email: "updated_b@test.com".to_string(),
+        };
+        row_store
+            .set(&key1, updated_record)
+            .expect("Branch B: Failed to update record");
+
+        op_branch_b.commit().expect("Branch B: Failed to commit");
+    }
+
+    // Merge operation: Create operation that merges both branches
+    let op_merge = tree
+        .new_operation()
+        .expect("Merge: Failed to start with both branch tips");
+
+    // Read the merged state to trigger CRDT resolution
+    let merged_record = {
+        let row_store = op_merge
+            .get_subtree::<RowStore<TestRecord>>("merge_test")
+            .expect("Merge: Failed to get RowStore");
+
+        row_store
+            .get(&key1)
+            .expect("Merge: Failed to get merged record")
+    };
+
+    // With KVOverWrite semantics, one of the concurrent updates should win
+    // The exact result depends on the deterministic merge order of the underlying CRDT
+    assert!(
+        merged_record.name == "Updated by Branch A" || merged_record.name == "Updated by Branch B",
+        "Merged record should contain updates from either branch A or B, got: {}",
+        merged_record.name
+    );
+
+    // Verify the age was also updated according to whichever branch won
+    if merged_record.name == "Updated by Branch A" {
+        assert_eq!(merged_record.age, 26);
+        assert_eq!(merged_record.email, "updated_a@test.com");
+    } else {
+        assert_eq!(merged_record.age, 27);
+        assert_eq!(merged_record.email, "updated_b@test.com");
+    }
+
+    // Commit the merge to verify persistence
+    op_merge.commit().expect("Merge: Failed to commit");
+
+    // Verify the merged state persists after commit
+    let viewer = tree
+        .get_subtree_viewer::<RowStore<TestRecord>>("merge_test")
+        .expect("Failed to get RowStore viewer");
+
+    let final_record = viewer
+        .get(&key1)
+        .expect("Failed to get final merged record");
+    assert_eq!(
+        final_record, merged_record,
+        "Final state should match merged state"
+    );
 }
