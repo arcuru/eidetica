@@ -1,9 +1,11 @@
 [package]
 name = "eidetica-bin"
-version = "0.1.0"
-edition = "2024"
-authors = ["Patrick Jackson <patrick@jackson.dev>"]
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Eidetica CLI binary"
 publish = false
 

@@ -2,6 +2,19 @@
 members = ["crates/lib", "crates/bin"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Patrick Jackson <patrick@jackson.dev>"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/arcuru/eidetica"
+homepage = "https://eidetica.dev"
+readme = "README.md"
+description = "Remember everything."
+
+[workspace.metadata.crane]
+name = "eidetica"
+
 [workspace.dependencies]
 # Shared dependencies
 chrono = ">= 0.3"
