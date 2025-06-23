@@ -117,6 +117,12 @@ impl PartialEq<ID> for String {
     }
 }
 
+impl PartialEq<&ID> for ID {
+    fn eq(&self, other: &&ID) -> bool {
+        self == *other
+    }
+}
+
 impl From<ID> for String {
     fn from(id: ID) -> Self {
         id.0.to_string()
@@ -285,8 +291,8 @@ impl Entry {
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
-    pub fn root(&self) -> &str {
-        &self.tree.root
+    pub fn root(&self) -> ID {
+        self.tree.root.clone()
     }
 
     /// Check if this entry is a root entry of a tree.
