@@ -650,7 +650,7 @@ impl Backend for InMemoryBackend {
     /// Stores an entry in the backend with the specified verification status.
     fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
         let entry_id = entry.id();
-        let tree_id = ID::from(entry.root());
+        let tree_id = entry.root();
 
         // Store the entry
         {
@@ -771,7 +771,7 @@ impl Backend for InMemoryBackend {
         let mut tips = Vec::new();
         let entries = self.entries.read().unwrap();
         for (id, entry) in entries.iter() {
-            if entry.root() == *tree && self.is_tip(tree, id) {
+            if entry.root() == tree && self.is_tip(tree, id) {
                 tips.push(id.clone());
             } else if entry.is_root() && entry.id() == *tree && self.is_tip(tree, id) {
                 // Handle the special case of the root entry
