@@ -234,7 +234,11 @@ fn print_entry(entry: &Entry) {
     for subtree in entry.subtrees() {
         println!("  Subtree: {subtree}");
         println!("    Data:");
-        println!("      {}", entry.get_settings().unwrap());
+        if let Ok(data) = entry.data(&subtree) {
+            println!("      {data}");
+        } else {
+            println!("      <no data>");
+        }
     }
     if let Ok(parents) = entry.parents() {
         println!("  Parents: {parents:?}");

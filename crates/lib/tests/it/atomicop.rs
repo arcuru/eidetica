@@ -270,14 +270,15 @@ fn test_metadata_for_settings_entries() {
     let settings_entry = tree.get_entry(&settings_id).unwrap();
     let data_entry = tree.get_entry(&data_id).unwrap();
 
-    // Verify settings entry has no metadata (as it's a settings update)
-    assert!(settings_entry.get_metadata().is_none());
+    // Verify settings entry has metadata with settings tips
+    assert!(settings_entry.metadata().is_some());
 
-    // Verify data entry has metadata that includes the settings ID
-    let metadata = data_entry.get_metadata().unwrap();
+    // Verify data entry has metadata with settings_tips field
+    let metadata = data_entry.metadata().unwrap();
+    let metadata_obj: serde_json::Value = serde_json::from_str(metadata).unwrap();
     assert!(
-        metadata.contains(settings_id.as_str()),
-        "Metadata should include settings ID"
+        metadata_obj.get("settings_tips").is_some(),
+        "Metadata should include settings_tips field"
     );
 }
 

@@ -14,6 +14,18 @@ use crate::tree::Tree;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
+
+/// Metadata structure for entries
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EntryMetadata {
+    /// Tips of the _settings subtree at the time this entry was created
+    /// This is used for improving sync performance and for validation in sparse checkouts.
+    settings_tips: Vec<ID>,
+    /// Random entropy for ensuring unique IDs for root entries
+    entropy: Option<u64>,
+}
+
 /// Represents a single, atomic transaction for modifying a `Tree`.
 ///
 /// An `AtomicOp` encapsulates a mutable `EntryBuilder` being constructed. Users interact with
@@ -84,7 +96,7 @@ impl AtomicOp {
 
         // Start with a basic entry linked to the tree's root.
         // Data and parents will be filled based on the operation type.
-        let mut builder = Entry::builder(tree.root_id().clone(), "");
+        let mut builder = Entry::builder(tree.root_id().clone());
 
         // Use the provided tips as parents (only if not empty)
         if !tips.is_empty() {
@@ -125,6 +137,45 @@ impl AtomicOp {
     /// Get the current authentication key ID for this operation.
     pub fn auth_key_id(&self) -> Option<&str> {
         self.auth_key_id.as_deref()
+    }
+
+    /// Get the current settings for this operation.
+    ///
+    /// This method provides a unified view of settings by merging historical settings
+    /// from the tree with any staged changes in the `_settings` subtree within this
+    /// atomic operation.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result<KVNested>` containing the merged settings data. The settings
+    /// include both:
+    /// - Historical settings computed from all relevant entries in the tree
+    /// - Any staged changes to the `_settings` subtree in this operation
+    ///
+    /// # Implementation Details
+    ///
+    /// The method uses CRDT merge semantics to combine historical and staged data,
+    /// ensuring deterministic conflict resolution. If no staged changes exist,
+    /// the historical settings are returned unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Unable to compute historical settings state
+    /// - Unable to deserialize settings data
+    /// - CRDT merge operation fails
+    pub fn get_settings(&self) -> Result<KVNested> {
+        // Get historical settings from the tree
+        let mut historical_settings = self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+
+        // Get any staged changes to the _settings subtree in this operation
+        let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
+
+        // Always merge - get_local_data returns Default::default() if no staged data,
+        // which is an empty KVNested that won't affect the merge
+        historical_settings = historical_settings.merge(&staged_settings)?;
+
+        Ok(historical_settings)
     }
 
     /// Set the tree root field for the entry being built.
@@ -269,6 +320,14 @@ impl AtomicOp {
     /// # Returns
     /// A `Result<T>` containing the deserialized staged data. Returns `Ok(T::default())`
     /// if no data has been staged for this subtree in this operation yet.
+    ///
+    /// # Behavior
+    /// - If the subtree doesn't exist, returns `T::default()`
+    /// - If the subtree exists but has empty data (empty string or whitespace), returns `T::default()`
+    /// - Otherwise deserializes the JSON data to type `T`
+    ///
+    /// # Errors
+    /// Returns an error if the subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: serde::de::DeserializeOwned + Default,
@@ -282,7 +341,12 @@ impl AtomicOp {
         })?;
 
         if let Ok(data) = builder.data(subtree_name) {
-            serde_json::from_str(data).map_err(Error::from)
+            if data.trim().is_empty() {
+                // If data is empty, return default
+                Ok(T::default())
+            } else {
+                serde_json::from_str(data).map_err(Error::from)
+            }
         } else {
             // If subtree doesn't exist or has no data, return default
             Ok(T::default())
@@ -587,7 +651,7 @@ impl AtomicOp {
             builder.subtrees().contains(&SETTINGS.to_string())
         };
 
-        // Get the settings state from the historical parents. This will be used to validate the current commit
+        // Get settings using full CRDT state computation
         let historical_settings = self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
 
         // However, if this is a settings update and there's no historical auth but staged auth exists,
@@ -620,32 +684,31 @@ impl AtomicOp {
         // Clone the builder since we can't easily take ownership from RefCell<Option<>>
         let mut builder = builder_from_cell.clone();
 
-        // If this is not a settings update, add metadata with settings tips
-        if !has_settings_update {
-            // Get the backend to access settings tips
-            // FIXME: We should get the subtree tips relative to the parent pointers of this entry
-            // rather than the current tips of the tree. This ensures the metadata accurately reflects
-            // the settings at the point this entry was created, even in concurrent modification scenarios.
-            let settings_tips = self
-                .tree
-                .backend()
-                .get_subtree_tips(self.tree.root_id(), SETTINGS)?;
+        // Add metadata with settings tips for all entries
+        // Get the backend to access settings tips
+        let settings_tips = self.tree.backend().get_subtree_tips_up_to_entries(
+            self.tree.root_id(),
+            SETTINGS,
+            &self.tree.get_tips()?,
+        )?;
 
-            if !settings_tips.is_empty() {
-                // Create a KVOverWrite with settings tips
-                let mut metadata = crate::data::KVOverWrite::new();
+        // Parse existing metadata if present, or create new
+        let mut metadata = builder
+            .metadata()
+            .and_then(|m| serde_json::from_str::<EntryMetadata>(m).ok())
+            .unwrap_or_else(|| EntryMetadata {
+                settings_tips: Vec::new(),
+                entropy: None,
+            });
 
-                // Convert the tips vector to a JSON string
-                let tips_json = serde_json::to_string(&settings_tips)?;
-                metadata.set(SETTINGS.to_string(), tips_json);
+        // Update settings tips
+        metadata.settings_tips = settings_tips;
 
-                // Serialize the metadata
-                let metadata_json = serde_json::to_string(&metadata)?;
+        // Serialize the metadata
+        let metadata_json = serde_json::to_string(&metadata)?;
 
-                // Add metadata to the entry builder
-                builder.set_metadata_mut(metadata_json);
-            }
-        }
+        // Add metadata to the entry builder
+        builder.set_metadata_mut(metadata_json);
 
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured

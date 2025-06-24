@@ -9,6 +9,7 @@ use crate::Error;
 use crate::Result;
 use crate::auth::types::AuthInfo;
 use crate::constants::ROOT;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -168,8 +169,6 @@ struct TreeNode {
     /// IDs of the parent `Entry`s in the main tree history.
     /// The vector is kept sorted alphabetically.
     pub parents: Vec<ID>,
-    /// Serialized data associated with this `Entry` in the main tree.
-    pub data: RawData,
     /// Serialized metadata associated with this `Entry` in the main tree.
     /// This data is metadata about this specific entry only and is not merged with other entries.
     ///
@@ -212,13 +211,12 @@ struct SubTreeNode {
 /// # use eidetica::entry::Entry;
 ///
 /// // Create a new entry using Entry::builder()
-/// let entry = Entry::builder("tree_root", r#"{"settings":true}"#)
+/// let entry = Entry::builder("tree_root")
 ///     .set_subtree_data("users", r#"{"user1":"data"}"#)
 ///     .build();
 ///
 /// // Access entry data
 /// let id = entry.id(); // Calculate content-addressable ID
-/// let settings = entry.get_settings().unwrap();
 /// let user_data = entry.data("users").unwrap();
 /// ```
 ///
@@ -233,10 +231,10 @@ struct SubTreeNode {
 /// # let root_id: String = "some_root_id".to_string();
 /// # let data: RawData = "{}".to_string();
 /// // For a regular entry:
-/// let builder = Entry::builder(root_id, data);
+/// let builder = Entry::builder(root_id);
 ///
 /// // For a new top-level tree root:
-/// let root_builder = Entry::root_builder("initial_settings_data".to_string());
+/// let root_builder = Entry::root_builder();
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
@@ -255,9 +253,8 @@ impl Entry {
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
-    /// * `data` - Data that will be converted to `RawData` (serialized string) for the main tree node (`tree.data`).
-    pub fn builder(root: impl Into<ID>, data: impl Into<RawData>) -> EntryBuilder {
-        EntryBuilder::new(root, data)
+    pub fn builder(root: impl Into<ID>) -> EntryBuilder {
+        EntryBuilder::new(root)
     }
 
     /// Creates a new `EntryBuilder` for a top-level (root) entry for a new tree.
@@ -265,11 +262,8 @@ impl Entry {
     ///
     /// Root entries have an empty string as their `root` ID and include a special ROOT subtree marker.
     /// This method is typically used when creating a new tree.
-    ///
-    /// # Arguments
-    /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    pub fn root_builder(data: impl Into<RawData>) -> EntryBuilder {
-        EntryBuilder::new_top_level(data.into())
+    pub fn root_builder() -> EntryBuilder {
+        EntryBuilder::new_top_level()
     }
 
     /// Get the content-addressable ID of the entry.
@@ -329,10 +323,12 @@ impl Entry {
             .collect()
     }
 
-    /// Get the `RawData` associated with the main tree node (`tree.data`).
-    /// This is not the same as the "settings" subtree data (which might be in a "settings" subtree).
-    pub fn get_settings(&self) -> Result<RawData> {
-        Ok(self.tree.data.clone())
+    /// Get the metadata associated with this entry's tree node.
+    ///
+    /// Metadata is optional information attached to an entry that is not part of the
+    /// main data model and is not merged between entries.
+    pub fn metadata(&self) -> Option<&RawData> {
+        self.tree.metadata.as_ref()
     }
 
     /// Get the `RawData` for a specific named subtree within this entry.
@@ -358,11 +354,6 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or(Error::NotFound)
-    }
-
-    /// Get the metadata for this entry's tree node, if present.
-    pub fn get_metadata(&self) -> Option<&RawData> {
-        self.tree.metadata.as_ref()
     }
 
     /// Create a canonical representation of this entry for signing purposes.
@@ -406,7 +397,7 @@ impl Entry {
 ///
 /// ```ignore
 /// // Efficient - no unnecessary .to_string() calls needed
-/// let entry = Entry::builder("root_id", "main_data")
+/// let entry = Entry::builder("root_id")
 ///     .add_parent("parent1")
 ///     .set_subtree_data("users", "user_data")
 ///     .build();
@@ -420,7 +411,7 @@ impl Entry {
 ///    # use eidetica::entry::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
-///    let entry = Entry::builder(root_id, data)
+///    let entry = Entry::builder(root_id)
 ///        .set_subtree_data("users".to_string(), "user_data".to_string())
 ///        .add_parent("parent_id".to_string())
 ///        .build();
@@ -431,7 +422,7 @@ impl Entry {
 ///    # use eidetica::entry::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
-///    let mut builder = Entry::builder(root_id, data);
+///    let mut builder = Entry::builder(root_id);
 ///    builder.set_subtree_data_mut("users".to_string(), "user_data".to_string());
 ///    builder.add_parent_mut("parent_id".to_string());
 ///    let entry = builder.build();
@@ -443,13 +434,13 @@ impl Entry {
 /// use eidetica::entry::Entry;
 ///
 /// // Create a builder for a regular entry
-/// let entry = Entry::builder("root_id", "main_data")
+/// let entry = Entry::builder("root_id")
 ///     .add_parent("parent1")
 ///     .set_subtree_data("users", "user_data")
 ///     .build();
 ///
 /// // Create a builder for a top-level root entry
-/// let root_entry = Entry::root_builder("settings_data")
+/// let root_entry = Entry::root_builder()
 ///     .set_subtree_data("users", "initial_user_data")
 ///     .build();
 /// ```
@@ -465,16 +456,14 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
-    /// * `data` - Data that will be converted to `RawData` (serialized string) for the main tree node (`tree.data`).
     ///
     /// Note: It's generally preferred to use the static `Entry::builder()` method
     /// instead of calling this constructor directly.
-    pub fn new(root: impl Into<ID>, data: impl Into<RawData>) -> Self {
+    pub fn new(root: impl Into<ID>) -> Self {
         Self {
             tree: TreeNode {
                 root: root.into(),
                 parents: Vec::new(),
-                data: data.into(),
                 metadata: None,
             },
             subtrees: Vec::new(),
@@ -487,15 +476,18 @@ impl EntryBuilder {
     /// Root entries have an empty string as their `root` ID and include a special ROOT subtree marker.
     /// This method is typically used when creating a new tree.
     ///
-    /// # Arguments
-    /// * `data` - `RawData` (serialized string) for the root entry's main data (`tree.data`), often tree settings.
-    ///
     /// Note: It's generally preferred to use the static `Entry::root_builder()` method
     /// instead of calling this constructor directly.
-    pub fn new_top_level(data: impl Into<RawData>) -> Self {
-        let mut builder = Self::new("", data.into());
+    pub fn new_top_level() -> Self {
+        let mut builder = Self::new("");
         // Add a special subtree that identifies this as a root entry
         builder.set_subtree_data_mut(ROOT, "");
+
+        // Add random entropy to metadata to ensure unique IDs for each root entry
+        let entropy: u64 = rand::thread_rng().r#gen();
+        let metadata_json = format!(r#"{{"entropy":{entropy}}}"#);
+        builder.set_metadata_mut(&metadata_json);
+
         builder
     }
 
@@ -658,31 +650,6 @@ impl EntryBuilder {
     /// A mutable reference to self for method chaining.
     pub fn set_root_mut(&mut self, root: impl Into<String>) -> &mut Self {
         self.tree.root = root.into().into();
-        self
-    }
-
-    /// Set the main data for this entry's tree node.
-    ///
-    /// # Arguments
-    /// * `data` - `RawData` (serialized string) for the main tree node.
-    ///
-    /// # Returns
-    /// A mutable reference to self for method chaining.
-    pub fn set_data(mut self, data: impl Into<String>) -> Self {
-        self.tree.data = data.into();
-        self
-    }
-
-    /// Mutable reference version of set_data.
-    /// Set the main data for this entry's tree node.
-    ///
-    /// # Arguments
-    /// * `data` - `RawData` (serialized string) for the main tree node.
-    ///
-    /// # Returns
-    /// A mutable reference to self for method chaining.
-    pub fn set_data_mut(&mut self, data: impl Into<String>) -> &mut Self {
-        self.tree.data = data.into();
         self
     }
 
@@ -872,6 +839,30 @@ impl EntryBuilder {
     pub fn set_metadata_mut(&mut self, metadata: impl Into<String>) -> &mut Self {
         self.tree.metadata = Some(metadata.into());
         self
+    }
+
+    /// Get the current metadata value for this entry builder.
+    ///
+    /// Metadata is optional information attached to an entry that is not part of the
+    /// main data model and is not merged between entries. It's used primarily for
+    /// improving efficiency of operations and for experimentation.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(&RawData)` containing the serialized metadata if present,
+    /// or `None` if no metadata has been set.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let builder = Entry::builder("root_id");
+    /// assert!(builder.metadata().is_none());
+    ///
+    /// let builder = builder.set_metadata(r#"{"custom": "data"}"#);
+    /// assert!(builder.metadata().is_some());
+    /// ```
+    pub fn metadata(&self) -> Option<&RawData> {
+        self.tree.metadata.as_ref()
     }
 
     /// Build and return the final immutable `Entry`.
