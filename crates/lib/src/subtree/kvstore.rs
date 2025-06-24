@@ -78,6 +78,10 @@ impl KVStore {
                 std::io::ErrorKind::InvalidData,
                 "Expected string value, found a nested map",
             ))),
+            NestedValue::Array(_) => Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Expected string value, found an array",
+            ))),
             NestedValue::Deleted => Err(Error::NotFound),
         }
     }
@@ -131,7 +135,8 @@ impl KVStore {
             .unwrap_or_default();
 
         // Update the data
-        data.set(key.as_ref().to_string(), value);
+        data.as_hashmap_mut()
+            .insert(key.as_ref().to_string(), value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -367,7 +372,9 @@ impl KVStore {
 
         // Set the value at the final key in the path.
         if let Some(last_key_s) = path_slice.last() {
-            current_map_mut.set(last_key_s.as_ref().to_string(), value);
+            current_map_mut
+                .as_hashmap_mut()
+                .insert(last_key_s.as_ref().to_string(), value);
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
@@ -378,6 +385,73 @@ impl KVStore {
 
         let serialized_data = serde_json::to_string(&subtree_data)?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)
+    }
+
+    // Array operations - high-level API that hides CRDT implementation details
+
+    /// Add an element to an array at the given key
+    /// Creates a new array if the key doesn't exist
+    /// Returns the unique ID of the added element
+    pub fn array_add(&self, key: impl AsRef<str>, value: NestedValue) -> Result<String> {
+        let mut data = self.get_all()?;
+
+        let element_id = data.array_add(key.as_ref(), value)?;
+
+        let serialized = serde_json::to_string(&data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized)?;
+
+        Ok(element_id)
+    }
+
+    /// Remove an element by its ID from an array
+    /// Returns true if an element was removed, false otherwise
+    pub fn array_remove(&self, key: impl AsRef<str>, id: &str) -> Result<bool> {
+        let mut data = self.get_all()?;
+
+        let was_removed = data.array_remove(key.as_ref(), id)?;
+
+        let serialized = serde_json::to_string(&data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized)?;
+
+        Ok(was_removed)
+    }
+
+    /// Get an element by its ID from an array
+    pub fn array_get(&self, key: impl AsRef<str>, id: &str) -> Result<Option<NestedValue>> {
+        let data = self.get_all()?;
+        Ok(data.array_get(key.as_ref(), id).cloned())
+    }
+
+    /// Get all element IDs from an array in UUID-sorted order
+    /// Returns an empty Vec if the key doesn't exist or isn't an array
+    pub fn array_ids(&self, key: impl AsRef<str>) -> Result<Vec<String>> {
+        let data = self.get_all()?;
+        Ok(data.array_ids(key.as_ref()))
+    }
+
+    /// Get the length of an array
+    /// Returns 0 if the key doesn't exist or isn't an array
+    pub fn array_len(&self, key: impl AsRef<str>) -> Result<usize> {
+        let data = self.get_all()?;
+        Ok(data.array_len(key.as_ref()))
+    }
+
+    /// Check if an array is empty
+    /// Returns true if the key doesn't exist, isn't an array, or the array is empty
+    pub fn array_is_empty(&self, key: impl AsRef<str>) -> Result<bool> {
+        let data = self.get_all()?;
+        Ok(data.array_is_empty(key.as_ref()))
+    }
+
+    /// Clear all elements from an array (tombstone them)
+    /// Does nothing if the key doesn't exist or isn't an array
+    pub fn array_clear(&self, key: impl AsRef<str>) -> Result<()> {
+        let mut data = self.get_all()?;
+
+        data.array_clear(key.as_ref())?;
+
+        let serialized = serde_json::to_string(&data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized)
     }
 }
 

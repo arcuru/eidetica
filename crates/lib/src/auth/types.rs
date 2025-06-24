@@ -24,6 +24,9 @@ macro_rules! impl_nested_value_string {
                     NestedValue::Map(_) => {
                         Err(concat!("Cannot convert map to ", stringify!($type)).to_string())
                     }
+                    NestedValue::Array(_) => {
+                        Err(concat!("Cannot convert array to ", stringify!($type)).to_string())
+                    }
                     NestedValue::Deleted => Err(concat!(
                         "Cannot convert deleted value to ",
                         stringify!($type)
@@ -44,7 +47,7 @@ macro_rules! impl_nested_value_map {
             fn from(value: $type) -> Self {
                 let mut nested = KVNested::new();
                 $(
-                    nested.set(stringify!($field), value.$field);
+                    nested.as_hashmap_mut().insert(stringify!($field).to_string(), NestedValue::from(value.$field));
                 )*
                 NestedValue::Map(nested)
             }
@@ -74,6 +77,7 @@ macro_rules! impl_nested_value_map {
                         serde_json::from_str(&json)
                             .map_err(|e| format!("Failed to parse {} from JSON: {}", stringify!($type), e))
                     }
+                    NestedValue::Array(_) => Err(concat!("Cannot convert array to ", stringify!($type)).to_string()),
                     NestedValue::Deleted => Err(concat!("Cannot convert deleted value to ", stringify!($type)).to_string()),
                 }
             }
@@ -327,6 +331,7 @@ impl TryFrom<NestedValue> for String {
         match value {
             NestedValue::String(s) => Ok(s),
             NestedValue::Map(_) => Err("Cannot convert map to String".to_string()),
+            NestedValue::Array(_) => Err("Cannot convert array to String".to_string()),
             NestedValue::Deleted => Err("Cannot convert deleted value to String".to_string()),
         }
     }
@@ -364,6 +369,16 @@ impl TryFrom<NestedValue> for Vec<String> {
             NestedValue::String(s) => serde_json::from_str(&s)
                 .map_err(|e| format!("Failed to parse Vec<String> from JSON: {e}")),
             NestedValue::Map(_) => Err("Cannot convert map to Vec<String>".to_string()),
+            NestedValue::Array(array) => {
+                let mut result = Vec::new();
+                for (_, nested_value) in array.iter() {
+                    match nested_value {
+                        NestedValue::String(s) => result.push(s.clone()),
+                        _ => return Err("Array contains non-string values".to_string()),
+                    }
+                }
+                Ok(result)
+            }
             NestedValue::Deleted => Err("Cannot convert deleted value to Vec<String>".to_string()),
         }
     }
@@ -380,7 +395,7 @@ impl From<AuthId> for NestedValue {
             AuthId::UserTree { id, tips, key } => {
                 nested.set("type", "user_tree".to_string());
                 nested.set("id", id);
-                nested.set("tips", tips);
+                nested.set("tips", serde_json::to_string(&tips).unwrap_or_default());
                 nested.set("key", *key);
             }
         }
@@ -452,6 +467,7 @@ impl TryFrom<NestedValue> for AuthId {
                 serde_json::from_str(&json)
                     .map_err(|e| format!("Failed to parse AuthId from JSON: {e}"))
             }
+            NestedValue::Array(_) => Err("Cannot convert array to AuthId".to_string()),
             NestedValue::Deleted => Err("Cannot convert deleted value to AuthId".to_string()),
         }
     }
@@ -460,7 +476,9 @@ impl TryFrom<NestedValue> for AuthId {
 impl From<AuthInfo> for NestedValue {
     fn from(auth_info: AuthInfo) -> Self {
         let mut nested = KVNested::new();
-        nested.set("id", auth_info.id);
+        nested
+            .as_hashmap_mut()
+            .insert("id".to_string(), NestedValue::from(auth_info.id));
         if let Some(signature) = auth_info.signature {
             nested.set("signature", signature);
         }
@@ -491,6 +509,7 @@ impl TryFrom<NestedValue> for AuthInfo {
                 })
             }
             NestedValue::String(s) => Err(format!("Cannot convert string to AuthInfo: {s}")),
+            NestedValue::Array(_) => Err("Cannot convert array to AuthInfo".to_string()),
             NestedValue::Deleted => Err("Cannot convert deleted value to AuthInfo".to_string()),
         }
     }

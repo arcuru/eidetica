@@ -6,7 +6,7 @@
 //! the higher settings level.
 
 use crate::auth::types::{AuthId, AuthKey, KeyStatus, ResolvedAuth, UserAuthTreeRef};
-use crate::data::KVNested;
+use crate::data::{KVNested, NestedValue};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -48,7 +48,9 @@ impl AuthSettings {
 
     /// Add or update an authentication key
     pub fn add_key(&mut self, id: impl Into<String>, key: AuthKey) -> Result<()> {
-        self.inner.set(id, key);
+        self.inner
+            .as_hashmap_mut()
+            .insert(id.into(), NestedValue::from(key));
         Ok(())
     }
 
@@ -58,7 +60,9 @@ impl AuthSettings {
         id: impl Into<String>,
         tree_ref: UserAuthTreeRef,
     ) -> Result<()> {
-        self.inner.set(id, tree_ref);
+        self.inner
+            .as_hashmap_mut()
+            .insert(id.into(), NestedValue::from(tree_ref));
         Ok(())
     }
 
@@ -69,7 +73,9 @@ impl AuthSettings {
             match AuthKey::try_from(value.clone()) {
                 Ok(mut auth_key) => {
                     auth_key.status = KeyStatus::Revoked;
-                    self.inner.set(id.to_string(), auth_key);
+                    self.inner
+                        .as_hashmap_mut()
+                        .insert(id.to_string(), NestedValue::from(auth_key));
                     Ok(())
                 }
                 Err(_) => {

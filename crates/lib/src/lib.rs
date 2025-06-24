@@ -22,6 +22,7 @@ pub mod auth;
 pub mod backend;
 pub mod basedb;
 pub mod constants;
+pub mod crdt;
 pub mod data;
 pub mod entry;
 pub mod subtree;

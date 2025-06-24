@@ -191,16 +191,13 @@ where
         }
 
         // Iterate through all key-value pairs
-        for (key, value_opt) in data.as_hashmap().iter() {
-            // Skip tombstones (None values)
-            if let Some(value) = value_opt {
-                // Deserialize the row
-                let row: T = serde_json::from_str(value)?;
+        for (key, value) in data.as_hashmap().iter() {
+            // Deserialize the row
+            let row: T = serde_json::from_str(value)?;
 
-                // Check if the row matches the query
-                if query(&row) {
-                    result.push((key.clone(), row));
-                }
+            // Check if the row matches the query
+            if query(&row) {
+                result.push((key.clone(), row));
             }
         }
 
