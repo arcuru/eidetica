@@ -22,6 +22,7 @@ mod data;
 mod entry;
 mod helpers;
 mod parent_aware_merge;
+mod settings_metadata;
 mod subtree;
 mod tree;
 mod tree_api;

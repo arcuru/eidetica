@@ -64,11 +64,16 @@ fn test_kvoverwrite_from_entry() {
     let kv = create_kvoverwrite(&[("key1", "value1"), ("key2", "value2")]);
 
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
-    let entry = Entry::root_builder(serialized).build();
 
-    // Extract KVOverWrite from entry
-    let data = entry.get_settings().expect("Failed to get settings");
-    let deserialized: KVOverWrite = serde_json::from_str(&data).expect("Deserialization failed");
+    let entry_with_settings = Entry::root_builder()
+        .set_subtree_data("tmp", serialized)
+        .build();
+
+    // Now we can get the data from the tmp subtree directly
+    let data = entry_with_settings
+        .data("tmp")
+        .expect("Failed to get tmp data");
+    let deserialized: KVOverWrite = serde_json::from_str(data).expect("Deserialization failed");
 
     assert_eq!(deserialized.get("key1"), Some("value1"));
     assert_eq!(deserialized.get("key2"), Some("value2"));
@@ -242,12 +247,14 @@ fn test_kvowrite_to_entry() {
     // Serialize the KVOverwrite to a string
     let serialized = serde_json::to_string(&kvstore).unwrap();
 
-    // Create an entry with this data
-    let entry = Entry::root_builder(serialized).build();
+    // Create an entry with this data in tmp subtree
+    let entry = Entry::root_builder()
+        .set_subtree_data("tmp", serialized.clone())
+        .build();
 
     // Ensure the entry data matches the serialized KVOverwrite
-    let entry_data = entry.get_settings().unwrap();
-    let deserialized: KVOverWrite = serde_json::from_str(&entry_data).unwrap();
+    let entry_data = entry.data("tmp").unwrap();
+    let deserialized: KVOverWrite = serde_json::from_str(entry_data).unwrap();
 
     // Verify the deserialized data matches the original KVOverwrite
     assert_eq!(deserialized.get("key1").unwrap(), "value1");

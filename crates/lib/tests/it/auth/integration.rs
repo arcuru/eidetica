@@ -422,7 +422,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .expect("Failed to set value");
 
         // Create entry without committing to test validation
-        let entry_builder = eidetica::entry::Entry::builder(format!("root_{i}"), "{}").build();
+        let entry_builder = eidetica::entry::Entry::builder(format!("root_{i}")).build();
         entries.push(entry_builder);
     }
 
