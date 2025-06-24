@@ -34,3 +34,4 @@
 
 - [Overview](design/index.md)
   - [Authentication](design/authentication.md)
+  - [Settings Storage](design/settings_storage.md)
