@@ -19,13 +19,13 @@ fn test_kvoverwrite_basic_operations() {
     let value = "test_value";
     kv.set(key, value);
 
-    assert_eq!(kv.get(key), Some(value));
+    assert_eq!(kv.get(key), Some(&value.to_string()));
     assert_eq!(kv.get("non_existent_key"), None);
 
     // Test overwrite
     let new_value = "new_value";
     kv.set(key, new_value);
-    assert_eq!(kv.get(key), Some(new_value));
+    assert_eq!(kv.get(key), Some(&new_value.to_string()));
 }
 
 #[test]
@@ -38,9 +38,9 @@ fn test_kvoverwrite_merge() {
     let merged = kv1.merge(&kv2).expect("Merge failed");
 
     // Verify merged result
-    assert_eq!(merged.get("key1"), Some("value1"));
-    assert_eq!(merged.get("key2"), Some("value2_updated")); // overwritten
-    assert_eq!(merged.get("key3"), Some("value3")); // added from kv2
+    assert_eq!(merged.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(merged.get("key2"), Some(&"value2_updated".to_string())); // overwritten
+    assert_eq!(merged.get("key3"), Some(&"value3".to_string())); // added from kv2
 }
 
 #[test]
@@ -54,8 +54,8 @@ fn test_kvoverwrite_serialization() {
     // Deserialize back
     let deserialized: KVOverWrite =
         serde_json::from_str(&serialized).expect("Deserialization failed");
-    assert_eq!(deserialized.get("key1"), Some("value1"));
-    assert_eq!(deserialized.get("key2"), Some("value2"));
+    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(deserialized.get("key2"), Some(&"value2".to_string()));
 }
 
 #[test]
@@ -75,8 +75,8 @@ fn test_kvoverwrite_from_entry() {
         .expect("Failed to get tmp data");
     let deserialized: KVOverWrite = serde_json::from_str(data).expect("Deserialization failed");
 
-    assert_eq!(deserialized.get("key1"), Some("value1"));
-    assert_eq!(deserialized.get("key2"), Some("value2"));
+    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(deserialized.get("key2"), Some(&"value2".to_string()));
 }
 
 #[test]
@@ -126,19 +126,31 @@ fn test_kvoverwrite_multiple_merge_operations() {
     // Since branch1 and branch2 modify different keys (except for "common"),
     // merged1_2 and merged2_1 should be mostly identical
 
-    assert_eq!(merged1_2.get("key1"), Some("branch1_value"));
-    assert_eq!(merged1_2.get("key2"), Some("branch2_value"));
-    assert_eq!(merged1_2.get("branch1_key"), Some("branch1_only"));
-    assert_eq!(merged1_2.get("branch2_key"), Some("branch2_only"));
+    assert_eq!(merged1_2.get("key1"), Some(&"branch1_value".to_string()));
+    assert_eq!(merged1_2.get("key2"), Some(&"branch2_value".to_string()));
+    assert_eq!(
+        merged1_2.get("branch1_key"),
+        Some(&"branch1_only".to_string())
+    );
+    assert_eq!(
+        merged1_2.get("branch2_key"),
+        Some(&"branch2_only".to_string())
+    );
 
-    assert_eq!(merged2_1.get("key1"), Some("branch1_value"));
-    assert_eq!(merged2_1.get("key2"), Some("branch2_value"));
-    assert_eq!(merged2_1.get("branch1_key"), Some("branch1_only"));
-    assert_eq!(merged2_1.get("branch2_key"), Some("branch2_only"));
+    assert_eq!(merged2_1.get("key1"), Some(&"branch1_value".to_string()));
+    assert_eq!(merged2_1.get("key2"), Some(&"branch2_value".to_string()));
+    assert_eq!(
+        merged2_1.get("branch1_key"),
+        Some(&"branch1_only".to_string())
+    );
+    assert_eq!(
+        merged2_1.get("branch2_key"),
+        Some(&"branch2_only".to_string())
+    );
 
     // But for the "common" key, the order matters
-    assert_eq!(merged1_2.get("common"), Some("branch2")); // Last write wins
-    assert_eq!(merged2_1.get("common"), Some("branch1")); // Last write wins
+    assert_eq!(merged1_2.get("common"), Some(&"branch2".to_string())); // Last write wins
+    assert_eq!(merged2_1.get("common"), Some(&"branch1".to_string())); // Last write wins
 }
 
 #[test]
@@ -167,18 +179,18 @@ fn test_kvoverwrite_serialization_roundtrip_with_merge() {
         serde_json::from_str(&merged_serialized).expect("Deserialization of merged data failed");
 
     // Verify final state
-    assert_eq!(final_data.get("key1"), Some("value1")); // Unchanged
-    assert_eq!(final_data.get("key2"), Some("updated2")); // Updated
-    assert_eq!(final_data.get("key3"), Some("value3")); // Added
+    assert_eq!(final_data.get("key1"), Some(&"value1".to_string())); // Unchanged
+    assert_eq!(final_data.get("key2"), Some(&"updated2".to_string())); // Updated
+    assert_eq!(final_data.get("key3"), Some(&"value3".to_string())); // Added
 
     // Test merging with an empty CRDT
     let empty = KVOverWrite::new();
     let merged_with_empty = final_data.merge(&empty).expect("Merge with empty failed");
 
     // Merging with empty should not change anything
-    assert_eq!(merged_with_empty.get("key1"), Some("value1"));
-    assert_eq!(merged_with_empty.get("key2"), Some("updated2"));
-    assert_eq!(merged_with_empty.get("key3"), Some("value3"));
+    assert_eq!(merged_with_empty.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(merged_with_empty.get("key2"), Some(&"updated2".to_string()));
+    assert_eq!(merged_with_empty.get("key3"), Some(&"value3".to_string()));
 }
 
 #[test]
@@ -192,13 +204,13 @@ fn test_kvoverwrite_new() {
 fn test_kvoverwrite_from_hashmap() {
     // Test creation from an existing HashMap
     let mut data = HashMap::new();
-    data.insert("key1", "value1");
-    data.insert("key2", "value2");
+    data.insert("key1".to_string(), "value1".to_string());
+    data.insert("key2".to_string(), "value2".to_string());
 
-    let kv = KVOverWrite::from_hashmap(data.clone());
+    let kv = KVOverWrite::from(data.clone());
     assert_eq!(kv.as_hashmap().len(), 2);
-    assert_eq!(kv.get("key1"), Some("value1"));
-    assert_eq!(kv.get("key2"), Some("value2"));
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
 }
 
 #[test]
@@ -208,17 +220,16 @@ fn test_kvoverwrite_remove() {
 
     // Add a value then remove it
     kv.set("key1", "value1");
-    assert_eq!(kv.get("key1"), Some("value1"));
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
 
     let removed = kv.remove("key1");
     assert_eq!(removed, Some("value1".to_string()));
-    // Assert that key1 is now a tombstone
-    assert_eq!(kv.as_hashmap().get("key1"), Some(&None));
+    // Assert that key1 is now removed
+    assert_eq!(kv.get("key1"), None);
 
     // Try removing a non-existent key
     let removed = kv.remove("nonexistent");
     assert_eq!(removed, None);
-    // Nonexistent key should also result in a tombstone, checked by test_kvoverwrite_delete_nonexistent
 }
 
 #[test]
@@ -231,11 +242,11 @@ fn test_kvoverwrite_as_hashmap_mut() {
 
     // Modify through the mutable HashMap reference
     kv.as_hashmap_mut()
-        .insert("key2".to_string(), Some("value2".to_string()));
+        .insert("key2".to_string(), "value2".to_string());
 
     // Verify both modifications worked
-    assert_eq!(kv.get("key1"), Some("value1"));
-    assert_eq!(kv.get("key2"), Some("value2"));
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
+    assert_eq!(kv.get("key2"), Some(&"value2".to_string()));
 }
 
 #[test]
@@ -262,66 +273,64 @@ fn test_kvowrite_to_entry() {
 }
 
 #[test]
-fn test_kvoverwrite_tombstones() {
-    // Test tombstone functionality
+fn test_kvoverwrite_merge_behavior() {
+    // Test merge functionality
     let mut kv = KVOverWrite::new();
 
     // Add and then remove some values
     kv.set("key1", "value1");
     kv.set("key2", "value2");
 
-    assert_eq!(kv.get("key1"), Some("value1"));
+    assert_eq!(kv.get("key1"), Some(&"value1".to_string()));
 
-    // Remove key1, should return the value and create a tombstone
+    // Remove key1, should return the value and actually remove it
     let removed = kv.remove("key1");
     assert_eq!(removed, Some("value1".to_string()));
 
     // get() should now return None for the removed key
     assert_eq!(kv.get("key1"), None);
 
-    // But in the underlying HashMap, it should be a None tombstone
-    assert!(kv.as_hashmap().contains_key("key1"));
-    assert_eq!(kv.as_hashmap().get("key1"), Some(&None));
+    // The key should not exist in the underlying HashMap
+    assert!(!kv.as_hashmap().contains_key("key1"));
 
-    // Test merging with tombstones
+    // Test merging with new values
     let mut kv2 = KVOverWrite::new();
-    kv2.set("key1", "new_value1"); // Try to resurrect the deleted key
+    kv2.set("key1", "new_value1"); // Add key1 back
     kv2.set("key3", "value3");
 
-    // Should overwrite the tombstone
+    // Should add the new values
     let merged = kv.merge(&kv2).expect("Merge failed");
-    assert_eq!(merged.get("key1"), Some("new_value1")); // Resurrected
-    assert_eq!(merged.get("key2"), Some("value2")); // Unchanged
-    assert_eq!(merged.get("key3"), Some("value3")); // Added
+    assert_eq!(merged.get("key1"), Some(&"new_value1".to_string())); // Added
+    assert_eq!(merged.get("key2"), Some(&"value2".to_string())); // Unchanged
+    assert_eq!(merged.get("key3"), Some(&"value3".to_string())); // Added
 
-    // Now test deleting in the other direction
+    // Try removing a non-existent key
     let mut kv3 = KVOverWrite::new();
-    kv3.remove("key2"); // Delete key2 in kv3
+    let removed = kv3.remove("nonexistent");
+    assert_eq!(removed, None);
 
-    // Merge kv3 into merged (kv1+kv2)
+    // Merge should preserve existing values
     let final_merge = merged.merge(&kv3).expect("Second merge failed");
-
-    // key2 should now be deleted
-    assert_eq!(final_merge.get("key2"), None);
-    assert_eq!(final_merge.get("key1"), Some("new_value1")); // Still present
-    assert_eq!(final_merge.get("key3"), Some("value3")); // Still present
+    assert_eq!(final_merge.get("key1"), Some(&"new_value1".to_string())); // Still present
+    assert_eq!(final_merge.get("key2"), Some(&"value2".to_string())); // Still present
+    assert_eq!(final_merge.get("key3"), Some(&"value3".to_string())); // Still present
 }
 
 #[test]
-fn test_kvoverwrite_tombstone_serialization() {
-    // Test serialization with tombstones
+fn test_kvoverwrite_serialization_after_remove() {
+    // Test serialization after removing values
     let mut kv = KVOverWrite::new();
     kv.set("key1", "value1");
     kv.set("key2", "value2");
 
-    // Create tombstone
+    // Remove a key
     kv.remove("key2");
 
-    // Verify tombstone exists
-    assert!(kv.as_hashmap().contains_key("key2"));
-    assert_eq!(kv.as_hashmap().get("key2"), Some(&None));
+    // Verify key is removed
+    assert!(!kv.as_hashmap().contains_key("key2"));
+    assert_eq!(kv.get("key2"), None);
 
-    // Serialize with tombstone
+    // Serialize
     let serialized = serde_json::to_string(&kv).expect("Serialization failed");
 
     // Deserialize
@@ -329,61 +338,57 @@ fn test_kvoverwrite_tombstone_serialization() {
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify structure is maintained
-    assert_eq!(deserialized.get("key1"), Some("value1"));
+    assert_eq!(deserialized.get("key1"), Some(&"value1".to_string()));
     assert_eq!(deserialized.get("key2"), None);
 
-    // Verify tombstone survived serialization
-    assert!(deserialized.as_hashmap().contains_key("key2"));
-    assert_eq!(deserialized.as_hashmap().get("key2"), Some(&None));
+    // Verify key is still not present
+    assert!(!deserialized.as_hashmap().contains_key("key2"));
 }
 
 #[test]
-fn test_kvoverwrite_delete_nonexistent() {
-    // Test creating a tombstone for non-existent key
+fn test_kvoverwrite_remove_nonexistent() {
+    // Test removing a key that doesn't exist
     let mut kv = KVOverWrite::new();
 
     // Remove a key that doesn't exist
     let result = kv.remove("nonexistent");
     assert_eq!(result, None);
 
-    // Verify a tombstone was still created
-    assert!(kv.as_hashmap().contains_key("nonexistent"));
-    assert_eq!(kv.as_hashmap().get("nonexistent"), Some(&None));
+    // Verify no key was created
+    assert!(!kv.as_hashmap().contains_key("nonexistent"));
 
     // Ensure get still returns None
     assert_eq!(kv.get("nonexistent"), None);
 }
 
 #[test]
-fn test_kvoverwrite_merge_with_dual_tombstones() {
-    // Test merging when both sources have tombstones
+fn test_kvoverwrite_merge_with_removals() {
+    // Test merging when both sources have removals
     let mut kv1 = KVOverWrite::new();
     kv1.set("key1", "value1");
     kv1.set("key2", "value2");
-    kv1.remove("key1"); // Create tombstone in kv1
+    kv1.remove("key1"); // Remove from kv1
 
     let mut kv2 = KVOverWrite::new();
     kv2.set("key2", "updated2");
     kv2.set("key3", "value3");
-    kv2.remove("key3"); // Create tombstone in kv2
 
     // Merge kv2 into kv1
     let merged = kv1.merge(&kv2).expect("Merge failed");
 
     // Verify results:
-    // key1: tombstone from kv1 (still tombstone)
+    // key1: removed from kv1, not in kv2, so not present
     // key2: value from kv2 overwrites kv1
-    // key3: tombstone from kv2
+    // key3: value from kv2
 
     assert_eq!(merged.get("key1"), None);
-    assert_eq!(merged.get("key2"), Some("updated2"));
-    assert_eq!(merged.get("key3"), None);
+    assert_eq!(merged.get("key2"), Some(&"updated2".to_string()));
+    assert_eq!(merged.get("key3"), Some(&"value3".to_string()));
 
-    // Verify tombstones are present
-    assert!(merged.as_hashmap().contains_key("key1"));
+    // Verify keys are only present if they have values
+    assert!(!merged.as_hashmap().contains_key("key1"));
+    assert!(merged.as_hashmap().contains_key("key2"));
     assert!(merged.as_hashmap().contains_key("key3"));
-    assert_eq!(merged.as_hashmap().get("key1"), Some(&None));
-    assert_eq!(merged.as_hashmap().get("key3"), Some(&None));
 }
 
 #[test]

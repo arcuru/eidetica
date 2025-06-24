@@ -330,7 +330,7 @@ impl AtomicOp {
     /// Returns an error if the subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
-        T: serde::de::DeserializeOwned + Default,
+        T: crate::data::Data + Default,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.borrow();
@@ -375,7 +375,7 @@ impl AtomicOp {
     /// if the subtree has no history prior to this operation.
     pub(crate) fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
-        T: CRDT + Clone,
+        T: CRDT + Default,
     {
         let subtree_name = subtree_name.as_ref();
         // Get the entry builder to get parent pointers
@@ -444,7 +444,7 @@ impl AtomicOp {
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT + Clone,
+        T: CRDT + Default,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -505,7 +505,7 @@ impl AtomicOp {
         entry_id: &ID,
     ) -> Result<T>
     where
-        T: CRDT + Clone,
+        T: CRDT + Default,
     {
         // Step 1: Check if already cached
         {
@@ -602,7 +602,7 @@ impl AtomicOp {
     /// A `Result<T>` containing the merged CRDT state
     fn merge_path_entries<T>(&self, subtree_name: &str, mut state: T, entry_ids: &[ID]) -> Result<T>
     where
-        T: CRDT + Clone,
+        T: CRDT + Clone + Default + serde::de::DeserializeOwned,
     {
         for entry_id in entry_ids {
             let entry = self.tree.backend().get(entry_id)?;

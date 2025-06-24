@@ -231,6 +231,248 @@ fn test_kvstore_set_value() {
 }
 
 #[test]
+fn test_kvstore_array_basic_operations() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    let mut element_ids = Vec::new();
+
+    {
+        let kv_store = op
+            .get_subtree::<KVStore>("my_kv")
+            .expect("Failed to get KVStore");
+
+        // Test array operations - add strings as NestedValue
+        let element_id1 = kv_store
+            .array_add("fruits", NestedValue::String("apple".to_string()))
+            .expect("Failed to add apple");
+        let element_id2 = kv_store
+            .array_add("fruits", NestedValue::String("banana".to_string()))
+            .expect("Failed to add banana");
+        let element_id3 = kv_store
+            .array_add("fruits", NestedValue::String("orange".to_string()))
+            .expect("Failed to add orange");
+
+        element_ids.push(element_id1.clone());
+        element_ids.push(element_id2.clone());
+        element_ids.push(element_id3.clone());
+
+        // Test array length
+        assert_eq!(
+            kv_store
+                .array_len("fruits")
+                .expect("Failed to get array length"),
+            3
+        );
+
+        // Test getting elements by ID
+        let apple = kv_store
+            .array_get("fruits", &element_id1)
+            .expect("Failed to get apple");
+        assert_eq!(apple, Some(NestedValue::String("apple".to_string())));
+
+        // Test getting all IDs (should be in UUID-sorted order)
+        let ids = kv_store
+            .array_ids("fruits")
+            .expect("Failed to get array IDs");
+        assert_eq!(ids.len(), 3);
+
+        // Verify IDs are sorted
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort();
+        assert_eq!(ids, sorted_ids);
+
+        // Test remove by ID
+        let removed = kv_store
+            .array_remove("fruits", &element_id3)
+            .expect("Failed to remove orange");
+        assert!(removed);
+
+        // Verify removal
+        assert_eq!(
+            kv_store
+                .array_len("fruits")
+                .expect("Failed to get array length after remove"),
+            2
+        );
+        let orange_removed = kv_store
+            .array_get("fruits", &element_id3)
+            .expect("Failed to check orange");
+        assert_eq!(orange_removed, None);
+    }
+
+    // Commit the operation
+    op.commit().expect("Failed to commit operation");
+
+    // Verify with viewer
+    let viewer = tree
+        .get_subtree_viewer::<KVStore>("my_kv")
+        .expect("Failed to get viewer");
+
+    assert_eq!(
+        viewer
+            .array_len("fruits")
+            .expect("Failed to get array length from viewer"),
+        2
+    );
+    let apple = viewer
+        .array_get("fruits", &element_ids[0])
+        .expect("Failed to get apple from viewer");
+    assert_eq!(apple, Some(NestedValue::String("apple".to_string())));
+}
+
+#[test]
+fn test_kvstore_array_nonexistent_key() {
+    let tree = setup_tree();
+    let op = tree.new_operation().expect("Failed to start operation");
+
+    {
+        let kv_store = op
+            .get_subtree::<KVStore>("my_kv")
+            .expect("Failed to get KVStore");
+
+        // Test operations on non-existent array
+        let empty_ids = kv_store
+            .array_ids("nonexistent")
+            .expect("Failed to get nonexistent array IDs");
+        assert!(empty_ids.is_empty());
+
+        assert_eq!(
+            kv_store
+                .array_len("nonexistent")
+                .expect("Failed to get length"),
+            0
+        );
+        assert!(
+            kv_store
+                .array_is_empty("nonexistent")
+                .expect("Failed to check empty")
+        );
+
+        // Test getting from non-existent array
+        let nothing = kv_store
+            .array_get("nonexistent", "fake-uuid")
+            .expect("Failed to get from nonexistent array");
+        assert_eq!(nothing, None);
+
+        // Remove from non-existent array should return false
+        let removed = kv_store
+            .array_remove("nonexistent", "fake-uuid")
+            .expect("Failed to remove from nonexistent");
+        assert!(!removed);
+
+        // Add to non-existent array should create it
+        let first_id = kv_store
+            .array_add("new_array", NestedValue::String("first_item".to_string()))
+            .expect("Failed to add to new array");
+
+        assert_eq!(
+            kv_store
+                .array_len("new_array")
+                .expect("Failed to get new array length"),
+            1
+        );
+        let first_item = kv_store
+            .array_get("new_array", &first_id)
+            .expect("Failed to get first item");
+        assert_eq!(
+            first_item,
+            Some(NestedValue::String("first_item".to_string()))
+        );
+    }
+}
+
+#[test]
+fn test_kvstore_array_persistence() {
+    let tree = setup_tree();
+
+    let mut color_ids = Vec::new();
+
+    // Create array in first operation
+    let op1 = tree.new_operation().expect("Failed to start op1");
+    {
+        let kv_store = op1
+            .get_subtree::<KVStore>("my_kv")
+            .expect("Failed to get KVStore");
+
+        let red_id = kv_store
+            .array_add("colors", NestedValue::String("red".to_string()))
+            .expect("Failed to add red");
+        let green_id = kv_store
+            .array_add("colors", NestedValue::String("green".to_string()))
+            .expect("Failed to add green");
+        color_ids.push(red_id);
+        color_ids.push(green_id);
+    }
+    op1.commit().expect("Failed to commit op1");
+
+    // Modify array in second operation
+    let op2 = tree.new_operation().expect("Failed to start op2");
+    {
+        let kv_store = op2
+            .get_subtree::<KVStore>("my_kv")
+            .expect("Failed to get KVStore");
+
+        // Array should persist from previous operation
+        assert_eq!(
+            kv_store
+                .array_len("colors")
+                .expect("Failed to get colors length"),
+            2
+        );
+
+        let red = kv_store
+            .array_get("colors", &color_ids[0])
+            .expect("Failed to get red");
+        assert_eq!(red, Some(NestedValue::String("red".to_string())));
+
+        let green = kv_store
+            .array_get("colors", &color_ids[1])
+            .expect("Failed to get green");
+        assert_eq!(green, Some(NestedValue::String("green".to_string())));
+
+        // Add more items and remove one
+        let blue_id = kv_store
+            .array_add("colors", NestedValue::String("blue".to_string()))
+            .expect("Failed to add blue");
+        color_ids.push(blue_id);
+
+        let removed = kv_store
+            .array_remove("colors", &color_ids[0])
+            .expect("Failed to remove red");
+        assert!(removed);
+    }
+    op2.commit().expect("Failed to commit op2");
+
+    // Verify final state
+    let viewer = tree
+        .get_subtree_viewer::<KVStore>("my_kv")
+        .expect("Failed to get viewer");
+
+    assert_eq!(
+        viewer
+            .array_len("colors")
+            .expect("Failed to get final colors length"),
+        2
+    );
+
+    let red_removed = viewer
+        .array_get("colors", &color_ids[0])
+        .expect("Failed to check red removed");
+    assert_eq!(red_removed, None);
+
+    let green = viewer
+        .array_get("colors", &color_ids[1])
+        .expect("Failed to get final green");
+    assert_eq!(green, Some(NestedValue::String("green".to_string())));
+
+    let blue = viewer
+        .array_get("colors", &color_ids[2])
+        .expect("Failed to get final blue");
+    assert_eq!(blue, Some(NestedValue::String("blue".to_string())));
+}
+
+#[test]
 fn test_subtree_basic() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");

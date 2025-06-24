@@ -184,7 +184,10 @@ mod tests {
     fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> crate::data::KVNested {
         let mut settings = crate::data::KVNested::new();
         let mut auth_section = crate::data::KVNested::new();
-        auth_section.set(key_id.to_string(), auth_key.clone());
+        auth_section.as_hashmap_mut().insert(
+            key_id.to_string(),
+            crate::data::NestedValue::from(auth_key.clone()),
+        );
         settings.set_map("auth", auth_section);
         settings
     }
