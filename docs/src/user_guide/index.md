@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tree = match db.find_tree("my_tree") {
         Ok(mut trees) => trees.pop().unwrap(), // Found existing
         Err(Error::NotFound) => {
-            let mut settings = eidetica::data::KVOverWrite::new();
+            let mut settings = eidetica::crdt::Map::new();
             settings.set("name".to_string(), "my_tree".to_string());
             db.new_tree(settings)? // Create new
         }

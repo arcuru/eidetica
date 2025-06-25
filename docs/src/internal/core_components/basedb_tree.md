@@ -8,7 +8,7 @@ classDiagram
         -Arc<Mutex<Box<dyn Backend>>> backend
         +new(backend: Box<dyn Backend>) BaseDB
         +add_private_key(key_id: &str) Result<()>
-        +new_tree(settings: KVNested, signing_key_id: &str) Result<Tree>
+        +new_tree(settings: Nested, signing_key_id: &str) Result<Tree>
         +new_tree_default(signing_key_id: &str) Result<Tree>
         +load_tree(root_id: &ID) Result<Tree>
         +all_trees() Result<Vec<Tree>>
@@ -19,13 +19,13 @@ classDiagram
         -ID root
         -Arc<Mutex<Box<dyn Backend>>> backend
         -Option<String> default_auth_key
-        +new(settings: KVNested, backend: Arc<Mutex<Box<dyn Backend>>>, signing_key_id: &str) Result<Tree>
+        +new(settings: Nested, backend: Arc<Mutex<Box<dyn Backend>>>, signing_key_id: &str) Result<Tree>
         +root_id() &ID
         +get_root() Result<Entry>
         +get_name() Result<String>
         +insert_raw(entry: Entry) Result<ID>
         +get_tip_entries() Result<Vec<Entry>>
-        +get_settings() Result<KVNested>
+        +get_settings() Result<Nested>
         +new_operation() Result<Operation>
     }
 
@@ -42,7 +42,7 @@ classDiagram
     Operation --> Backend : uses
 ```
 
-A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `KVNested` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings and requires a signing key ID for authentication. Alternatively, `new_tree_default()` creates a tree with empty default settings, also requiring authentication.
+A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `Nested` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings and requires a signing key ID for authentication. Alternatively, `new_tree_default()` creates a tree with empty default settings, also requiring authentication.
 
 **Authentication**: All trees must be created with authentication. The `signing_key_id` parameter must reference a private key that has been added to the database via `add_private_key()`. This key becomes the tree's default authentication key for all operations.
 

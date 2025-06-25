@@ -83,7 +83,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(eidetica::Error::NotFound) => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eidetica::data::KVNested::new(); // Tree settings
+            let mut settings = eidetica::crdt::Nested::new(); // Tree settings
             settings.set_string("name", tree_name);
             let tree = db.new_tree(settings, auth_key)?;
 

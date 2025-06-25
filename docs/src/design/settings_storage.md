@@ -26,7 +26,7 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 
 **Key Properties:**
 
-- **Data Type**: `KVNested` CRDT for deterministic merging
+- **Data Type**: `Nested` CRDT for deterministic merging
 - **Location**: Exclusively in `_settings` subtree
 - **Access**: Through `AtomicOp::get_settings()` method
 
@@ -35,12 +35,12 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 `AtomicOp::get_settings()` provides unified access to settings:
 
 ```rust
-pub fn get_settings(&self) -> Result<KVNested> {
+pub fn get_settings(&self) -> Result<Nested> {
     // Get historical settings from the tree
-    let mut historical_settings = self.get_full_state::<KVNested>(SETTINGS)?;
+    let mut historical_settings = self.get_full_state::<Nested>(SETTINGS)?;
 
     // Get any staged changes to the _settings subtree in this operation
-    let staged_settings = self.get_local_data::<KVNested>(SETTINGS)?;
+    let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
 
     // Merge using CRDT semantics
     historical_settings = historical_settings.merge(&staged_settings)?;
@@ -116,7 +116,7 @@ Authentication configuration is stored in `_settings.auth`:
 
 ```rust
 pub struct AuthSettings {
-    inner: KVNested,  // Wraps KVNested data from _settings.auth
+    inner: Nested,  // Wraps Nested data from _settings.auth
 }
 ```
 
@@ -143,7 +143,7 @@ pub struct AuthSettings {
 let settings = op.get_settings()?;
 
 // Access auth configuration
-if let Some(NestedValue::Map(auth_map)) = settings.get("auth") {
+if let Some(Value::Map(auth_map)) = settings.get("auth") {
     // Process authentication settings
 }
 ```
