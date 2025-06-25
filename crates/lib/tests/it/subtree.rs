@@ -1,5 +1,5 @@
 use crate::helpers::*;
-use eidetica::data::{KVNested, NestedValue};
+use eidetica::crdt::{Nested, Value};
 use eidetica::subtree::{KVStore, RowStore};
 use serde::{Deserialize, Serialize};
 
@@ -114,15 +114,15 @@ fn test_kvstore_get_all_via_viewer() {
     assert_eq!(all_data_map.len(), 3);
     assert_eq!(
         all_data_map.get("key_a"),
-        Some(&NestedValue::String("val_a".to_string()))
+        Some(&Value::String("val_a".to_string()))
     );
     assert_eq!(
         all_data_map.get("key_b"),
-        Some(&NestedValue::String("val_b_updated".to_string()))
+        Some(&Value::String("val_b_updated".to_string()))
     );
     assert_eq!(
         all_data_map.get("key_c"),
-        Some(&NestedValue::String("val_c".to_string()))
+        Some(&Value::String("val_c".to_string()))
     );
 }
 
@@ -190,10 +190,10 @@ fn test_kvstore_set_value() {
         kv_store.set("key1", "value1").expect("Failed to set key1");
 
         // Set map value
-        let mut nested = KVNested::new();
+        let mut nested = Nested::new();
         nested.set_string("inner", "nested_value");
         kv_store
-            .set_value("key2", NestedValue::Map(nested.clone()))
+            .set_value("key2", Value::Map(nested.clone()))
             .expect("Failed to set key2");
 
         // Verify string value
@@ -201,8 +201,8 @@ fn test_kvstore_set_value() {
 
         // Verify map value exists and has correct structure
         match kv_store.get("key2").expect("Failed to get key2") {
-            NestedValue::Map(map) => match map.get("inner") {
-                Some(NestedValue::String(value)) => assert_eq!(value, "nested_value"),
+            Value::Map(map) => match map.get("inner") {
+                Some(Value::String(value)) => assert_eq!(value, "nested_value"),
                 _ => panic!("Expected string value in nested map"),
             },
             _ => panic!("Expected map value for key2"),
@@ -222,8 +222,8 @@ fn test_kvstore_set_value() {
 
     // Check map value persisted and can be accessed
     match viewer.get("key2").expect("Failed to get key2 from viewer") {
-        NestedValue::Map(map) => match map.get("inner") {
-            Some(NestedValue::String(value)) => assert_eq!(value, "nested_value"),
+        Value::Map(map) => match map.get("inner") {
+            Some(Value::String(value)) => assert_eq!(value, "nested_value"),
             _ => panic!("Expected string value in nested map from viewer"),
         },
         _ => panic!("Expected map value for key2 from viewer"),
@@ -242,15 +242,15 @@ fn test_kvstore_array_basic_operations() {
             .get_subtree::<KVStore>("my_kv")
             .expect("Failed to get KVStore");
 
-        // Test array operations - add strings as NestedValue
+        // Test array operations - add strings as Value
         let element_id1 = kv_store
-            .array_add("fruits", NestedValue::String("apple".to_string()))
+            .array_add("fruits", Value::String("apple".to_string()))
             .expect("Failed to add apple");
         let element_id2 = kv_store
-            .array_add("fruits", NestedValue::String("banana".to_string()))
+            .array_add("fruits", Value::String("banana".to_string()))
             .expect("Failed to add banana");
         let element_id3 = kv_store
-            .array_add("fruits", NestedValue::String("orange".to_string()))
+            .array_add("fruits", Value::String("orange".to_string()))
             .expect("Failed to add orange");
 
         element_ids.push(element_id1.clone());
@@ -269,7 +269,7 @@ fn test_kvstore_array_basic_operations() {
         let apple = kv_store
             .array_get("fruits", &element_id1)
             .expect("Failed to get apple");
-        assert_eq!(apple, Some(NestedValue::String("apple".to_string())));
+        assert_eq!(apple, Some(Value::String("apple".to_string())));
 
         // Test getting all IDs (should be in UUID-sorted order)
         let ids = kv_store
@@ -318,7 +318,7 @@ fn test_kvstore_array_basic_operations() {
     let apple = viewer
         .array_get("fruits", &element_ids[0])
         .expect("Failed to get apple from viewer");
-    assert_eq!(apple, Some(NestedValue::String("apple".to_string())));
+    assert_eq!(apple, Some(Value::String("apple".to_string())));
 }
 
 #[test]
@@ -363,7 +363,7 @@ fn test_kvstore_array_nonexistent_key() {
 
         // Add to non-existent array should create it
         let first_id = kv_store
-            .array_add("new_array", NestedValue::String("first_item".to_string()))
+            .array_add("new_array", Value::String("first_item".to_string()))
             .expect("Failed to add to new array");
 
         assert_eq!(
@@ -375,10 +375,7 @@ fn test_kvstore_array_nonexistent_key() {
         let first_item = kv_store
             .array_get("new_array", &first_id)
             .expect("Failed to get first item");
-        assert_eq!(
-            first_item,
-            Some(NestedValue::String("first_item".to_string()))
-        );
+        assert_eq!(first_item, Some(Value::String("first_item".to_string())));
     }
 }
 
@@ -396,10 +393,10 @@ fn test_kvstore_array_persistence() {
             .expect("Failed to get KVStore");
 
         let red_id = kv_store
-            .array_add("colors", NestedValue::String("red".to_string()))
+            .array_add("colors", Value::String("red".to_string()))
             .expect("Failed to add red");
         let green_id = kv_store
-            .array_add("colors", NestedValue::String("green".to_string()))
+            .array_add("colors", Value::String("green".to_string()))
             .expect("Failed to add green");
         color_ids.push(red_id);
         color_ids.push(green_id);
@@ -424,16 +421,16 @@ fn test_kvstore_array_persistence() {
         let red = kv_store
             .array_get("colors", &color_ids[0])
             .expect("Failed to get red");
-        assert_eq!(red, Some(NestedValue::String("red".to_string())));
+        assert_eq!(red, Some(Value::String("red".to_string())));
 
         let green = kv_store
             .array_get("colors", &color_ids[1])
             .expect("Failed to get green");
-        assert_eq!(green, Some(NestedValue::String("green".to_string())));
+        assert_eq!(green, Some(Value::String("green".to_string())));
 
         // Add more items and remove one
         let blue_id = kv_store
-            .array_add("colors", NestedValue::String("blue".to_string()))
+            .array_add("colors", Value::String("blue".to_string()))
             .expect("Failed to add blue");
         color_ids.push(blue_id);
 
@@ -464,12 +461,12 @@ fn test_kvstore_array_persistence() {
     let green = viewer
         .array_get("colors", &color_ids[1])
         .expect("Failed to get final green");
-    assert_eq!(green, Some(NestedValue::String("green".to_string())));
+    assert_eq!(green, Some(Value::String("green".to_string())));
 
     let blue = viewer
         .array_get("colors", &color_ids[2])
         .expect("Failed to get final blue");
-    assert_eq!(blue, Some(NestedValue::String("blue".to_string())));
+    assert_eq!(blue, Some(Value::String("blue".to_string())));
 }
 
 #[test]
@@ -487,11 +484,11 @@ fn test_subtree_basic() {
         kv_store.set("key2", "value2").expect("Failed to set key2");
 
         // Set a nested map value
-        let mut nested = KVNested::new();
+        let mut nested = Nested::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
         kv_store
-            .set_value("nested", NestedValue::Map(nested.clone()))
+            .set_value("nested", Value::Map(nested.clone()))
             .expect("Failed to set nested map");
     }
 
@@ -509,14 +506,14 @@ fn test_subtree_basic() {
 
     // Check nested map
     match viewer.get("nested").expect("Failed to get nested map") {
-        NestedValue::Map(map) => {
+        Value::Map(map) => {
             // Check nested values
             match map.get("nested_key1") {
-                Some(NestedValue::String(value)) => assert_eq!(value, "nested_value1"),
+                Some(Value::String(value)) => assert_eq!(value, "nested_value1"),
                 _ => panic!("Expected string value for nested_key1"),
             }
             match map.get("nested_key2") {
-                Some(NestedValue::String(value)) => assert_eq!(value, "nested_value2"),
+                Some(Value::String(value)) => assert_eq!(value, "nested_value2"),
                 _ => panic!("Expected string value for nested_key2"),
             }
         }
@@ -539,10 +536,10 @@ fn test_kvstore_update_nested_value() {
             .expect("Op1: Failed to get KVStore");
 
         // Create level1 -> level2_str structure
-        let mut l1_map = KVNested::new();
+        let mut l1_map = Nested::new();
         l1_map.set_string("level2_str", "initial_value");
         kv_store
-            .set_value("level1", NestedValue::Map(l1_map))
+            .set_value("level1", Value::Map(l1_map))
             .expect("Op1: Failed to set level1");
     }
     op1.commit().expect("Op1: Failed to commit");
@@ -555,28 +552,26 @@ fn test_kvstore_update_nested_value() {
             .expect("Op2: Failed to get KVStore");
 
         // Create an entirely new map structure that will replace the old one
-        let mut l2_map = KVNested::new();
+        let mut l2_map = Nested::new();
         l2_map.set_string("deep_key", "deep_value");
 
-        let mut new_l1_map = KVNested::new();
+        let mut new_l1_map = Nested::new();
         new_l1_map.set_map("level2_map", l2_map);
 
         // Completely replace the previous value at level1
         kv_store
-            .set_value("level1", NestedValue::Map(new_l1_map.clone()))
+            .set_value("level1", Value::Map(new_l1_map.clone()))
             .expect("Op2: Failed to overwrite level1");
 
         // Verify the update within the same operation
         match kv_store.get("level1").expect("Failed to get level1") {
-            NestedValue::Map(retrieved_l1_map) => {
+            Value::Map(retrieved_l1_map) => {
                 // Check if level2_map exists with the expected content
                 match retrieved_l1_map.get("level2_map") {
-                    Some(NestedValue::Map(retrieved_l2_map)) => {
-                        match retrieved_l2_map.get("deep_key") {
-                            Some(NestedValue::String(val)) => assert_eq!(val, "deep_value"),
-                            _ => panic!("Expected string 'deep_value' at deep_key"),
-                        }
-                    }
+                    Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                        Some(Value::String(val)) => assert_eq!(val, "deep_value"),
+                        _ => panic!("Expected string 'deep_value' at deep_key"),
+                    },
                     _ => panic!("Expected 'level2_map' to be a map"),
                 }
             }
@@ -592,15 +587,13 @@ fn test_kvstore_update_nested_value() {
 
     // Verify the structure after commit
     match viewer.get("level1").expect("Viewer: Failed to get level1") {
-        NestedValue::Map(retrieved_l1_map) => {
+        Value::Map(retrieved_l1_map) => {
             // Check if level2_map exists with expected content
             match retrieved_l1_map.get("level2_map") {
-                Some(NestedValue::Map(retrieved_l2_map)) => {
-                    match retrieved_l2_map.get("deep_key") {
-                        Some(NestedValue::String(val)) => assert_eq!(val, "deep_value"),
-                        _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
-                    }
-                }
+                Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                    Some(Value::String(val)) => assert_eq!(val, "deep_value"),
+                    _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
+                },
                 _ => panic!("Viewer: Expected 'level2_map' to be a map"),
             }
         }

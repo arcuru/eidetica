@@ -29,7 +29,7 @@ Here's a simple example:
 ```rust
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
-use eidetica::data::KVNested;
+use eidetica::crdt::Nested;
 use std::path::PathBuf;
 
 // Create a new in-memory database
@@ -40,7 +40,7 @@ let db = BaseDB::new(Box::new(backend));
 db.add_private_key("my_key")?;
 
 // Create a tree to store data
-let mut settings = KVNested::new();
+let mut settings = Nested::new();
 settings.set_string("name", "my_tree");
 let tree = db.new_tree(settings, "my_key")?;
 ```

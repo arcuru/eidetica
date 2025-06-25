@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::backend;
 use eidetica::basedb::BaseDB;
-use eidetica::data::KVNested;
+use eidetica::crdt::Nested;
 use eidetica::subtree::RowStore;
 use eidetica::subtree::YrsStore;
 use eidetica::y_crdt::{Map, Transact};
@@ -193,7 +193,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(Error::NotFound) => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = KVNested::new();
+            let mut settings = Nested::new();
             settings.set_string("name", tree_name);
 
             db.new_tree(settings, TODO_APP_KEY_ID)?

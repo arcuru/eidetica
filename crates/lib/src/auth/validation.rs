@@ -7,13 +7,13 @@
 //!
 //! This implementation uses a simplified approach:
 //! - **Entry-time validation**: Validate entries against current auth settings when created
-//! - **Standard CRDT merging**: Use existing KVNested Last Write Wins (LWW) for all conflicts
+//! - **Standard CRDT merging**: Use existing Nested Last Write Wins (LWW) for all conflicts
 //! - **Administrative priority**: Priority rules apply only to key creation/modification operations
-//! - **No custom merge logic**: Authentication relies on proven KVNested CRDT semantics
+//! - **No custom merge logic**: Authentication relies on proven Nested CRDT semantics
 
 use crate::auth::crypto::{parse_public_key, verify_entry_signature};
 use crate::auth::types::{AuthId, AuthKey, KeyStatus, Operation, ResolvedAuth};
-use crate::data::{KVNested, NestedValue};
+use crate::crdt::{Nested, Value};
 use crate::entry::Entry;
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -37,7 +37,7 @@ impl AuthValidator {
     /// # Arguments
     /// * `entry` - The entry to validate
     /// * `settings_state` - Current state of the _settings subtree for key lookup
-    pub fn validate_entry(&mut self, entry: &Entry, settings_state: &KVNested) -> Result<bool> {
+    pub fn validate_entry(&mut self, entry: &Entry, settings_state: &Nested) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key ID and no signature
         if let AuthId::Direct(key_id) = &entry.auth.id
@@ -50,7 +50,7 @@ impl AuthValidator {
 
         // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
         match settings_state.get("auth") {
-            Some(NestedValue::Map(auth_map)) => {
+            Some(Value::Map(auth_map)) => {
                 // If 'auth' section exists and is a map, check if it's empty
                 if auth_map.as_hashmap().is_empty() {
                     return Ok(true);
@@ -83,11 +83,11 @@ impl AuthValidator {
     ///
     /// # Arguments
     /// * `auth_id` - The authentication identifier to resolve
-    /// * `settings` - KVNested settings containing auth configuration
+    /// * `settings` - Nested settings containing auth configuration
     pub fn resolve_auth_key(
         &mut self,
         auth_id: &AuthId,
-        settings: &KVNested,
+        settings: &Nested,
     ) -> Result<ResolvedAuth> {
         match auth_id {
             AuthId::Direct(key_id) => self.resolve_direct_key(key_id, settings),
@@ -98,15 +98,15 @@ impl AuthValidator {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    fn resolve_direct_key(&mut self, key_id: &str, settings: &KVNested) -> Result<ResolvedAuth> {
+    fn resolve_direct_key(&mut self, key_id: &str, settings: &Nested) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
             .ok_or_else(|| Error::Authentication("No auth configuration found".to_string()))?;
 
-        // Extract the auth KVNested from the NestedValue
+        // Extract the auth Nested from the Value
         let auth_nested = match auth_section {
-            NestedValue::Map(auth_map) => auth_map,
+            Value::Map(auth_map) => auth_map,
             _ => {
                 return Err(Error::Authentication(
                     "Auth section must be a nested map".to_string(),
@@ -141,7 +141,7 @@ impl AuthValidator {
         _tree_id: &str,
         _tips: &[String],
         _key: &AuthId,
-        _settings: &KVNested,
+        _settings: &Nested,
     ) -> Result<ResolvedAuth> {
         // Phase 1: Return error - User Auth Trees not yet implemented
         Err(Error::Authentication(
@@ -181,13 +181,12 @@ mod tests {
     use crate::auth::types::{AuthInfo, AuthKey, KeyStatus, Permission};
     use crate::entry::Entry;
 
-    fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> crate::data::KVNested {
-        let mut settings = crate::data::KVNested::new();
-        let mut auth_section = crate::data::KVNested::new();
-        auth_section.as_hashmap_mut().insert(
-            key_id.to_string(),
-            crate::data::NestedValue::from(auth_key.clone()),
-        );
+    fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> Nested {
+        let mut settings = Nested::new();
+        let mut auth_section = Nested::new();
+        auth_section
+            .as_hashmap_mut()
+            .insert(key_id.to_string(), Value::from(auth_key.clone()));
         settings.set_map("auth", auth_section);
         settings
     }
@@ -373,7 +372,7 @@ mod tests {
     #[test]
     fn test_missing_key() {
         let mut validator = AuthValidator::new();
-        let settings = crate::data::KVNested::new(); // Empty settings
+        let settings = Nested::new(); // Empty settings
 
         let auth_id = AuthId::Direct("NONEXISTENT_KEY".to_string());
         let result = validator.resolve_auth_key(&auth_id, &settings);
@@ -388,7 +387,7 @@ mod tests {
     #[test]
     fn test_user_tree_not_implemented() {
         let mut validator = AuthValidator::new();
-        let settings = crate::data::KVNested::new();
+        let settings = Nested::new();
 
         let auth_id = AuthId::UserTree {
             id: "user1".to_string(),
@@ -453,7 +452,7 @@ mod tests {
         entry.auth.signature = Some(signature);
 
         // Validate against empty settings (no auth configuration)
-        let empty_settings = crate::data::KVNested::new();
+        let empty_settings = Nested::new();
         let result = validator.validate_entry(&entry, &empty_settings);
 
         // Should succeed because there's no auth configuration to validate against
