@@ -19,10 +19,10 @@ classDiagram
         +merge(&self, other: &Self) Result<Self>
     }
 
-    class KVOverWrite {
+    class Map {
         -HashMap<String, Option<String>> data
-        +new() KVOverWrite
-        +from_hashmap(data: HashMap<String, String>) KVOverWrite
+        +new() Map
+        +from_hashmap(data: HashMap<String, String>) Map
         +get(key: &str) Option<&String>
         +set(key: String, value: String) &mut Self
         +remove(key: &str) Option<String>
@@ -30,36 +30,36 @@ classDiagram
         +merge(&self, other: &Self) Result<Self>
     }
 
-    class NestedValue {
+    class Value {
         <<enum>>
         +String(String)
-        +Map(KVNested)
+        +Map(Nested)
         +Deleted
     }
 
-    class KVNested {
-        -HashMap<String, NestedValue> data
-        +new() KVNested
-        +get(key: &str) Option<&NestedValue>
-        +set(key: String, value: NestedValue) &mut Self
+    class Nested {
+        -HashMap<String, Value> data
+        +new() Nested
+        +get(key: &str) Option<&Value>
+        +set(key: String, value: Value) &mut Self
         +set_string(key: String, value: String) &mut Self
-        +set_map(key: String, value: KVNested) &mut Self
-        +remove(key: &str) Option<NestedValue>
-        +as_hashmap() &HashMap<String, NestedValue>
+        +set_map(key: String, value: Nested) &mut Self
+        +remove(key: &str) Option<Value>
+        +as_hashmap() &HashMap<String, Value>
         +merge(&self, other: &Self) Result<Self>
     }
 
     CRDT --|> Data : requires
-    KVOverWrite ..|> CRDT : implements
-    KVOverWrite ..|> Data : implements
-    KVNested ..|> CRDT : implements
-    KVNested ..|> Data : implements
-    KVNested -- NestedValue : uses
+    Map ..|> CRDT : implements
+    Map ..|> Data : implements
+    Nested ..|> CRDT : implements
+    Nested ..|> Data : implements
+    Nested -- Value : uses
 ```
 
 - **CRDT Trait**: Defines a `merge` operation for resolving conflicts between divergent states. Implementors must also implement `Serialize`, `Deserialize`, and `Default`.
 
-- **KVOverWrite**: A simple key-value CRDT implementation using a last-write-wins strategy:
+- **Map**: A simple key-value CRDT implementation using a last-write-wins strategy:
 
   - Uses a `HashMap<String, Option<String>>` to store data
   - Supports tombstones via `Option<String>` values where `None` represents a deleted key
@@ -68,13 +68,13 @@ classDiagram
   - During merge, if a key exists in both CRDTs, the `other` value always wins (last-write-wins)
   - Tombstones are preserved during merges to ensure proper deletion propagation
 
-- **KVNested**: A nested key-value CRDT implementation:
+- **Nested**: A nested key-value CRDT implementation:
 
-  - Supports arbitrary nesting of maps and string values via the `NestedValue` enum
-  - `NestedValue` can be a `String`, another `KVNested` map, or `Deleted` (tombstone)
+  - Supports arbitrary nesting of maps and string values via the `Value` enum
+  - `Value` can be a `String`, another `Nested` map, or `Deleted` (tombstone)
   - Implements recursive merging for nested maps
   - Provides specific methods for setting string values (`set_string`) and map values (`set_map`)
-  - Uses tombstones (`NestedValue::Deleted`) to track deletions
+  - Uses tombstones (`Value::Deleted`) to track deletions
   - During merges, if a key exists in both CRDTs:
     - If both have maps at that key, the maps are recursively merged
     - If types differ (map vs string) or one side has a tombstone, the `other` side's value wins
@@ -109,7 +109,7 @@ Tombstones are an important concept in CRDTs to ensure proper deletion propagati
 1. Instead of physically removing data, we mark it as deleted with a tombstone
 2. Tombstones are retained and synchronized between replicas
 3. This ensures that a deletion in one replica eventually propagates to all replicas
-4. Both `KVOverWrite` and `KVNested` use tombstones to represent deleted entries
+4. Both `Map` and `Nested` use tombstones to represent deleted entries
 
 ### CRDT Merge Algorithm Implementation
 

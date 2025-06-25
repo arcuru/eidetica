@@ -89,9 +89,9 @@ Authentication configuration is stored in the special `_settings` subtree under 
 - Settings can be validated against the current entry being created
 
 NB: This isn't accurate? \_settings has conflicts
-The `_settings` subtree uses `KVNested` CRDT structure, allowing for hierarchical organization of authentication data while maintaining conflict-free merging properties using a Last-Write-Wins method.
+The `_settings` subtree uses `Nested` CRDT structure, allowing for hierarchical organization of authentication data while maintaining conflict-free merging properties using a Last-Write-Wins method.
 
-**Clarification**: Throughout this document, when we refer to `KVNested`, this is the hierarchical CRDT implementation that supports nested maps. The `_settings` subtree specifically uses `KVNested` to enable complex authentication configurations.
+**Clarification**: Throughout this document, when we refer to `Nested`, this is the hierarchical CRDT implementation that supports nested maps. The `_settings` subtree specifically uses `Nested` to enable complex authentication configurations.
 
 ### Permission Hierarchy
 
@@ -309,7 +309,7 @@ stateDiagram-v2
 
 ### Priority System
 
-Priority **only impacts administrative actions**, which are limited to modifications of the `_settings` subtree. Priority does **not** affect conflict resolution during merges - conflicts are resolved using the same Last Write Wins (LWW) strategy as the underlying KVNested CRDT.
+Priority **only impacts administrative actions**, which are limited to modifications of the `_settings` subtree. Priority does **not** affect conflict resolution during merges - conflicts are resolved using the same Last Write Wins (LWW) strategy as the underlying Nested CRDT.
 
 Keys include a priority field (positive integers, lower values = higher priority) to establish administrative hierarchy:
 
@@ -331,7 +331,7 @@ Keys include a priority field (positive integers, lower values = higher priority
 
 Priority **only** matters for administrative operations - specifically who can create, modify, or revoke keys in the `_settings.auth` configuration. Priority does **not** affect merge conflict resolution.
 
-When merging two chains that have conflicting auth settings, the standard KVNested Last Write Wins (LWW) strategy is used, just like any other conflicting changes in the `_settings` tree.
+When merging two chains that have conflicting auth settings, the standard Nested Last Write Wins (LWW) strategy is used, just like any other conflicting changes in the `_settings` tree.
 
 ## User Authentication Trees
 
@@ -464,7 +464,7 @@ By treating User Auth Tree key deletion as `revoked` status, users can manage th
 
 ## Conflict Resolution and Merging
 
-Conflicts in the `_settings` tree are merged using the same Last Write Wins (LWW) strategy as the underlying KVNested CRDT. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the most recent write (by logical timestamp) will win, regardless of the priority of the signing key.
+Conflicts in the `_settings` tree are merged using the same Last Write Wins (LWW) strategy as the underlying Nested CRDT. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the most recent write (by logical timestamp) will win, regardless of the priority of the signing key.
 
 Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
@@ -591,7 +591,7 @@ graph TD
 
 **Conflict Resolution Rules Applied**:
 
-- **Settings Merge**: All authentication changes are merged using KVNested CRDT semantics with Last Write Wins
+- **Settings Merge**: All authentication changes are merged using Nested CRDT semantics with Last Write Wins
 - **Timestamp Ordering**: Changes are resolved based on logical timestamps, with the most recent change taking precedence
 - **Historical Validity**: Entry B1 remains valid because it was created before the status change
 - **Content Preservation**: With "revoked" status, content is preserved in merges but cannot be used as parents for new entries

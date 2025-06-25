@@ -27,7 +27,7 @@ Subtrees offer several advantages:
 
 ### KVStore (Key-Value Store)
 
-The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `KVNested` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
+The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Nested` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
 
 #### Basic Usage
 
@@ -41,7 +41,7 @@ config.set("api_url", "https://api.example.com")?;
 config.set("max_connections", "100")?;
 
 // Get values
-let url = config.get("api_url")?; // Returns a NestedValue
+let url = config.get("api_url")?; // Returns a Value
 let url_string = config.get_string("api_url")?; // Returns a String directly
 
 // Remove values
@@ -58,20 +58,20 @@ op.commit()?;
 
 ```rust
 // Create nested structures
-let mut preferences = KVNested::new();
+let mut preferences = Nested::new();
 preferences.set_string("theme", "dark");
 preferences.set_string("language", "en");
 
 // Set this map as a value in the KVStore
-config.set_value("user_prefs", NestedValue::Map(preferences))?;
+config.set_value("user_prefs", Value::Map(preferences))?;
 
 // Later retrieve and modify the nested data
-if let NestedValue::Map(mut prefs) = config.get("user_prefs")? {
+if let Value::Map(mut prefs) = config.get("user_prefs")? {
     // Modify the map
     prefs.set_string("theme", "light");
 
     // Update the value in the store
-    config.set_value("user_prefs", NestedValue::Map(prefs))?;
+    config.set_value("user_prefs", Value::Map(prefs))?;
 }
 ```
 
@@ -85,21 +85,21 @@ let prefs_editor = config.get_value_mut("user_prefs");
 
 // Read nested values
 match prefs_editor.get_value("theme")? {
-    NestedValue::String(theme) => println!("Current theme: {}", theme),
+    Value::String(theme) => println!("Current theme: {}", theme),
     _ => println!("Theme not found or not a string"),
 }
 
 // Set nested values directly
 prefs_editor
     .get_value_mut("theme")
-    .set(NestedValue::String("light".to_string()))?;
+    .set(Value::String("light".to_string()))?;
 
 // Navigate deep structures with method chaining
 config
     .get_value_mut("user")
     .get_value_mut("profile")
     .get_value_mut("display_name")
-    .set(NestedValue::String("Alice Smith".to_string()))?;
+    .set(Value::String("Alice Smith".to_string()))?;
 
 // Even if intermediate paths don't exist yet, they'll be created automatically
 // The line above will work even if "user", "profile", or "display_name" don't exist
@@ -111,7 +111,7 @@ prefs_editor.delete_self()?; // Delete the entire user_prefs object
 // Working with the root of the subtree
 let root_editor = config.get_root_mut();
 match root_editor.get()? {
-    NestedValue::Map(root_map) => {
+    Value::Map(root_map) => {
         // Access all top-level keys
         for (key, value) in root_map.as_hashmap() {
             println!("Key: {}, Value type: {}", key, value.type_name());
@@ -132,7 +132,7 @@ op.commit()?;
 // Set a value using a path array
 config.set_at_path(
     &["user".to_string(), "settings".to_string(), "notifications".to_string()],
-    NestedValue::String("enabled".to_string())
+    Value::String("enabled".to_string())
 )?;
 
 // Get a value using a path array
@@ -230,7 +230,7 @@ While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Sub
 
 Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
 
-- **`KVStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using `KVOverWrite`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
+- **`KVStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using `Map`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
 
 - **`RowStore<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 

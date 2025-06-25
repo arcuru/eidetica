@@ -203,7 +203,7 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust
-use eidetica::subtree::{KVStore, NestedValue, Nested};
+use eidetica::subtree::{KVStore, Value, Nested};
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -222,12 +222,12 @@ let user_store = op.get_subtree::<KVStore>("users")?;
     user_editor
         .get_value_mut("profile")
         .get_value_mut("name")
-        .set(NestedValue::String("Jane Doe".to_string()))?;
+        .set(Value::String("Jane Doe".to_string()))?;
 
     user_editor
         .get_value_mut("profile")
         .get_value_mut("email")
-        .set(NestedValue::String("jane@example.com".to_string()))?;
+        .set(Value::String("jane@example.com".to_string()))?;
 
     // Set preferences as a map
     let mut preferences = Nested::new();
@@ -236,13 +236,13 @@ let user_store = op.get_subtree::<KVStore>("users")?;
 
     user_editor
         .get_value_mut("preferences")
-        .set(NestedValue::Map(preferences))?;
+        .set(Value::Map(preferences))?;
 
     // Add to preferences using the editor
     user_editor
         .get_value_mut("preferences")
         .get_value_mut("language")
-        .set(NestedValue::String("en".to_string()))?;
+        .set(Value::String("en".to_string()))?;
 
     // Delete a specific preference
     user_editor
@@ -260,21 +260,21 @@ let viewer_store = viewer_op.get_subtree::<KVStore>("users")?;
 
 // Get the user data and navigate through it
 if let Ok(user_data) = viewer_store.get("user123") {
-    if let NestedValue::Map(user_map) = user_data {
+    if let Value::Map(user_map) = user_data {
         // Access profile
-        if let Some(NestedValue::Map(profile)) = user_map.get("profile") {
-            if let Some(NestedValue::String(name)) = profile.get("name") {
+        if let Some(Value::Map(profile)) = user_map.get("profile") {
+            if let Some(Value::String(name)) = profile.get("name") {
                 println!("User name: {}", name);
             }
         }
 
         // Access preferences
-        if let Some(NestedValue::Map(prefs)) = user_map.get("preferences") {
+        if let Some(Value::Map(prefs)) = user_map.get("preferences") {
             println!("User preferences:");
             for (key, value) in prefs.as_hashmap() {
                 match value {
-                    NestedValue::String(val) => println!("  {}: {}", key, val),
-                    NestedValue::Deleted => println!("  {}: [deleted]", key),
+                    Value::String(val) => println!("  {}: {}", key, val),
+                    Value::Deleted => println!("  {}: [deleted]", key),
                     _ => println!("  {}: [complex value]", key),
                 }
             }
@@ -288,7 +288,7 @@ if let Ok(user_data) = viewer_store.get("user123") {
 
     // Get profile name
     match editor.get_value_mut("profile").get_value("name") {
-        Ok(NestedValue::String(name)) => println!("User name (via editor): {}", name),
+        Ok(Value::String(name)) => println!("User name (via editor): {}", name),
         _ => println!("Name not found or not a string"),
     }
 
@@ -306,7 +306,7 @@ if let Ok(user_data) = viewer_store.get("user123") {
     println!("\nAll users in store:");
 
     match root_editor.get() {
-        Ok(NestedValue::Map(users)) => {
+        Ok(Value::Map(users)) => {
             for (user_id, _) in users.as_hashmap() {
                 println!("  User ID: {}", user_id);
             }
