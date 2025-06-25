@@ -1,5 +1,5 @@
 use eidetica::backend::InMemoryBackend;
-use eidetica::data::{KVNested, NestedValue};
+use eidetica::crdt::{Nested, Value};
 use eidetica::subtree::KVStore;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
@@ -60,7 +60,7 @@ pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, ei
     (db, tree)
 }
 
-/// Creates a tree with initial settings using KVNested with authentication
+/// Creates a tree with initial settings using Nested with authentication
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let db = setup_db();
     let tree = db
@@ -85,9 +85,9 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     tree
 }
 
-/// Creates a KVNested with the specified key-value pairs
-pub fn create_kvnested(values: &[(&str, &str)]) -> KVNested {
-    let mut kv = KVNested::new();
+/// Creates a Nested with the specified key-value pairs
+pub fn create_kvnested(values: &[(&str, &str)]) -> Nested {
+    let mut kv = Nested::new();
 
     for (key, value) in values {
         kv.set_string(*key, *value);
@@ -96,12 +96,12 @@ pub fn create_kvnested(values: &[(&str, &str)]) -> KVNested {
     kv
 }
 
-/// Creates a nested KVNested structure
-pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> KVNested {
-    let mut root = KVNested::new();
+/// Creates a nested Nested structure
+pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Nested {
+    let mut root = Nested::new();
 
     for (outer_key, inner_values) in structure {
-        let mut inner = KVNested::new();
+        let mut inner = Nested::new();
 
         for (inner_key, inner_value) in *inner_values {
             inner.set_string(*inner_key, *inner_value);
@@ -119,13 +119,13 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
         .get(key)
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))
     {
-        NestedValue::String(value) => assert_eq!(value, expected),
+        Value::String(value) => assert_eq!(value, expected),
         _ => panic!("Expected string value for key {key}"),
     }
 }
 
 /// Helper for checking NotFound errors
-pub fn assert_key_not_found(result: Result<NestedValue, eidetica::Error>) {
+pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
     match result {
         Err(eidetica::Error::NotFound) => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),
@@ -133,8 +133,8 @@ pub fn assert_key_not_found(result: Result<NestedValue, eidetica::Error>) {
 }
 
 /// Helper to create a KVOverWrite with initial data
-pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::data::KVOverWrite {
-    let mut kv = eidetica::data::KVOverWrite::new();
+pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::crdt::Map {
+    let mut kv = eidetica::crdt::Map::new();
 
     for (key, value) in values {
         kv.set(*key, *value);
@@ -143,15 +143,15 @@ pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::data::KVOverWrit
     kv
 }
 
-/// Helper to check deep nested values inside a KVNested structure
-pub fn assert_nested_value(kv: &KVNested, path: &[&str], expected: &str) {
+/// Helper to check deep nested values inside a Nested structure
+pub fn assert_nested_value(kv: &Nested, path: &[&str], expected: &str) {
     let mut current = kv;
     let last_idx = path.len() - 1;
 
     // Navigate through the nested maps
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(NestedValue::Map(map)) => current = map,
+            Some(Value::Map(map)) => current = map,
             Some(other) => panic!("Expected map at path element '{key}', got {other:?}"),
             None => panic!("Path element '{key}' not found in nested structure"),
         }
@@ -160,14 +160,14 @@ pub fn assert_nested_value(kv: &KVNested, path: &[&str], expected: &str) {
     // Check final value
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(NestedValue::String(value)) => assert_eq!(value, expected),
+        Some(Value::String(value)) => assert_eq!(value, expected),
         Some(other) => panic!("Expected string at path end '{final_key}', got {other:?}"),
         None => panic!("Final path element '{final_key}' not found in nested structure"),
     }
 }
 
 /// Helper to validate that a path is deleted (has tombstone or is missing)
-pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
+pub fn assert_path_deleted(kv: &Nested, path: &[&str]) {
     if path.is_empty() {
         panic!("Empty path provided to assert_path_deleted");
     }
@@ -178,8 +178,8 @@ pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
     // If early path doesn't exist, that's fine - the path is deleted
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(NestedValue::Map(map)) => current = map,
-            Some(NestedValue::Deleted) => return, // Found tombstone
+            Some(Value::Map(map)) => current = map,
+            Some(Value::Deleted) => return, // Found tombstone
             Some(other) => panic!("Unexpected value at path element '{key}', got {other:?}"),
             None => return, // Path doesn't exist, which is valid for a deleted path
         }
@@ -188,8 +188,8 @@ pub fn assert_path_deleted(kv: &KVNested, path: &[&str]) {
     // Check final key
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(NestedValue::Deleted) => (), // Tombstone, as expected
-        None => (),                       // Key doesn't exist, which is valid
+        Some(Value::Deleted) => (), // Tombstone, as expected
+        None => (),                 // Key doesn't exist, which is valid
         Some(other) => panic!("Expected tombstone at path end '{final_key}', got {other:?}"),
     }
 }

@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
-use eidetica::data::{KVNested, NestedValue};
+use eidetica::crdt::{Nested, Value};
 use eidetica::subtree::{KVStore, SubTree};
 
 #[test]
@@ -127,12 +127,12 @@ fn test_atomicop_parent_relationships() {
 
     // Verify both entries are included in merged data
     match all_data.get("first") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "entry"),
+        Some(Value::String(value)) => assert_eq!(value, "entry"),
         _ => panic!("Expected string value for 'first'"),
     }
 
     match all_data.get("second") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "entry"),
+        Some(Value::String(value)) => assert_eq!(value, "entry"),
         _ => panic!("Expected string value for 'second'"),
     }
 }
@@ -189,13 +189,10 @@ fn test_atomicop_with_delete() {
 
     // Check the full state with tombstone
     let all_data = store3.get_all().unwrap();
-    assert_eq!(
-        all_data.as_hashmap().get("key1"),
-        Some(&NestedValue::Deleted)
-    );
+    assert_eq!(all_data.as_hashmap().get("key1"), Some(&Value::Deleted));
     assert_eq!(
         all_data.as_hashmap().get("key2"),
-        Some(&NestedValue::String("value2".to_string()))
+        Some(&Value::String("value2".to_string()))
     );
 }
 
@@ -212,14 +209,12 @@ fn test_atomicop_nested_values() {
     store1.set("string_key", "string_value").unwrap();
 
     // Create and set a nested map value
-    let mut nested = KVNested::new();
+    let mut nested = Nested::new();
     nested.set_string("inner1".to_string(), "value1".to_string());
     nested.set_string("inner2".to_string(), "value2".to_string());
 
     // Use the new set_value method to store a map
-    store1
-        .set_value("map_key", NestedValue::Map(nested))
-        .unwrap();
+    store1.set_value("map_key", Value::Map(nested)).unwrap();
 
     // Commit the operation
     op1.commit().unwrap();
@@ -230,19 +225,19 @@ fn test_atomicop_nested_values() {
 
     // Check the string value
     match store2.get("string_key").unwrap() {
-        NestedValue::String(value) => assert_eq!(value, "string_value"),
+        Value::String(value) => assert_eq!(value, "string_value"),
         _ => panic!("Expected string value"),
     }
 
     // Check the nested map
     match store2.get("map_key").unwrap() {
-        NestedValue::Map(map) => {
+        Value::Map(map) => {
             match map.get("inner1") {
-                Some(NestedValue::String(value)) => assert_eq!(value, "value1"),
+                Some(Value::String(value)) => assert_eq!(value, "value1"),
                 _ => panic!("Expected string value for inner1"),
             }
             match map.get("inner2") {
-                Some(NestedValue::String(value)) => assert_eq!(value, "value2"),
+                Some(Value::String(value)) => assert_eq!(value, "value2"),
                 _ => panic!("Expected string value for inner2"),
             }
         }
@@ -314,7 +309,7 @@ fn test_atomicop_with_custom_tips() {
     // This operation should only see data from A
     let state_from_a = store_from_a.get_all().unwrap();
     match state_from_a.get("step") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "A"),
+        Some(Value::String(value)) => assert_eq!(value, "A"),
         _ => panic!("Expected step to be 'A'"),
     }
     assert!(state_from_a.get("a_data").is_some(), "Should see a_data");
@@ -562,11 +557,11 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     // This tests the case where one tip has the subtree (entry2) and one doesn't (entry3)
     let state = store4.get_all().unwrap();
     match state.get("key1") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "value1"),
+        Some(Value::String(value)) => assert_eq!(value, "value1"),
         _ => panic!("Expected key1 to have value 'value1' from entry1"),
     }
     match state.get("key2") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "value2"),
+        Some(Value::String(value)) => assert_eq!(value, "value2"),
         _ => panic!("Expected key2 to have value 'value2' from entry2"),
     }
 
@@ -574,7 +569,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     let settings4 = op4.get_subtree::<KVStore>("settings").unwrap();
     let settings_state = settings4.get_all().unwrap();
     match settings_state.get("config") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "value"),
+        Some(Value::String(value)) => assert_eq!(value, "value"),
         _ => panic!("Expected config to have value 'value'"),
     }
 }
@@ -613,7 +608,7 @@ fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
     // but not in the tip entries themselves
     let state = store4.get_all().unwrap();
     match state.get("original") {
-        Some(NestedValue::String(value)) => assert_eq!(value, "value"),
+        Some(Value::String(value)) => assert_eq!(value, "value"),
         _ => panic!("Expected 'original' to have value 'value' from ancestor entry1"),
     }
 

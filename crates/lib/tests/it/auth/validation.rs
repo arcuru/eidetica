@@ -3,7 +3,7 @@ use crate::create_auth_keys;
 use crate::helpers::*;
 use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::data::{KVNested, NestedValue};
+use eidetica::crdt::{Nested, Value};
 use eidetica::subtree::KVStore;
 
 #[test]
@@ -119,8 +119,8 @@ fn test_mandatory_authentication_enforcement() {
     // Add test key and create tree
     db.add_private_key("TEST_KEY")
         .expect("Failed to add test key");
-    let mut settings = KVNested::new();
-    let auth_settings = KVNested::new();
+    let mut settings = Nested::new();
+    let auth_settings = Nested::new();
     settings.set_map("auth", auth_settings);
 
     let mut tree = db
@@ -158,8 +158,8 @@ fn test_multiple_authenticated_entries() {
     let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
 
     // Create a tree with authentication enabled
-    let mut settings = KVNested::new();
-    let mut auth_settings = KVNested::new();
+    let mut settings = Nested::new();
+    let mut auth_settings = Nested::new();
 
     let auth_key = AuthKey {
         key: format_public_key(&public_key),
@@ -221,7 +221,7 @@ fn test_entry_validation_with_corrupted_auth_section() {
     entry.auth.signature = Some(signature);
 
     // Test with no auth section at all
-    let empty_settings = eidetica::data::KVNested::new();
+    let empty_settings = Nested::new();
     let result = validator.validate_entry(&entry, &empty_settings);
     assert!(
         result.is_ok(),
@@ -229,15 +229,15 @@ fn test_entry_validation_with_corrupted_auth_section() {
     );
 
     // Test with settings containing non-map auth section
-    let mut corrupted_settings = eidetica::data::KVNested::new();
+    let mut corrupted_settings = Nested::new();
     corrupted_settings.set("auth", "invalid_string_value".to_string());
 
     let result = validator.validate_entry(&entry, &corrupted_settings);
     assert!(result.is_err(), "Should fail with corrupted auth section");
 
     // Test with settings containing deleted auth section
-    let mut deleted_settings = eidetica::data::KVNested::new();
-    deleted_settings.set("auth", NestedValue::Deleted);
+    let mut deleted_settings = Nested::new();
+    deleted_settings.set("auth", Value::Deleted);
 
     let result = validator.validate_entry(&entry, &deleted_settings);
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
@@ -271,8 +271,8 @@ fn test_entry_validation_cache_behavior() {
     };
 
     // Create settings with the key
-    let mut settings = eidetica::data::KVNested::new();
-    let mut auth_settings = eidetica::data::KVNested::new();
+    let mut settings = Nested::new();
+    let mut auth_settings = Nested::new();
     auth_settings.set("TEST_KEY".to_string(), auth_key.clone());
     settings.set_map("auth", auth_settings);
 
@@ -296,8 +296,8 @@ fn test_entry_validation_cache_behavior() {
     let mut revoked_auth_key = auth_key.clone();
     revoked_auth_key.status = eidetica::auth::types::KeyStatus::Revoked;
 
-    let mut new_settings = eidetica::data::KVNested::new();
-    let mut new_auth_settings = eidetica::data::KVNested::new();
+    let mut new_settings = Nested::new();
+    let mut new_auth_settings = Nested::new();
     new_auth_settings.set("TEST_KEY".to_string(), revoked_auth_key);
     new_settings.set_map("auth", new_auth_settings);
 
@@ -328,8 +328,8 @@ fn test_entry_validation_with_malformed_keys() {
         status: eidetica::auth::types::KeyStatus::Active,
     };
 
-    let mut settings = eidetica::data::KVNested::new();
-    let mut auth_settings = eidetica::data::KVNested::new();
+    let mut settings = Nested::new();
+    let mut auth_settings = Nested::new();
     auth_settings.set("TEST_KEY".to_string(), auth_key.clone());
     settings.set_map("auth", auth_settings);
 
@@ -357,8 +357,8 @@ fn test_entry_validation_with_malformed_keys() {
         status: eidetica::auth::types::KeyStatus::Active,
     };
 
-    let mut malformed_settings = eidetica::data::KVNested::new();
-    let mut malformed_auth_settings = eidetica::data::KVNested::new();
+    let mut malformed_settings = Nested::new();
+    let mut malformed_auth_settings = Nested::new();
     malformed_auth_settings.set("TEST_KEY".to_string(), malformed_auth_key.clone());
     malformed_settings.set_map("auth", malformed_auth_settings);
 
@@ -409,7 +409,7 @@ fn test_entry_validation_unsigned_entry_detection() {
     let entry = eidetica::entry::Entry::builder("root123".to_string()).build();
 
     // Test with no auth settings
-    let empty_settings = eidetica::data::KVNested::new();
+    let empty_settings = Nested::new();
     let result1 = validator.validate_entry(&entry, &empty_settings);
     assert!(
         result1.is_ok() && result1.unwrap(),
@@ -417,8 +417,8 @@ fn test_entry_validation_unsigned_entry_detection() {
     );
 
     // Test with auth settings present
-    let mut settings = eidetica::data::KVNested::new();
-    let auth_settings = eidetica::data::KVNested::new();
+    let mut settings = Nested::new();
+    let auth_settings = Nested::new();
     settings.set_map("auth", auth_settings);
 
     let result2 = validator.validate_entry(&entry, &settings);
@@ -441,8 +441,8 @@ fn test_entry_validation_with_invalid_signatures() {
         status: eidetica::auth::types::KeyStatus::Active,
     };
 
-    let mut settings = eidetica::data::KVNested::new();
-    let mut auth_settings = eidetica::data::KVNested::new();
+    let mut settings = Nested::new();
+    let mut auth_settings = Nested::new();
     auth_settings.set("TEST_KEY".to_string(), auth_key);
     settings.set_map("auth", auth_settings);
 

@@ -3,31 +3,31 @@
 //! This module defines the fundamental types for authentication, including permissions,
 //! key management, and authentication identifiers used in the system.
 
-use crate::data::{KVNested, NestedValue};
+use crate::crdt::{Nested, Value};
 use serde::{Deserialize, Serialize};
 
-/// Macro to implement NestedValue conversions for types that convert via String
+/// Macro to implement Value conversions for types that convert via String
 macro_rules! impl_nested_value_string {
     ($type:ty) => {
-        impl From<$type> for NestedValue {
+        impl From<$type> for Value {
             fn from(value: $type) -> Self {
-                NestedValue::String(value.into())
+                Value::String(value.into())
             }
         }
 
-        impl TryFrom<NestedValue> for $type {
+        impl TryFrom<Value> for $type {
             type Error = String;
 
-            fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+            fn try_from(value: Value) -> Result<Self, Self::Error> {
                 match value {
-                    NestedValue::String(s) => <$type>::try_from(s),
-                    NestedValue::Map(_) => {
+                    Value::String(s) => <$type>::try_from(s),
+                    Value::Map(_) => {
                         Err(concat!("Cannot convert map to ", stringify!($type)).to_string())
                     }
-                    NestedValue::Array(_) => {
+                    Value::Array(_) => {
                         Err(concat!("Cannot convert array to ", stringify!($type)).to_string())
                     }
-                    NestedValue::Deleted => Err(concat!(
+                    Value::Deleted => Err(concat!(
                         "Cannot convert deleted value to ",
                         stringify!($type)
                     )
@@ -38,27 +38,27 @@ macro_rules! impl_nested_value_string {
     };
 }
 
-/// Macro to implement NestedValue conversions for types that convert to Map
+/// Macro to implement Value conversions for types that convert to Map
 macro_rules! impl_nested_value_map {
     ($type:ty, {
         $($field:ident : $field_type:ty),* $(,)?
     }) => {
-        impl From<$type> for NestedValue {
+        impl From<$type> for Value {
             fn from(value: $type) -> Self {
-                let mut nested = KVNested::new();
+                let mut nested = Nested::new();
                 $(
-                    nested.as_hashmap_mut().insert(stringify!($field).to_string(), NestedValue::from(value.$field));
+                    nested.as_hashmap_mut().insert(stringify!($field).to_string(), Value::from(value.$field));
                 )*
-                NestedValue::Map(nested)
+                Value::Map(nested)
             }
         }
 
-        impl TryFrom<NestedValue> for $type {
+        impl TryFrom<Value> for $type {
             type Error = String;
 
-            fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+            fn try_from(value: Value) -> Result<Self, Self::Error> {
                 match value {
-                    NestedValue::Map(map) => {
+                    Value::Map(map) => {
                         $(
                             let $field = map
                                 .get(stringify!($field))
@@ -72,13 +72,13 @@ macro_rules! impl_nested_value_map {
                             $($field,)*
                         })
                     }
-                    NestedValue::String(json) => {
+                    Value::String(json) => {
                         // Fallback to JSON parsing for backward compatibility
                         serde_json::from_str(&json)
                             .map_err(|e| format!("Failed to parse {} from JSON: {}", stringify!($type), e))
                     }
-                    NestedValue::Array(_) => Err(concat!("Cannot convert array to ", stringify!($type)).to_string()),
-                    NestedValue::Deleted => Err(concat!("Cannot convert deleted value to ", stringify!($type)).to_string()),
+                    Value::Array(_) => Err(concat!("Cannot convert array to ", stringify!($type)).to_string()),
+                    Value::Deleted => Err(concat!("Cannot convert deleted value to ", stringify!($type)).to_string()),
                 }
             }
         }
@@ -319,20 +319,20 @@ impl TryFrom<String> for KeyStatus {
     }
 }
 
-// Use macros for NestedValue conversions
+// Use macros for Value conversions
 impl_nested_value_string!(Permission);
 impl_nested_value_string!(KeyStatus);
 
-// Add TryFrom<NestedValue> for String to support the macro
-impl TryFrom<NestedValue> for String {
+// Add TryFrom<Value> for String to support the macro
+impl TryFrom<Value> for String {
     type Error = String;
 
-    fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            NestedValue::String(s) => Ok(s),
-            NestedValue::Map(_) => Err("Cannot convert map to String".to_string()),
-            NestedValue::Array(_) => Err("Cannot convert array to String".to_string()),
-            NestedValue::Deleted => Err("Cannot convert deleted value to String".to_string()),
+            Value::String(s) => Ok(s),
+            Value::Map(_) => Err("Cannot convert map to String".to_string()),
+            Value::Array(_) => Err("Cannot convert array to String".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to String".to_string()),
         }
     }
 }
@@ -354,39 +354,39 @@ impl_nested_value_map!(UserAuthTreeRef, {
     tree: TreeReference
 });
 
-impl From<Vec<String>> for NestedValue {
+impl From<Vec<String>> for Value {
     fn from(vec: Vec<String>) -> Self {
         // Convert Vec<String> to a JSON array string
-        NestedValue::String(serde_json::to_string(&vec).unwrap_or_else(|_| "[]".to_string()))
+        Value::String(serde_json::to_string(&vec).unwrap_or_else(|_| "[]".to_string()))
     }
 }
 
-impl TryFrom<NestedValue> for Vec<String> {
+impl TryFrom<Value> for Vec<String> {
     type Error = String;
 
-    fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            NestedValue::String(s) => serde_json::from_str(&s)
+            Value::String(s) => serde_json::from_str(&s)
                 .map_err(|e| format!("Failed to parse Vec<String> from JSON: {e}")),
-            NestedValue::Map(_) => Err("Cannot convert map to Vec<String>".to_string()),
-            NestedValue::Array(array) => {
+            Value::Map(_) => Err("Cannot convert map to Vec<String>".to_string()),
+            Value::Array(array) => {
                 let mut result = Vec::new();
                 for (_, nested_value) in array.iter() {
                     match nested_value {
-                        NestedValue::String(s) => result.push(s.clone()),
+                        Value::String(s) => result.push(s.clone()),
                         _ => return Err("Array contains non-string values".to_string()),
                     }
                 }
                 Ok(result)
             }
-            NestedValue::Deleted => Err("Cannot convert deleted value to Vec<String>".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to Vec<String>".to_string()),
         }
     }
 }
 
-impl From<AuthId> for NestedValue {
+impl From<AuthId> for Value {
     fn from(auth_id: AuthId) -> Self {
-        let mut nested = KVNested::new();
+        let mut nested = Nested::new();
         match auth_id {
             AuthId::Direct(key_id) => {
                 nested.set("type", "direct".to_string());
@@ -399,22 +399,22 @@ impl From<AuthId> for NestedValue {
                 nested.set("key", *key);
             }
         }
-        NestedValue::Map(nested)
+        Value::Map(nested)
     }
 }
 
-impl TryFrom<NestedValue> for AuthId {
+impl TryFrom<Value> for AuthId {
     type Error = String;
 
-    fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            NestedValue::Map(map) => {
+            Value::Map(map) => {
                 let auth_type = map
                     .get("type")
                     .ok_or_else(|| "Missing 'type' field in AuthId".to_string())?;
 
                 let type_str = match auth_type {
-                    NestedValue::String(s) => s,
+                    Value::String(s) => s,
                     _ => return Err("AuthId 'type' field must be a string".to_string()),
                 };
 
@@ -425,7 +425,7 @@ impl TryFrom<NestedValue> for AuthId {
                             .ok_or_else(|| "Missing 'key_id' field in Direct AuthId".to_string())?;
 
                         let key_id_str = match key_id {
-                            NestedValue::String(s) => s.clone(),
+                            Value::String(s) => s.clone(),
                             _ => return Err("AuthId 'key_id' field must be a string".to_string()),
                         };
 
@@ -443,7 +443,7 @@ impl TryFrom<NestedValue> for AuthId {
                             .ok_or_else(|| "Missing 'key' field in UserTree AuthId".to_string())?;
 
                         let id_str = match id {
-                            NestedValue::String(s) => s.clone(),
+                            Value::String(s) => s.clone(),
                             _ => return Err("AuthId 'id' field must be a string".to_string()),
                         };
 
@@ -462,41 +462,41 @@ impl TryFrom<NestedValue> for AuthId {
                     _ => Err(format!("Unknown AuthId type: {type_str}")),
                 }
             }
-            NestedValue::String(json) => {
+            Value::String(json) => {
                 // Fallback to JSON parsing for backward compatibility
                 serde_json::from_str(&json)
                     .map_err(|e| format!("Failed to parse AuthId from JSON: {e}"))
             }
-            NestedValue::Array(_) => Err("Cannot convert array to AuthId".to_string()),
-            NestedValue::Deleted => Err("Cannot convert deleted value to AuthId".to_string()),
+            Value::Array(_) => Err("Cannot convert array to AuthId".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to AuthId".to_string()),
         }
     }
 }
 
-impl From<AuthInfo> for NestedValue {
+impl From<AuthInfo> for Value {
     fn from(auth_info: AuthInfo) -> Self {
-        let mut nested = KVNested::new();
+        let mut nested = Nested::new();
         nested
             .as_hashmap_mut()
-            .insert("id".to_string(), NestedValue::from(auth_info.id));
+            .insert("id".to_string(), Value::from(auth_info.id));
         if let Some(signature) = auth_info.signature {
             nested.set("signature", signature);
         }
-        NestedValue::Map(nested)
+        Value::Map(nested)
     }
 }
 
-impl TryFrom<NestedValue> for AuthInfo {
+impl TryFrom<Value> for AuthInfo {
     type Error = String;
 
-    fn try_from(value: NestedValue) -> Result<Self, Self::Error> {
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            NestedValue::Map(map) => {
+            Value::Map(map) => {
                 let id = map
                     .get("id")
                     .ok_or_else(|| "Missing 'id' field in AuthInfo".to_string())?;
                 let signature = map.get("signature").and_then(|v| match v {
-                    NestedValue::String(s) => Some(s.clone()),
+                    Value::String(s) => Some(s.clone()),
                     _ => None,
                 });
 
@@ -508,9 +508,9 @@ impl TryFrom<NestedValue> for AuthInfo {
                     signature,
                 })
             }
-            NestedValue::String(s) => Err(format!("Cannot convert string to AuthInfo: {s}")),
-            NestedValue::Array(_) => Err("Cannot convert array to AuthInfo".to_string()),
-            NestedValue::Deleted => Err("Cannot convert deleted value to AuthInfo".to_string()),
+            Value::String(s) => Err(format!("Cannot convert string to AuthInfo: {s}")),
+            Value::Array(_) => Err("Cannot convert array to AuthInfo".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to AuthInfo".to_string()),
         }
     }
 }
@@ -679,40 +679,40 @@ mod tests {
             status: KeyStatus::Active,
         };
 
-        let nested_value: NestedValue = key.clone().into();
-        if let NestedValue::Map(map) = nested_value {
+        let nested_value: Value = key.clone().into();
+        if let Value::Map(map) = nested_value {
             // Check that the map contains the expected keys
             assert!(map.get("key").is_some());
             assert!(map.get("permissions").is_some());
             assert!(map.get("status").is_some());
 
             // Verify the values
-            if let Some(NestedValue::String(key_val)) = map.get("key") {
+            if let Some(Value::String(key_val)) = map.get("key") {
                 assert_eq!(key_val, "ed25519:test_key");
             } else {
                 panic!("Expected key to be a string");
             }
 
-            if let Some(NestedValue::String(perm_val)) = map.get("permissions") {
+            if let Some(Value::String(perm_val)) = map.get("permissions") {
                 assert_eq!(perm_val, "read");
             } else {
                 panic!("Expected permissions to be a string");
             }
 
-            if let Some(NestedValue::String(status_val)) = map.get("status") {
+            if let Some(Value::String(status_val)) = map.get("status") {
                 assert_eq!(status_val, "active");
             } else {
                 panic!("Expected status to be a string");
             }
         } else {
-            panic!("Expected NestedValue::Map");
+            panic!("Expected Value::Map");
         }
     }
 
     #[test]
     fn test_permission_nested_value_roundtrip() {
         let original = Permission::Write(42);
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = Permission::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn test_key_status_nested_value_roundtrip() {
         let original = KeyStatus::Revoked;
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = KeyStatus::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn test_vec_string_nested_value_roundtrip() {
         let original = vec!["tip1".to_string(), "tip2".to_string(), "tip3".to_string()];
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = Vec::<String>::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn test_auth_id_nested_value_roundtrip() {
         let original = AuthId::Direct("KEY_LAPTOP".to_string());
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = AuthId::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
@@ -744,19 +744,16 @@ mod tests {
     #[test]
     fn test_auth_id_direct_structured_format() {
         let auth_id = AuthId::Direct("KEY_LAPTOP".to_string());
-        let nested: NestedValue = auth_id.into();
+        let nested: Value = auth_id.into();
 
-        if let NestedValue::Map(map) = nested {
-            assert_eq!(
-                map.get("type"),
-                Some(&NestedValue::String("direct".to_string()))
-            );
+        if let Value::Map(map) = nested {
+            assert_eq!(map.get("type"), Some(&Value::String("direct".to_string())));
             assert_eq!(
                 map.get("key_id"),
-                Some(&NestedValue::String("KEY_LAPTOP".to_string()))
+                Some(&Value::String("KEY_LAPTOP".to_string()))
             );
         } else {
-            panic!("Expected NestedValue::Map for Direct AuthId");
+            panic!("Expected Value::Map for Direct AuthId");
         }
     }
 
@@ -768,20 +765,20 @@ mod tests {
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };
 
-        let nested: NestedValue = auth_id.clone().into();
+        let nested: Value = auth_id.clone().into();
 
-        if let NestedValue::Map(map) = nested {
+        if let Value::Map(map) = nested {
             assert_eq!(
                 map.get("type"),
-                Some(&NestedValue::String("user_tree".to_string()))
+                Some(&Value::String("user_tree".to_string()))
             );
             assert_eq!(
                 map.get("id"),
-                Some(&NestedValue::String("user@example.com".to_string()))
+                Some(&Value::String("user@example.com".to_string()))
             );
 
             // Check tips
-            if let Some(NestedValue::String(tips_json)) = map.get("tips") {
+            if let Some(Value::String(tips_json)) = map.get("tips") {
                 let tips: Vec<String> = serde_json::from_str(tips_json).unwrap();
                 assert_eq!(tips, vec!["tip1".to_string(), "tip2".to_string()]);
             } else {
@@ -790,14 +787,14 @@ mod tests {
 
             // Check nested key
             if let Some(nested_key) = map.get("key") {
-                if let NestedValue::Map(key_map) = nested_key {
+                if let Value::Map(key_map) = nested_key {
                     assert_eq!(
                         key_map.get("type"),
-                        Some(&NestedValue::String("direct".to_string()))
+                        Some(&Value::String("direct".to_string()))
                     );
                     assert_eq!(
                         key_map.get("key_id"),
-                        Some(&NestedValue::String("KEY_LAPTOP".to_string()))
+                        Some(&Value::String("KEY_LAPTOP".to_string()))
                     );
                 } else {
                     panic!("Expected nested key to be a map");
@@ -806,7 +803,7 @@ mod tests {
                 panic!("Expected nested key to be present");
             }
         } else {
-            panic!("Expected NestedValue::Map for UserTree AuthId");
+            panic!("Expected Value::Map for UserTree AuthId");
         }
     }
 
@@ -818,7 +815,7 @@ mod tests {
             key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
         };
 
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = AuthId::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
@@ -829,7 +826,7 @@ mod tests {
             id: AuthId::Direct("KEY_LAPTOP".to_string()),
             signature: Some("signature_here".to_string()),
         };
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = AuthInfo::try_from(nested).unwrap();
         assert_eq!(original.id, parsed.id);
         assert_eq!(original.signature, parsed.signature);
@@ -875,12 +872,12 @@ mod tests {
             tips: vec!["tip1".to_string(), "tip2".to_string()],
         };
 
-        let nested: NestedValue = tree_ref.into();
-        if let NestedValue::Map(map) = nested {
+        let nested: Value = tree_ref.into();
+        if let Value::Map(map) = nested {
             assert!(map.get("root").is_some());
             assert!(map.get("tips").is_some());
         } else {
-            panic!("Expected NestedValue::Map");
+            panic!("Expected Value::Map");
         }
     }
 
@@ -892,7 +889,7 @@ mod tests {
             status: KeyStatus::Revoked,
         };
 
-        let nested: NestedValue = original.clone().into();
+        let nested: Value = original.clone().into();
         let parsed = AuthKey::try_from(nested).unwrap();
 
         assert_eq!(original.key, parsed.key);

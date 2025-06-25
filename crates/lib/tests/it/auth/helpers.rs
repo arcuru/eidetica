@@ -2,7 +2,7 @@ use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::backend::InMemoryBackend;
 use eidetica::basedb::BaseDB;
-use eidetica::data::KVNested;
+use eidetica::crdt::Nested;
 use eidetica::subtree::KVStore;
 
 // ===== TEST HELPERS AND MACROS =====
@@ -38,8 +38,8 @@ pub fn setup_authenticated_tree(
     keys: &[(&str, Permission, KeyStatus)],
     public_keys: &[ed25519_dalek::VerifyingKey],
 ) -> eidetica::tree::Tree {
-    let mut settings = KVNested::new();
-    let mut auth_settings = KVNested::new();
+    let mut settings = Nested::new();
+    let mut auth_settings = Nested::new();
 
     for ((key_id, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
         auth_settings.set(

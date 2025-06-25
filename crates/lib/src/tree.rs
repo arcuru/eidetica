@@ -7,7 +7,7 @@
 use crate::atomicop::AtomicOp;
 use crate::backend::Backend;
 use crate::constants::{ROOT, SETTINGS};
-use crate::data::{KVNested, NestedValue};
+use crate::crdt::{Nested, Value};
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
 use crate::{Error, Result};
@@ -38,20 +38,20 @@ impl Tree {
     /// and storing it in the backend. All trees must now be created with authentication.
     ///
     /// # Arguments
-    /// * `settings` - A `KVNested` CRDT containing the initial settings for the tree.
+    /// * `settings` - A `Nested` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
     /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
-        initial_settings: KVNested,
+        initial_settings: Nested,
         backend: Arc<dyn Backend>,
         signing_key_id: impl AsRef<str>,
     ) -> Result<Self> {
         let signing_key_id = signing_key_id.as_ref();
         // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
         let (super_user_key_id, final_tree_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key
@@ -312,12 +312,12 @@ impl Tree {
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
     /// # use eidetica::backend::InMemoryBackend;
-    /// # use eidetica::data::KVNested;
+    /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(KVNested::new(), "TEST_KEY")?;
+    /// # let tree = db.new_tree(Nested::new(), "TEST_KEY")?;
     /// # let op = tree.new_operation()?;
     /// let entry_id = op.commit()?;
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
@@ -361,12 +361,12 @@ impl Tree {
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
     /// # use eidetica::backend::InMemoryBackend;
-    /// # use eidetica::data::KVNested;
+    /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(KVNested::new(), "TEST_KEY")?;
+    /// # let tree = db.new_tree(Nested::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
     /// let entries = tree.get_entries(entry_ids)?;
     /// # Ok(())
@@ -446,7 +446,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result` containing the historical settings data
-    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<crate::data::KVNested> {
+    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<Nested> {
         // TODO: Implement full historical settings reconstruction from entry metadata
         // For now, use current settings for simplicity and backward compatibility
         //

@@ -4,9 +4,9 @@ use crate::auth::crypto::sign_entry;
 use crate::auth::types::{AuthId, AuthInfo, Operation};
 use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
-use crate::data::CRDT;
-use crate::data::KVNested;
-use crate::data::NestedValue;
+use crate::crdt::CRDT;
+use crate::crdt::Nested;
+use crate::crdt::Value;
 use crate::entry::Entry;
 use crate::entry::{EntryBuilder, ID};
 use crate::subtree::SubTree;
@@ -147,7 +147,7 @@ impl AtomicOp {
     ///
     /// # Returns
     ///
-    /// Returns a `Result<KVNested>` containing the merged settings data. The settings
+    /// Returns a `Result<Nested>` containing the merged settings data. The settings
     /// include both:
     /// - Historical settings computed from all relevant entries in the tree
     /// - Any staged changes to the `_settings` subtree in this operation
@@ -164,15 +164,15 @@ impl AtomicOp {
     /// - Unable to compute historical settings state
     /// - Unable to deserialize settings data
     /// - CRDT merge operation fails
-    pub fn get_settings(&self) -> Result<KVNested> {
+    pub fn get_settings(&self) -> Result<Nested> {
         // Get historical settings from the tree
-        let mut historical_settings = self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+        let mut historical_settings = self.get_full_state::<Nested>(SETTINGS)?;
 
         // Get any staged changes to the _settings subtree in this operation
-        let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
+        let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
 
         // Always merge - get_local_data returns Default::default() if no staged data,
-        // which is an empty KVNested that won't affect the merge
+        // which is an empty Nested that won't affect the merge
         historical_settings = historical_settings.merge(&staged_settings)?;
 
         Ok(historical_settings)
@@ -652,15 +652,15 @@ impl AtomicOp {
         };
 
         // Get settings using full CRDT state computation
-        let historical_settings = self.get_full_state::<crate::data::KVNested>(SETTINGS)?;
+        let historical_settings = self.get_full_state::<Nested>(SETTINGS)?;
 
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial tree creation with auth)
         let effective_settings_for_validation = if has_settings_update {
-            let historical_has_auth = matches!(historical_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
             if !historical_has_auth {
-                let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
-                let staged_has_auth = matches!(staged_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+                let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
+                let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
                 if staged_has_auth {
                     staged_settings
                 } else {
@@ -730,13 +730,13 @@ impl AtomicOp {
 
             // Check if we need to bootstrap auth configuration
             // First check if auth is configured in the historical settings
-            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
             // If not configured historically, check if this entry is setting up auth for the first time
             let auth_configured = if !auth_configured_historical && has_settings_update {
                 // Check if the staged settings contain auth configuration
-                let staged_settings = self.get_local_data::<crate::data::KVNested>(SETTINGS)?;
-                matches!(staged_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+                let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
+                matches!(staged_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
             } else {
                 auth_configured_historical
             };
@@ -799,7 +799,7 @@ impl AtomicOp {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
                 match settings_for_validation.get("auth") {
-                    Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
+                    Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
                         // We have auth configuration, so check permissions
                         let operation_type = if has_settings_update
                             || entry.subtrees().contains(&SETTINGS.to_string())
@@ -831,9 +831,9 @@ impl AtomicOp {
                             // This operation is updating settings - check if it's adding auth configuration
                             if let Ok(settings_data) = entry.data(SETTINGS) {
                                 if let Ok(new_settings) =
-                                    serde_json::from_str::<KVNested>(settings_data)
+                                    serde_json::from_str::<Nested>(settings_data)
                                 {
-                                    if matches!(new_settings.get("auth"), Some(NestedValue::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+                                    if matches!(new_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
                                     {
                                         // This is a bootstrap operation - adding auth config for the first time
                                         // Allow it since it's setting up authentication

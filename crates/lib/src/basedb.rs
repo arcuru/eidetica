@@ -6,7 +6,7 @@
 
 use crate::auth::crypto::{format_public_key, generate_keypair};
 use crate::backend::Backend;
-use crate::data::KVNested;
+use crate::crdt::Nested;
 use crate::entry::ID;
 use crate::tree::Tree;
 use crate::{Error, Result};
@@ -42,7 +42,7 @@ impl BaseDB {
     /// Create a new tree in the database.
     ///
     /// A `Tree` represents a collection of related entries, analogous to a table.
-    /// It is initialized with settings defined by a `KVNested` CRDT.
+    /// It is initialized with settings defined by a `Nested` CRDT.
     /// All trees must now be created with authentication.
     ///
     /// # Arguments
@@ -51,7 +51,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: KVNested, signing_key_id: impl AsRef<str>) -> Result<Tree> {
+    pub fn new_tree(&self, settings: Nested, signing_key_id: impl AsRef<str>) -> Result<Tree> {
         Tree::new(settings, Arc::clone(&self.backend), signing_key_id)
     }
 
@@ -64,7 +64,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
     pub fn new_tree_default(&self, signing_key_id: impl AsRef<str>) -> Result<Tree> {
-        let mut settings = KVNested::new();
+        let mut settings = Nested::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
         // This prevents content-addressable collision when creating multiple trees
