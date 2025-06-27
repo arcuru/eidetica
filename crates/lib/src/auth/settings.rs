@@ -6,10 +6,13 @@
 //! the higher settings level.
 
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, ResolvedAuth, SigKey};
+use crate::auth::validation::AuthValidator;
+use crate::backend::Backend;
 use crate::crdt::{Nested, Value};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Authentication settings view/interface over Nested data
 ///
@@ -134,7 +137,11 @@ impl AuthSettings {
     ///
     /// This is entry-time validation using current settings state only.
     /// No complex merge-time validation is performed.
-    pub fn validate_entry_auth(&self, sig_key: &SigKey) -> Result<ResolvedAuth> {
+    pub fn validate_entry_auth(
+        &self,
+        sig_key: &SigKey,
+        backend: Option<&Arc<dyn Backend>>,
+    ) -> Result<ResolvedAuth> {
         match sig_key {
             SigKey::Direct(key_id) => {
                 if let Some(key_result) = self.get_key(key_id) {
@@ -150,10 +157,16 @@ impl AuthSettings {
                 }
             }
             SigKey::DelegationPath(_) => {
-                // Phase 1: Delegated trees not implemented yet
-                Err(Error::Authentication(
-                    "Delegated trees not yet implemented in Phase 1".to_string(),
-                ))
+                // For delegation path entries, validate using the backend
+                let backend = backend.ok_or_else(|| {
+                    Error::Authentication(
+                        "Backend required for delegation path validation".to_string(),
+                    )
+                })?;
+
+                // Use AuthValidator to resolve the delegation path
+                let mut validator = AuthValidator::new();
+                validator.resolve_sig_key(sig_key, &self.inner, Some(backend))
             }
         }
     }
