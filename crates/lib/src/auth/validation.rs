@@ -102,6 +102,34 @@ impl AuthValidator {
         settings: &Nested,
         backend: Option<&Arc<dyn Backend>>,
     ) -> Result<ResolvedAuth> {
+        self.resolve_auth_key_with_depth(auth_id, settings, backend, 0)
+    }
+
+    /// Resolve authentication identifier with recursion depth tracking
+    ///
+    /// This internal method tracks delegation depth to prevent infinite loops
+    /// and ensures that delegation chains don't exceed reasonable limits.
+    ///
+    /// # Arguments
+    /// * `auth_id` - The authentication identifier to resolve
+    /// * `settings` - Nested settings containing auth configuration
+    /// * `backend` - Backend for loading delegated trees (required for DelegatedTree auth_id)
+    /// * `depth` - Current recursion depth (0 for initial call)
+    fn resolve_auth_key_with_depth(
+        &mut self,
+        auth_id: &AuthId,
+        settings: &Nested,
+        backend: Option<&Arc<dyn Backend>>,
+        depth: usize,
+    ) -> Result<ResolvedAuth> {
+        // Prevent infinite recursion and overly deep delegation chains
+        const MAX_DELEGATION_DEPTH: usize = 10;
+        if depth >= MAX_DELEGATION_DEPTH {
+            return Err(Error::Authentication(format!(
+                "Maximum delegation depth ({MAX_DELEGATION_DEPTH}) exceeded - possible circular delegation"
+            )));
+        }
+
         match auth_id {
             AuthId::Direct(key_id) => self.resolve_direct_key(key_id, settings),
             AuthId::DelegatedTree { id, tips, key } => {
@@ -110,7 +138,7 @@ impl AuthValidator {
                         "Backend required for delegated tree resolution".to_string(),
                     )
                 })?;
-                self.resolve_delegated_tree_key(id, tips, key, settings, backend)
+                self.resolve_delegated_tree_key_with_depth(id, tips, key, settings, backend, depth)
             }
         }
     }
@@ -150,24 +178,26 @@ impl AuthValidator {
         })
     }
 
-    /// Resolve a delegated tree key reference using direct backend access
+    /// Resolve a delegated tree key reference with depth tracking for nested delegation
     ///
     /// # Arguments
     /// * `tree_ref_id` - ID of the delegated tree reference in main tree's auth settings
     /// * `tips` - Tips of the delegated tree at time of signing (required, cannot be empty)
-    /// * `key` - Key reference within the delegated tree
+    /// * `key` - Key reference within the delegated tree (can be nested)
     /// * `settings` - Main tree's auth settings
     /// * `backend` - Backend for loading delegated trees
+    /// * `depth` - Current delegation depth
     ///
     /// # Errors
     /// Returns an error if tips are empty, as context is required for validation
-    fn resolve_delegated_tree_key(
+    fn resolve_delegated_tree_key_with_depth(
         &mut self,
         tree_ref_id: &str,
         tips: &[ID],
         key: &AuthId,
         settings: &Nested,
         backend: &Arc<dyn Backend>,
+        depth: usize,
     ) -> Result<ResolvedAuth> {
         // 1. Get the delegated tree reference from main tree's auth settings
         let delegated_tree_ref = self.get_delegated_tree_ref(tree_ref_id, settings)?;
@@ -206,7 +236,8 @@ impl AuthValidator {
         })?;
 
         // 5. Recursively resolve the key within the delegated tree
-        let delegated_auth = self.resolve_auth_key(key, &delegated_settings, Some(backend))?;
+        let delegated_auth =
+            self.resolve_auth_key_with_depth(key, &delegated_settings, Some(backend), depth + 1)?;
 
         // 6. Apply permission clamping based on the bounds configured for this delegation
         let effective_permission = clamp_permission(
@@ -760,5 +791,170 @@ mod tests {
             error_msg.contains("Invalid tips") || error_msg.contains("empty"),
             "Expected error about invalid/empty tips, got: {error_msg}"
         );
+    }
+
+    #[test]
+    fn test_nested_delegation_with_permission_clamping() {
+        use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
+        use crate::backend::InMemoryBackend;
+        use crate::basedb::BaseDB;
+
+        // Create a backend and database for testing
+        let backend = Box::new(InMemoryBackend::new());
+        let db = BaseDB::new(backend);
+
+        // Create keys for main tree, intermediate delegated tree, and final user tree
+        let main_key = db.add_private_key("main_admin").unwrap();
+        let intermediate_key = db.add_private_key("intermediate_admin").unwrap();
+        let user_key = db.add_private_key("final_user").unwrap();
+
+        // 1. Create the final user tree (deepest level)
+        let mut user_settings = Nested::new();
+        let mut user_auth = Nested::new();
+        user_auth.set(
+            "final_user",
+            AuthKey {
+                key: format_public_key(&user_key),
+                permissions: Permission::Admin(3), // High privilege at source
+                status: KeyStatus::Active,
+            },
+        );
+        user_settings.set_map("auth", user_auth);
+        let user_tree = db.new_tree(user_settings, "final_user").unwrap();
+        let user_tips = user_tree.get_tips().unwrap();
+
+        // 2. Create intermediate delegated tree that delegates to user tree
+        let mut intermediate_settings = Nested::new();
+        let mut intermediate_auth = Nested::new();
+
+        // Add direct key to intermediate tree
+        intermediate_auth.set(
+            "intermediate_admin",
+            AuthKey {
+                key: format_public_key(&intermediate_key),
+                permissions: Permission::Admin(2),
+                status: KeyStatus::Active,
+            },
+        );
+
+        // Add delegation to user tree with bounds Write(8) max, Read min
+        intermediate_auth.set(
+            "user_delegation",
+            DelegatedTreeRef {
+                permission_bounds: PermissionBounds {
+                    max: Permission::Write(8), // Clamp Admin(3) to Write(8)
+                    min: Some(Permission::Read),
+                },
+                tree: TreeReference {
+                    root: user_tree.root_id().clone(),
+                    tips: user_tips.clone(),
+                },
+            },
+        );
+
+        intermediate_settings.set_map("auth", intermediate_auth);
+        let intermediate_tree = db
+            .new_tree(intermediate_settings, "intermediate_admin")
+            .unwrap();
+        let intermediate_tips = intermediate_tree.get_tips().unwrap();
+
+        // 3. Create main tree that delegates to intermediate tree
+        let mut main_settings = Nested::new();
+        let mut main_auth = Nested::new();
+
+        // Add direct key to main tree
+        main_auth.set(
+            "main_admin",
+            AuthKey {
+                key: format_public_key(&main_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        );
+
+        // Add delegation to intermediate tree with bounds Write(5) max, Read min
+        // This should be more restrictive than the intermediate tree's Write(8)
+        main_auth.set(
+            "intermediate_delegation",
+            DelegatedTreeRef {
+                permission_bounds: PermissionBounds {
+                    max: Permission::Write(5), // More restrictive than Write(8)
+                    min: Some(Permission::Read),
+                },
+                tree: TreeReference {
+                    root: intermediate_tree.root_id().clone(),
+                    tips: intermediate_tips.clone(),
+                },
+            },
+        );
+
+        main_settings.set_map("auth", main_auth);
+        let main_tree = db.new_tree(main_settings, "main_admin").unwrap();
+
+        // 4. Test nested delegation resolution: Main -> Intermediate -> User
+        let mut validator = AuthValidator::new();
+        let main_settings = main_tree.get_settings().unwrap().get_all().unwrap();
+
+        // Create nested delegation AuthId:
+        // Main tree delegates to "intermediate_delegation" ->
+        // Intermediate tree delegates to "user_delegation" ->
+        // User tree resolves "final_user" key
+        let nested_auth_id = AuthId::DelegatedTree {
+            id: "intermediate_delegation".to_string(),
+            tips: intermediate_tips,
+            key: Box::new(AuthId::DelegatedTree {
+                id: "user_delegation".to_string(),
+                tips: user_tips,
+                key: Box::new(AuthId::Direct("final_user".to_string())),
+            }),
+        };
+
+        let result =
+            validator.resolve_auth_key(&nested_auth_id, &main_settings, Some(db.backend()));
+
+        // Should succeed with multi-level permission clamping:
+        // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)
+        assert!(
+            result.is_ok(),
+            "Nested delegation resolution failed: {:?}",
+            result.err()
+        );
+        let resolved = result.unwrap();
+
+        // The permission should be clamped at each level:
+        // 1. User tree has Admin(3) (high permission)
+        // 2. Intermediate tree clamps Admin(3) to Write(8) due to max bound
+        // 3. Main tree clamps Write(8) with max bound Write(5) -> no change since Write(8) is more restrictive
+        // Final result should be Write(8) - the most restrictive bound in the chain
+
+        assert_eq!(resolved.effective_permission, Permission::Write(8)); // Correctly clamped through the chain
+        assert_eq!(resolved.key_status, KeyStatus::Active);
+    }
+
+    #[test]
+    fn test_delegation_depth_limit() {
+        // Test that excessive delegation depth is prevented
+        let mut validator = AuthValidator::new();
+
+        // Create an empty settings (doesn't matter for depth test)
+        let settings = Nested::new();
+
+        // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
+        let simple_auth_id = AuthId::Direct("base_key".to_string());
+
+        // This should succeed (just under the limit)
+        let result = validator.resolve_auth_key_with_depth(&simple_auth_id, &settings, None, 9);
+        // Should fail due to missing auth configuration, not depth limit
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("No auth configuration found"));
+
+        // This should fail due to depth limit (at the limit)
+        let result = validator.resolve_auth_key_with_depth(&simple_auth_id, &settings, None, 10);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        println!("Depth limit error: {error}");
+        assert!(error.to_string().contains("Maximum delegation depth"));
+        assert!(error.to_string().contains("exceeded"));
     }
 }
