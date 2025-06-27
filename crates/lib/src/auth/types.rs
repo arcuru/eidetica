@@ -234,6 +234,7 @@ pub enum AuthId {
     /// Direct reference to a key ID in the main tree's _settings.auth
     Direct(String),
     /// Delegated tree delegation with optional nesting
+    /// TODO: This should be done with a flat list instead of a nested struct
     DelegatedTree {
         /// Delegated tree ID in the main tree's _settings.auth
         id: String,
