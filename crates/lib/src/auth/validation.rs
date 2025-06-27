@@ -102,6 +102,10 @@ impl AuthValidator {
         settings: &Nested,
         backend: Option<&Arc<dyn Backend>>,
     ) -> Result<ResolvedAuth> {
+        // Note: We don't cache results here because auth settings can change
+        // and cached results could become stale (e.g., revoked keys, updated permissions).
+        // In a production system, caching would need to be more sophisticated with
+        // invalidation strategies based on settings changes.
         self.resolve_auth_key_with_depth(auth_id, settings, backend, 0)
     }
 
@@ -200,26 +204,38 @@ impl AuthValidator {
         depth: usize,
     ) -> Result<ResolvedAuth> {
         // 1. Get the delegated tree reference from main tree's auth settings
-        let delegated_tree_ref = self.get_delegated_tree_ref(tree_ref_id, settings)?;
+        let delegated_tree_ref =
+            self.get_delegated_tree_ref(tree_ref_id, settings)
+                .map_err(|e| {
+                    Error::Authentication(format!(
+                        "Failed to resolve delegated tree reference '{tree_ref_id}': {e}"
+                    ))
+                })?;
 
         // 2. Load the delegated tree directly from backend
-        let root_id = delegated_tree_ref.tree.root;
+        let root_id = delegated_tree_ref.tree.root.clone();
 
-        let delegated_tree = Tree::new_from_id(root_id.clone(), Arc::clone(backend))
-            .map_err(|e| Error::Authentication(format!("Failed to load delegated tree: {e}")))?;
+        let delegated_tree =
+            Tree::new_from_id(root_id.clone(), Arc::clone(backend)).map_err(|e| {
+                Error::Authentication(format!(
+                    "Failed to load delegated tree with root '{root_id}': {e}"
+                ))
+            })?;
 
         // 3. Validate tip ancestry using backend's DAG traversal
-        let current_tips = backend
-            .get_tips(&root_id)
-            .map_err(|e| Error::Authentication(format!("Failed to get current tips: {e}")))?;
+        let current_tips = backend.get_tips(&root_id).map_err(|e| {
+            Error::Authentication(format!(
+                "Failed to get current tips for delegated tree '{root_id}': {e}"
+            ))
+        })?;
 
         // Check if claimed tips are valid (descendants of or equal to current tips)
         // Tips are required for delegated tree resolution to ensure historical consistency
         let tips_valid = self.validate_tip_ancestry(tips, &current_tips, backend)?;
         if !tips_valid {
-            return Err(Error::Authentication(
-                "Invalid tips: either empty or represent a rollback from current state".to_string(),
-            ));
+            return Err(Error::Authentication(format!(
+                "Invalid delegation: claimed tips {tips:?} are not valid for delegated tree '{root_id}' (current tips: {current_tips:?})"
+            )));
         }
 
         // 4. Get the delegated tree's auth settings at the claimed tips time
@@ -299,14 +315,21 @@ impl AuthValidator {
         current_tips: &[ID],
         backend: &Arc<dyn Backend>,
     ) -> Result<bool> {
-        // If no current tips, accept any claimed tips (first entry in tree)
+        // Fast path: If no current tips, accept any claimed tips (first entry in tree)
         if current_tips.is_empty() {
             return Ok(true);
         }
 
-        // If no claimed tips, that's invalid (should have at least some context)
+        // Fast path: If no claimed tips, that's invalid (should have at least some context)
         if claimed_tips.is_empty() {
             return Ok(false);
+        }
+
+        // Fast path: Check if all claimed tips are identical to current tips
+        if claimed_tips.len() == current_tips.len()
+            && claimed_tips.iter().all(|tip| current_tips.contains(tip))
+        {
+            return Ok(true);
         }
 
         // Check if each claimed tip is either:
@@ -314,10 +337,11 @@ impl AuthValidator {
         // 2. An ancestor of a current tip (meaning we're using older but valid state)
         // 3. A descendant of a current tip (meaning we're ahead of current state)
 
+        // Validate each claimed tip
         for claimed_tip in claimed_tips {
             let mut is_valid = false;
 
-            // Check if claimed tip equals any current tip
+            // Fast path: Check if claimed tip equals any current tip
             if current_tips.contains(claimed_tip) {
                 is_valid = true;
             } else {
@@ -788,8 +812,8 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(
-            error_msg.contains("Invalid tips") || error_msg.contains("empty"),
-            "Expected error about invalid/empty tips, got: {error_msg}"
+            error_msg.contains("Invalid delegation"),
+            "Expected error about invalid delegation, got: {error_msg}"
         );
     }
 
@@ -956,5 +980,41 @@ mod tests {
         println!("Depth limit error: {error}");
         assert!(error.to_string().contains("Maximum delegation depth"));
         assert!(error.to_string().contains("exceeded"));
+    }
+
+    #[test]
+    fn test_performance_optimizations() {
+        let mut validator = AuthValidator::new();
+        let (_, verifying_key) = generate_keypair();
+
+        let auth_key = AuthKey {
+            key: format_public_key(&verifying_key),
+            permissions: Permission::Write(10),
+            status: KeyStatus::Active,
+        };
+
+        let settings = create_test_settings_with_key("PERF_KEY", &auth_key);
+        let auth_id = AuthId::Direct("PERF_KEY".to_string());
+
+        // Test that resolution works correctly
+        let result1 = validator.resolve_auth_key(&auth_id, &settings, None);
+        assert!(result1.is_ok());
+
+        // Multiple resolutions should work consistently
+        let result2 = validator.resolve_auth_key(&auth_id, &settings, None);
+        assert!(result2.is_ok());
+
+        // Results should be identical
+        let resolved1 = result1.unwrap();
+        let resolved2 = result2.unwrap();
+        assert_eq!(
+            resolved1.effective_permission,
+            resolved2.effective_permission
+        );
+        assert_eq!(resolved1.key_status, resolved2.key_status);
+
+        // Test cache clear functionality
+        validator.clear_cache();
+        assert_eq!(validator.auth_cache.len(), 0);
     }
 }
