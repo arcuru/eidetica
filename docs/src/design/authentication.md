@@ -343,7 +343,7 @@ Permissions from delegated trees are clamped based on the `permission-bounds` fi
   - If not specified, there is no minimum bound
   - If specified, keys with lower permissions are raised to this level
 
-The effective permission and its embedded priority are determined by clamping:
+The effective priority is derived from the **effective permission returned after clamping**. If the delegated key's permission already lies within the `min`/`max` bounds its original priority value is preserved; when a permission is clamped to a bound the bound's priority value becomes the effective priority:
 
 ```mermaid
 graph LR
@@ -363,7 +363,7 @@ graph LR
   - If min is specified and delegated tree permission < min, it's raised to min
   - If min is not specified, no minimum bound is applied
 - The max bound must be <= permissions of the key that added the delegated tree reference
-- Effective priority = priority embedded in the effective permission after clamping
+- Effective priority = priority embedded in the **effective permission** produced by clamping. This is either the delegated key's priority (when already inside the bounds) or the priority that comes from the `min`/`max` bound that performed the clamp.
 - Delegated tree admin permissions only apply within that delegated tree
 - Permission clamping occurs at each level of delegation chains
 - Note: There is no "none" permission level - absence of permissions means no access
@@ -400,7 +400,7 @@ Delegated trees can reference other delegated trees, creating delegation chains:
 - The final element must contain only a `"key"` field (the actual signing key)
 - Each step represents traversing from one tree to the next in the delegation chain
 - Permission clamping applies at each level using the minimum function
-- Priority comes from the final effective permission after all clamping operations
+- Priority at each step is the priority inside the permission value that survives the clamp at that level (outer reference, inner key, or bound, depending on which one is selected by the clamping rules)
 - Tips must be valid at each level of the chain for the delegation to be valid
 
 ### Delegated Tree References
