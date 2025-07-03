@@ -8,7 +8,7 @@
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::backend::Backend;
-use crate::crdt::{Nested, Value};
+use crate::crdt::Nested;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,9 +51,7 @@ impl AuthSettings {
 
     /// Add or update an authentication key
     pub fn add_key(&mut self, id: impl Into<String>, key: AuthKey) -> Result<()> {
-        self.inner
-            .as_hashmap_mut()
-            .insert(id.into(), Value::from(key));
+        self.inner.set_json(id, key)?;
         Ok(())
     }
 
@@ -63,22 +61,18 @@ impl AuthSettings {
         id: impl Into<String>,
         tree_ref: DelegatedTreeRef,
     ) -> Result<()> {
-        self.inner
-            .as_hashmap_mut()
-            .insert(id.into(), Value::from(tree_ref));
+        self.inner.set_json(id, tree_ref)?;
         Ok(())
     }
 
     /// Revoke a key by setting its status to Revoked
     pub fn revoke_key(&mut self, id: impl AsRef<str>) -> Result<()> {
         let id = id.as_ref();
-        if let Some(value) = self.inner.get(id) {
-            match AuthKey::try_from(value.clone()) {
+        if self.inner.get(id).is_some() {
+            match self.inner.get_json::<AuthKey>(id) {
                 Ok(mut auth_key) => {
                     auth_key.status = KeyStatus::Revoked;
-                    self.inner
-                        .as_hashmap_mut()
-                        .insert(id.to_string(), Value::from(auth_key));
+                    self.inner.set_json(id, auth_key)?;
                     Ok(())
                 }
                 Err(_) => {
@@ -95,26 +89,32 @@ impl AuthSettings {
 
     /// Get a specific key by ID
     pub fn get_key(&self, id: impl AsRef<str>) -> Option<Result<AuthKey>> {
-        self.inner.get(id.as_ref()).map(|value| {
-            AuthKey::try_from(value.clone())
-                .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))
-        })
+        match self.inner.get_json::<AuthKey>(id.as_ref()) {
+            Ok(key) => Some(Ok(key)),
+            Err(Error::NotFound) => None,
+            Err(e) => Some(Err(Error::Authentication(format!(
+                "Invalid auth key format: {e}"
+            )))),
+        }
     }
 
     /// Get a specific delegated tree reference by ID
     pub fn get_delegated_tree(&self, id: impl AsRef<str>) -> Option<Result<DelegatedTreeRef>> {
-        self.inner.get(id.as_ref()).map(|value| {
-            DelegatedTreeRef::try_from(value.clone())
-                .map_err(|e| Error::Authentication(format!("Invalid delegated tree format: {e}")))
-        })
+        match self.inner.get_json::<DelegatedTreeRef>(id.as_ref()) {
+            Ok(tree_ref) => Some(Ok(tree_ref)),
+            Err(Error::NotFound) => None,
+            Err(e) => Some(Err(Error::Authentication(format!(
+                "Invalid delegated tree format: {e}"
+            )))),
+        }
     }
 
     /// Get all authentication keys
     pub fn get_all_keys(&self) -> Result<HashMap<String, AuthKey>> {
         let mut keys = HashMap::new();
-        for (key_id, value) in self.inner.as_hashmap().iter() {
+        for (key_id, _) in self.inner.as_hashmap().iter() {
             // Try to parse as AuthKey, skip if it's not one
-            if let Ok(auth_key) = AuthKey::try_from(value.clone()) {
+            if let Ok(auth_key) = self.inner.get_json::<AuthKey>(key_id) {
                 keys.insert(key_id.clone(), auth_key);
             }
         }
@@ -124,9 +124,9 @@ impl AuthSettings {
     /// Get all delegated tree references
     pub fn get_all_delegated_trees(&self) -> Result<HashMap<String, DelegatedTreeRef>> {
         let mut trees = HashMap::new();
-        for (tree_id, value) in self.inner.as_hashmap().iter() {
+        for (tree_id, _) in self.inner.as_hashmap().iter() {
             // Try to parse as DelegatedTreeRef, skip if it's not one
-            if let Ok(tree_ref) = DelegatedTreeRef::try_from(value.clone()) {
+            if let Ok(tree_ref) = self.inner.get_json::<DelegatedTreeRef>(tree_id) {
                 trees.insert(tree_id.clone(), tree_ref);
             }
         }

@@ -100,7 +100,7 @@ impl Nested {
         }
     }
 
-    /// Set a key-value pair where the value is a string.
+    /// Set a key-value pair where the value can convert to Value.
     pub fn set<K, V>(&mut self, key: K, value: V) -> &mut Self
     where
         K: Into<String>,
@@ -110,23 +110,41 @@ impl Nested {
         self
     }
 
-    /// Set a key-value pair where the value is a string (alias for set).
+    /// Set a key-value pair with automatic JSON serialization for any Serialize type.
+    pub fn set_json<K, T>(&mut self, key: K, value: T) -> crate::Result<&mut Self>
+    where
+        K: Into<String>,
+        T: serde::Serialize,
+    {
+        let json = serde_json::to_string(&value)?;
+        self.data.insert(key.into(), Value::String(json));
+        Ok(self)
+    }
+
+    /// Set a key-value pair with a raw Value (for advanced use).
+    pub fn set_raw<K>(&mut self, key: K, value: Value) -> &mut Self
+    where
+        K: Into<String>,
+    {
+        self.data.insert(key.into(), value);
+        self
+    }
+
+    /// Get a raw Value by key (for advanced use).
+    pub fn get_raw(&self, key: &str) -> Option<&Value> {
+        match self.data.get(key) {
+            Some(Value::Deleted) | None => None,
+            Some(value) => Some(value),
+        }
+    }
+
+    /// Set a key-value pair where the value is a string.
     pub fn set_string<K, V>(&mut self, key: K, value: V) -> &mut Self
     where
         K: Into<String>,
         V: Into<String>,
     {
         self.data.insert(key.into(), Value::String(value.into()));
-        self
-    }
-
-    /// Set a key-value pair where the value is any type that can convert to Value.
-    pub fn set_nested<K, V>(&mut self, key: K, value: V) -> &mut Self
-    where
-        K: Into<String>,
-        V: Into<Value>,
-    {
-        self.data.insert(key.into(), value.into());
         self
     }
 
@@ -139,13 +157,29 @@ impl Nested {
         self
     }
 
-    /// Set a key-value pair where the value is an array
+    /// Get a nested map by key.
+    pub fn get_map(&self, key: &str) -> Option<&Nested> {
+        match self.data.get(key) {
+            Some(Value::Map(nested)) => Some(nested),
+            _ => None,
+        }
+    }
+
+    /// Set a key-value pair where the value is an array.
     pub fn set_array<K>(&mut self, key: K, value: Array) -> &mut Self
     where
         K: Into<String>,
     {
         self.data.insert(key.into(), Value::Array(value));
         self
+    }
+
+    /// Get an array by key.
+    pub fn get_array(&self, key: &str) -> Option<&Array> {
+        match self.data.get(key) {
+            Some(Value::Array(array)) => Some(array),
+            _ => None,
+        }
     }
 
     /// Remove a key-value pair by inserting a tombstone.
@@ -165,6 +199,20 @@ impl Nested {
         match self.data.get(key) {
             Some(Value::Deleted) | None => None,
             Some(value) => Some(value),
+        }
+    }
+
+    /// Get a value by key with automatic JSON deserialization for any Deserialize type.
+    pub fn get_json<T>(&self, key: &str) -> crate::Result<T>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        match self.data.get(key) {
+            Some(Value::String(json)) => Ok(serde_json::from_str::<T>(json)?),
+            Some(Value::Deleted) | None => Err(crate::Error::NotFound),
+            Some(_) => Err(crate::Error::InvalidOperation(format!(
+                "Key '{key}' is not a JSON string value"
+            ))),
         }
     }
 

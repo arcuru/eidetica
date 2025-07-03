@@ -166,7 +166,7 @@ fn test_multiple_authenticated_entries() {
         permissions: Permission::Admin(0), // Admin needed to create tree with auth
         status: KeyStatus::Active,
     };
-    auth_settings.set("TEST_KEY".to_string(), auth_key);
+    auth_settings.set_json("TEST_KEY", auth_key).unwrap();
     settings.set_map("auth", auth_settings);
 
     let mut tree = db
@@ -273,7 +273,9 @@ fn test_entry_validation_cache_behavior() {
     // Create settings with the key
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set("TEST_KEY".to_string(), auth_key.clone());
+    auth_settings
+        .set_json("TEST_KEY", auth_key.clone())
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     // Create a signed entry
@@ -298,7 +300,9 @@ fn test_entry_validation_cache_behavior() {
 
     let mut new_settings = Nested::new();
     let mut new_auth_settings = Nested::new();
-    new_auth_settings.set("TEST_KEY".to_string(), revoked_auth_key);
+    new_auth_settings
+        .set_json("TEST_KEY", revoked_auth_key)
+        .unwrap();
     new_settings.set_map("auth", new_auth_settings);
 
     // Validate with revoked key - should fail
@@ -330,7 +334,9 @@ fn test_entry_validation_with_malformed_keys() {
 
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set("TEST_KEY".to_string(), auth_key.clone());
+    auth_settings
+        .set_json("TEST_KEY", auth_key.clone())
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     // Create entry signed with correct key
@@ -359,7 +365,9 @@ fn test_entry_validation_with_malformed_keys() {
 
     let mut malformed_settings = Nested::new();
     let mut malformed_auth_settings = Nested::new();
-    malformed_auth_settings.set("TEST_KEY".to_string(), malformed_auth_key.clone());
+    malformed_auth_settings
+        .set_json("TEST_KEY", malformed_auth_key.clone())
+        .unwrap();
     malformed_settings.set_map("auth", malformed_auth_settings);
 
     // Entry with same ID but malformed key in settings should fail
@@ -443,7 +451,7 @@ fn test_entry_validation_with_invalid_signatures() {
 
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set("TEST_KEY".to_string(), auth_key);
+    auth_settings.set_json("TEST_KEY", auth_key).unwrap();
     settings.set_map("auth", auth_settings);
 
     // Create entry signed with correct key

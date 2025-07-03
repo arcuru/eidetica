@@ -6,88 +6,48 @@
 use crate::crdt::{Nested, Value};
 use crate::entry::ID;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-/// Macro to implement Value conversions for types that convert via String
-macro_rules! impl_nested_value_string {
-    ($type:ty) => {
-        impl From<$type> for Value {
-            fn from(value: $type) -> Self {
-                Value::String(value.into())
-            }
+// Specialized implementation for HashMap<String, T> using JSON serialization
+impl<T> From<HashMap<String, T>> for Value
+where
+    T: serde::Serialize,
+{
+    fn from(map: HashMap<String, T>) -> Self {
+        let mut nested = Nested::new();
+        for (key, value) in map {
+            nested.set_json(&key, value).unwrap();
         }
-
-        impl TryFrom<Value> for $type {
-            type Error = String;
-
-            fn try_from(value: Value) -> Result<Self, Self::Error> {
-                match value {
-                    Value::String(s) => <$type>::try_from(s),
-                    Value::Map(_) => {
-                        Err(concat!("Cannot convert map to ", stringify!($type)).to_string())
-                    }
-                    Value::Array(_) => {
-                        Err(concat!("Cannot convert array to ", stringify!($type)).to_string())
-                    }
-                    Value::Deleted => Err(concat!(
-                        "Cannot convert deleted value to ",
-                        stringify!($type)
-                    )
-                    .to_string()),
-                }
-            }
-        }
-    };
+        Value::Map(nested)
+    }
 }
 
-/// Macro to implement Value conversions for types that convert to Map
-/// TODO: Clean this up
-macro_rules! impl_nested_value_map {
-     ($type:ty, {
-         $($field:ident : $field_type:ty),* $(,)?
-     }) => {
-         impl From<$type> for Value {
-             fn from(value: $type) -> Self {
-                 let mut nested = Nested::new();
-                 $(
-                     nested.set(stringify!($field), value.$field);
-                 )*
-                 Value::Map(nested)
-             }
-         }
+impl<T> TryFrom<Value> for HashMap<String, T>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    type Error = String;
 
-         impl TryFrom<Value> for $type {
-             type Error = String;
-
-             fn try_from(value: Value) -> Result<Self, Self::Error> {
-                 match value {
-                     Value::Map(map) => {
-                         $(
-                             let $field = map
-                                 .get(stringify!($field))
-                                 .ok_or_else(|| format!("Missing '{}' field in {}", stringify!($field), stringify!($type)))?;
-
-                             let $field = <$field_type>::try_from($field.clone())
-                                 .map_err(|e| format!("Invalid {}: {}", stringify!($field), e))?;
-                         )*
-
-                         Ok(Self {
-                             $($field,)*
-                         })
-                     }
-                     Value::String(json) => {
-                         // Fallback to JSON parsing for backward compatibility
-                         serde_json::from_str(&json)
-                             .map_err(|e| format!("Failed to parse {} from JSON: {}", stringify!($type), e))
-                     }
-                     Value::Array(_) => {
-                        Err(concat!("Cannot convert array to ", stringify!($type)).to_string())
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Map(nested) => {
+                let mut map = HashMap::new();
+                for key in nested.as_hashmap().keys() {
+                    match nested.get_json::<T>(key) {
+                        Ok(converted) => {
+                            map.insert(key.clone(), converted);
+                        }
+                        Err(e) => {
+                            return Err(format!("Failed to convert value for key '{key}': {e}"));
+                        }
                     }
-                    Value::Deleted => Err(concat!("Cannot convert deleted value to ", stringify!($type)).to_string()),
-                 }
-             }
-         }
-     };
- }
+                }
+                Ok(map)
+            }
+            _ => Err("Cannot convert non-map value to HashMap".to_string()),
+        }
+    }
+}
 
 /// Permission levels for authenticated operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,205 +311,6 @@ impl TryFrom<String> for KeyStatus {
     }
 }
 
-// Use macros for Value conversions
-impl_nested_value_string!(Permission);
-impl_nested_value_string!(KeyStatus);
-
-// Add TryFrom<Value> for String to support the macro
-impl TryFrom<Value> for String {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => Ok(s),
-            Value::Map(_) => Err("Cannot convert map to String".to_string()),
-            Value::Array(_) => Err("Cannot convert array to String".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to String".to_string()),
-        }
-    }
-}
-
-// Use the map macro for struct types
-impl_nested_value_map!(AuthKey, {
-    pubkey: String,
-    permissions: Permission,
-    status: KeyStatus
-});
-
-impl_nested_value_map!(TreeReference, {
-    root: ID,
-    tips: Vec<ID>
-});
-
-impl_nested_value_map!(PermissionBounds, {
-    max: Permission,
-    min: Option<Permission>
-});
-
-impl_nested_value_map!(DelegatedTreeRef, {
-    permission_bounds: PermissionBounds,
-    tree: TreeReference
-});
-
-impl_nested_value_map!(DelegationStep, {
-    key: String,
-    tips: Option<Vec<ID>>
-});
-
-// Support for Option<Permission>
-impl From<Option<Permission>> for Value {
-    fn from(value: Option<Permission>) -> Self {
-        match value {
-            Some(perm) => Value::String(perm.into()),
-            None => Value::String("none".to_string()),
-        }
-    }
-}
-
-impl TryFrom<Value> for Option<Permission> {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => {
-                if s == "none" {
-                    Ok(None)
-                } else {
-                    Permission::try_from(s).map(Some)
-                }
-            }
-            Value::Map(_) => Err("Cannot convert map to Option<Permission>".to_string()),
-            Value::Array(_) => Err("Cannot convert array to Option<Permission>".to_string()),
-            Value::Deleted => Ok(None),
-        }
-    }
-}
-
-// Support for Option<u32>
-impl From<Option<u32>> for Value {
-    fn from(value: Option<u32>) -> Self {
-        match value {
-            Some(num) => Value::String(num.to_string()),
-            None => Value::String("none".to_string()),
-        }
-    }
-}
-
-impl TryFrom<Value> for Option<u32> {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => {
-                if s == "none" {
-                    Ok(None)
-                } else {
-                    s.parse::<u32>()
-                        .map(Some)
-                        .map_err(|e| format!("Invalid u32: {e}"))
-                }
-            }
-            Value::Map(_) => Err("Cannot convert map to Option<u32>".to_string()),
-            Value::Array(_) => Err("Cannot convert array to Option<u32>".to_string()),
-            Value::Deleted => Ok(None),
-        }
-    }
-}
-
-impl From<Vec<String>> for Value {
-    fn from(vec: Vec<String>) -> Self {
-        // Convert Vec<String> to a JSON array string
-        Value::String(serde_json::to_string(&vec).unwrap_or_else(|_| "[]".to_string()))
-    }
-}
-
-impl TryFrom<Value> for Vec<String> {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => serde_json::from_str(&s)
-                .map_err(|e| format!("Failed to parse Vec<String> from JSON: {e}")),
-            Value::Map(_) => Err("Cannot convert map to Vec<String>".to_string()),
-            Value::Array(_) => Err("Cannot convert array to Vec<String>".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to Vec<String>".to_string()),
-        }
-    }
-}
-
-impl From<SigKey> for Value {
-    fn from(sig_key: SigKey) -> Self {
-        match sig_key {
-            SigKey::Direct(key_id) => Value::String(key_id),
-            SigKey::DelegationPath(steps) => {
-                let json = serde_json::to_string(&steps).unwrap_or_else(|_| "[]".to_string());
-                Value::String(json)
-            }
-        }
-    }
-}
-
-impl TryFrom<Value> for SigKey {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => {
-                // Try to parse as JSON array first (delegation path)
-                if let Ok(steps) = serde_json::from_str::<Vec<DelegationStep>>(&s) {
-                    Ok(SigKey::DelegationPath(steps))
-                } else {
-                    // Otherwise treat as direct key
-                    Ok(SigKey::Direct(s))
-                }
-            }
-            Value::Array(_) => Err("Cannot convert array to SigKey".to_string()),
-            Value::Map(_) => Err("Cannot convert map to SigKey".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to SigKey".to_string()),
-        }
-    }
-}
-
-impl From<SigInfo> for Value {
-    fn from(sig_info: SigInfo) -> Self {
-        let mut nested = Nested::new();
-        nested.set("key", sig_info.key);
-        if let Some(sig) = sig_info.sig {
-            nested.set("sig", sig);
-        }
-        Value::Map(nested)
-    }
-}
-
-impl TryFrom<Value> for SigInfo {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::Map(map) => {
-                let key = map
-                    .get("key")
-                    .ok_or_else(|| "Missing 'key' field in SigInfo".to_string())?;
-                let sig = map.get("sig").and_then(|v| match v {
-                    Value::String(s) => Some(s.clone()),
-                    _ => None,
-                });
-
-                let key_parsed =
-                    SigKey::try_from(key.clone()).map_err(|e| format!("Invalid key: {e}"))?;
-
-                Ok(SigInfo {
-                    key: key_parsed,
-                    sig,
-                })
-            }
-            Value::String(s) => Err(format!("Cannot convert string to SigInfo: {s}")),
-            Value::Array(_) => Err("Cannot convert array to SigInfo".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to SigInfo".to_string()),
-        }
-    }
-}
-
 impl SigInfo {
     /// Check if this SigInfo was signed by a specific key ID
     ///
@@ -618,40 +379,6 @@ impl TryFrom<Value> for Vec<ID> {
             Value::Array(_) => Err("Cannot convert array to Vec<ID>".to_string()),
             Value::Map(_) => Err("Cannot convert map to Vec<ID>".to_string()),
             Value::Deleted => Err("Cannot convert deleted value to Vec<ID>".to_string()),
-        }
-    }
-}
-
-// Support for Option<Vec<ID>>
-impl From<Option<Vec<ID>>> for Value {
-    fn from(value: Option<Vec<ID>>) -> Self {
-        match value {
-            Some(vec) => {
-                let strings: Vec<String> = vec.into_iter().map(|id| id.to_string()).collect();
-                Value::String(serde_json::to_string(&strings).unwrap())
-            }
-            None => Value::String("none".to_string()),
-        }
-    }
-}
-
-impl TryFrom<Value> for Option<Vec<ID>> {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => {
-                if s == "none" {
-                    Ok(None)
-                } else {
-                    let strings: Vec<String> = serde_json::from_str(&s)
-                        .map_err(|e| format!("Invalid Vec<ID> JSON: {e}"))?;
-                    Ok(Some(strings.into_iter().map(ID::new).collect()))
-                }
-            }
-            Value::Array(_) => Err("Cannot convert array to Option<Vec<ID>>".to_string()),
-            Value::Map(_) => Err("Cannot convert map to Option<Vec<ID>>".to_string()),
-            Value::Deleted => Ok(None),
         }
     }
 }
@@ -809,78 +536,61 @@ mod tests {
             status: KeyStatus::Active,
         };
 
-        let nested_value: Value = key.clone().into();
-        if let Value::Map(map) = nested_value {
-            // Check that the map contains the expected keys
-            assert!(map.get("pubkey").is_some());
-            assert!(map.get("permissions").is_some());
-            assert!(map.get("status").is_some());
+        let mut nested = Nested::new();
+        nested.set_json("test_key", &key).unwrap();
 
-            // Verify the values
-            if let Some(Value::String(key_val)) = map.get("pubkey") {
-                assert_eq!(key_val, "ed25519:test_key");
-            } else {
-                panic!("Expected key to be a string");
-            }
-
-            if let Some(Value::String(perm_val)) = map.get("permissions") {
-                assert_eq!(perm_val, "read");
-            } else {
-                panic!("Expected permissions to be a string");
-            }
-
-            if let Some(Value::String(status_val)) = map.get("status") {
-                assert_eq!(status_val, "active");
-            } else {
-                panic!("Expected status to be a string");
-            }
-        } else {
-            panic!("Expected Value::Map");
-        }
+        // Test that we can retrieve it back
+        let retrieved: AuthKey = nested.get_json("test_key").unwrap();
+        assert_eq!(retrieved.pubkey, key.pubkey);
+        assert_eq!(retrieved.permissions, key.permissions);
+        assert_eq!(retrieved.status, key.status);
     }
 
     #[test]
     fn test_permission_nested_value_roundtrip() {
         let original = Permission::Write(42);
-        let nested: Value = original.clone().into();
-        let parsed = Permission::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("perm", &original).unwrap();
+        let parsed: Permission = nested.get_json("perm").unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
     fn test_key_status_nested_value_roundtrip() {
         let original = KeyStatus::Revoked;
-        let nested: Value = original.clone().into();
-        let parsed = KeyStatus::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("status", &original).unwrap();
+        let parsed: KeyStatus = nested.get_json("status").unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
     fn test_vec_string_nested_value_roundtrip() {
         let original = vec!["tip1".to_string(), "tip2".to_string(), "tip3".to_string()];
-        let nested: Value = original.clone().into();
-        let parsed = Vec::<String>::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("vec", &original).unwrap();
+        let parsed: Vec<String> = nested.get_json("vec").unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
     fn test_sig_key_nested_value_roundtrip() {
         let original = SigKey::Direct("KEY_LAPTOP".to_string());
-        let nested: Value = original.clone().into();
-        let parsed = SigKey::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("sig_key", &original).unwrap();
+        let parsed: SigKey = nested.get_json("sig_key").unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
     fn test_sig_key_direct_format() {
         let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
-        let value: Value = sig_key.into();
+        let mut nested = Nested::new();
+        nested.set_json("sig_key", &sig_key).unwrap();
 
-        if let Value::String(s) = value {
-            assert_eq!(s, "KEY_LAPTOP");
-        } else {
-            panic!("Expected Value::String for Direct SigKey");
-        }
+        // Test that we can retrieve it back correctly
+        let retrieved: SigKey = nested.get_json("sig_key").unwrap();
+        assert_eq!(retrieved, sig_key);
     }
 
     #[test]
@@ -896,18 +606,12 @@ mod tests {
             },
         ]);
 
-        let value: Value = sig_key.clone().into();
+        let mut nested = Nested::new();
+        nested.set_json("sig_key", &sig_key).unwrap();
 
-        if let Value::String(json) = value {
-            let steps: Vec<DelegationStep> = serde_json::from_str(&json).unwrap();
-            assert_eq!(steps.len(), 2);
-            assert_eq!(steps[0].key, "user@example.com");
-            assert_eq!(steps[0].tips, Some(vec![ID::new("tip1"), ID::new("tip2")]));
-            assert_eq!(steps[1].key, "KEY_LAPTOP");
-            assert_eq!(steps[1].tips, None);
-        } else {
-            panic!("Expected Value::String for DelegationPath SigKey");
-        }
+        // Test that we can retrieve it back correctly
+        let retrieved: SigKey = nested.get_json("sig_key").unwrap();
+        assert_eq!(retrieved, sig_key);
     }
 
     #[test]
@@ -923,8 +627,9 @@ mod tests {
             },
         ]);
 
-        let nested: Value = original.clone().into();
-        let parsed = SigKey::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("sig_key", &original).unwrap();
+        let parsed: SigKey = nested.get_json("sig_key").unwrap();
         assert_eq!(original, parsed);
     }
 
@@ -934,8 +639,9 @@ mod tests {
             key: SigKey::Direct("KEY_LAPTOP".to_string()),
             sig: Some("signature_here".to_string()),
         };
-        let nested: Value = original.clone().into();
-        let parsed = SigInfo::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("sig_info", &original).unwrap();
+        let parsed: SigInfo = nested.get_json("sig_info").unwrap();
         assert_eq!(original.key, parsed.key);
         assert_eq!(original.sig, parsed.sig);
     }
@@ -947,13 +653,13 @@ mod tests {
             tips: vec![ID::new("tip1"), ID::new("tip2")],
         };
 
-        let nested: Value = tree_ref.into();
-        if let Value::Map(map) = nested {
-            assert!(map.get("root").is_some());
-            assert!(map.get("tips").is_some());
-        } else {
-            panic!("Expected Value::Map");
-        }
+        let mut nested = Nested::new();
+        nested.set_json("tree_ref", &tree_ref).unwrap();
+
+        // Test that we can retrieve it back correctly
+        let retrieved: TreeReference = nested.get_json("tree_ref").unwrap();
+        assert_eq!(retrieved.root, tree_ref.root);
+        assert_eq!(retrieved.tips, tree_ref.tips);
     }
 
     #[test]
@@ -997,8 +703,9 @@ mod tests {
             },
         };
 
-        let nested: Value = tree_ref.clone().into();
-        let parsed = DelegatedTreeRef::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("tree_ref", &tree_ref).unwrap();
+        let parsed: DelegatedTreeRef = nested.get_json("tree_ref").unwrap();
 
         assert_eq!(tree_ref.permission_bounds.max, parsed.permission_bounds.max);
         assert_eq!(tree_ref.permission_bounds.min, parsed.permission_bounds.min);
@@ -1009,30 +716,34 @@ mod tests {
     fn test_option_permission_nested_value_roundtrip() {
         // Test Some(permission)
         let some_perm = Some(Permission::Write(42));
-        let nested: Value = some_perm.clone().into();
-        let parsed = Option::<Permission>::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("perm", &some_perm).unwrap();
+        let parsed: Option<Permission> = nested.get_json("perm").unwrap();
         assert_eq!(some_perm, parsed);
 
         // Test None
         let none_perm: Option<Permission> = None;
-        let nested: Value = none_perm.clone().into();
-        let parsed = Option::<Permission>::try_from(nested).unwrap();
-        assert_eq!(none_perm, parsed);
+        let mut nested2 = Nested::new();
+        nested2.set_json("perm", &none_perm).unwrap();
+        let parsed2: Option<Permission> = nested2.get_json("perm").unwrap();
+        assert_eq!(none_perm, parsed2);
     }
 
     #[test]
     fn test_option_u32_nested_value_roundtrip() {
         // Test Some(u32)
         let some_num = Some(42u32);
-        let nested: Value = some_num.into();
-        let parsed = Option::<u32>::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("num", some_num).unwrap();
+        let parsed: Option<u32> = nested.get_json("num").unwrap();
         assert_eq!(some_num, parsed);
 
         // Test None
         let none_num: Option<u32> = None;
-        let nested: Value = none_num.into();
-        let parsed = Option::<u32>::try_from(nested).unwrap();
-        assert_eq!(none_num, parsed);
+        let mut nested2 = Nested::new();
+        nested2.set_json("num", none_num).unwrap();
+        let parsed2: Option<u32> = nested2.get_json("num").unwrap();
+        assert_eq!(none_num, parsed2);
     }
 
     #[test]
@@ -1043,8 +754,9 @@ mod tests {
             min: Some(Permission::Read),
         };
 
-        let nested: Value = bounds.clone().into();
-        let parsed = PermissionBounds::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("bounds", &bounds).unwrap();
+        let parsed: PermissionBounds = nested.get_json("bounds").unwrap();
         assert_eq!(bounds.max, parsed.max);
         assert_eq!(bounds.min, parsed.min);
 
@@ -1054,10 +766,11 @@ mod tests {
             min: None,
         };
 
-        let nested: Value = bounds_no_min.clone().into();
-        let parsed = PermissionBounds::try_from(nested).unwrap();
-        assert_eq!(bounds_no_min.max, parsed.max);
-        assert_eq!(bounds_no_min.min, parsed.min);
+        let mut nested2 = Nested::new();
+        nested2.set_json("bounds", &bounds_no_min).unwrap();
+        let parsed2: PermissionBounds = nested2.get_json("bounds").unwrap();
+        assert_eq!(bounds_no_min.max, parsed2.max);
+        assert_eq!(bounds_no_min.min, parsed2.min);
     }
 
     #[test]
@@ -1073,8 +786,9 @@ mod tests {
             },
         };
 
-        let nested: Value = tree_ref.clone().into();
-        let parsed = DelegatedTreeRef::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("tree_ref", &tree_ref).unwrap();
+        let parsed: DelegatedTreeRef = nested.get_json("tree_ref").unwrap();
 
         assert_eq!(tree_ref.permission_bounds.max, parsed.permission_bounds.max);
         assert_eq!(tree_ref.permission_bounds.min, parsed.permission_bounds.min);
@@ -1090,8 +804,9 @@ mod tests {
             status: KeyStatus::Revoked,
         };
 
-        let nested: Value = original.clone().into();
-        let parsed = AuthKey::try_from(nested).unwrap();
+        let mut nested = Nested::new();
+        nested.set_json("auth_key", &original).unwrap();
+        let parsed: AuthKey = nested.get_json("auth_key").unwrap();
 
         assert_eq!(original.pubkey, parsed.pubkey);
         assert_eq!(original.permissions, parsed.permissions);

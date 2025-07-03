@@ -165,12 +165,10 @@ impl AuthValidator {
         };
 
         // Now get the specific key from the auth section
-        let key_value = auth_nested
-            .get(key_id)
-            .ok_or_else(|| Error::Authentication(format!("Key not found: {key_id}")))?;
 
-        // Use the new TryFrom implementation to parse AuthKey
-        let auth_key = AuthKey::try_from(key_value.clone())
+        // Use get_json to parse AuthKey
+        let auth_key = auth_nested
+            .get_json::<AuthKey>(key_id)
             .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))?;
 
         let public_key = parse_public_key(&auth_key.pubkey)?;
@@ -329,14 +327,13 @@ impl AuthValidator {
         };
 
         // Get the delegated tree reference
-        let tree_ref_value = auth_nested.get(tree_ref_id).ok_or_else(|| {
-            Error::Authentication(format!("Delegated tree reference not found: {tree_ref_id}"))
-        })?;
 
         // Parse the delegated tree reference
-        DelegatedTreeRef::try_from(tree_ref_value.clone()).map_err(|e| {
-            Error::Authentication(format!("Invalid delegated tree reference format: {e}"))
-        })
+        auth_nested
+            .get_json::<DelegatedTreeRef>(tree_ref_id)
+            .map_err(|e| {
+                Error::Authentication(format!("Invalid delegated tree reference format: {e}"))
+            })
     }
 
     /// Validate tip ancestry using backend's DAG traversal
@@ -438,9 +435,10 @@ mod tests {
     fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> Nested {
         let mut settings = Nested::new();
         let mut auth_section = Nested::new();
-        auth_section
-            .as_hashmap_mut()
-            .insert(key_id.to_string(), Value::from(auth_key.clone()));
+        auth_section.as_hashmap_mut().insert(
+            key_id.to_string(),
+            serde_json::to_string(&auth_key).unwrap().into(),
+        );
         settings.set_map("auth", auth_section);
         settings
     }
@@ -720,14 +718,16 @@ mod tests {
         // Create the delegated tree with its own auth configuration
         let mut delegated_settings = Nested::new();
         let mut delegated_auth = Nested::new();
-        delegated_auth.set(
-            "delegated_user", // Key name must match the key used for tree creation
-            AuthKey {
-                pubkey: format_public_key(&delegated_key),
-                permissions: Permission::Admin(5),
-                status: KeyStatus::Active,
-            },
-        );
+        delegated_auth
+            .set_json(
+                "delegated_user", // Key name must match the key used for tree creation
+                AuthKey {
+                    pubkey: format_public_key(&delegated_key),
+                    permissions: Permission::Admin(5),
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
         delegated_settings.set_map("auth", delegated_auth);
 
         let delegated_tree = db.new_tree(delegated_settings, "delegated_user").unwrap();
@@ -737,32 +737,36 @@ mod tests {
         let mut main_auth = Nested::new();
 
         // Add direct key to main tree
-        main_auth.set(
-            "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        );
+        main_auth
+            .set_json(
+                "main_admin",
+                AuthKey {
+                    pubkey: format_public_key(&main_key),
+                    permissions: Permission::Admin(0),
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
 
         // Get the actual tips from the delegated tree
         let delegated_tips = delegated_tree.get_tips().unwrap();
 
         // Add delegation reference
-        main_auth.set(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: Some(Permission::Read),
+        main_auth
+            .set_json(
+                "delegate_to_user",
+                DelegatedTreeRef {
+                    permission_bounds: PermissionBounds {
+                        max: Permission::Write(10),
+                        min: Some(Permission::Read),
+                    },
+                    tree: TreeReference {
+                        root: delegated_tree.root_id().clone(),
+                        tips: delegated_tips.clone(),
+                    },
                 },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        );
+            )
+            .unwrap();
 
         main_settings.set_map("auth", main_auth);
         let main_tree = db.new_tree(main_settings, "main_admin").unwrap();
@@ -818,29 +822,33 @@ mod tests {
         let mut main_auth = Nested::new();
 
         // Add direct key to main tree
-        main_auth.set(
-            "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        );
+        main_auth
+            .set_json(
+                "main_admin",
+                AuthKey {
+                    pubkey: format_public_key(&main_key),
+                    permissions: Permission::Admin(0),
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
 
         // Add delegation reference (with proper tips that we'll ignore in the test)
-        main_auth.set(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: Some(Permission::Read),
+        main_auth
+            .set_json(
+                "delegate_to_user",
+                DelegatedTreeRef {
+                    permission_bounds: PermissionBounds {
+                        max: Permission::Write(10),
+                        min: Some(Permission::Read),
+                    },
+                    tree: TreeReference {
+                        root: delegated_tree.root_id().clone(),
+                        tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
+                    },
                 },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
-                },
-            },
-        );
+            )
+            .unwrap();
 
         main_settings.set_map("auth", main_auth);
 
@@ -889,14 +897,16 @@ mod tests {
         // 1. Create the final user tree (deepest level)
         let mut user_settings = Nested::new();
         let mut user_auth = Nested::new();
-        user_auth.set(
-            "final_user",
-            AuthKey {
-                pubkey: format_public_key(&user_key),
-                permissions: Permission::Admin(3), // High privilege at source
-                status: KeyStatus::Active,
-            },
-        );
+        user_auth
+            .set_json(
+                "final_user",
+                AuthKey {
+                    pubkey: format_public_key(&user_key),
+                    permissions: Permission::Admin(3), // High privilege at source
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
         user_settings.set_map("auth", user_auth);
         let user_tree = db.new_tree(user_settings, "final_user").unwrap();
         let user_tips = user_tree.get_tips().unwrap();
@@ -906,29 +916,33 @@ mod tests {
         let mut intermediate_auth = Nested::new();
 
         // Add direct key to intermediate tree
-        intermediate_auth.set(
-            "intermediate_admin",
-            AuthKey {
-                pubkey: format_public_key(&intermediate_key),
-                permissions: Permission::Admin(2),
-                status: KeyStatus::Active,
-            },
-        );
+        intermediate_auth
+            .set_json(
+                "intermediate_admin",
+                AuthKey {
+                    pubkey: format_public_key(&intermediate_key),
+                    permissions: Permission::Admin(2),
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
 
         // Add delegation to user tree with bounds Write(8) max, Read min
-        intermediate_auth.set(
-            "user_delegation",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(8), // Clamp Admin(3) to Write(8)
-                    min: Some(Permission::Read),
+        intermediate_auth
+            .set_json(
+                "user_delegation",
+                DelegatedTreeRef {
+                    permission_bounds: PermissionBounds {
+                        max: Permission::Write(8), // Clamp Admin(3) to Write(8)
+                        min: Some(Permission::Read),
+                    },
+                    tree: TreeReference {
+                        root: user_tree.root_id().clone(),
+                        tips: user_tips.clone(),
+                    },
                 },
-                tree: TreeReference {
-                    root: user_tree.root_id().clone(),
-                    tips: user_tips.clone(),
-                },
-            },
-        );
+            )
+            .unwrap();
 
         intermediate_settings.set_map("auth", intermediate_auth);
         let intermediate_tree = db
@@ -941,30 +955,34 @@ mod tests {
         let mut main_auth = Nested::new();
 
         // Add direct key to main tree
-        main_auth.set(
-            "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        );
+        main_auth
+            .set_json(
+                "main_admin",
+                AuthKey {
+                    pubkey: format_public_key(&main_key),
+                    permissions: Permission::Admin(0),
+                    status: KeyStatus::Active,
+                },
+            )
+            .unwrap();
 
         // Add delegation to intermediate tree with bounds Write(5) max, Read min
         // This should be more restrictive than the intermediate tree's Write(8)
-        main_auth.set(
-            "intermediate_delegation",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(5), // More restrictive than Write(8)
-                    min: Some(Permission::Read),
+        main_auth
+            .set_json(
+                "intermediate_delegation",
+                DelegatedTreeRef {
+                    permission_bounds: PermissionBounds {
+                        max: Permission::Write(5), // More restrictive than Write(8)
+                        min: Some(Permission::Read),
+                    },
+                    tree: TreeReference {
+                        root: intermediate_tree.root_id().clone(),
+                        tips: intermediate_tips.clone(),
+                    },
                 },
-                tree: TreeReference {
-                    root: intermediate_tree.root_id().clone(),
-                    tips: intermediate_tips.clone(),
-                },
-            },
-        );
+            )
+            .unwrap();
 
         main_settings.set_map("auth", main_auth);
         let main_tree = db.new_tree(main_settings, "main_admin").unwrap();

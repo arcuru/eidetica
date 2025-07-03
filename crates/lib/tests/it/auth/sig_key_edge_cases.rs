@@ -38,14 +38,15 @@ fn test_direct_key_empty_id() -> Result<()> {
 
     // Create tree with empty key ID
     let mut auth = Nested::new();
-    auth.set(
+    auth.set_json(
         "", // Empty key ID
         AuthKey {
             pubkey: format_public_key(&admin_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
-    );
+    )
+    .unwrap();
 
     let mut settings = Nested::new();
     settings.set_map("auth", auth);
@@ -257,14 +258,15 @@ fn test_circular_delegation_simple() -> Result<()> {
 
     // Create a tree that delegates to itself
     let mut auth = Nested::new();
-    auth.set(
+    auth.set_json(
         "admin",
         AuthKey {
             pubkey: format_public_key(&admin_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
-    );
+    )
+    .unwrap();
 
     let mut settings = Nested::new();
     settings.set_map("auth", auth);
