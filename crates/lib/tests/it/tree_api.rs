@@ -242,7 +242,7 @@ fn test_auth_helpers_signed_entries() {
     auth_settings.set(
         key_id.to_string(),
         AuthKey {
-            key: eidetica::auth::crypto::format_public_key(&public_key),
+            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
@@ -318,7 +318,7 @@ fn test_verify_entry_signature_auth_scenarios() {
     auth_settings.set(
         key_id.to_string(),
         AuthKey {
-            key: eidetica::auth::crypto::format_public_key(&public_key),
+            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
@@ -380,7 +380,7 @@ fn test_verify_entry_signature_unauthorized_key() {
     auth_settings.set(
         authorized_key_id.to_string(),
         AuthKey {
-            key: eidetica::auth::crypto::format_public_key(&authorized_public_key),
+            pubkey: eidetica::auth::crypto::format_public_key(&authorized_public_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
@@ -438,7 +438,7 @@ fn test_verify_entry_signature_validates_tree_auth() {
     auth_settings.set(
         key_id.to_string(),
         AuthKey {
-            key: eidetica::auth::crypto::format_public_key(&public_key),
+            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },

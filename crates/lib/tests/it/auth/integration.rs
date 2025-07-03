@@ -173,7 +173,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     auth_settings.set(
         "KEY1",
         AuthKey {
-            key: format_public_key(&key1),
+            pubkey: format_public_key(&key1),
             permissions: Permission::Admin(1),
             status: KeyStatus::Active,
         },
@@ -197,7 +197,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     new_auth_settings.set(
         "KEY1",
         AuthKey {
-            key: format_public_key(&key1),
+            pubkey: format_public_key(&key1),
             permissions: Permission::Admin(1),
             status: KeyStatus::Active,
         },
@@ -205,7 +205,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     new_auth_settings.set(
         "KEY2",
         AuthKey {
-            key: format_public_key(&key2),
+            pubkey: format_public_key(&key2),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         },
@@ -249,7 +249,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     auth_settings.set(
         "VALID_KEY",
         AuthKey {
-            key: format_public_key(&valid_key),
+            pubkey: format_public_key(&valid_key),
             permissions: Permission::Admin(1), // Need admin to modify settings
             status: KeyStatus::Active,
         },
@@ -382,7 +382,7 @@ fn test_validation_pipeline_entry_level_validation() {
     auth_settings.set(
         "ADMIN_KEY",
         AuthKey {
-            key: format_public_key(&admin_key),
+            pubkey: format_public_key(&admin_key),
             permissions: Permission::Admin(0),
             status: KeyStatus::Active,
         },
@@ -390,7 +390,7 @@ fn test_validation_pipeline_entry_level_validation() {
     auth_settings.set(
         "ACTIVE_KEY",
         AuthKey {
-            key: format_public_key(&active_key),
+            pubkey: format_public_key(&active_key),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         },
@@ -398,7 +398,7 @@ fn test_validation_pipeline_entry_level_validation() {
     auth_settings.set(
         "REVOKED_KEY",
         AuthKey {
-            key: format_public_key(&revoked_key),
+            pubkey: format_public_key(&revoked_key),
             permissions: Permission::Write(20),
             status: KeyStatus::Revoked,
         },

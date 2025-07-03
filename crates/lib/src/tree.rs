@@ -72,7 +72,7 @@ impl Tree {
             // Create auth settings with the provided key
             let mut auth_settings_handler = AuthSettings::new();
             let super_user_auth_key = AuthKey {
-                key: format_public_key(&public_key),
+                pubkey: format_public_key(&public_key),
                 permissions: Permission::Admin(0), // Highest priority
                 status: KeyStatus::Active,
             };

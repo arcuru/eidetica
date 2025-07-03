@@ -173,7 +173,7 @@ impl AuthValidator {
         let auth_key = AuthKey::try_from(key_value.clone())
             .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))?;
 
-        let public_key = parse_public_key(&auth_key.key)?;
+        let public_key = parse_public_key(&auth_key.pubkey)?;
 
         Ok(ResolvedAuth {
             public_key,
@@ -412,7 +412,7 @@ mod tests {
         let (_, verifying_key) = generate_keypair();
 
         let auth_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };
@@ -432,7 +432,7 @@ mod tests {
         let (_signing_key, verifying_key) = generate_keypair();
 
         let auth_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };
@@ -508,7 +508,7 @@ mod tests {
         let (signing_key, verifying_key) = generate_keypair();
 
         let auth_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Write(20),
             status: KeyStatus::Active,
         };
@@ -603,7 +603,7 @@ mod tests {
         let (signing_key, verifying_key) = generate_keypair();
 
         let revoked_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Write(10),
             status: KeyStatus::Revoked, // Key is revoked
         };
@@ -638,7 +638,7 @@ mod tests {
         // Create a simple direct key resolution test
         let (_, verifying_key) = generate_keypair();
         let auth_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Admin(5),
             status: KeyStatus::Active,
         };
@@ -679,7 +679,7 @@ mod tests {
         delegated_auth.set(
             "delegated_user", // Key name must match the key used for tree creation
             AuthKey {
-                key: format_public_key(&delegated_key),
+                pubkey: format_public_key(&delegated_key),
                 permissions: Permission::Admin(5),
                 status: KeyStatus::Active,
             },
@@ -696,7 +696,7 @@ mod tests {
         main_auth.set(
             "main_admin",
             AuthKey {
-                key: format_public_key(&main_key),
+                pubkey: format_public_key(&main_key),
                 permissions: Permission::Admin(0),
                 status: KeyStatus::Active,
             },
@@ -772,7 +772,7 @@ mod tests {
         main_auth.set(
             "main_admin",
             AuthKey {
-                key: format_public_key(&main_key),
+                pubkey: format_public_key(&main_key),
                 permissions: Permission::Admin(0),
                 status: KeyStatus::Active,
             },
@@ -838,7 +838,7 @@ mod tests {
         user_auth.set(
             "final_user",
             AuthKey {
-                key: format_public_key(&user_key),
+                pubkey: format_public_key(&user_key),
                 permissions: Permission::Admin(3), // High privilege at source
                 status: KeyStatus::Active,
             },
@@ -855,7 +855,7 @@ mod tests {
         intermediate_auth.set(
             "intermediate_admin",
             AuthKey {
-                key: format_public_key(&intermediate_key),
+                pubkey: format_public_key(&intermediate_key),
                 permissions: Permission::Admin(2),
                 status: KeyStatus::Active,
             },
@@ -890,7 +890,7 @@ mod tests {
         main_auth.set(
             "main_admin",
             AuthKey {
-                key: format_public_key(&main_key),
+                pubkey: format_public_key(&main_key),
                 permissions: Permission::Admin(0),
                 status: KeyStatus::Active,
             },
@@ -988,7 +988,7 @@ mod tests {
         let (_, verifying_key) = generate_keypair();
 
         let auth_key = AuthKey {
-            key: format_public_key(&verifying_key),
+            pubkey: format_public_key(&verifying_key),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };

@@ -747,7 +747,7 @@ impl AtomicOp {
 
                 let mut auth_settings = crate::auth::settings::AuthSettings::new();
                 let super_user_auth_key = crate::auth::types::AuthKey {
-                    key: crate::auth::crypto::format_public_key(&public_key),
+                    pubkey: crate::auth::crypto::format_public_key(&public_key),
                     permissions: crate::auth::types::Permission::Admin(0), // Highest priority
                     status: crate::auth::types::KeyStatus::Active,
                 };
