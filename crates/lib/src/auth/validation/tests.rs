@@ -316,11 +316,11 @@ fn test_basic_delegated_tree_resolution() {
 #[test]
 fn test_complete_delegation_workflow() {
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::InMemoryBackend;
+    use crate::backend::database::InMemory;
     use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Create keys for both main and delegated trees
@@ -414,11 +414,11 @@ fn test_complete_delegation_workflow() {
 #[test]
 fn test_delegated_tree_requires_tips() {
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::InMemoryBackend;
+    use crate::backend::database::InMemory;
     use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Create keys for both main and delegated trees
@@ -493,11 +493,11 @@ fn test_delegated_tree_requires_tips() {
 #[test]
 fn test_nested_delegation_with_permission_clamping() {
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::InMemoryBackend;
+    use crate::backend::database::InMemory;
     use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Create keys for main tree, intermediate delegated tree, and final user tree

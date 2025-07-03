@@ -8,7 +8,7 @@ use crate::auth::permission::clamp_permission;
 use crate::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
 };
-use crate::backend::Backend;
+use crate::backend::Database;
 use crate::crdt::{Nested, Value};
 use crate::entry::ID;
 use crate::tree::Tree;
@@ -32,7 +32,7 @@ impl DelegationResolver {
         &mut self,
         steps: &[DelegationStep],
         settings: &Nested,
-        backend: &Arc<dyn Backend>,
+        backend: &Arc<dyn Database>,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
         if steps.is_empty() {
@@ -191,7 +191,7 @@ impl DelegationResolver {
         &self,
         claimed_tips: &[ID],
         current_tips: &[ID],
-        backend: &Arc<dyn Backend>,
+        backend: &Arc<dyn Database>,
     ) -> Result<bool> {
         // Fast path: If no current tips, accept any claimed tips (first entry in tree)
         if current_tips.is_empty() {

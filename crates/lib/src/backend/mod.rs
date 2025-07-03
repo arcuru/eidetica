@@ -1,7 +1,9 @@
+//! Backend implementations for Eidetica storage
 //!
-//! Defines the storage backend trait and implementations.
+//! This module provides the core `Database` trait and various backend implementations
+//! organized by category (database, file, network, cloud).
 //!
-//! The `Backend` trait defines the interface for storing and retrieving `Entry` objects.
+//! The `Database` trait defines the interface for storing and retrieving `Entry` objects.
 //! This allows the core database logic (`BaseDB`, `Tree`) to be independent of the specific storage mechanism.
 
 use crate::Result;
@@ -9,9 +11,8 @@ use crate::entry::{Entry, ID};
 use ed25519_dalek::SigningKey;
 use std::any::Any;
 
-mod in_memory;
-
-pub use in_memory::InMemoryBackend;
+// Category modules
+pub mod database;
 
 /// Verification status for entries in the backend.
 ///
@@ -38,7 +39,7 @@ pub enum VerificationStatus {
     // Unverified,
 }
 
-/// Backend trait abstracting the underlying storage mechanism for Eidetica entries.
+/// Database trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
 /// and querying entries and their relationships within trees and subtrees.
@@ -46,19 +47,19 @@ pub enum VerificationStatus {
 /// (e.g., in memory, on disk, in a remote database).
 ///
 /// Much of the performance-critical logic, particularly concerning tree traversal
-/// and tip calculation, resides within `Backend` implementations, as the optimal
+/// and tip calculation, resides within `Database` implementations, as the optimal
 /// approach often depends heavily on the underlying storage characteristics.
 ///
-/// All backend implementations must be `Send` and `Sync` to allow sharing across threads,
+/// All database implementations must be `Send` and `Sync` to allow sharing across threads,
 /// and implement `Any` to allow for downcasting if needed.
 ///
 /// ## Verification Status
 ///
-/// The backend stores a verification status for each entry, indicating whether
+/// The database stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
-/// The backend itself does not perform verification - it only stores the status
+/// The database itself does not perform verification - it only stores the status
 /// set by the calling code (typically Tree/Operation implementations).
-pub trait Backend: Send + Sync + Any {
+pub trait Database: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments
@@ -78,7 +79,7 @@ pub trait Backend: Send + Sync + Any {
     /// A `Result` containing the `VerificationStatus` if the entry exists, or an `Error::NotFound` otherwise.
     fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus>;
 
-    /// Stores an entry in the backend with the specified verification status.
+    /// Stores an entry in the database with the specified verification status.
     ///
     /// If an entry with the same ID already exists, it may be overwritten,
     /// although the content-addressable nature means the content will be identical.
@@ -439,3 +440,10 @@ pub trait Backend: Send + Sync + Any {
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
 }
+
+// Backward compatibility re-exports
+#[deprecated(since = "0.2.0", note = "Use Database instead")]
+pub use Database as Backend;
+
+#[deprecated(since = "0.2.0", note = "Use database::InMemory instead")]
+pub use database::InMemory as InMemoryBackend;
