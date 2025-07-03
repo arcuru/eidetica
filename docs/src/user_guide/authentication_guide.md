@@ -7,7 +7,7 @@ This guide explains how to work with Eidetica's mandatory authentication system.
 Eidetica implements mandatory authentication for all database operations:
 
 - Every entry must be signed with a valid Ed25519 private key
-- Keys are managed through the `_settings.auth` tree configuration
+- Keys are managed in the tree configuration
 - Permission levels control what operations each key can perform
 - All authentication data is tracked in the immutable history
 

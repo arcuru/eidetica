@@ -22,12 +22,12 @@ classDiagram
         -cache: HashMap<CacheKey, ResolvedAuth>
     }
 
-    class AuthInfo {
-        +AuthId id
+    class SigInfo {
+        +SigKey id
         +String signature
     }
 
-    class AuthId {
+    class SigKey {
         <<enumeration>>
         Direct(String)
         DelegatedTree {id, tips, key}
@@ -67,7 +67,7 @@ classDiagram
     }
 
     AuthValidator --> ResolvedAuth : produces
-    AuthInfo --> AuthId : contains
+    SigInfo --> SigKey : contains
     ResolvedAuth --> Permission : contains
     ResolvedAuth --> KeyStatus : contains
     AuthKey --> Permission : contains
@@ -79,7 +79,7 @@ classDiagram
 
 The authentication process is mandatory for all entries:
 
-1. **Entry Building**: Create entry with `AuthInfo` containing direct key name
+1. **Entry Building**: Create entry with `SigInfo` containing direct key name
 2. **Signing**: Sign entry content hash with Ed25519 private key
 3. **Validation**: `AuthValidator` resolves key from `_settings.auth` at specified tips
 4. **Status Check**: Verify key is Active (not Revoked)
@@ -154,7 +154,7 @@ AuthKey {
 
 Authentication is deeply integrated throughout Eidetica:
 
-- **Entry Structure**: Mandatory `auth` field with signature in every entry
+- **Entry Structure**: Mandatory `sig` field with signature in every entry
 - **AtomicOp**: Handles entry signing during commit operations
 - **Tree Creation**: Requires initial admin key for new trees
 - **Backend Storage**: Validates authentication before storing entries

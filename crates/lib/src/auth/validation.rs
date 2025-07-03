@@ -14,7 +14,7 @@
 
 use crate::auth::crypto::{parse_public_key, verify_entry_signature};
 use crate::auth::permission::clamp_permission;
-use crate::auth::types::{AuthId, AuthKey, DelegatedTreeRef, KeyStatus, Operation, ResolvedAuth};
+use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Operation, ResolvedAuth, SigKey};
 use crate::backend::Backend;
 use crate::crdt::{Nested, Value};
 use crate::entry::{Entry, ID};
@@ -51,9 +51,9 @@ impl AuthValidator {
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key ID and no signature
-        if let AuthId::Direct(key_id) = &entry.auth.id
+        if let SigKey::Direct(key_id) = &entry.sig.key
             && key_id.is_empty()
-            && entry.auth.signature.is_none()
+            && entry.sig.sig.is_none()
         {
             // This is an unsigned entry - allow it to pass without authentication
             return Ok(true);
@@ -79,7 +79,7 @@ impl AuthValidator {
 
         // For all other entries, proceed with normal authentication validation
         // Resolve the authentication information
-        let resolved_auth = self.resolve_auth_key(&entry.auth.id, settings_state, backend)?;
+        let resolved_auth = self.resolve_sig_key(&entry.sig.key, settings_state, backend)?;
 
         // Check if the key is in an active state
         if resolved_auth.key_status != KeyStatus::Active {
@@ -93,12 +93,12 @@ impl AuthValidator {
     /// Resolve authentication identifier to concrete authentication information
     ///
     /// # Arguments
-    /// * `auth_id` - The authentication identifier to resolve
+    /// * `sig_key` - The signature key identifier to resolve
     /// * `settings` - Nested settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegatedTree auth_id)
-    pub fn resolve_auth_key(
+    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    pub fn resolve_sig_key(
         &mut self,
-        auth_id: &AuthId,
+        sig_key: &SigKey,
         settings: &Nested,
         backend: Option<&Arc<dyn Backend>>,
     ) -> Result<ResolvedAuth> {
@@ -106,7 +106,7 @@ impl AuthValidator {
         // and cached results could become stale (e.g., revoked keys, updated permissions).
         // In a production system, caching would need to be more sophisticated with
         // invalidation strategies based on settings changes.
-        self.resolve_auth_key_with_depth(auth_id, settings, backend, 0)
+        self.resolve_sig_key_with_depth(sig_key, settings, backend, 0)
     }
 
     /// Resolve authentication identifier with recursion depth tracking
@@ -115,13 +115,13 @@ impl AuthValidator {
     /// and ensures that delegation chains don't exceed reasonable limits.
     ///
     /// # Arguments
-    /// * `auth_id` - The authentication identifier to resolve
+    /// * `sig_key` - The signature key identifier to resolve
     /// * `settings` - Nested settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegatedTree auth_id)
+    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     /// * `depth` - Current recursion depth (0 for initial call)
-    fn resolve_auth_key_with_depth(
+    fn resolve_sig_key_with_depth(
         &mut self,
-        auth_id: &AuthId,
+        sig_key: &SigKey,
         settings: &Nested,
         backend: Option<&Arc<dyn Backend>>,
         depth: usize,
@@ -134,15 +134,15 @@ impl AuthValidator {
             )));
         }
 
-        match auth_id {
-            AuthId::Direct(key_id) => self.resolve_direct_key(key_id, settings),
-            AuthId::DelegatedTree { id, tips, key } => {
+        match sig_key {
+            SigKey::Direct(key_id) => self.resolve_direct_key(key_id, settings),
+            SigKey::DelegationPath(steps) => {
                 let backend = backend.ok_or_else(|| {
                     Error::Authentication(
                         "Backend required for delegated tree resolution".to_string(),
                     )
                 })?;
-                self.resolve_delegated_tree_key_with_depth(id, tips, key, settings, backend, depth)
+                self.resolve_delegation_path_with_depth(steps, settings, backend, depth)
             }
         }
     }
@@ -182,91 +182,130 @@ impl AuthValidator {
         })
     }
 
-    /// Resolve a delegated tree key reference with depth tracking for nested delegation
+    /// Resolve delegation path using flat list structure
     ///
-    /// # Arguments
-    /// * `tree_ref_id` - ID of the delegated tree reference in main tree's auth settings
-    /// * `tips` - Tips of the delegated tree at time of signing (required, cannot be empty)
-    /// * `key` - Key reference within the delegated tree (can be nested)
-    /// * `settings` - Main tree's auth settings
-    /// * `backend` - Backend for loading delegated trees
-    /// * `depth` - Current delegation depth
-    ///
-    /// # Errors
-    /// Returns an error if tips are empty, as context is required for validation
-    fn resolve_delegated_tree_key_with_depth(
+    /// This iteratively processes each step in the delegation path,
+    /// applying permission clamping at each level.
+    fn resolve_delegation_path_with_depth(
         &mut self,
-        tree_ref_id: &str,
-        tips: &[ID],
-        key: &AuthId,
+        steps: &[crate::auth::types::DelegationStep],
         settings: &Nested,
         backend: &Arc<dyn Backend>,
-        depth: usize,
+        _depth: usize,
     ) -> Result<ResolvedAuth> {
-        // 1. Get the delegated tree reference from main tree's auth settings
-        let delegated_tree_ref =
-            self.get_delegated_tree_ref(tree_ref_id, settings)
-                .map_err(|e| {
+        if steps.is_empty() {
+            return Err(Error::Authentication("Empty delegation path".to_string()));
+        }
+
+        // Iterate through delegation steps
+        let mut current_settings = settings.clone();
+        let current_backend = Arc::clone(backend);
+        let mut cumulative_bounds = None;
+
+        // Process all steps except the last one (which should be the final key)
+        for (i, step) in steps.iter().enumerate() {
+            let is_final_step = i == steps.len() - 1;
+
+            if is_final_step {
+                // Final step: resolve the actual key
+                if step.tips.is_some() {
+                    return Err(Error::Authentication(
+                        "Final delegation step must not have tips".to_string(),
+                    ));
+                }
+
+                // Resolve the final key directly
+                let mut resolved = self.resolve_direct_key(&step.key, &current_settings)?;
+
+                // Apply accumulated permission bounds
+                if let Some(bounds) = cumulative_bounds {
+                    resolved.effective_permission =
+                        clamp_permission(resolved.effective_permission, &bounds);
+                }
+
+                return Ok(resolved);
+            } else {
+                // Intermediate step: load delegated tree
+                if step.tips.is_none() {
+                    return Err(Error::Authentication(
+                        "Non-final delegation step must have tips".to_string(),
+                    ));
+                }
+
+                let tips = step.tips.as_ref().unwrap();
+
+                // Get the delegated tree reference
+                let delegated_tree_ref =
+                    self.get_delegated_tree_ref(&step.key, &current_settings)?;
+
+                // Load the delegated tree
+                let root_id = delegated_tree_ref.tree.root.clone();
+                let delegated_tree =
+                    Tree::new_from_id(root_id.clone(), Arc::clone(&current_backend)).map_err(
+                        |e| {
+                            Error::Authentication(format!(
+                                "Failed to load delegated tree with root '{root_id}': {e}"
+                            ))
+                        },
+                    )?;
+
+                // Validate tips
+                let current_tips = current_backend.get_tips(&root_id).map_err(|e| {
                     Error::Authentication(format!(
-                        "Failed to resolve delegated tree reference '{tree_ref_id}': {e}"
+                        "Failed to get current tips for delegated tree '{root_id}': {e}"
                     ))
                 })?;
 
-        // 2. Load the delegated tree directly from backend
-        let root_id = delegated_tree_ref.tree.root.clone();
+                let tips_valid =
+                    self.validate_tip_ancestry(tips, &current_tips, &current_backend)?;
+                if !tips_valid {
+                    return Err(Error::Authentication(format!(
+                        "Invalid delegation: claimed tips {tips:?} are not valid for delegated tree '{root_id}'"
+                    )));
+                }
 
-        let delegated_tree =
-            Tree::new_from_id(root_id.clone(), Arc::clone(backend)).map_err(|e| {
-                Error::Authentication(format!(
-                    "Failed to load delegated tree with root '{root_id}': {e}"
-                ))
-            })?;
+                // Get delegated tree's settings
+                let delegated_settings_kvstore = delegated_tree.get_settings().map_err(|e| {
+                    Error::Authentication(format!("Failed to get delegated tree settings: {e}"))
+                })?;
+                current_settings = delegated_settings_kvstore.get_all().map_err(|e| {
+                    Error::Authentication(format!(
+                        "Failed to get delegated tree settings data: {e}"
+                    ))
+                })?;
 
-        // 3. Validate tip ancestry using backend's DAG traversal
-        let current_tips = backend.get_tips(&root_id).map_err(|e| {
-            Error::Authentication(format!(
-                "Failed to get current tips for delegated tree '{root_id}': {e}"
-            ))
-        })?;
-
-        // Check if claimed tips are valid (descendants of or equal to current tips)
-        // Tips are required for delegated tree resolution to ensure historical consistency
-        let tips_valid = self.validate_tip_ancestry(tips, &current_tips, backend)?;
-        if !tips_valid {
-            return Err(Error::Authentication(format!(
-                "Invalid delegation: claimed tips {tips:?} are not valid for delegated tree '{root_id}' (current tips: {current_tips:?})"
-            )));
+                // Accumulate permission bounds
+                if let Some(existing_bounds) = cumulative_bounds {
+                    // Combine bounds by taking the minimum of max permissions
+                    let new_max = std::cmp::min(
+                        existing_bounds.max.clone(),
+                        delegated_tree_ref.permission_bounds.max.clone(),
+                    );
+                    let new_min = match (
+                        existing_bounds.min,
+                        delegated_tree_ref.permission_bounds.min.clone(),
+                    ) {
+                        (Some(existing_min), Some(new_min)) => {
+                            Some(std::cmp::max(existing_min, new_min))
+                        }
+                        (Some(existing_min), None) => Some(existing_min),
+                        (None, Some(new_min)) => Some(new_min),
+                        (None, None) => None,
+                    };
+                    cumulative_bounds = Some(crate::auth::types::PermissionBounds {
+                        max: new_max,
+                        min: new_min,
+                    });
+                } else {
+                    cumulative_bounds = Some(delegated_tree_ref.permission_bounds);
+                }
+            }
         }
 
-        // 4. Get the delegated tree's auth settings at the claimed tips time
-        // We need to get the settings state as it existed at the claimed tips,
-        // not the current state, to ensure consistent validation
-        // Get settings state at the specified tips
-        // For now, we'll use the current state but this could be enhanced to
-        // compute the historical state at the claimed tips
-        let delegated_settings_kvstore = delegated_tree.get_settings().map_err(|e| {
-            Error::Authentication(format!("Failed to get delegated tree settings: {e}"))
-        })?;
-        let delegated_settings = delegated_settings_kvstore.get_all().map_err(|e| {
-            Error::Authentication(format!("Failed to get delegated tree settings data: {e}"))
-        })?;
-
-        // 5. Recursively resolve the key within the delegated tree
-        let delegated_auth =
-            self.resolve_auth_key_with_depth(key, &delegated_settings, Some(backend), depth + 1)?;
-
-        // 6. Apply permission clamping based on the bounds configured for this delegation
-        let effective_permission = clamp_permission(
-            delegated_auth.effective_permission,
-            &delegated_tree_ref.permission_bounds,
-        );
-
-        // 7. Return the resolved authentication with clamped permissions
-        Ok(ResolvedAuth {
-            public_key: delegated_auth.public_key,
-            effective_permission,
-            key_status: delegated_auth.key_status,
-        })
+        // This should never be reached due to the final step handling above
+        Err(Error::Authentication(
+            "Invalid delegation path structure".to_string(),
+        ))
     }
 
     /// Get delegated tree reference from auth settings
@@ -393,7 +432,7 @@ impl Default for AuthValidator {
 mod tests {
     use super::*;
     use crate::auth::crypto::{format_public_key, generate_keypair, sign_entry};
-    use crate::auth::types::{AuthInfo, AuthKey, KeyStatus, Permission};
+    use crate::auth::types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey};
     use crate::entry::Entry;
 
     fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> Nested {
@@ -438,8 +477,8 @@ mod tests {
         };
 
         let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
-        let auth_id = AuthId::Direct("KEY_LAPTOP".to_string());
-        let resolved = validator.resolve_auth_key(&auth_id, &settings, None);
+        let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
+        let resolved = validator.resolve_sig_key(&sig_key, &settings, None);
         assert!(resolved.is_ok());
     }
 
@@ -519,16 +558,16 @@ mod tests {
         let mut entry = Entry::builder("abc").build();
 
         // Set auth info without signature
-        entry.auth = AuthInfo {
-            id: AuthId::Direct("KEY_LAPTOP".to_string()),
-            signature: None,
+        entry.sig = SigInfo {
+            key: SigKey::Direct("KEY_LAPTOP".to_string()),
+            sig: None,
         };
 
         // Sign the entry
         let signature = sign_entry(&entry, &signing_key).unwrap();
 
         // Set the signature on the entry
-        entry.auth.signature = Some(signature);
+        entry.sig.sig = Some(signature);
 
         // Validate the entry
         let result = validator.validate_entry(&entry, &settings, None);
@@ -541,8 +580,8 @@ mod tests {
         let mut validator = AuthValidator::new();
         let settings = Nested::new(); // Empty settings
 
-        let auth_id = AuthId::Direct("NONEXISTENT_KEY".to_string());
-        let result = validator.resolve_auth_key(&auth_id, &settings, None);
+        let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
+        let result = validator.resolve_sig_key(&sig_key, &settings, None);
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -556,13 +595,18 @@ mod tests {
         let mut validator = AuthValidator::new();
         let settings = Nested::new();
 
-        let auth_id = AuthId::DelegatedTree {
-            id: "user1".to_string(),
-            tips: vec![ID::new("tip1")],
-            key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
-        };
+        let sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "user1".to_string(),
+                tips: Some(vec![ID::new("tip1")]),
+            },
+            DelegationStep {
+                key: "KEY_LAPTOP".to_string(),
+                tips: None,
+            },
+        ]);
 
-        let result = validator.resolve_auth_key(&auth_id, &settings, None);
+        let result = validator.resolve_sig_key(&sig_key, &settings, None);
         assert!(result.is_err());
         assert!(
             result
@@ -579,14 +623,14 @@ mod tests {
 
         // Create an entry with auth info (signed)
         let mut entry = Entry::builder("root123").build();
-        entry.auth = AuthInfo {
-            id: AuthId::Direct("SOME_KEY".to_string()),
-            signature: None,
+        entry.sig = SigInfo {
+            key: SigKey::Direct("SOME_KEY".to_string()),
+            sig: None,
         };
 
         // Sign the entry
         let signature = sign_entry(&entry, &signing_key).unwrap();
-        entry.auth.signature = Some(signature);
+        entry.sig.sig = Some(signature);
 
         // Validate against empty settings (no auth configuration)
         let empty_settings = Nested::new();
@@ -614,16 +658,16 @@ mod tests {
         let mut entry = Entry::builder("abc").build();
 
         // Set auth info without signature
-        entry.auth = AuthInfo {
-            id: AuthId::Direct("KEY_LAPTOP".to_string()),
-            signature: None,
+        entry.sig = SigInfo {
+            key: SigKey::Direct("KEY_LAPTOP".to_string()),
+            sig: None,
         };
 
         // Sign the entry
         let signature = sign_entry(&entry, &signing_key).unwrap();
 
         // Set the signature on the entry
-        entry.auth.signature = Some(signature);
+        entry.sig.sig = Some(signature);
 
         // Validation should fail with revoked key
         let result = validator.validate_entry(&entry, &settings, None);
@@ -645,8 +689,8 @@ mod tests {
 
         let settings = create_test_settings_with_key("DIRECT_KEY", &auth_key);
 
-        let auth_id = AuthId::Direct("DIRECT_KEY".to_string());
-        let result = validator.resolve_auth_key(&auth_id, &settings, None);
+        let sig_key = SigKey::Direct("DIRECT_KEY".to_string());
+        let result = validator.resolve_sig_key(&sig_key, &settings, None);
 
         match result {
             Ok(resolved) => {
@@ -727,14 +771,19 @@ mod tests {
         let mut validator = AuthValidator::new();
         let main_settings = main_tree.get_settings().unwrap().get_all().unwrap();
 
-        let delegated_auth_id = AuthId::DelegatedTree {
-            id: "delegate_to_user".to_string(),
-            tips: delegated_tips,
-            key: Box::new(AuthId::Direct("delegated_user".to_string())),
-        };
+        let delegated_sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "delegate_to_user".to_string(),
+                tips: Some(delegated_tips),
+            },
+            DelegationStep {
+                key: "delegated_user".to_string(),
+                tips: None,
+            },
+        ]);
 
         let result =
-            validator.resolve_auth_key(&delegated_auth_id, &main_settings, Some(db.backend()));
+            validator.resolve_sig_key(&delegated_sig_key, &main_settings, Some(db.backend()));
 
         // Should succeed with permission clamping (Admin -> Write due to bounds)
         assert!(
@@ -799,14 +848,19 @@ mod tests {
         let mut validator = AuthValidator::new();
         let settings = main_settings;
 
-        // Create a DelegatedTree auth_id with empty tips
-        let auth_id = AuthId::DelegatedTree {
-            id: "delegate_to_user".to_string(),
-            tips: vec![], // Empty tips should cause validation to fail
-            key: Box::new(AuthId::Direct("delegated_user".to_string())),
-        };
+        // Create a DelegationPath sig_key with empty tips
+        let sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "delegate_to_user".to_string(),
+                tips: Some(vec![]), // Empty tips should cause validation to fail
+            },
+            DelegationStep {
+                key: "delegated_user".to_string(),
+                tips: None,
+            },
+        ]);
 
-        let result = validator.resolve_auth_key(&auth_id, &settings, Some(db.backend()));
+        let result = validator.resolve_sig_key(&sig_key, &settings, Some(db.backend()));
 
         // Should fail because tips are required for delegated tree resolution
         assert!(result.is_err());
@@ -919,22 +973,26 @@ mod tests {
         let mut validator = AuthValidator::new();
         let main_settings = main_tree.get_settings().unwrap().get_all().unwrap();
 
-        // Create nested delegation AuthId:
+        // Create nested delegation SigKey:
         // Main tree delegates to "intermediate_delegation" ->
         // Intermediate tree delegates to "user_delegation" ->
         // User tree resolves "final_user" key
-        let nested_auth_id = AuthId::DelegatedTree {
-            id: "intermediate_delegation".to_string(),
-            tips: intermediate_tips,
-            key: Box::new(AuthId::DelegatedTree {
-                id: "user_delegation".to_string(),
-                tips: user_tips,
-                key: Box::new(AuthId::Direct("final_user".to_string())),
-            }),
-        };
+        let nested_sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "intermediate_delegation".to_string(),
+                tips: Some(intermediate_tips),
+            },
+            DelegationStep {
+                key: "user_delegation".to_string(),
+                tips: Some(user_tips),
+            },
+            DelegationStep {
+                key: "final_user".to_string(),
+                tips: None,
+            },
+        ]);
 
-        let result =
-            validator.resolve_auth_key(&nested_auth_id, &main_settings, Some(db.backend()));
+        let result = validator.resolve_sig_key(&nested_sig_key, &main_settings, Some(db.backend()));
 
         // Should succeed with multi-level permission clamping:
         // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)
@@ -964,17 +1022,17 @@ mod tests {
         let settings = Nested::new();
 
         // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
-        let simple_auth_id = AuthId::Direct("base_key".to_string());
+        let simple_sig_key = SigKey::Direct("base_key".to_string());
 
         // This should succeed (just under the limit)
-        let result = validator.resolve_auth_key_with_depth(&simple_auth_id, &settings, None, 9);
+        let result = validator.resolve_sig_key_with_depth(&simple_sig_key, &settings, None, 9);
         // Should fail due to missing auth configuration, not depth limit
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert!(error.to_string().contains("No auth configuration found"));
 
         // This should fail due to depth limit (at the limit)
-        let result = validator.resolve_auth_key_with_depth(&simple_auth_id, &settings, None, 10);
+        let result = validator.resolve_sig_key_with_depth(&simple_sig_key, &settings, None, 10);
         assert!(result.is_err());
         let error = result.unwrap_err();
         println!("Depth limit error: {error}");
@@ -994,14 +1052,14 @@ mod tests {
         };
 
         let settings = create_test_settings_with_key("PERF_KEY", &auth_key);
-        let auth_id = AuthId::Direct("PERF_KEY".to_string());
+        let sig_key = SigKey::Direct("PERF_KEY".to_string());
 
         // Test that resolution works correctly
-        let result1 = validator.resolve_auth_key(&auth_id, &settings, None);
+        let result1 = validator.resolve_sig_key(&sig_key, &settings, None);
         assert!(result1.is_ok());
 
         // Multiple resolutions should work consistently
-        let result2 = validator.resolve_auth_key(&auth_id, &settings, None);
+        let result2 = validator.resolve_sig_key(&sig_key, &settings, None);
         assert!(result2.is_ok());
 
         // Results should be identical

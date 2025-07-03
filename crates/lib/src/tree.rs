@@ -323,7 +323,7 @@ impl Tree {
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
     /// let entry = tree.get_entry("some_entry_id")?;     // Using &str
     /// let entry = tree.get_entry(entry_id.clone())?;    // Using String
-    /// println!("Entry auth: {:?}", entry.auth);
+    /// println!("Entry signature: {:?}", entry.sig);
     /// # Ok(())
     /// # }
     /// ```
@@ -424,7 +424,7 @@ impl Tree {
         let entry = self.get_entry(entry_id)?;
 
         // If the entry has no authentication, it's considered valid for backward compatibility
-        if entry.auth.id == crate::auth::types::AuthId::default() {
+        if entry.sig.key == crate::auth::types::SigKey::default() {
             return Ok(true);
         }
 

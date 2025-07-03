@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use eidetica::Error;
-use eidetica::auth::types::{AuthId, AuthKey, KeyStatus, Permission};
+use eidetica::auth::types::{AuthKey, KeyStatus, Permission, SigKey};
 use eidetica::crdt::Nested;
 use eidetica::subtree::KVStore;
 
@@ -22,8 +22,8 @@ fn test_get_entry_basic() {
     // Test get_entry
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.auth.id, AuthId::Direct("test_key".to_string()));
-    assert!(entry.auth.signature.is_some());
+    assert_eq!(entry.sig.key, SigKey::Direct("test_key".to_string()));
+    assert!(entry.sig.sig.is_some());
 }
 
 /// Test get_entry with non-existent entry
@@ -265,9 +265,9 @@ fn test_auth_helpers_signed_entries() {
 
     // Test entry auth access
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    let auth_info = &entry.auth;
-    assert_eq!(auth_info.id, AuthId::Direct(key_id.to_string()));
-    assert!(auth_info.signature.is_some());
+    let sig_info = &entry.sig;
+    assert_eq!(sig_info.key, SigKey::Direct(key_id.to_string()));
+    assert!(sig_info.sig.is_some());
 
     // Test verify_entry_signature
     let is_valid = tree
@@ -276,8 +276,8 @@ fn test_auth_helpers_signed_entries() {
     assert!(is_valid);
 
     // Test is_signed_by helper
-    assert!(auth_info.is_signed_by(key_id));
-    assert!(!auth_info.is_signed_by("OTHER_KEY"));
+    assert!(sig_info.is_signed_by(key_id));
+    assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test authentication helpers with default authenticated entries
@@ -295,13 +295,13 @@ fn test_auth_helpers_default_authenticated_entries() {
 
     // Test entry auth access - should be signed with default key
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    let auth_info = &entry.auth;
-    assert_eq!(auth_info.id, AuthId::Direct("test_key".to_string()));
-    assert!(auth_info.signature.is_some());
+    let sig_info = &entry.sig;
+    assert_eq!(sig_info.key, SigKey::Direct("test_key".to_string()));
+    assert!(sig_info.sig.is_some());
 
     // Test is_signed_by helper
-    assert!(auth_info.is_signed_by("test_key"));
-    assert!(!auth_info.is_signed_by("OTHER_KEY"));
+    assert!(sig_info.is_signed_by("test_key"));
+    assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test verify_entry_signature with different authentication scenarios
@@ -559,6 +559,6 @@ fn test_batch_vs_individual_retrieval() {
     assert_eq!(individual_entries.len(), batch_entries.len());
     for (individual, batch) in individual_entries.iter().zip(batch_entries.iter()) {
         assert_eq!(individual.id(), batch.id());
-        assert_eq!(individual.auth, batch.auth);
+        assert_eq!(individual.sig, batch.sig);
     }
 }

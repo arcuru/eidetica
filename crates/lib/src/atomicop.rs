@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::Result;
 use crate::auth::crypto::sign_entry;
-use crate::auth::types::{AuthId, AuthInfo, Operation};
+use crate::auth::types::{Operation, SigInfo, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::crdt::CRDT;
@@ -714,9 +714,9 @@ impl AtomicOp {
         // All entries must now be authenticated - fail if no auth key is configured
         let signing_key = if let Some(key_id) = &self.auth_key_id {
             // Set auth ID on the entry builder (without signature initially)
-            builder.set_auth_mut(AuthInfo {
-                id: AuthId::Direct(key_id.clone()),
-                signature: None,
+            builder.set_sig_mut(SigInfo {
+                key: SigKey::Direct(key_id.clone()),
+                sig: None,
             });
 
             // Get the private key from backend for signing
@@ -783,7 +783,7 @@ impl AtomicOp {
         // Sign the entry if we have a signing key
         if let Some(signing_key) = signing_key {
             let signature = sign_entry(&entry, &signing_key)?;
-            entry.auth.signature = Some(signature);
+            entry.sig.sig = Some(signature);
         }
 
         // Validate authentication (all entries must be authenticated)
@@ -813,8 +813,8 @@ impl AtomicOp {
                             Operation::WriteData // Default to write for other data modifications
                         };
 
-                        let resolved_auth = validator.resolve_auth_key(
-                            &entry.auth.id,
+                        let resolved_auth = validator.resolve_sig_key(
+                            &entry.sig.key,
                             &settings_for_validation,
                             Some(self.tree.backend()),
                         )?;
