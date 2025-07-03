@@ -5,7 +5,7 @@
 //! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
 
 use crate::auth::crypto::{format_public_key, generate_keypair};
-use crate::backend::Backend;
+use crate::backend::Database;
 use crate::crdt::Nested;
 use crate::entry::ID;
 use crate::tree::Tree;
@@ -22,20 +22,20 @@ use std::sync::Arc;
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
 pub struct BaseDB {
     /// The backend used by the database.
-    backend: Arc<dyn Backend>,
+    backend: Arc<dyn Database>,
     // Blob storage will be separate, maybe even just an extension
     // storage: IPFS;
 }
 
 impl BaseDB {
-    pub fn new(backend: Box<dyn Backend>) -> Self {
+    pub fn new(backend: Box<dyn Database>) -> Self {
         Self {
             backend: Arc::from(backend),
         }
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn Backend> {
+    pub fn backend(&self) -> &Arc<dyn Database> {
         &self.backend
     }
 
@@ -175,7 +175,7 @@ impl BaseDB {
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::InMemoryBackend, basedb::BaseDB};
+    /// # use eidetica::{backend::database::InMemory, basedb::BaseDB};
     /// let backend = InMemoryBackend::new();
     /// let db = BaseDB::new(Box::new(backend));
     ///

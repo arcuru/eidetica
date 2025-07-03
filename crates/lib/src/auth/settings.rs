@@ -7,7 +7,7 @@
 
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
-use crate::backend::Backend;
+use crate::backend::Database;
 use crate::crdt::Nested;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,7 @@ impl AuthSettings {
     pub fn validate_entry_auth(
         &self,
         sig_key: &SigKey,
-        backend: Option<&Arc<dyn Backend>>,
+        backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         match sig_key {
             SigKey::Direct(key_id) => {

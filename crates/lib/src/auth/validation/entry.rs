@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
-use crate::backend::Backend;
+use crate::backend::Database;
 use crate::crdt::{Nested, Value};
 use crate::entry::Entry;
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ impl AuthValidator {
         &mut self,
         entry: &Entry,
         settings_state: &Nested,
-        backend: Option<&Arc<dyn Backend>>,
+        backend: Option<&Arc<dyn Database>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key ID and no signature
@@ -94,7 +94,7 @@ impl AuthValidator {
         &mut self,
         sig_key: &SigKey,
         settings: &Nested,
-        backend: Option<&Arc<dyn Backend>>,
+        backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver.resolve_sig_key(sig_key, settings, backend)

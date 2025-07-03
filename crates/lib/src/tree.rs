@@ -5,7 +5,7 @@
 //! the history and relationships between entries, interfacing with a backend storage system.
 
 use crate::atomicop::AtomicOp;
-use crate::backend::Backend;
+use crate::backend::Database;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::{Nested, Value};
 use crate::entry::{Entry, ID};
@@ -26,7 +26,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Tree {
     root: ID,
-    backend: Arc<dyn Backend>,
+    backend: Arc<dyn Database>,
     /// Default authentication key ID for operations on this tree
     default_auth_key: Option<String>,
 }
@@ -46,7 +46,7 @@ impl Tree {
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
         initial_settings: Nested,
-        backend: Arc<dyn Backend>,
+        backend: Arc<dyn Database>,
         signing_key_id: impl AsRef<str>,
     ) -> Result<Self> {
         let signing_key_id = signing_key_id.as_ref();
@@ -135,7 +135,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
-    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn Backend>) -> Result<Self> {
+    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn Database>) -> Result<Self> {
         Ok(Self {
             root: id,
             backend,
@@ -185,7 +185,7 @@ impl Tree {
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn Backend> {
+    pub fn backend(&self) -> &Arc<dyn Database> {
         &self.backend
     }
 
@@ -311,7 +311,7 @@ impl Tree {
     /// ```rust,no_run
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
-    /// # use eidetica::backend::InMemoryBackend;
+    /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
@@ -360,7 +360,7 @@ impl Tree {
     /// ```rust,no_run
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
-    /// # use eidetica::backend::InMemoryBackend;
+    /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemoryBackend::new());
