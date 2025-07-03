@@ -15,4 +15,4 @@ pub use crypto::*;
 pub use permission::*;
 pub use settings::*;
 pub use types::*;
-pub use validation::*;
+pub use validation::AuthValidator;
