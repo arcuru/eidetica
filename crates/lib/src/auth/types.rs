@@ -117,13 +117,13 @@ impl Ord for Permission {
 
 impl Permission {
     /// Calculate ordering value for mathematical comparison
-    /// Read = 0, Write(p) = 1 + u32::MAX - p, Admin(p) = 1 + (2 * u32::MAX) - p
-    /// This allows for easy comparison of permissions
+    /// Read = 0, Write(p) = 1 + u32::MAX - p, Admin(p) = 2 + (2 * u32::MAX) - p
+    /// This ensures Admin permissions are always > Write permissions
     fn ordering_value(&self) -> u64 {
         match self {
             Permission::Read => 0,
             Permission::Write(p) => 1 + (u32::MAX as u64) - (*p as u64),
-            Permission::Admin(p) => 1 + (2 * u32::MAX as u64) - (*p as u64),
+            Permission::Admin(p) => 2 + (2 * u32::MAX as u64) - (*p as u64),
         }
     }
 

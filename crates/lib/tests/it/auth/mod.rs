@@ -1,7 +1,10 @@
 pub mod crypto;
 pub mod delegated_trees;
+pub mod error_handling_tests;
 pub mod helpers;
 pub mod integration;
+pub mod permission_edge_cases;
 pub mod security_tests;
+pub mod sig_key_edge_cases;
 pub mod types;
 pub mod validation;
