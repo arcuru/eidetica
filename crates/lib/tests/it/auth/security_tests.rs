@@ -27,16 +27,11 @@ fn test_admin_hierarchy_enforcement() {
         .can_modify_key(&low_priority_resolved, "HIGH_PRIORITY_ADMIN")
         .unwrap();
 
-    // Note: Current implementation may allow broader admin privileges than expected
-    // This test documents the current behavior rather than enforcing strict hierarchy
-    if can_modify {
-        // Current implementation allows this - may need security review
-        println!("Warning: Low priority admin can modify high priority admin");
-    } else {
-        println!("Good: Admin hierarchy is properly enforced");
-    }
-    // For now, just verify the function doesn't crash
-    // The function should return a boolean value without panicking
+    // Low priority admin should NOT be able to modify high priority admin
+    assert!(
+        !can_modify,
+        "Low priority admin (priority 100) should not be able to modify high priority admin (priority 1)"
+    );
 }
 
 #[test]
@@ -92,14 +87,12 @@ fn test_admin_hierarchy_complete_enforcement() {
         .can_modify_key(&junior_resolved, "SUPER_ADMIN")
         .unwrap();
 
-    // Note: Current implementation may allow broader admin privileges than expected
-    if can_modify {
-        println!("Warning: Low priority admin can modify super admin");
-    } else {
-        println!("Good: Admin hierarchy is properly enforced");
-    }
-    // For now, just verify the function doesn't crash
-    // The function should return a boolean value without panicking
+    // Junior admin should NEVER be able to modify super admin
+    assert!(
+        !can_modify,
+        "Junior admin (priority {}) should not be able to modify super admin (priority 0)",
+        u32::MAX - 1
+    );
 }
 
 #[test]
@@ -160,11 +153,52 @@ fn test_privilege_escalation_prevention() {
 
     // Write users should NEVER be able to create new admin keys
     let can_create_admin = settings
-        .can_modify_key(&write_resolved, "NEW_ADMIN_KEY")
+        .can_create_key(&write_resolved, &Permission::Admin(1))
         .unwrap();
 
     assert!(
         !can_modify_admin && !can_create_admin,
         "Write users should not be able to modify admin keys"
+    );
+}
+
+#[test]
+fn test_key_creation_privilege_escalation_prevention() {
+    let mut settings = AuthSettings::new();
+
+    // Create a low-priority admin that should not be able to create high-priority admins
+    let low_admin = auth_key(
+        "ed25519:low_admin",
+        Permission::Admin(100), // Low priority admin
+        KeyStatus::Active,
+    );
+
+    settings.add_key("LOW_ADMIN", low_admin.clone()).unwrap();
+
+    let low_admin_resolved = ResolvedAuth {
+        public_key: eidetica::auth::crypto::generate_keypair().1,
+        effective_permission: low_admin.permissions,
+        key_status: low_admin.status,
+    };
+
+    // Test that low admin cannot create a higher priority admin key
+    let can_create_super_admin = settings
+        .can_create_key(&low_admin_resolved, &Permission::Admin(0))
+        .unwrap();
+
+    // Low priority admin (priority 100) should NOT be able to create super admin (priority 0)
+    assert!(
+        !can_create_super_admin,
+        "Low priority admin (priority 100) should not be able to create super admin (priority 0)"
+    );
+
+    // Test that low admin CAN create lower priority keys
+    let can_create_lower_admin = settings
+        .can_create_key(&low_admin_resolved, &Permission::Admin(200))
+        .unwrap();
+
+    assert!(
+        can_create_lower_admin,
+        "Low priority admin (priority 100) should be able to create lower priority admin (priority 200)"
     );
 }

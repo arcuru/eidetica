@@ -5,7 +5,7 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
-use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, ResolvedAuth, SigKey};
+use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::backend::Backend;
 use crate::crdt::{Nested, Value};
@@ -171,11 +171,11 @@ impl AuthSettings {
         }
     }
 
-    /// Check if a signing key can modify a target key based on priority rules
+    /// Check if a signing key can modify an existing target key.
     ///
-    /// Priority rules apply only to administrative operations:
-    /// - Keys can modify keys with equal or lower priority (equal or higher numbers)
-    /// - Admin keys can always modify Write keys regardless of priority
+    /// Only admin keys can modify other keys. Uses the built-in permission ordering
+    /// where higher permissions can modify keys with equal or lower permissions.
+    /// Returns an error if the target key doesn't exist - use `can_create_key` for creation checks.
     pub fn can_modify_key(
         &self,
         signing_key: &ResolvedAuth,
@@ -186,28 +186,37 @@ impl AuthSettings {
             return Ok(false);
         }
 
-        // Get signing key priority
-        let signing_priority = signing_key
-            .effective_permission
-            .priority()
-            .unwrap_or(u32::MAX); // Default to lowest priority if None
-
         // Get target key info
         if let Some(target_result) = self.get_key(target_key_id.as_ref()) {
             let target_key = target_result?;
-            let target_priority = target_key.permissions.priority().unwrap_or(u32::MAX);
 
-            // Admin keys can always modify Write keys
-            if signing_key.effective_permission.can_admin() && target_key.permissions.can_write() {
-                return Ok(true);
-            }
-
-            // Otherwise, check priority hierarchy (lower number = higher priority)
-            Ok(signing_priority <= target_priority)
+            // Use the built-in permission ordering: signing key must be >= target key
+            Ok(signing_key.effective_permission >= target_key.permissions)
         } else {
-            // Target key doesn't exist, allow creation
-            Ok(true)
+            // Target key doesn't exist - this is an error for modification
+            Err(Error::InvalidOperation(format!(
+                "Cannot modify non-existent key: {}",
+                target_key_id.as_ref()
+            )))
         }
+    }
+
+    /// Check if a signing key can create a new key with the specified permissions.
+    ///
+    /// Only admin keys can create other keys. The signing key must have permissions
+    /// greater than or equal to the new key's permissions to prevent privilege escalation.
+    pub fn can_create_key(
+        &self,
+        signing_key: &ResolvedAuth,
+        new_key_permissions: &Permission,
+    ) -> Result<bool> {
+        // Must have admin permissions to create keys
+        if !signing_key.effective_permission.can_admin() {
+            return Ok(false);
+        }
+
+        // Signing key must be >= new key permissions to prevent privilege escalation
+        Ok(signing_key.effective_permission >= *new_key_permissions)
     }
 }
 
@@ -318,8 +327,12 @@ mod tests {
             key_status: high_priority_key.status,
         };
 
-        // Should be able to modify lower priority keys
-        assert!(settings.can_modify_key(&admin_resolved, "NEW_KEY").unwrap());
+        // Should be able to create new keys with lower permissions
+        assert!(
+            settings
+                .can_create_key(&admin_resolved, &Permission::Write(20))
+                .unwrap()
+        );
 
         // Test with write key (lower privileges)
         let write_resolved = ResolvedAuth {
@@ -328,7 +341,11 @@ mod tests {
             key_status: KeyStatus::Active,
         };
 
-        // Write key should not be able to modify other keys
-        assert!(!settings.can_modify_key(&write_resolved, "NEW_KEY").unwrap());
+        // Write key should not be able to create other keys
+        assert!(
+            !settings
+                .can_create_key(&write_resolved, &Permission::Write(20))
+                .unwrap()
+        );
     }
 }

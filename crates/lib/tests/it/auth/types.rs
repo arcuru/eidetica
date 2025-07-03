@@ -175,7 +175,11 @@ fn test_permission_hierarchical_key_modification() {
             .can_modify_key(&super_resolved, "LOW_WRITE")
             .unwrap()
     );
-    assert!(settings.can_modify_key(&super_resolved, "NEW_KEY").unwrap());
+    assert!(
+        settings
+            .can_create_key(&super_resolved, &Permission::Admin(20))
+            .unwrap()
+    );
 
     // Low admin should be able to modify equal/lower priority admins and all write keys
     // Note: Current implementation may allow broader admin privileges than expected
@@ -209,7 +213,7 @@ fn test_permission_hierarchical_key_modification() {
     // Test that new keys can be created
     assert!(
         settings
-            .can_modify_key(&low_admin_resolved, "NEW_KEY")
+            .can_create_key(&low_admin_resolved, &Permission::Admin(20))
             .unwrap()
     );
     // These assertions are covered above
@@ -235,7 +239,11 @@ fn test_permission_hierarchical_key_modification() {
             .can_modify_key(&write_resolved, "LOW_WRITE")
             .unwrap()
     );
-    assert!(!settings.can_modify_key(&write_resolved, "NEW_KEY").unwrap());
+    assert!(
+        !settings
+            .can_create_key(&write_resolved, &Permission::Write(20))
+            .unwrap()
+    );
 }
 
 #[test]
