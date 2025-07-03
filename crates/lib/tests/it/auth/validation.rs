@@ -27,7 +27,7 @@ fn test_backend_authentication_validation() {
 
     // Verify the entry was stored and signed
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert!(entry.auth.is_signed_by("TEST_KEY"));
+    assert!(entry.sig.is_signed_by("TEST_KEY"));
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn test_multiple_authenticated_entries() {
 
     // Verify the signed entry was stored correctly
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
-    assert!(entry2.auth.is_signed_by("TEST_KEY"));
+    assert!(entry2.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .expect("Failed to verify")
@@ -213,12 +213,12 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Create a signed entry
     let mut entry = eidetica::entry::Entry::builder("root123".to_string()).build();
-    entry.auth = eidetica::auth::types::AuthInfo {
-        id: eidetica::auth::types::AuthId::Direct("TEST_KEY".to_string()),
-        signature: None,
+    entry.sig = eidetica::auth::types::SigInfo {
+        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
+        sig: None,
     };
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
-    entry.auth.signature = Some(signature);
+    entry.sig.sig = Some(signature);
 
     // Test with no auth section at all
     let empty_settings = Nested::new();
@@ -278,12 +278,12 @@ fn test_entry_validation_cache_behavior() {
 
     // Create a signed entry
     let mut entry = eidetica::entry::Entry::builder("root123".to_string()).build();
-    entry.auth = eidetica::auth::types::AuthInfo {
-        id: eidetica::auth::types::AuthId::Direct("TEST_KEY".to_string()),
-        signature: None,
+    entry.sig = eidetica::auth::types::SigInfo {
+        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
+        sig: None,
     };
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
-    entry.auth.signature = Some(signature);
+    entry.sig.sig = Some(signature);
 
     // Validate the entry - should work
     let result1 = validator.validate_entry(&entry, &settings, None);
@@ -335,13 +335,13 @@ fn test_entry_validation_with_malformed_keys() {
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::entry::Entry::builder("root123".to_string()).build();
-    correct_entry.auth = eidetica::auth::types::AuthInfo {
-        id: eidetica::auth::types::AuthId::Direct("TEST_KEY".to_string()),
-        signature: None,
+    correct_entry.sig = eidetica::auth::types::SigInfo {
+        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
+        sig: None,
     };
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
-    correct_entry.auth.signature = Some(correct_signature);
+    correct_entry.sig.sig = Some(correct_signature);
 
     // Should validate successfully with correct settings
     let result1 = validator.validate_entry(&correct_entry, &settings, None);
@@ -371,7 +371,7 @@ fn test_entry_validation_with_malformed_keys() {
 
     // Create entry with corrupted signature
     let mut corrupted_entry = correct_entry.clone();
-    corrupted_entry.auth.signature = Some("invalid_base64_signature!@#".to_string());
+    corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
     let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature
@@ -384,15 +384,15 @@ fn test_entry_validation_with_malformed_keys() {
     let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     let mut wrong_signature_entry = eidetica::entry::Entry::builder("root456".to_string()).build();
-    wrong_signature_entry.auth = eidetica::auth::types::AuthInfo {
-        id: eidetica::auth::types::AuthId::Direct("TEST_KEY".to_string()),
-        signature: None,
+    wrong_signature_entry.sig = eidetica::auth::types::SigInfo {
+        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
+        sig: None,
     };
 
     // Sign with wrong key but try to validate against correct key
     let wrong_signature =
         eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
-    wrong_signature_entry.auth.signature = Some(wrong_signature);
+    wrong_signature_entry.sig.sig = Some(wrong_signature);
 
     let result3 = validator.validate_entry(&wrong_signature_entry, &settings, None);
     assert!(
@@ -448,13 +448,13 @@ fn test_entry_validation_with_invalid_signatures() {
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::entry::Entry::builder("root123".to_string()).build();
-    correct_entry.auth = eidetica::auth::types::AuthInfo {
-        id: eidetica::auth::types::AuthId::Direct("TEST_KEY".to_string()),
-        signature: None,
+    correct_entry.sig = eidetica::auth::types::SigInfo {
+        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
+        sig: None,
     };
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
-    correct_entry.auth.signature = Some(correct_signature);
+    correct_entry.sig.sig = Some(correct_signature);
 
     // Should validate successfully
     let result1 = validator.validate_entry(&correct_entry, &settings, None);
@@ -465,7 +465,7 @@ fn test_entry_validation_with_invalid_signatures() {
 
     // Create entry with corrupted signature
     let mut corrupted_entry = correct_entry.clone();
-    corrupted_entry.auth.signature = Some("invalid_base64_signature!@#".to_string());
+    corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
     let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature

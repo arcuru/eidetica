@@ -73,11 +73,7 @@ pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String> {
 /// * `entry` - The entry that was signed (with signature field set)
 /// * `verifying_key` - Public key for verification
 pub fn verify_entry_signature(entry: &Entry, verifying_key: &VerifyingKey) -> Result<bool> {
-    let signature_base64 = entry
-        .auth
-        .signature
-        .as_ref()
-        .ok_or(Error::InvalidSignature)?;
+    let signature_base64 = entry.sig.sig.as_ref().ok_or(Error::InvalidSignature)?;
 
     let signature_bytes =
         Base64::decode_vec(signature_base64).map_err(|_| Error::InvalidSignature)?;
@@ -179,16 +175,16 @@ mod tests {
         let mut entry = crate::entry::Entry::builder("root123").build();
 
         // Set auth ID without signature
-        entry.auth = crate::auth::types::AuthInfo {
-            id: crate::auth::types::AuthId::Direct("KEY_LAPTOP".to_string()),
-            signature: None,
+        entry.sig = crate::auth::types::SigInfo {
+            key: crate::auth::types::SigKey::Direct("KEY_LAPTOP".to_string()),
+            sig: None,
         };
 
         // Sign the entry
         let signature = sign_entry(&entry, &signing_key).unwrap();
 
         // Set the signature on the entry
-        entry.auth.signature = Some(signature);
+        entry.sig.sig = Some(signature);
 
         // Verify the signature
         assert!(verify_entry_signature(&entry, &verifying_key).unwrap());

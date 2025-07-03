@@ -32,7 +32,7 @@ fn test_authenticated_operations() {
 
     // Verify the entry is signed
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert!(entry.auth.is_signed_by("TEST_KEY"));
+    assert!(entry.sig.is_signed_by("TEST_KEY"));
 }
 
 #[test]
@@ -232,9 +232,9 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
 
     // Verify both entries exist and are properly signed
     let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
-    assert!(entry1.auth.is_signed_by("KEY1"));
+    assert!(entry1.sig.is_signed_by("KEY1"));
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
-    assert!(entry2.auth.is_signed_by("KEY2"));
+    assert!(entry2.sig.is_signed_by("KEY2"));
 }
 
 #[test]

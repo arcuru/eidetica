@@ -2,7 +2,7 @@ use super::helpers::*;
 use crate::create_auth_keys;
 use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{AuthId, KeyStatus, Permission};
+use eidetica::auth::types::{KeyStatus, Permission, SigKey};
 use eidetica::crdt::Nested;
 
 #[test]
@@ -54,8 +54,8 @@ fn test_key_management() {
 
     // Verify the entry was signed correctly
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
-    assert!(entry.auth.signature.is_some());
+    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
+    assert!(entry.sig.sig.is_some());
 
     // Verify signature with tree's auth configuration
     assert!(
@@ -101,7 +101,7 @@ fn test_import_private_key() {
 
     // Verify the entry was signed correctly
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
+    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id)
             .expect("Failed to verify")
@@ -148,8 +148,8 @@ fn test_backend_serialization() {
 
     // Verify entry can be retrieved and is properly signed
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.auth.id, AuthId::Direct(key_id.to_string()));
-    assert!(entry.auth.signature.is_some());
+    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
+    assert!(entry.sig.sig.is_some());
     assert!(
         tree.verify_entry_signature(&entry_id)
             .expect("Failed to verify")
@@ -168,7 +168,7 @@ fn test_backend_serialization() {
 
     // Verify second entry
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
-    assert_eq!(entry2.auth.id, AuthId::Direct(key_id2.to_string()));
+    assert_eq!(entry2.sig.key, SigKey::Direct(key_id2.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .expect("Failed to verify")
@@ -272,9 +272,9 @@ fn test_multiple_authenticated_entries() {
 
     // Verify both entries are properly signed
     let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
-    assert!(entry1.auth.is_signed_by("USER1"));
+    assert!(entry1.sig.is_signed_by("USER1"));
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
-    assert!(entry2.auth.is_signed_by("USER2"));
+    assert!(entry2.sig.is_signed_by("USER2"));
 
     // Verify signatures with tree's auth configuration
     assert!(

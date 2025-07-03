@@ -202,13 +202,18 @@ Every entry in Eidetica must be signed. The authentication information is embedd
     }
   ],
   "auth": {
-    "id": { "Direct": "KEY_LAPTOP" },
-    "signature": "ed25519_signature_base64_encoded"
+    "sig": "ed25519_signature_base64_encoded",
+    "key": "KEY_LAPTOP"
   }
 }
 ```
 
-The `auth.id` field currently supports only the `Direct` variant, which references a key name in the `_settings.auth` configuration. The signature is a base64-encoded Ed25519 signature of the entry's content hash.
+The `auth.key` field can be either:
+
+- **Direct key**: A string referencing a key name in this tree's `_settings.auth`
+- **Delegation path**: An ordered list of `{"key": "delegated_tree_1", "tips": ["A", "B"]}` elements, where the last element must contain only a `"key"` field
+
+The `auth.sig` field contains the base64-encoded Ed25519 signature of the entry's content hash.
 
 ## Key Management
 
@@ -370,30 +375,30 @@ Delegated trees can reference other delegated trees, creating delegation chains:
 ```json
 {
   "auth": {
-    "id": [
+    "sig": "signature_bytes",
+    "key": [
       {
-        "id": "example@eidetica.dev",
+        "key": "example@eidetica.dev",
         "tips": ["current_tip"]
       },
       {
-        "id": "old-identity",
+        "key": "old-identity",
         "tips": ["old_tip"]
       },
       {
         "key": "LEGACY_KEY"
       }
-    ],
-    "signature": "signature_bytes"
+    ]
   }
 }
 ```
 
 **Delegation Chain Rules**:
 
-- Each element in the `auth.id` array represents a step in the delegation chain
-- The first element references the main tree's delegated tree
-- Subsequent elements reference nested delegated trees or direct keys
-- The final element must be a direct key reference
+- The `auth.key` field contains an ordered list representing the delegation path
+- Each element has a `"key"` field and optionally `"tips"` for delegated trees
+- The final element must contain only a `"key"` field (the actual signing key)
+- Each step represents traversing from one tree to the next in the delegation chain
 - Permission clamping applies at each level using the minimum function
 - Priority comes from the final effective permission after all clamping operations
 - Tips must be valid at each level of the chain for the delegation to be valid

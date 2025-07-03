@@ -5,7 +5,7 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
-use crate::auth::types::{AuthId, AuthKey, DelegatedTreeRef, KeyStatus, ResolvedAuth};
+use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, ResolvedAuth, SigKey};
 use crate::crdt::{Nested, Value};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -134,9 +134,9 @@ impl AuthSettings {
     ///
     /// This is entry-time validation using current settings state only.
     /// No complex merge-time validation is performed.
-    pub fn validate_entry_auth(&self, auth_id: &AuthId) -> Result<ResolvedAuth> {
-        match auth_id {
-            AuthId::Direct(key_id) => {
+    pub fn validate_entry_auth(&self, sig_key: &SigKey) -> Result<ResolvedAuth> {
+        match sig_key {
+            SigKey::Direct(key_id) => {
                 if let Some(key_result) = self.get_key(key_id) {
                     let auth_key = key_result?;
                     let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
@@ -149,7 +149,7 @@ impl AuthSettings {
                     Err(Error::Authentication(format!("Key not found: {key_id}")))
                 }
             }
-            AuthId::DelegatedTree { .. } => {
+            SigKey::DelegationPath(_) => {
                 // Phase 1: Delegated trees not implemented yet
                 Err(Error::Authentication(
                     "Delegated trees not yet implemented in Phase 1".to_string(),

@@ -7,7 +7,7 @@
 
 use crate::Error;
 use crate::Result;
-use crate::auth::types::AuthInfo;
+use crate::auth::types::SigInfo;
 use crate::constants::ROOT;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -198,6 +198,15 @@ struct SubTreeNode {
 /// It is content-addressable, meaning its `ID` is a cryptographic hash of its contents.
 /// Entries form a Merkle-DAG (Directed Acyclic Graph) structure through parent references.
 ///
+/// # Authentication
+///
+/// Each entry contains authentication information with:
+/// - `sig`: Base64-encoded cryptographic signature (optional, allows unsigned entry creation)
+/// - `key`: Authentication key reference path, either:
+///   - A direct key ID defined in this tree's `_settings.auth`
+///   - A delegation path as an ordered list of `{"key": "delegated_tree_1", "tips": ["A", "B"]}`
+///     where the last element must contain only a `"key"` field
+///
 /// # Immutability
 ///
 /// `Entry` instances are designed to be immutable once created. To create or modify entries,
@@ -244,7 +253,7 @@ pub struct Entry {
     /// The vector is kept sorted alphabetically by subtree name during the build process.
     subtrees: Vec<SubTreeNode>,
     /// Authentication information for this entry
-    pub auth: AuthInfo,
+    pub sig: SigInfo,
 }
 
 impl Entry {
@@ -363,7 +372,7 @@ impl Entry {
     /// The returned entry has deterministic field ordering for consistent signatures.
     pub fn canonical_for_signing(&self) -> Self {
         let mut canonical = self.clone();
-        canonical.auth.signature = None;
+        canonical.sig.sig = None;
         canonical
     }
 
@@ -448,7 +457,7 @@ impl Entry {
 pub struct EntryBuilder {
     tree: TreeNode,
     subtrees: Vec<SubTreeNode>,
-    auth: AuthInfo,
+    sig: SigInfo,
 }
 
 impl EntryBuilder {
@@ -467,7 +476,7 @@ impl EntryBuilder {
                 metadata: None,
             },
             subtrees: Vec::new(),
-            auth: AuthInfo::default(),
+            sig: SigInfo::default(),
         }
     }
 
@@ -495,8 +504,8 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `auth` - The authentication information including key ID and optional signature
-    pub fn set_auth(mut self, auth: AuthInfo) -> Self {
-        self.auth = auth;
+    pub fn set_sig(mut self, sig: SigInfo) -> Self {
+        self.sig = sig;
         self
     }
 
@@ -505,19 +514,33 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `auth` - The authentication information including key ID and optional signature
-    pub fn set_auth_mut(&mut self, auth: AuthInfo) -> &mut Self {
-        self.auth = auth;
+    pub fn set_sig_mut(&mut self, sig: SigInfo) -> &mut Self {
+        self.sig = sig;
         self
     }
 
-    /// Get a reference to the current authentication information
-    pub fn auth(&self) -> &AuthInfo {
-        &self.auth
+    /// Compatibility alias for set_sig
+    #[deprecated(note = "Use set_sig instead")]
+    pub fn set_auth(self, sig: SigInfo) -> Self {
+        self.set_sig(sig)
     }
 
-    /// Get a mutable reference to the current authentication information
-    pub fn auth_mut(&mut self) -> &mut AuthInfo {
-        &mut self.auth
+    /// Compatibility alias for set_sig_mut
+    #[deprecated(note = "Use set_sig_mut instead")]
+    pub fn set_auth_mut(&mut self, sig: SigInfo) -> &mut Self {
+        self.set_sig_mut(sig)
+    }
+
+    /// Access authentication info for compatibility
+    #[deprecated(note = "Use .sig field instead")]
+    pub fn auth(&self) -> &SigInfo {
+        &self.sig
+    }
+
+    /// Mutable access to authentication info for compatibility
+    #[deprecated(note = "Use .sig field instead")]
+    pub fn auth_mut(&mut self) -> &mut SigInfo {
+        &mut self.sig
     }
 
     /// Get the names of all subtrees this entry builder contains data for.
@@ -894,7 +917,7 @@ impl EntryBuilder {
         Entry {
             tree: self.tree,
             subtrees: self.subtrees,
-            auth: self.auth,
+            sig: self.sig,
         }
     }
 }

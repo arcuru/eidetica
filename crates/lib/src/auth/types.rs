@@ -226,39 +226,48 @@ impl Default for PermissionBounds {
     }
 }
 
-/// Authentication identifier for entry signing
-///
-/// Can be either a direct key reference or a nested delegated tree delegation
+/// Step in a delegation path
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AuthId {
-    /// Direct reference to a key ID in the main tree's _settings.auth
-    Direct(String),
-    /// Delegated tree delegation with optional nesting
-    /// TODO: This should be done with a flat list instead of a nested struct
-    DelegatedTree {
-        /// Delegated tree ID in the main tree's _settings.auth
-        id: String,
-        /// Tips of the delegated tree at time of signing
-        tips: Vec<ID>,
-        /// Key reference within the delegated tree (can be nested)
-        key: Box<AuthId>,
-    },
+pub struct DelegationStep {
+    /// Delegated tree ID or final key name
+    pub key: String,
+    /// Tips of the delegated tree at time of signing (None for final step)
+    pub tips: Option<Vec<ID>>,
 }
 
-impl Default for AuthId {
+/// Authentication key identifier for entry signing
+///
+/// Represents the path to resolve the signing key, either directly or through delegation.
+/// Uses a flat list structure instead of recursive nesting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum SigKey {
+    /// Direct reference to a key ID in the current tree's _settings.auth
+    Direct(String),
+    /// Flat delegation path as ordered list
+    /// Each step except the last contains {"key": "tree_id", "tips": ["A", "B"]}
+    /// The final step contains only {"key": "final_key_name"}
+    DelegationPath(Vec<DelegationStep>),
+}
+
+impl Default for SigKey {
     fn default() -> Self {
-        AuthId::Direct(String::new())
+        SigKey::Direct(String::new())
     }
 }
 
-/// Authentication information embedded in an entry
+/// Signature information embedded in an entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct AuthInfo {
-    /// Authentication identifier (direct key or User Auth Tree delegation)
-    pub id: AuthId,
-    /// Base64-encoded signature bytes
+pub struct SigInfo {
+    /// Authentication signature - base64-encoded signature bytes
     /// Optional to allow for entry creation before signing
-    pub signature: Option<String>,
+    pub sig: Option<String>,
+    /// Authentication key reference path
+    /// Either a direct key ID defined in this tree's _settings.auth,
+    /// or a delegation path as an ordered list of {"key": "delegated_tree_1", "tips": ["A", "B"]}.
+    /// The last element in the delegation path must contain only a "key" field.
+    /// This represents the path that needs to be traversed to find the public key of the signing key.
+    pub key: SigKey,
 }
 
 /// Resolved authentication information after validation
@@ -382,6 +391,11 @@ impl_nested_value_map!(DelegatedTreeRef, {
     tree: TreeReference
 });
 
+impl_nested_value_map!(DelegationStep, {
+    key: String,
+    tips: Option<Vec<ID>>
+});
+
 // Support for Option<Permission>
 impl From<Option<Permission>> for Value {
     fn from(value: Option<Permission>) -> Self {
@@ -463,153 +477,101 @@ impl TryFrom<Value> for Vec<String> {
     }
 }
 
-impl From<AuthId> for Value {
-    fn from(auth_id: AuthId) -> Self {
-        let mut nested = Nested::new();
-        match auth_id {
-            AuthId::Direct(key_id) => {
-                nested.set("type", "direct".to_string());
-                nested.set("key_id", key_id);
-            }
-            AuthId::DelegatedTree { id, tips, key } => {
-                nested.set("type", "delegated_tree".to_string());
-                nested.set("id", id);
-                nested.set("tips", tips);
-                nested.set("key", *key);
+impl From<SigKey> for Value {
+    fn from(sig_key: SigKey) -> Self {
+        match sig_key {
+            SigKey::Direct(key_id) => Value::String(key_id),
+            SigKey::DelegationPath(steps) => {
+                let json = serde_json::to_string(&steps).unwrap_or_else(|_| "[]".to_string());
+                Value::String(json)
             }
         }
-        Value::Map(nested)
     }
 }
 
-impl TryFrom<Value> for AuthId {
+impl TryFrom<Value> for SigKey {
     type Error = String;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Map(map) => {
-                let auth_type = map
-                    .get("type")
-                    .ok_or_else(|| "Missing 'type' field in AuthId".to_string())?;
-
-                let type_str = match auth_type {
-                    Value::String(s) => s,
-                    _ => return Err("AuthId 'type' field must be a string".to_string()),
-                };
-
-                match type_str.as_str() {
-                    "direct" => {
-                        let key_id = map
-                            .get("key_id")
-                            .ok_or_else(|| "Missing 'key_id' field in Direct AuthId".to_string())?;
-
-                        let key_id_str = match key_id {
-                            Value::String(s) => s.clone(),
-                            _ => return Err("AuthId 'key_id' field must be a string".to_string()),
-                        };
-
-                        Ok(AuthId::Direct(key_id_str))
-                    }
-                    "delegated_tree" => {
-                        let id = map
-                            .get("id")
-                            .ok_or_else(|| "Missing 'id' field in UserTree AuthId".to_string())?;
-                        let tips = map
-                            .get("tips")
-                            .ok_or_else(|| "Missing 'tips' field in UserTree AuthId".to_string())?;
-                        let key = map
-                            .get("key")
-                            .ok_or_else(|| "Missing 'key' field in UserTree AuthId".to_string())?;
-
-                        let id_str = match id {
-                            Value::String(s) => s.clone(),
-                            _ => return Err("AuthId 'id' field must be a string".to_string()),
-                        };
-
-                        let tips_vec = Vec::<ID>::try_from(tips.clone())
-                            .map_err(|e| format!("Invalid tips: {e}"))?;
-
-                        let key_parsed = AuthId::try_from(key.clone())
-                            .map_err(|e| format!("Invalid nested key: {e}"))?;
-
-                        Ok(AuthId::DelegatedTree {
-                            id: id_str,
-                            tips: tips_vec,
-                            key: Box::new(key_parsed),
-                        })
-                    }
-                    _ => Err(format!("Unknown AuthId type: {type_str}")),
+            Value::String(s) => {
+                // Try to parse as JSON array first (delegation path)
+                if let Ok(steps) = serde_json::from_str::<Vec<DelegationStep>>(&s) {
+                    Ok(SigKey::DelegationPath(steps))
+                } else {
+                    // Otherwise treat as direct key
+                    Ok(SigKey::Direct(s))
                 }
             }
-            Value::String(json) => {
-                // Fallback to JSON parsing for backward compatibility
-                serde_json::from_str(&json)
-                    .map_err(|e| format!("Failed to parse AuthId from JSON: {e}"))
-            }
-            Value::Array(_) => Err("Cannot convert array to AuthId".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to AuthId".to_string()),
+            Value::Array(_) => Err("Cannot convert array to SigKey".to_string()),
+            Value::Map(_) => Err("Cannot convert map to SigKey".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to SigKey".to_string()),
         }
     }
 }
 
-impl From<AuthInfo> for Value {
-    fn from(auth_info: AuthInfo) -> Self {
+impl From<SigInfo> for Value {
+    fn from(sig_info: SigInfo) -> Self {
         let mut nested = Nested::new();
-        nested.set("id", auth_info.id);
-        if let Some(signature) = auth_info.signature {
-            nested.set("signature", signature);
+        nested.set("key", sig_info.key);
+        if let Some(sig) = sig_info.sig {
+            nested.set("sig", sig);
         }
         Value::Map(nested)
     }
 }
 
-impl TryFrom<Value> for AuthInfo {
+impl TryFrom<Value> for SigInfo {
     type Error = String;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Map(map) => {
-                let id = map
-                    .get("id")
-                    .ok_or_else(|| "Missing 'id' field in AuthInfo".to_string())?;
-                let signature = map.get("signature").and_then(|v| match v {
+                let key = map
+                    .get("key")
+                    .ok_or_else(|| "Missing 'key' field in SigInfo".to_string())?;
+                let sig = map.get("sig").and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
                     _ => None,
                 });
 
-                let id_parsed =
-                    AuthId::try_from(id.clone()).map_err(|e| format!("Invalid id: {e}"))?;
+                let key_parsed =
+                    SigKey::try_from(key.clone()).map_err(|e| format!("Invalid key: {e}"))?;
 
-                Ok(AuthInfo {
-                    id: id_parsed,
-                    signature,
+                Ok(SigInfo {
+                    key: key_parsed,
+                    sig,
                 })
             }
-            Value::String(s) => Err(format!("Cannot convert string to AuthInfo: {s}")),
-            Value::Array(_) => Err("Cannot convert array to AuthInfo".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to AuthInfo".to_string()),
+            Value::String(s) => Err(format!("Cannot convert string to SigInfo: {s}")),
+            Value::Array(_) => Err("Cannot convert array to SigInfo".to_string()),
+            Value::Deleted => Err("Cannot convert deleted value to SigInfo".to_string()),
         }
     }
 }
 
-impl AuthInfo {
-    /// Check if this AuthInfo was signed by a specific key ID
+impl SigInfo {
+    /// Check if this SigInfo was signed by a specific key ID
     ///
     /// For direct keys, this checks if the key ID matches.
-    /// For delegated trees, this checks if the nested key ultimately resolves to the given key ID.
+    /// For delegated trees, this checks if the final key in the delegation path matches the given key ID.
     pub fn is_signed_by(&self, key_id: &str) -> bool {
-        self.id.is_signed_by(key_id)
+        self.key.is_signed_by(key_id)
     }
 }
 
-impl AuthId {
-    /// Check if this AuthId ultimately resolves to a specific key ID
+impl SigKey {
+    /// Check if this SigKey ultimately resolves to a specific key ID
     pub fn is_signed_by(&self, key_id: &str) -> bool {
         match self {
-            AuthId::Direct(id) => id == key_id,
-            AuthId::DelegatedTree { key, .. } => {
-                // Recursively check nested keys
-                key.as_ref().is_signed_by(key_id)
+            SigKey::Direct(id) => id == key_id,
+            SigKey::DelegationPath(steps) => {
+                // Check the final step in the delegation path
+                if let Some(last_step) = steps.last() {
+                    last_step.key == key_id
+                } else {
+                    false
+                }
             }
         }
     }
@@ -656,6 +618,40 @@ impl TryFrom<Value> for Vec<ID> {
             Value::Array(_) => Err("Cannot convert array to Vec<ID>".to_string()),
             Value::Map(_) => Err("Cannot convert map to Vec<ID>".to_string()),
             Value::Deleted => Err("Cannot convert deleted value to Vec<ID>".to_string()),
+        }
+    }
+}
+
+// Support for Option<Vec<ID>>
+impl From<Option<Vec<ID>>> for Value {
+    fn from(value: Option<Vec<ID>>) -> Self {
+        match value {
+            Some(vec) => {
+                let strings: Vec<String> = vec.into_iter().map(|id| id.to_string()).collect();
+                Value::String(serde_json::to_string(&strings).unwrap())
+            }
+            None => Value::String("none".to_string()),
+        }
+    }
+}
+
+impl TryFrom<Value> for Option<Vec<ID>> {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => {
+                if s == "none" {
+                    Ok(None)
+                } else {
+                    let strings: Vec<String> = serde_json::from_str(&s)
+                        .map_err(|e| format!("Invalid Vec<ID> JSON: {e}"))?;
+                    Ok(Some(strings.into_iter().map(ID::new).collect()))
+                }
+            }
+            Value::Array(_) => Err("Cannot convert array to Option<Vec<ID>>".to_string()),
+            Value::Map(_) => Err("Cannot convert map to Option<Vec<ID>>".to_string()),
+            Value::Deleted => Ok(None),
         }
     }
 }
@@ -767,35 +763,40 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_info_serialization() {
-        let auth_info = AuthInfo {
-            id: AuthId::Direct("KEY_LAPTOP".to_string()),
-            signature: Some("signature_base64_encoded_string_here".to_string()),
+    fn test_sig_info_serialization() {
+        let sig_info = SigInfo {
+            key: SigKey::Direct("KEY_LAPTOP".to_string()),
+            sig: Some("signature_base64_encoded_string_here".to_string()),
         };
 
-        let json = serde_json::to_string(&auth_info).unwrap();
-        let deserialized: AuthInfo = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&sig_info).unwrap();
+        let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            serde_json::to_string(&auth_info.id).unwrap(),
-            serde_json::to_string(&deserialized.id).unwrap()
+            serde_json::to_string(&sig_info.key).unwrap(),
+            serde_json::to_string(&deserialized.key).unwrap()
         );
-        assert_eq!(auth_info.signature, deserialized.signature);
+        assert_eq!(sig_info.sig, deserialized.sig);
     }
 
     #[test]
-    fn test_delegated_tree_auth_id() {
-        let auth_id = AuthId::DelegatedTree {
-            id: "example@eidetica.dev".to_string(),
-            tips: vec![ID::new("abc123")],
-            key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
-        };
+    fn test_delegation_path_sig_key() {
+        let sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "example@eidetica.dev".to_string(),
+                tips: Some(vec![ID::new("abc123")]),
+            },
+            DelegationStep {
+                key: "KEY_LAPTOP".to_string(),
+                tips: None,
+            },
+        ]);
 
-        let json = serde_json::to_string(&auth_id).unwrap();
-        let deserialized: AuthId = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&sig_key).unwrap();
+        let deserialized: SigKey = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            serde_json::to_string(&auth_id).unwrap(),
+            serde_json::to_string(&sig_key).unwrap(),
             serde_json::to_string(&deserialized).unwrap()
         );
     }
@@ -863,102 +864,80 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_id_nested_value_roundtrip() {
-        let original = AuthId::Direct("KEY_LAPTOP".to_string());
+    fn test_sig_key_nested_value_roundtrip() {
+        let original = SigKey::Direct("KEY_LAPTOP".to_string());
         let nested: Value = original.clone().into();
-        let parsed = AuthId::try_from(nested).unwrap();
+        let parsed = SigKey::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
-    fn test_auth_id_direct_structured_format() {
-        let auth_id = AuthId::Direct("KEY_LAPTOP".to_string());
-        let nested: Value = auth_id.into();
+    fn test_sig_key_direct_format() {
+        let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
+        let value: Value = sig_key.into();
 
-        if let Value::Map(map) = nested {
-            assert_eq!(map.get("type"), Some(&Value::String("direct".to_string())));
-            assert_eq!(
-                map.get("key_id"),
-                Some(&Value::String("KEY_LAPTOP".to_string()))
-            );
+        if let Value::String(s) = value {
+            assert_eq!(s, "KEY_LAPTOP");
         } else {
-            panic!("Expected Value::Map for Direct AuthId");
+            panic!("Expected Value::String for Direct SigKey");
         }
     }
 
     #[test]
-    fn test_auth_id_delegated_tree_structured_format() {
-        let auth_id = AuthId::DelegatedTree {
-            id: "user@example.com".to_string(),
-            tips: vec![ID::new("tip1"), ID::new("tip2")],
-            key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
-        };
+    fn test_sig_key_delegation_path_format() {
+        let sig_key = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "user@example.com".to_string(),
+                tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
+            },
+            DelegationStep {
+                key: "KEY_LAPTOP".to_string(),
+                tips: None,
+            },
+        ]);
 
-        let nested: Value = auth_id.clone().into();
+        let value: Value = sig_key.clone().into();
 
-        if let Value::Map(map) = nested {
-            assert_eq!(
-                map.get("type"),
-                Some(&Value::String("delegated_tree".to_string()))
-            );
-            assert_eq!(
-                map.get("id"),
-                Some(&Value::String("user@example.com".to_string()))
-            );
-
-            // Check tips
-            if let Some(Value::String(tips_json)) = map.get("tips") {
-                let tips: Vec<String> = serde_json::from_str(tips_json).unwrap();
-                assert_eq!(tips, vec!["tip1".to_string(), "tip2".to_string()]);
-            } else {
-                panic!("Expected tips to be a JSON string");
-            }
-
-            // Check nested key
-            if let Some(nested_key) = map.get("key") {
-                if let Value::Map(key_map) = nested_key {
-                    assert_eq!(
-                        key_map.get("type"),
-                        Some(&Value::String("direct".to_string()))
-                    );
-                    assert_eq!(
-                        key_map.get("key_id"),
-                        Some(&Value::String("KEY_LAPTOP".to_string()))
-                    );
-                } else {
-                    panic!("Expected nested key to be a map");
-                }
-            } else {
-                panic!("Expected nested key to be present");
-            }
+        if let Value::String(json) = value {
+            let steps: Vec<DelegationStep> = serde_json::from_str(&json).unwrap();
+            assert_eq!(steps.len(), 2);
+            assert_eq!(steps[0].key, "user@example.com");
+            assert_eq!(steps[0].tips, Some(vec![ID::new("tip1"), ID::new("tip2")]));
+            assert_eq!(steps[1].key, "KEY_LAPTOP");
+            assert_eq!(steps[1].tips, None);
         } else {
-            panic!("Expected Value::Map for UserTree AuthId");
+            panic!("Expected Value::String for DelegationPath SigKey");
         }
     }
 
     #[test]
-    fn test_auth_id_delegated_tree_roundtrip() {
-        let original = AuthId::DelegatedTree {
-            id: "user@example.com".to_string(),
-            tips: vec![ID::new("tip1"), ID::new("tip2")],
-            key: Box::new(AuthId::Direct("KEY_LAPTOP".to_string())),
-        };
+    fn test_sig_key_delegation_path_roundtrip() {
+        let original = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "user@example.com".to_string(),
+                tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
+            },
+            DelegationStep {
+                key: "KEY_LAPTOP".to_string(),
+                tips: None,
+            },
+        ]);
 
         let nested: Value = original.clone().into();
-        let parsed = AuthId::try_from(nested).unwrap();
+        let parsed = SigKey::try_from(nested).unwrap();
         assert_eq!(original, parsed);
     }
 
     #[test]
-    fn test_auth_info_nested_value_roundtrip() {
-        let original = AuthInfo {
-            id: AuthId::Direct("KEY_LAPTOP".to_string()),
-            signature: Some("signature_here".to_string()),
+    fn test_sig_info_nested_value_roundtrip() {
+        let original = SigInfo {
+            key: SigKey::Direct("KEY_LAPTOP".to_string()),
+            sig: Some("signature_here".to_string()),
         };
         let nested: Value = original.clone().into();
-        let parsed = AuthInfo::try_from(nested).unwrap();
-        assert_eq!(original.id, parsed.id);
-        assert_eq!(original.signature, parsed.signature);
+        let parsed = SigInfo::try_from(nested).unwrap();
+        assert_eq!(original.key, parsed.key);
+        assert_eq!(original.sig, parsed.sig);
     }
 
     #[test]
@@ -1117,5 +1096,58 @@ mod tests {
         assert_eq!(original.pubkey, parsed.pubkey);
         assert_eq!(original.permissions, parsed.permissions);
         assert_eq!(original.status, parsed.status);
+    }
+
+    #[test]
+    fn test_sig_key_is_signed_by() {
+        // Test direct key
+        let direct_key = SigKey::Direct("KEY_LAPTOP".to_string());
+        assert!(direct_key.is_signed_by("KEY_LAPTOP"));
+        assert!(!direct_key.is_signed_by("KEY_DESKTOP"));
+
+        // Test delegation path
+        let delegation_path = SigKey::DelegationPath(vec![
+            DelegationStep {
+                key: "user@example.com".to_string(),
+                tips: Some(vec![ID::new("tip1")]),
+            },
+            DelegationStep {
+                key: "KEY_LAPTOP".to_string(),
+                tips: None,
+            },
+        ]);
+        assert!(delegation_path.is_signed_by("KEY_LAPTOP"));
+        assert!(!delegation_path.is_signed_by("user@example.com"));
+        assert!(!delegation_path.is_signed_by("KEY_DESKTOP"));
+
+        // Test empty delegation path
+        let empty_path = SigKey::DelegationPath(vec![]);
+        assert!(!empty_path.is_signed_by("KEY_LAPTOP"));
+    }
+
+    #[test]
+    fn test_delegation_step_serialization() {
+        let step = DelegationStep {
+            key: "user@example.com".to_string(),
+            tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
+        };
+
+        let json = serde_json::to_string(&step).unwrap();
+        let deserialized: DelegationStep = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(step.key, deserialized.key);
+        assert_eq!(step.tips, deserialized.tips);
+
+        // Test final step (no tips)
+        let final_step = DelegationStep {
+            key: "KEY_LAPTOP".to_string(),
+            tips: None,
+        };
+
+        let json = serde_json::to_string(&final_step).unwrap();
+        let deserialized: DelegationStep = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(final_step.key, deserialized.key);
+        assert_eq!(final_step.tips, deserialized.tips);
     }
 }
