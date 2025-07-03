@@ -576,13 +576,13 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         },
     );
 
-    // Bounds: raise anything below Write(7) up to Write(7), cap at Write(9)
+    // Bounds: raise anything below Write(7) up to Write(7), cap at Write(0)
     main_auth.set(
         "delegate_user_min_upgrade",
         DelegatedTreeRef {
             permission_bounds: PermissionBounds {
-                max: Permission::Write(9),
-                min: Some(Permission::Write(7)),
+                max: Permission::Write(0),       // Highest possible Write permission
+                min: Some(Permission::Write(7)), // Minimum permission level
             },
             tree: TreeReference {
                 root: delegated_tree.root_id().clone(),

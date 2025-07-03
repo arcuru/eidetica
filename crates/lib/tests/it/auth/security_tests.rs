@@ -41,39 +41,19 @@ fn test_admin_hierarchy_enforcement() {
 
 #[test]
 fn test_permission_ordering_correctness() {
-    // These two permissions should NOT be equal according to the security model:
-    // Admin(u32::MAX) = 1 + (2 * u32::MAX) - u32::MAX = 1 + u32::MAX
-    // Write(0) = 1 + u32::MAX - 0 = 1 + u32::MAX
+    // Admin permissions should always be higher than Write permissions
     let admin_lowest = Permission::Admin(u32::MAX);
     let write_highest = Permission::Write(0);
 
-    // Test documents current behavior - there is an arithmetic overflow issue
-    println!(
-        "Admin(u32::MAX) == Write(0): {}",
-        admin_lowest == write_highest
+    // This should now work correctly after fixing the arithmetic
+    assert!(
+        admin_lowest > write_highest,
+        "Admin should always be higher than Write"
     );
-    println!(
-        "Admin(u32::MAX) > Write(0): {}",
-        admin_lowest > write_highest
+    assert_ne!(
+        admin_lowest, write_highest,
+        "Admin and Write should never be equal"
     );
-    println!(
-        "Admin(u32::MAX) < Write(0): {}",
-        admin_lowest < write_highest
-    );
-
-    if admin_lowest == write_highest {
-        println!("WARNING: Permission arithmetic overflow detected - Admin(u32::MAX) == Write(0)");
-        println!("This is a security vulnerability that should be fixed");
-    } else if admin_lowest < write_highest {
-        println!("WARNING: Admin(u32::MAX) < Write(0) - this is backwards!");
-        println!("This indicates a serious permission ordering bug");
-    }
-
-    // Just verify the comparison doesn't crash - don't enforce specific ordering
-    // since there appear to be bugs in the current implementation
-    // The comparison should work without panicking
-    let _ = admin_lowest == write_highest;
-    let _ = admin_lowest != write_highest;
 }
 
 #[test]
@@ -124,38 +104,25 @@ fn test_admin_hierarchy_complete_enforcement() {
 
 #[test]
 fn test_permission_arithmetic_correctness() {
-    // Test the arithmetic overflow issue in permission ordering
-
-    // These calculations should not overflow or cause inconsistencies:
-    // Admin(0) = 1 + (2 * u32::MAX) - 0 = 1 + 2 * u32::MAX (should be max value)
-    // Admin(u32::MAX) = 1 + (2 * u32::MAX) - u32::MAX = 1 + u32::MAX
-    // Write(0) = 1 + u32::MAX - 0 = 1 + u32::MAX
-
+    // Test that permission arithmetic works correctly
     let admin_max_priority = Permission::Admin(0); // Highest priority
     let admin_min_priority = Permission::Admin(u32::MAX); // Lowest priority  
     let write_max_priority = Permission::Write(0); // Highest write priority
 
-    // This test documents the arithmetic overflow bug
-    // Admin(u32::MAX) and Write(0) should NOT be equal, but they are due to overflow
-    // Document the arithmetic overflow issue
-    if admin_min_priority == write_max_priority {
-        println!("WARNING: Arithmetic overflow - Admin(u32::MAX) == Write(0)");
-        // Document the current buggy behavior
-        assert_eq!(
-            admin_min_priority, write_max_priority,
-            "Current implementation has arithmetic overflow"
-        );
-    } else {
-        assert_ne!(
-            admin_min_priority, write_max_priority,
-            "Admin and Write should never be equal"
-        );
-    }
+    // Admin permissions should never equal Write permissions
+    assert_ne!(
+        admin_min_priority, write_max_priority,
+        "Admin and Write should never be equal"
+    );
 
-    // Admin(0) should definitely be greater than Write(0) - this should work correctly
+    // Admin should always be higher than Write
     assert!(
         admin_max_priority > write_max_priority,
         "Admin should always be higher than Write"
+    );
+    assert!(
+        admin_min_priority > write_max_priority,
+        "Even lowest priority Admin should be higher than highest priority Write"
     );
 }
 
