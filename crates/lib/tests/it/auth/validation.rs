@@ -162,7 +162,7 @@ fn test_multiple_authenticated_entries() {
     let mut auth_settings = Nested::new();
 
     let auth_key = AuthKey {
-        key: format_public_key(&public_key),
+        pubkey: format_public_key(&public_key),
         permissions: Permission::Admin(0), // Admin needed to create tree with auth
         status: KeyStatus::Active,
     };
@@ -265,7 +265,7 @@ fn test_entry_validation_cache_behavior() {
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     let auth_key = eidetica::auth::types::AuthKey {
-        key: eidetica::auth::crypto::format_public_key(&verifying_key),
+        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
         permissions: eidetica::auth::types::Permission::Write(10),
         status: eidetica::auth::types::KeyStatus::Active,
     };
@@ -323,7 +323,7 @@ fn test_entry_validation_with_malformed_keys() {
 
     // Create settings with a valid key for comparison
     let auth_key = eidetica::auth::types::AuthKey {
-        key: eidetica::auth::crypto::format_public_key(&verifying_key),
+        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
         permissions: eidetica::auth::types::Permission::Write(10),
         status: eidetica::auth::types::KeyStatus::Active,
     };
@@ -352,7 +352,7 @@ fn test_entry_validation_with_malformed_keys() {
 
     // Now test with malformed key in settings
     let malformed_auth_key = eidetica::auth::types::AuthKey {
-        key: "ed25519:invalid_base64_data!@#$".to_string(),
+        pubkey: "ed25519:invalid_base64_data!@#$".to_string(),
         permissions: eidetica::auth::types::Permission::Write(10),
         status: eidetica::auth::types::KeyStatus::Active,
     };
@@ -436,7 +436,7 @@ fn test_entry_validation_with_invalid_signatures() {
 
     // Create settings with the correct public key
     let auth_key = eidetica::auth::types::AuthKey {
-        key: eidetica::auth::crypto::format_public_key(&verifying_key),
+        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
         permissions: eidetica::auth::types::Permission::Write(10),
         status: eidetica::auth::types::KeyStatus::Active,
     };

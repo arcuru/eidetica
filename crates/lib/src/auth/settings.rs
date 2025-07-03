@@ -139,7 +139,7 @@ impl AuthSettings {
             AuthId::Direct(key_id) => {
                 if let Some(key_result) = self.get_key(key_id) {
                     let auth_key = key_result?;
-                    let public_key = crate::auth::crypto::parse_public_key(&auth_key.key)?;
+                    let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
                     Ok(ResolvedAuth {
                         public_key,
                         effective_permission: auth_key.permissions.clone(),
@@ -216,7 +216,7 @@ mod tests {
 
         // Add a key
         let auth_key = AuthKey {
-            key: "ed25519:test_key".to_string(),
+            pubkey: "ed25519:test_key".to_string(),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };
@@ -225,7 +225,7 @@ mod tests {
 
         // Retrieve the key
         let retrieved = settings.get_key("KEY_LAPTOP").unwrap().unwrap();
-        assert_eq!(retrieved.key, auth_key.key);
+        assert_eq!(retrieved.pubkey, auth_key.pubkey);
         assert_eq!(retrieved.permissions, auth_key.permissions);
         assert_eq!(retrieved.status, auth_key.status);
     }
@@ -235,7 +235,7 @@ mod tests {
         let mut settings = AuthSettings::new();
 
         let auth_key = AuthKey {
-            key: "ed25519:test_key".to_string(),
+            pubkey: "ed25519:test_key".to_string(),
             permissions: Permission::Admin(5),
             status: KeyStatus::Active,
         };
@@ -256,13 +256,13 @@ mod tests {
         let mut settings2 = AuthSettings::new();
 
         let key1 = AuthKey {
-            key: "ed25519:key1".to_string(),
+            pubkey: "ed25519:key1".to_string(),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };
 
         let key2 = AuthKey {
-            key: "ed25519:key2".to_string(),
+            pubkey: "ed25519:key2".to_string(),
             permissions: Permission::Admin(5),
             status: KeyStatus::Active,
         };
@@ -289,7 +289,7 @@ mod tests {
 
         // Add high-priority admin key
         let high_priority_key = AuthKey {
-            key: "ed25519:admin".to_string(),
+            pubkey: "ed25519:admin".to_string(),
             permissions: Permission::Admin(1), // High priority
             status: KeyStatus::Active,
         };

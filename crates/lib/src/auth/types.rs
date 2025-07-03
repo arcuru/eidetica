@@ -181,7 +181,7 @@ pub enum KeyStatus {
 pub struct AuthKey {
     /// Public key with crypto-agility prefix
     /// Currently only supports ed25519 format: "ed25519:<base64_url_unpadded_key>"
-    pub key: String,
+    pub pubkey: String,
     /// Permission level for this key
     pub permissions: Permission,
     /// Current status of the key
@@ -362,7 +362,7 @@ impl TryFrom<Value> for String {
 
 // Use the map macro for struct types
 impl_nested_value_map!(AuthKey, {
-    key: String,
+    pubkey: String,
     permissions: Permission,
     status: KeyStatus
 });
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn test_auth_key_serialization() {
         let key = AuthKey {
-            key: "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk".to_string(),
+            pubkey: "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk".to_string(),
             permissions: Permission::Write(10),
             status: KeyStatus::Active,
         };
@@ -761,7 +761,7 @@ mod tests {
         let serialized = serde_json::to_string(&key).unwrap();
         let deserialized: AuthKey = serde_json::from_str(&serialized).unwrap();
 
-        assert_eq!(key.key, deserialized.key);
+        assert_eq!(key.pubkey, deserialized.pubkey);
         assert_eq!(key.permissions, deserialized.permissions);
         assert_eq!(key.status, deserialized.status);
     }
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn test_auth_key_to_nested_value() {
         let key = AuthKey {
-            key: "ed25519:test_key".to_string(),
+            pubkey: "ed25519:test_key".to_string(),
             permissions: Permission::Read,
             status: KeyStatus::Active,
         };
@@ -811,12 +811,12 @@ mod tests {
         let nested_value: Value = key.clone().into();
         if let Value::Map(map) = nested_value {
             // Check that the map contains the expected keys
-            assert!(map.get("key").is_some());
+            assert!(map.get("pubkey").is_some());
             assert!(map.get("permissions").is_some());
             assert!(map.get("status").is_some());
 
             // Verify the values
-            if let Some(Value::String(key_val)) = map.get("key") {
+            if let Some(Value::String(key_val)) = map.get("pubkey") {
                 assert_eq!(key_val, "ed25519:test_key");
             } else {
                 panic!("Expected key to be a string");
@@ -1106,7 +1106,7 @@ mod tests {
     #[test]
     fn test_auth_key_nested_value_roundtrip() {
         let original = AuthKey {
-            key: "ed25519:test_key".to_string(),
+            pubkey: "ed25519:test_key".to_string(),
             permissions: Permission::Write(42),
             status: KeyStatus::Revoked,
         };
@@ -1114,7 +1114,7 @@ mod tests {
         let nested: Value = original.clone().into();
         let parsed = AuthKey::try_from(nested).unwrap();
 
-        assert_eq!(original.key, parsed.key);
+        assert_eq!(original.pubkey, parsed.pubkey);
         assert_eq!(original.permissions, parsed.permissions);
         assert_eq!(original.status, parsed.status);
     }

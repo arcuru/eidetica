@@ -82,14 +82,14 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     // Create a super high-priority admin (priority 0 = absolute highest)
     let super_admin = AuthKey {
-        key: "ed25519:super_admin".to_string(),
+        pubkey: "ed25519:super_admin".to_string(),
         permissions: Permission::Admin(0), // Absolute highest priority
         status: KeyStatus::Active,
     };
 
     // Create a very low-priority admin (almost lowest possible)
     let junior_admin = AuthKey {
-        key: "ed25519:junior_admin".to_string(),
+        pubkey: "ed25519:junior_admin".to_string(),
         permissions: Permission::Admin(u32::MAX - 1), // Almost lowest priority
         status: KeyStatus::Active,
     };

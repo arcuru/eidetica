@@ -10,7 +10,7 @@ use eidetica::subtree::KVStore;
 /// Create an AuthKey with commonly used defaults
 pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> AuthKey {
     AuthKey {
-        key: key_str.to_string(),
+        pubkey: key_str.to_string(),
         permissions: permission,
         status,
     }

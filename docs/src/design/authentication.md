@@ -119,11 +119,9 @@ The current implementation supports direct authentication keys stored in the `_s
 ```mermaid
 classDiagram
     class AuthKey {
-        String id
-        String key
+        String pubkey
         Permission permissions
         KeyStatus status
-        Integer priority (for Admin/Write)
     }
 
     class Permission {
@@ -152,19 +150,24 @@ classDiagram
   "_settings": {
     "auth": {
       "KEY_LAPTOP": {
-        "key": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
-        "permissions": { "Write": 10 },
-        "status": "Active"
+        "pubkey": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
+        "permissions": "write:10",
+        "status": "active"
       },
       "KEY_DESKTOP": {
-        "key": "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpkPExACKOW0L",
-        "permissions": "Read",
-        "status": "Active"
+        "pubkey": "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpkPExACKOW0L",
+        "permissions": "read",
+        "status": "active"
       },
       "*": {
-        "key": "*",
-        "permissions": "Read",
-        "status": "Active"
+        "pubkey": "*",
+        "permissions": "read",
+        "status": "active"
+      },
+      "PUBLIC_WRITE": {
+        "pubkey": "*",
+        "permissions": "write:100",
+        "status": "active"
       }
     },
     "name": "My Tree"
@@ -172,9 +175,10 @@ classDiagram
 }
 ```
 
-**Note**: The wildcard key `*` enables global permissions, commonly used for world-readable trees. Wildcard keys:
+**Note**: The wildcard key `*` enables global permissions for anyone. Wildcard keys:
 
-- Do not have a priority field since they cannot perform administrative operations
+- Can have any permission level: "read", "write:N", or "admin:N"
+- Are commonly used for world-readable trees (with "read" permissions) but can grant broader access
 - Can be revoked like any other key
 - Can be included in delegated trees (if you delegate to a tree with a wildcard, that's valid)
 
@@ -281,10 +285,9 @@ A delegated tree reference in the main tree's `_settings.auth` contains:
     "auth": {
       "example@eidetica.dev": {
         "permission-bounds": {
-          "max": "write",
+          "max": "write:15",
           "min": "read" // optional, defaults to no minimum
         },
-        "priority": 15,
         "tree": {
           "root": "hash_of_root_entry",
           "tips": ["hash1", "hash2"]
@@ -292,9 +295,8 @@ A delegated tree reference in the main tree's `_settings.auth` contains:
       },
       "another@example.com": {
         "permission-bounds": {
-          "max": "admin" // min not specified, so no minimum bound
+          "max": "admin:20" // min not specified, so no minimum bound
         },
-        "priority": 20,
         "tree": {
           "root": "hash_of_another_root",
           "tips": ["hash3"]
@@ -312,14 +314,13 @@ The referenced delegated tree maintains its own `_settings.auth` with direct key
   "_settings": {
     "auth": {
       "KEY_LAPTOP": {
-        "key": "ssh-ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "admin",
-        "status": "active",
-        "priority": 0
+        "pubkey": "ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
+        "permissions": "admin:0",
+        "status": "active"
       },
       "KEY_MOBILE": {
-        "key": "ssh-ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "write",
+        "pubkey": "ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
+        "permissions": "write:10",
         "status": "active"
       }
     }
@@ -337,17 +338,17 @@ Permissions from delegated trees are clamped based on the `permission-bounds` fi
   - If not specified, there is no minimum bound
   - If specified, keys with lower permissions are raised to this level
 
-The effective priority is always taken from their definition in the main tree:
+The effective permission and its embedded priority are determined by clamping:
 
 ```mermaid
 graph LR
-    A["Delegated Tree: admin"] --> B["Main Tree: max=write, min=read"] --> C["Effective: write"]
-    D["Delegated Tree: write"] --> B --> E["Effective: write"]
+    A["Delegated Tree: admin:5"] --> B["Main Tree: max=write:10, min=read"] --> C["Effective: write:10"]
+    D["Delegated Tree: write:8"] --> B --> E["Effective: write:8"]
     F["Delegated Tree: read"] --> B --> G["Effective: read"]
 
-    H["Delegated Tree: admin"] --> I["Main Tree: max=read (no min)"] --> J["Effective: read"]
+    H["Delegated Tree: admin:5"] --> I["Main Tree: max=read (no min)"] --> J["Effective: read"]
     K["Delegated Tree: read"] --> I --> L["Effective: read"]
-    M["Delegated Tree: write"] --> N["Main Tree: max=admin, min=write"] --> O["Effective: write"]
+    M["Delegated Tree: write:20"] --> N["Main Tree: max=admin:15, min=write:25"] --> O["Effective: write:25"]
 ```
 
 **Clamping Rules**:
@@ -357,7 +358,7 @@ graph LR
   - If min is specified and delegated tree permission < min, it's raised to min
   - If min is not specified, no minimum bound is applied
 - The max bound must be <= permissions of the key that added the delegated tree reference
-- Effective priority = main_tree_priority (always inherited, never from delegated tree)
+- Effective priority = priority embedded in the effective permission after clamping
 - Delegated tree admin permissions only apply within that delegated tree
 - Permission clamping occurs at each level of delegation chains
 - Note: There is no "none" permission level - absence of permissions means no access
@@ -394,7 +395,7 @@ Delegated trees can reference other delegated trees, creating delegation chains:
 - Subsequent elements reference nested delegated trees or direct keys
 - The final element must be a direct key reference
 - Permission clamping applies at each level using the minimum function
-- Priority is always determined by the outermost (main tree) reference
+- Priority comes from the final effective permission after all clamping operations
 - Tips must be valid at each level of the chain for the delegation to be valid
 
 ### Delegated Tree References
@@ -452,7 +453,7 @@ The following examples demonstrate how key status changes in delegated trees aff
 ```mermaid
 graph TD
     subgraph "Main Tree"
-        A["Entry A<br/>Settings: delegated_tree1 = max:write, min:read<br/>Tip: UA"]
+        A["Entry A<br/>Settings: delegated_tree1 = max:write:10, min:read<br/>Tip: UA"]
         B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
         C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
     end
@@ -472,7 +473,7 @@ graph TD
 ```mermaid
 graph TD
     subgraph "Main Tree"
-        A["Entry A<br/>Settings: user1 = write"]
+        A["Entry A<br/>Settings: user1 = write:15"]
         B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
         C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
         D["Entry D<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Status: Valid"]
@@ -510,8 +511,8 @@ graph TD
 graph TD
     subgraph "Merged Main Tree"
         A["Entry A"]
-        B["Entry B<br/>Alice (priority: 10) bans user_bob<br/>Timestamp: T1"]
-        C["Entry C<br/>Super admin (priority: 0) promotes user_bob to admin (priority: 5)<br/>Timestamp: T2"]
+        B["Entry B<br/>Alice (admin:10) bans user_bob<br/>Timestamp: T1"]
+        C["Entry C<br/>Super admin (admin:0) promotes user_bob to admin:5<br/>Timestamp: T2"]
         M["Entry M<br/>Merge entry<br/>user_bob = admin<br/>Last write (T2) wins via LWW"]
         N["Entry N<br/>Alice attempts to ban user_bob<br/>Rejected: Alice can't modify admin-level user with higher priority"]
     end
@@ -527,9 +528,9 @@ graph TD
 
 - All administrative actions are preserved in history
 - Last Write Wins resolves the merge conflict: the most recent change (T2) takes precedence
-- Priority still prevents unauthorized modifications: Alice cannot ban an admin:5 level user due to insufficient priority
-- The merged state reflects the most recent write, not the highest priority
-- Priority rules prevent Alice from making the change in Entry N, as she lacks authority to modify admin-level users
+- Permission-based authorization still prevents unauthorized modifications: Alice (admin:10) cannot ban a higher-priority user (admin:5) due to insufficient priority level
+- The merged state reflects the most recent write, not the permission priority
+- Permission priority rules prevent Alice from making the change in Entry N, as she lacks authority to modify higher-priority admin users
 
 ## Authorization Scenarios
 
@@ -676,9 +677,9 @@ Authentication configuration is stored in `_settings.auth` as a Nested CRDT:
 ```rust
 // Key storage structure
 AuthKey {
-    key: String,              // Ed25519 public key
+    pubkey: String,           // Ed25519 public key
     permissions: Permission,  // Admin(u32), Write(u32), or Read
-    status: KeyStatus,       // Active or Revoked
+    status: KeyStatus,        // Active or Revoked
 }
 ```
 
