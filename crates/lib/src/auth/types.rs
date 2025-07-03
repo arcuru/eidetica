@@ -3,51 +3,8 @@
 //! This module defines the fundamental types for authentication, including permissions,
 //! key management, and authentication identifiers used in the system.
 
-use crate::crdt::{Nested, Value};
 use crate::entry::ID;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-
-// Specialized implementation for HashMap<String, T> using JSON serialization
-impl<T> From<HashMap<String, T>> for Value
-where
-    T: serde::Serialize,
-{
-    fn from(map: HashMap<String, T>) -> Self {
-        let mut nested = Nested::new();
-        for (key, value) in map {
-            nested.set_json(&key, value).unwrap();
-        }
-        Value::Map(nested)
-    }
-}
-
-impl<T> TryFrom<Value> for HashMap<String, T>
-where
-    T: for<'de> serde::Deserialize<'de>,
-{
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::Map(nested) => {
-                let mut map = HashMap::new();
-                for key in nested.as_hashmap().keys() {
-                    match nested.get_json::<T>(key) {
-                        Ok(converted) => {
-                            map.insert(key.clone(), converted);
-                        }
-                        Err(e) => {
-                            return Err(format!("Failed to convert value for key '{key}': {e}"));
-                        }
-                    }
-                }
-                Ok(map)
-            }
-            _ => Err("Cannot convert non-map value to HashMap".to_string()),
-        }
-    }
-}
 
 /// Permission levels for authenticated operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -338,54 +295,10 @@ impl SigKey {
     }
 }
 
-// Support for ID types
-impl From<ID> for Value {
-    fn from(value: ID) -> Self {
-        Value::String(value.to_string())
-    }
-}
-
-impl TryFrom<Value> for ID {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => Ok(ID::new(s)),
-            Value::Map(_) => Err("Cannot convert map to ID".to_string()),
-            Value::Array(_) => Err("Cannot convert array to ID".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to ID".to_string()),
-        }
-    }
-}
-
-// Support for Vec<ID>
-impl From<Vec<ID>> for Value {
-    fn from(value: Vec<ID>) -> Self {
-        let strings: Vec<String> = value.into_iter().map(|id| id.to_string()).collect();
-        Value::String(serde_json::to_string(&strings).unwrap())
-    }
-}
-
-impl TryFrom<Value> for Vec<ID> {
-    type Error = String;
-
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        match value {
-            Value::String(s) => {
-                let strings: Vec<String> =
-                    serde_json::from_str(&s).map_err(|e| format!("Invalid Vec<ID> JSON: {e}"))?;
-                Ok(strings.into_iter().map(ID::new).collect())
-            }
-            Value::Array(_) => Err("Cannot convert array to Vec<ID>".to_string()),
-            Value::Map(_) => Err("Cannot convert map to Vec<ID>".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to Vec<ID>".to_string()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crdt::Nested;
 
     #[test]
     fn test_permission_clamping() {
