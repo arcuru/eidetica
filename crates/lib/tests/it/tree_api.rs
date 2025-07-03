@@ -239,14 +239,16 @@ fn test_auth_helpers_signed_entries() {
     // Create auth settings
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        key_id.to_string(),
-        AuthKey {
-            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            key_id.to_string(),
+            AuthKey {
+                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db
@@ -315,14 +317,16 @@ fn test_verify_entry_signature_auth_scenarios() {
     // Create auth settings
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        key_id.to_string(),
-        AuthKey {
-            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            key_id.to_string(),
+            AuthKey {
+                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db
@@ -377,14 +381,16 @@ fn test_verify_entry_signature_unauthorized_key() {
     // Create auth settings with only the authorized key
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        authorized_key_id.to_string(),
-        AuthKey {
-            pubkey: eidetica::auth::crypto::format_public_key(&authorized_public_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            authorized_key_id.to_string(),
+            AuthKey {
+                pubkey: eidetica::auth::crypto::format_public_key(&authorized_public_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db
@@ -435,14 +441,16 @@ fn test_verify_entry_signature_validates_tree_auth() {
     // Create auth settings
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        key_id.to_string(),
-        AuthKey {
-            pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            key_id.to_string(),
+            AuthKey {
+                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db

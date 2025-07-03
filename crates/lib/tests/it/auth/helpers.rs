@@ -42,14 +42,16 @@ pub fn setup_authenticated_tree(
     let mut auth_settings = Nested::new();
 
     for ((key_id, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
-        auth_settings.set(
-            key_id.to_string(),
-            auth_key(
-                &format_public_key(public_key),
-                permission.clone(),
-                status.clone(),
-            ),
-        );
+        auth_settings
+            .set_json(
+                key_id.to_string(),
+                auth_key(
+                    &format_public_key(public_key),
+                    permission.clone(),
+                    status.clone(),
+                ),
+            )
+            .unwrap();
     }
 
     settings.set_map("auth", auth_settings);

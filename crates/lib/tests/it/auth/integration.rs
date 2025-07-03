@@ -170,14 +170,16 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     // Create initial tree with KEY1 only
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        "KEY1",
-        AuthKey {
-            pubkey: format_public_key(&key1),
-            permissions: Permission::Admin(1),
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            "KEY1",
+            AuthKey {
+                pubkey: format_public_key(&key1),
+                permissions: Permission::Admin(1),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db
@@ -194,22 +196,26 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
 
     // Add KEY2 to auth settings
     let mut new_auth_settings = Nested::new();
-    new_auth_settings.set(
-        "KEY1",
-        AuthKey {
-            pubkey: format_public_key(&key1),
-            permissions: Permission::Admin(1),
-            status: KeyStatus::Active,
-        },
-    );
-    new_auth_settings.set(
-        "KEY2",
-        AuthKey {
-            pubkey: format_public_key(&key2),
-            permissions: Permission::Write(10),
-            status: KeyStatus::Active,
-        },
-    );
+    new_auth_settings
+        .set_json(
+            "KEY1",
+            AuthKey {
+                pubkey: format_public_key(&key1),
+                permissions: Permission::Admin(1),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
+    new_auth_settings
+        .set_json(
+            "KEY2",
+            AuthKey {
+                pubkey: format_public_key(&key2),
+                permissions: Permission::Write(10),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
 
     settings_store
         .set_value("auth", new_auth_settings.into())
@@ -246,14 +252,16 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     // Create tree with valid auth settings
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
-    auth_settings.set(
-        "VALID_KEY",
-        AuthKey {
-            pubkey: format_public_key(&valid_key),
-            permissions: Permission::Admin(1), // Need admin to modify settings
-            status: KeyStatus::Active,
-        },
-    );
+    auth_settings
+        .set_json(
+            "VALID_KEY",
+            AuthKey {
+                pubkey: format_public_key(&valid_key),
+                permissions: Permission::Admin(1), // Need admin to modify settings
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
     settings.set_map("auth", auth_settings);
 
     let tree = db
@@ -379,30 +387,36 @@ fn test_validation_pipeline_entry_level_validation() {
     let mut settings = Nested::new();
     let mut auth_settings = Nested::new();
 
-    auth_settings.set(
-        "ADMIN_KEY",
-        AuthKey {
-            pubkey: format_public_key(&admin_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
-    );
-    auth_settings.set(
-        "ACTIVE_KEY",
-        AuthKey {
-            pubkey: format_public_key(&active_key),
-            permissions: Permission::Write(10),
-            status: KeyStatus::Active,
-        },
-    );
-    auth_settings.set(
-        "REVOKED_KEY",
-        AuthKey {
-            pubkey: format_public_key(&revoked_key),
-            permissions: Permission::Write(20),
-            status: KeyStatus::Revoked,
-        },
-    );
+    auth_settings
+        .set_json(
+            "ADMIN_KEY",
+            AuthKey {
+                pubkey: format_public_key(&admin_key),
+                permissions: Permission::Admin(0),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
+    auth_settings
+        .set_json(
+            "ACTIVE_KEY",
+            AuthKey {
+                pubkey: format_public_key(&active_key),
+                permissions: Permission::Write(10),
+                status: KeyStatus::Active,
+            },
+        )
+        .unwrap();
+    auth_settings
+        .set_json(
+            "REVOKED_KEY",
+            AuthKey {
+                pubkey: format_public_key(&revoked_key),
+                permissions: Permission::Write(20),
+                status: KeyStatus::Revoked,
+            },
+        )
+        .unwrap();
 
     settings.set_map("auth", auth_settings);
     let tree = db
