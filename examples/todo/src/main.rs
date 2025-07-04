@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::backend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Nested;
 use eidetica::subtree::RowStore;
@@ -140,10 +140,10 @@ fn main() -> Result<()> {
 
 fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     let db = if path.exists() {
-        let backend = backend::InMemoryBackend::load_from_file(path)?;
+        let backend = InMemory::load_from_file(path)?;
         BaseDB::new(Box::new(backend))
     } else {
-        let backend = backend::InMemoryBackend::new();
+        let backend = InMemory::new();
         BaseDB::new(Box::new(backend))
     };
 
@@ -168,15 +168,15 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
 }
 
 fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
-    let backend = db.backend();
+    let database = db.backend();
 
-    // Cast the backend to InMemoryBackend to access save_to_file
-    let in_memory_backend = backend
+    // Cast the database to InMemory to access save_to_file
+    let in_memory_database = database
         .as_any()
-        .downcast_ref::<backend::InMemoryBackend>()
-        .ok_or(anyhow!("Failed to downcast backend to InMemoryBackend"))?;
+        .downcast_ref::<InMemory>()
+        .ok_or(anyhow!("Failed to downcast database to InMemory"))?;
 
-    in_memory_backend.save_to_file(path)?;
+    in_memory_database.save_to_file(path)?;
     Ok(())
 }
 

@@ -19,7 +19,7 @@ This Todo CLI application demonstrates how Eidetica can be used to build a simpl
 - Set and update user preferences
 - View all user preferences
 
-All data is persisted to a local file using Eidetica's InMemoryBackend with file serialization.
+All data is persisted to a local file using Eidetica's InMemory database with file serialization.
 To specify which file it persists into, pass the option `--database-path /path/to/file.json`.
 
 ## Usage
@@ -81,7 +81,7 @@ eidetica-todo show-prefs
 This app demonstrates several Eidetica features and subtree types:
 
 - **BaseDB**: The main database interface
-- **InMemoryBackend**: Memory storage with JSON file persistence
+- **InMemory**: Memory storage with JSON file persistence
 - **Tree**: A hierarchical data structure containing multiple subtrees
 - **RowStore**: A subtree type for storing record-like data (used for todos)
 - **YrsStore**: A Y-CRDT based subtree for collaborative data structures (used for user info and preferences)
