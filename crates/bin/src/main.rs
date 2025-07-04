@@ -1,5 +1,5 @@
 use eidetica::Tree;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::entry::Entry;
 use signal_hook::flag as signal_flag;
@@ -14,13 +14,13 @@ const DB_FILE: &str = "eidetica.json";
 fn save_database(db: &BaseDB) {
     println!("Saving database to {DB_FILE}...");
     let backend_any = db.backend().as_any();
-    if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemoryBackend>() {
+    if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemory>() {
         match in_memory_backend.save_to_file(DB_FILE) {
             Ok(_) => println!("Database saved successfully."),
             Err(e) => println!("Failed to save database: {e:?}"),
         }
     } else {
-        println!("Failed to downcast backend to InMemoryBackend for saving.");
+        println!("Failed to downcast database to InMemory for saving.");
     }
 }
 
@@ -40,17 +40,16 @@ fn main() -> io::Result<()> {
     print_help();
 
     // Create or load the in-memory backend
-    let backend: Box<dyn eidetica::backend::Backend> =
-        match InMemoryBackend::load_from_file(DB_FILE) {
-            Ok(backend) => {
-                println!("Loaded database from {DB_FILE}");
-                Box::new(backend)
-            }
-            Err(e) => {
-                println!("Failed to load database: {e:?}. Creating a new one.");
-                Box::new(InMemoryBackend::new())
-            }
-        };
+    let backend: Box<dyn eidetica::backend::Database> = match InMemory::load_from_file(DB_FILE) {
+        Ok(backend) => {
+            println!("Loaded database from {DB_FILE}");
+            Box::new(backend)
+        }
+        Err(e) => {
+            println!("Failed to load database: {e:?}. Creating a new one.");
+            Box::new(InMemory::new())
+        }
+    };
 
     // Initialize BaseDB with the loaded or new backend
     let db = BaseDB::new(backend);

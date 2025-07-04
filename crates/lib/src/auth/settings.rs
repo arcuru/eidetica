@@ -160,7 +160,7 @@ impl AuthSettings {
                 // For delegation path entries, validate using the backend
                 let backend = backend.ok_or_else(|| {
                     Error::Authentication(
-                        "Backend required for delegation path validation".to_string(),
+                        "Database required for delegation path validation".to_string(),
                     )
                 })?;
 

@@ -1,7 +1,7 @@
 //!
 //! Provides the main database structures (`BaseDB` and `Tree`).
 //!
-//! `BaseDB` manages multiple `Tree` instances and interacts with the storage `Backend`.
+//! `BaseDB` manages multiple `Tree` instances and interacts with the storage `Database`.
 //! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
 
 use crate::auth::crypto::{format_public_key, generate_keypair};
@@ -14,14 +14,14 @@ use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
 use std::sync::Arc;
 
-/// Database implementation on top of the backend.
+/// Database implementation on top of the storage backend.
 ///
 /// This database is the base DB, other 'overlays' or 'plugins' should be implemented on top of this.
 /// It manages collections of related entries, called `Tree`s, and interacts with a
-/// pluggable `Backend` for storage and retrieval.
+/// pluggable `Database` for storage and retrieval.
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
 pub struct BaseDB {
-    /// The backend used by the database.
+    /// The database storage used by the database.
     backend: Arc<dyn Database>,
     // Blob storage will be separate, maybe even just an extension
     // storage: IPFS;
@@ -159,12 +159,12 @@ impl BaseDB {
     //
     // These methods provide a high-level API for managing private keys used for
     // authentication and signing entries. Private keys are stored locally in the
-    // backend and are never synchronized or shared.
+    // database storage and are never synchronized or shared.
 
     /// Generate a new Ed25519 keypair and store the private key locally.
     ///
     /// This is the primary method for adding new authentication keys to the database.
-    /// The generated private key is stored in the backend's local key storage,
+    /// The generated private key is stored in the database's local key storage,
     /// and the public key is returned for use in authentication configuration.
     ///
     /// # Arguments

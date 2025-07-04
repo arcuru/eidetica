@@ -7,7 +7,7 @@ use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey};
 use eidetica::auth::validation::AuthValidator;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Nested;
 use eidetica::entry::ID;
@@ -20,7 +20,7 @@ fn test_empty_delegation_path() -> Result<()> {
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
     let settings = Nested::new();
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     let result = validator.resolve_sig_key(&empty_delegation, &settings, Some(db.backend()));
     assert!(result.is_err());
@@ -31,7 +31,7 @@ fn test_empty_delegation_path() -> Result<()> {
 /// Test SigKey::Direct with empty key ID
 #[test]
 fn test_direct_key_empty_id() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private key with empty ID to storage
     let admin_key = db.add_private_key("")?;
@@ -81,7 +81,7 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let settings = Nested::new();
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     let result = validator.resolve_sig_key(&delegation_path, &settings, Some(db.backend()));
     // Should error because intermediate steps need tips
@@ -251,7 +251,7 @@ fn test_delegation_path_invalid_json() {
 /// Test circular delegation detection (simplified version)
 #[test]
 fn test_circular_delegation_simple() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;

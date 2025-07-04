@@ -440,10 +440,3 @@ pub trait Database: Send + Sync + Any {
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
 }
-
-// Backward compatibility re-exports
-#[deprecated(since = "0.2.0", note = "Use Database instead")]
-pub use Database as Backend;
-
-#[deprecated(since = "0.2.0", note = "Use database::InMemory instead")]
-pub use database::InMemory as InMemoryBackend;

@@ -187,7 +187,7 @@ fn test_delegated_tree_requires_backend() {
         result
             .unwrap_err()
             .to_string()
-            .contains("Backend required for delegated tree resolution")
+            .contains("Database required for delegated tree resolution")
     );
 }
 

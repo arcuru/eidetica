@@ -1,12 +1,12 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use eidetica::backend::{Backend, InMemoryBackend};
+use eidetica::backend::{Database, database::InMemory};
 use eidetica::basedb::BaseDB;
 use eidetica::entry::ID;
 use eidetica::subtree::KVStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Tree {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
@@ -189,12 +189,12 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
                         let endpoints = vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
                         let expected_lca = &entry_ids[0]; // In a linear chain, LCA of first and last is the first
 
-                        // Access backend to call find_lca
+                        // Access database to call find_lca
                         let backend = tree.backend();
                         let in_memory = backend
                             .as_any()
-                            .downcast_ref::<InMemoryBackend>()
-                            .expect("Failed to downcast backend");
+                            .downcast_ref::<InMemory>()
+                            .expect("Failed to downcast database");
 
                         let lca = in_memory
                             .find_lca(tree.root_id(), "data", &endpoints)
@@ -225,7 +225,7 @@ pub fn bench_lca_diamond_merge(c: &mut Criterion) {
                 let backend = tree.backend();
                 let in_memory = backend
                     .as_any()
-                    .downcast_ref::<InMemoryBackend>()
+                    .downcast_ref::<InMemory>()
                     .expect("Failed to downcast backend");
 
                 let lca = in_memory
@@ -256,7 +256,7 @@ pub fn bench_tree_heights(c: &mut Criterion) {
                     let backend = tree.backend();
                     let in_memory = backend
                         .as_any()
-                        .downcast_ref::<InMemoryBackend>()
+                        .downcast_ref::<InMemory>()
                         .expect("Failed to downcast backend");
 
                     let heights = in_memory
@@ -291,8 +291,8 @@ pub fn bench_height_calculation_overhead(c: &mut Criterion) {
                         let backend = tree.backend();
                         let in_memory = backend
                             .as_any()
-                            .downcast_ref::<InMemoryBackend>()
-                            .expect("Failed to downcast backend");
+                            .downcast_ref::<InMemory>()
+                            .expect("Failed to downcast database");
 
                         // Simulate 5 operations that need height info
                         for _ in 0..5 {
@@ -435,8 +435,8 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                         let backend = tree.backend();
                         let in_memory = backend
                             .as_any()
-                            .downcast_ref::<InMemoryBackend>()
-                            .expect("Failed to downcast backend");
+                            .downcast_ref::<InMemory>()
+                            .expect("Failed to downcast database");
 
                         let is_tip = in_memory.is_tip(tree.root_id(), &last_entry_id);
                         black_box(is_tip);

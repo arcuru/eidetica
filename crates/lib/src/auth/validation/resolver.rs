@@ -73,7 +73,7 @@ impl KeyResolver {
             SigKey::DelegationPath(steps) => {
                 let backend = backend.ok_or_else(|| {
                     Error::Authentication(
-                        "Backend required for delegated tree resolution".to_string(),
+                        "Database required for delegated tree resolution".to_string(),
                     )
                 })?;
                 self.delegation_resolver
