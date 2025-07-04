@@ -42,7 +42,9 @@ tasks:
   test:
     desc: Run all tests
     aliases: [t]
-    cmd: cargo nextest run --workspace --all-features --no-fail-fast
+    cmds:
+      - cargo nextest run --workspace --all-features --no-fail-fast
+      - cargo test --doc --workspace --all-features
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features
