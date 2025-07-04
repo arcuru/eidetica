@@ -1,25 +1,25 @@
 ### BaseDB
 
-BaseDB is the main database implementation that works with a backend to store and retrieve entries. It manages trees, which are collections of related entries.
+BaseDB is the main database implementation that works with a database storage layer to store and retrieve entries. It manages trees, which are collections of related entries.
 
 ```mermaid
 classDiagram
     class BaseDB {
-        -Arc<Mutex<Box<dyn Backend>>> backend
-        +new(backend: Box<dyn Backend>) BaseDB
+        -Arc<Mutex<Box<dyn Database>>> database
+        +new(database: Box<dyn Database>) BaseDB
         +add_private_key(key_id: &str) Result<()>
         +new_tree(settings: Nested, signing_key_id: &str) Result<Tree>
         +new_tree_default(signing_key_id: &str) Result<Tree>
         +load_tree(root_id: &ID) Result<Tree>
         +all_trees() Result<Vec<Tree>>
-        +backend() &Arc<Mutex<Box<dyn Backend>>>
+        +database() &Arc<Mutex<Box<dyn Database>>>
     }
 
     class Tree {
         -ID root
-        -Arc<Mutex<Box<dyn Backend>>> backend
+        -Arc<Mutex<Box<dyn Database>>> database
         -Option<String> default_auth_key
-        +new(settings: Nested, backend: Arc<Mutex<Box<dyn Backend>>>, signing_key_id: &str) Result<Tree>
+        +new(settings: Nested, database: Arc<Mutex<Box<dyn Database>>>, signing_key_id: &str) Result<Tree>
         +root_id() &ID
         +get_root() Result<Entry>
         +get_name() Result<String>
@@ -35,11 +35,11 @@ classDiagram
     }
 
     BaseDB --> Tree : creates/loads
-    BaseDB --> Backend : uses
-    Tree --> Backend : uses
+    BaseDB --> Database : uses
+    Tree --> Database : uses
     Tree --> Entry : manages (via Operations)
     Tree --> Operation : creates
-    Operation --> Backend : uses
+    Operation --> Database : uses
 ```
 
 A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `Nested` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings and requires a signing key ID for authentication. Alternatively, `new_tree_default()` creates a tree with empty default settings, also requiring authentication.

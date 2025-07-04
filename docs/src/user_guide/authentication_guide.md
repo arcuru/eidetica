@@ -42,11 +42,11 @@ Lower priority numbers indicate higher administrative authority. Priority 0 is t
 When creating a new database, you must add at least one authentication key:
 
 ```rust
-use eidetica::{BaseDB, backend::InMemoryBackend};
+use eidetica::{BaseDB, backend::database::InMemory};
 
 // Create database
-let backend = InMemoryBackend::new();
-let db = BaseDB::new(Box::new(backend));
+let database = InMemory::new();
+let db = BaseDB::new(Box::new(database));
 
 // Add your first authentication key
 // This generates a new Ed25519 keypair and stores it
@@ -220,14 +220,14 @@ During network partitions:
 Here's a complete example showing authentication in a multi-user context:
 
 ```rust
-use eidetica::{BaseDB, Tree, backend::InMemoryBackend};
+use eidetica::{BaseDB, Tree, backend::database::InMemory};
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 use eidetica::crdt::Nested;
 
 fn setup_multi_user_app() -> Result<Tree> {
     // Create database with admin key
-    let backend = InMemoryBackend::new();
-    let db = BaseDB::new(Box::new(backend));
+    let database = InMemory::new();
+    let db = BaseDB::new(Box::new(database));
     db.add_private_key("SUPER_ADMIN")?;
 
     // Create application tree

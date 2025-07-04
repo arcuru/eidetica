@@ -10,9 +10,9 @@ See the [Core Components](core_components/index.md) section for details on the k
 graph TD
     A[User Application] --> B[BaseDB]
     B --> C[Tree]
-    C --> E[Backend]
-    E --> F[InMemoryBackend]
-    E -.-> G[Other Backends]
+    C --> E[Database]
+    E --> F[InMemoryDatabase]
+    E -.-> G[Other Databases]
 
     subgraph Entry Creation and Structure
         H[EntryBuilder] -- builds --> D[Entry]

@@ -19,7 +19,7 @@ eidetica = "0.1.0"  # Update version as appropriate
 
 To start using Eidetica, you need to:
 
-1. Choose and initialize a **Backend** (storage mechanism)
+1. Choose and initialize a **Database** (storage mechanism)
 2. Create a **BaseDB** instance (the main entry point)
 3. **Add authentication keys** (required for all operations)
 4. Create or access a **Tree** (logical container for data)
@@ -27,14 +27,14 @@ To start using Eidetica, you need to:
 Here's a simple example:
 
 ```rust
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Nested;
 use std::path::PathBuf;
 
 // Create a new in-memory database
-let backend = InMemoryBackend::new();
-let db = BaseDB::new(Box::new(backend));
+let database = InMemory::new();
+let db = BaseDB::new(Box::new(database));
 
 // Add an authentication key (required for all operations)
 db.add_private_key("my_key")?;
@@ -45,13 +45,13 @@ settings.set_string("name", "my_tree");
 let tree = db.new_tree(settings, "my_key")?;
 ```
 
-The backend determines how your data is stored. The example above uses `InMemoryBackend`, which keeps everything in memory but can save to a file:
+The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
 
 ```rust
 // Save the database to a file
 let path = PathBuf::from("my_database.json");
-let backend_guard = db.backend().lock().unwrap();
-if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemoryBackend>() {
+let database_guard = db.backend().lock().unwrap();
+if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
     in_memory.save_to_file(&path)?;
 }
 ```
@@ -60,8 +60,8 @@ You can load a previously saved database:
 
 ```rust
 let path = PathBuf::from("my_database.json");
-let backend = InMemoryBackend::load_from_file(&path)?;
-let db = BaseDB::new(Box::new(backend));
+let database = InMemory::load_from_file(&path)?;
+let db = BaseDB::new(Box::new(database));
 
 // Note: Authentication keys are automatically loaded with the database
 ```

@@ -6,7 +6,7 @@ Welcome to the Eidetica User Guide. This guide will help you understand and use 
 
 Eidetica is a Rust library for managing structured data with built-in history tracking. It combines concepts from distributed systems, Merkle-CRDTs, and traditional databases to provide a unique approach to data management:
 
-- **Efficient data storage** with customizable [Backends](concepts/backends.md)
+- **Efficient data storage** with customizable [Databases](concepts/backends.md)
 - **History tracking** for all changes via immutable [Entries](concepts/entries_trees.md) forming a DAG
 - **Structured data types** via named, typed [Subtrees](concepts/subtrees.md) within logical [Trees](concepts/entries_trees.md)
 - **Atomic changes** across multiple data structures using [Operations](operations.md)
@@ -20,7 +20,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
 2.  [**Basic Usage Pattern**](#basic-usage-pattern): A quick look at the typical workflow.
 3.  [**Core Concepts**](core_concepts.md): Understand the fundamental building blocks:
     - [Entries & Trees](concepts/entries_trees.md): The core DAG structure.
-    - [Backends](concepts/backends.md): How data is stored.
+    - [Databases](concepts/backends.md): How data is stored.
     - [Subtrees](concepts/subtrees.md): Where structured data lives (`KVStore`, `RowStore`).
     - [Operations](operations.md): How atomic changes are made.
 4.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
@@ -30,8 +30,8 @@ This user guide is structured to guide you from basic setup to advanced concepts
 
 Eidetica revolves around a few key components working together:
 
-1.  **`Backend`**: You start by choosing or creating a storage `Backend` (e.g., `InMemoryBackend`).
-2.  **`BaseDB`**: You create a `BaseDB` instance, providing it the `Backend`. This is your main database handle.
+1.  **`Database`**: You start by choosing or creating a storage `Database` (e.g., `InMemoryDatabase`).
+2.  **`BaseDB`**: You create a `BaseDB` instance, providing it the `Database`. This is your main database handle.
 3.  **`Tree`**: Using the `BaseDB`, you create or load a `Tree`, which acts as a logical container for related data and tracks its history.
 4.  **`Operation`**: To **read or write** data, you start an `Operation` from the `Tree`. This ensures atomicity and consistent views.
 5.  **`Subtree`**: Within an `Operation`, you get handles to named `Subtree`s (like `KVStore` or `RowStore<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
@@ -41,7 +41,7 @@ Eidetica revolves around a few key components working together:
 
 ```rust
 use eidetica::{BaseDB, Tree, Error};
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::subtree::{KVStore, RowStore};
 use serde::{Serialize, Deserialize};
 
@@ -49,10 +49,10 @@ use serde::{Serialize, Deserialize};
 struct MyData { /* fields */ }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Create Backend
-    let backend = InMemoryBackend::new();
+    // 1. Create Database
+    let database = InMemory::new();
     // 2. Create BaseDB
-    let db = BaseDB::new(Box::new(backend));
+    let db = BaseDB::new(Box::new(database));
 
     // 3. Create/Load Tree (e.g., named "my_tree")
     let tree = match db.find_tree("my_tree") {

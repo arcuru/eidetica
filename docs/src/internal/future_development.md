@@ -6,7 +6,7 @@ Based on comments in the code and potential architectural needs, future developm
 
 - **CRDT Refinement**: Further refinement of the CRDT data type implementation and trait usage (`RawData` vs. structured CRDT types). Ensuring robust merge logic and exploring more sophisticated CRDT types.
 - **Security**: Implementing security features like entry signing and key management (TODOs noted in `entry.rs`).
-- **Persistent Backends**: Developing persistent storage backends beyond the current `InMemoryBackend` (e.g., RocksDB, Sled, file-system based).
+- **Persistent Database Storage**: Developing persistent storage databases beyond the current `InMemory` implementation (e.g., RocksDB, Sled, file-system based).
 - **Blob Storage Integration**: Exploring integration with systems like IPFS for storing large binary blobs referenced by entries (commented out code exists in `basedb.rs`).
 - **Querying & Filtering**: Enhancing tree operations for more complex querying and filtering capabilities beyond simple gets or subtree iterations.
 - **Additional CRDTs**: Implementing additional CRDT implementations beyond the basic `Map` (e.g., Sequences, Sets, Counters).
