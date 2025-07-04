@@ -94,9 +94,9 @@ sequenceDiagram
     participant Database
     participant Crypto
 
-    User->>AtomicOp: set_auth_key_id("KEY_LAPTOP")
+    User->>AtomicOp: set_auth_key("KEY_LAPTOP")
     User->>AtomicOp: commit(private_key)
-    AtomicOp->>AtomicOp: build entry with AuthInfo
+    AtomicOp->>AtomicOp: build entry with SigInfo
     AtomicOp->>Crypto: sign_entry(entry, private_key)
     Crypto->>AtomicOp: signature
     AtomicOp->>AuthValidator: validate_entry_auth(entry, database)

@@ -18,13 +18,13 @@ graph TD
         H[EntryBuilder] -- builds --> D[Entry]
         D -- contains --> I[TreeNode]
         D -- contains --> J[SubTreeNode]
-        D -- contains --> K[AuthInfo]
+        D -- contains --> K[SigInfo]
         L[AuthValidator] -- validates --> D
         L -- uses --> M[_settings.auth]
     end
 
     subgraph Authentication Module
-        K --> N[AuthId]
+        K --> N[SigKey]
         K --> O[Signature]
         L --> P[ResolvedAuth]
         Q[CryptoModule] -- signs/verifies --> D
