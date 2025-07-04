@@ -176,7 +176,7 @@ impl BaseDB {
     /// # Example
     /// ```
     /// # use eidetica::{backend::database::InMemory, basedb::BaseDB};
-    /// let backend = InMemoryBackend::new();
+    /// let backend = InMemory::new();
     /// let db = BaseDB::new(Box::new(backend));
     ///
     /// // Generate a new key for laptop
