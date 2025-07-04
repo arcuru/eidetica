@@ -314,7 +314,7 @@ impl Tree {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
-    /// # let backend = Box::new(InMemoryBackend::new());
+    /// # let backend = Box::new(InMemory::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_tree(Nested::new(), "TEST_KEY")?;
@@ -363,7 +363,7 @@ impl Tree {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Nested;
     /// # fn main() -> Result<()> {
-    /// # let backend = Box::new(InMemoryBackend::new());
+    /// # let backend = Box::new(InMemory::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_tree(Nested::new(), "TEST_KEY")?;
