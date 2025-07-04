@@ -380,30 +380,6 @@ impl EntryBuilder {
         self
     }
 
-    /// Compatibility alias for set_sig
-    #[deprecated(note = "Use set_sig instead")]
-    pub fn set_auth(self, sig: SigInfo) -> Self {
-        self.set_sig(sig)
-    }
-
-    /// Compatibility alias for set_sig_mut
-    #[deprecated(note = "Use set_sig_mut instead")]
-    pub fn set_auth_mut(&mut self, sig: SigInfo) -> &mut Self {
-        self.set_sig_mut(sig)
-    }
-
-    /// Access authentication info for compatibility
-    #[deprecated(note = "Use .sig field instead")]
-    pub fn auth(&self) -> &SigInfo {
-        &self.sig
-    }
-
-    /// Mutable access to authentication info for compatibility
-    #[deprecated(note = "Use .sig field instead")]
-    pub fn auth_mut(&mut self) -> &mut SigInfo {
-        &mut self.sig
-    }
-
     /// Get the names of all subtrees this entry builder contains data for.
     /// The names are returned in alphabetical order.
     pub fn subtrees(&self) -> Vec<String> {

@@ -82,7 +82,7 @@ struct EntryMetadata {
 pub struct Entry {
     tree: TreeNode,              // Main tree node with metadata
     subtrees: Vec<SubTreeNode>,  // Named subtrees including _settings
-    auth: AuthInfo,              // Authentication information
+    sig: SigInfo,                // Signature information
 }
 ```
 
