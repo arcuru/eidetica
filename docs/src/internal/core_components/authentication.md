@@ -16,7 +16,7 @@ The authentication system is deeply integrated with Eidetica's core, validating 
 ```mermaid
 classDiagram
     class AuthValidator {
-        +validate_entry_auth(entry: &Entry, backend: &Backend) Result<()>
+        +validate_entry_auth(entry: &Entry, database: &Database) Result<()>
         +resolve_direct_key(key_name: &str, settings_tips: &[EntryId]) Result<ResolvedAuth>
         +check_operation_permission(permission: &Permission, operation: &Operation) Result<()>
         -cache: HashMap<CacheKey, ResolvedAuth>
@@ -91,7 +91,7 @@ sequenceDiagram
     participant User
     participant AtomicOp
     participant AuthValidator
-    participant Backend
+    participant Database
     participant Crypto
 
     User->>AtomicOp: set_auth_key_id("KEY_LAPTOP")
@@ -99,15 +99,15 @@ sequenceDiagram
     AtomicOp->>AtomicOp: build entry with AuthInfo
     AtomicOp->>Crypto: sign_entry(entry, private_key)
     Crypto->>AtomicOp: signature
-    AtomicOp->>AuthValidator: validate_entry_auth(entry, backend)
-    AuthValidator->>Backend: get settings at tips
-    Backend->>AuthValidator: settings with auth keys
+    AtomicOp->>AuthValidator: validate_entry_auth(entry, database)
+    AuthValidator->>Database: get settings at tips
+    Database->>AuthValidator: settings with auth keys
     AuthValidator->>AuthValidator: resolve direct key
     AuthValidator->>Crypto: verify_signature(entry, public_key)
     Crypto->>AuthValidator: valid/invalid
     AuthValidator->>AuthValidator: check permissions
     AuthValidator->>AtomicOp: validation result
-    AtomicOp->>Backend: store entry (if valid)
+    AtomicOp->>Database: store entry (if valid)
 ```
 
 #### Permission System
@@ -157,7 +157,7 @@ Authentication is deeply integrated throughout Eidetica:
 - **Entry Structure**: Mandatory `sig` field with signature in every entry
 - **AtomicOp**: Handles entry signing during commit operations
 - **Tree Creation**: Requires initial admin key for new trees
-- **Backend Storage**: Validates authentication before storing entries
+- **Database Storage**: Validates authentication before storing entries
 - **Settings Management**: `_settings.auth` uses Nested CRDT with LWW conflict resolution
 - **Validation Pipeline**: Every entry validated before acceptance
 

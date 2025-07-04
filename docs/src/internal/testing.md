@@ -31,7 +31,7 @@ Eidetica maintains ambitious test coverage targets:
 
 - **Core Data Types**: 95%+ coverage for all core data types (`Entry`, `Tree`, `SubTree`)
 - **CRDT Implementations**: 100% coverage for all CRDT implementations
-- **Backend Implementations**: 90%+ coverage, including error cases
+- **Database Implementations**: 90%+ coverage, including error cases
 - **Public API Methods**: 100% coverage
 
 ## Testing Patterns and Practices
@@ -54,7 +54,7 @@ Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/i
 
 - **Tree Setup Helpers**:
 
-  - `setup_tree()`: Creates a basic tree with an InMemoryBackend
+  - `setup_tree()`: Creates a basic tree with an InMemoryDatabase
   - `setup_tree_with_settings()`: Creates a tree with initial settings
   - `setup_tree_with_multiple_kvstores()`: Creates a tree with multiple KVStore subtrees and preset values
 

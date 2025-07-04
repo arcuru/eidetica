@@ -132,7 +132,7 @@ fn compute_single_entry_state_recursive<T>(&self, subtree_name: &str, entry_id: 
 where T: CRDT + Clone
 {
     // 1. Check cache first
-    if let Some(cached_state) = backend.get_cached_crdt_state(entry_id, subtree_name)? {
+    if let Some(cached_state) = database.get_cached_crdt_state(entry_id, subtree_name)? {
         return Ok(serde_json::from_str(&cached_state)?);
     }
 
@@ -141,17 +141,17 @@ where T: CRDT + Clone
         0 => T::default(),                              // Root entry
         1 => self.compute_single_entry_state_recursive(subtree_name, &parents[0])?, // Single parent
         _ => {
-            let lca_id = backend.find_lca(tree_root, subtree_name, &parents)?;
+            let lca_id = database.find_lca(tree_root, subtree_name, &parents)?;
             self.compute_single_entry_state_recursive(subtree_name, &lca_id)?  // Multiple parents
         }
     };
 
     // 3. Merge all paths from LCA to all parents (deduplicated and sorted)
-    let path_entries = backend.get_path_from_to(tree_root, subtree_name, &lca_id, &parents)?;
+    let path_entries = database.get_path_from_to(tree_root, subtree_name, &lca_id, &parents)?;
     let result = self.merge_path_entries(subtree_name, lca_state, &path_entries)?;
 
     // 4. Cache and return
-    backend.cache_crdt_state(entry_id, subtree_name, serde_json::to_string(&result)?)?;
+    database.cache_crdt_state(entry_id, subtree_name, serde_json::to_string(&result)?)?;
     Ok(result)
 }
 ```
@@ -163,9 +163,9 @@ where T: CRDT + Clone
 - **Cache Validity**: Immutable entries ensure cached states never become invalid
 - **Performance**: Dramatic performance improvement for repeated access patterns
 
-#### Backend Methods
+#### Database Methods
 
-The algorithm relies on new backend methods:
+The algorithm relies on new database methods:
 
 - `find_lca()`: Finds Lowest Common Ancestor of multiple entries
 - `get_path_from_to()`: Gets all entries from LCA to multiple target entries (deduplicated and sorted)

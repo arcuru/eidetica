@@ -48,13 +48,13 @@ Eidetica organizes data in a layered architecture:
 +----------+------------+
 | Entries (DAG)         |
 +-----------------------+
-| Backend Storage       |
+| Database Storage      |
 +-----------------------+
 ```
 
 Each layer builds on the ones below, providing progressively higher-level abstractions:
 
-1. **Backend Storage**: Physical storage of data (currently InMemory with file persistence)
+1. **Database Storage**: Physical storage of data (currently InMemory with file persistence)
 2. **Entries**: Immutable, content-addressed objects forming the database's history
 3. **Trees & Subtrees**: Logical organization and typed access to data
 4. **Operations**: Atomic transactions across multiple subtrees
@@ -164,7 +164,7 @@ Eidetica is under active development, and some features mentioned in this docume
 ### Implemented Features
 
 - Core Entry and Tree structure
-- In-memory backend with file persistence
+- In-memory database with file persistence
 - KVStore and RowStore subtree implementations
 - CRDT functionality:
   - Map (simple key-value with tombstone support for deletions)

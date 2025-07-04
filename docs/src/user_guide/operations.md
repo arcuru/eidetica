@@ -12,7 +12,7 @@ Operations provide several key benefits:
 
 - **Atomicity**: Changes made to multiple `Subtree`s within a single `Operation` are committed together as one atomic unit. If the `commit()` fails, no changes are persisted. This is similar to transactions in traditional databases.
 - **Consistency**: An `Operation` captures a snapshot of the `Tree`'s state (specifically, the tips of the relevant `Subtree`s) when it's created or when a `Subtree` is first accessed within it. All reads and writes within that `Operation` occur relative to this consistent state.
-- **Change Staging**: Modifications made via `Subtree` handles are staged within the `Operation` object itself, not written directly to the backend until `commit()` is called.
+- **Change Staging**: Modifications made via `Subtree` handles are staged within the `Operation` object itself, not written directly to the database until `commit()` is called.
 - **Authentication**: All operations are automatically authenticated using the tree's default signing key, ensuring data integrity and access control.
 - **History Creation**: A successful `commit()` results in the creation of a _new `Entry`_ in the `Tree`, containing the staged changes and linked to the previous state (the tips the `Operation` was based on). This is how history is built.
 
@@ -38,7 +38,7 @@ Using an `Operation` follows a distinct lifecycle:
     config_store.set("last_updated", Utc::now().to_rfc3339())?;
     ```
     _Note: `get` methods within an operation read from the staged state, reflecting any changes already made within the same operation._
-4.  **Commit**: Finalize the changes. This consumes the `Operation` object, calculates the final `Entry` content based on staged changes, cryptographically signs the entry, writes the new `Entry` to the `Backend`, and returns the `ID` of the newly created `Entry`.
+4.  **Commit**: Finalize the changes. This consumes the `Operation` object, calculates the final `Entry` content based on staged changes, cryptographically signs the entry, writes the new `Entry` to the `Database`, and returns the `ID` of the newly created `Entry`.
     ```rust
     let new_entry_id = op.commit()?;
     println!("Changes committed. New state represented by Entry: {}", new_entry_id);

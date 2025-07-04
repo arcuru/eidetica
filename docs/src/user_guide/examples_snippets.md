@@ -7,20 +7,20 @@ _Assumes basic setup like `use eidetica::{BaseDB, Tree, Error, ...};` and error 
 ## 1. Initializing the Database (`BaseDB`)
 
 ```rust
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
 
 // Option A: Create a new, empty in-memory database
-let backend_new = InMemoryBackend::new();
-let db_new = BaseDB::new(Box::new(backend_new));
+let database_new = InMemory::new();
+let db_new = BaseDB::new(Box::new(database_new));
 
 // Option B: Load from a previously saved file
 let db_path = PathBuf::from("my_database.json");
 if db_path.exists() {
-    match InMemoryBackend::load_from_file(&db_path) {
-        Ok(backend_loaded) => {
-            let db_loaded = BaseDB::new(Box::new(backend_loaded));
+    match InMemory::load_from_file(&db_path) {
+        Ok(database_loaded) => {
+            let db_loaded = BaseDB::new(Box::new(database_loaded));
             println!("Database loaded successfully.");
             // Use db_loaded
         }
@@ -427,25 +427,25 @@ prefs_read_store.with_doc(|doc| {
 - Real-time data synchronization
 - Any scenario requiring conflict-free concurrent updates
 
-## 9. Saving the Database (InMemoryBackend)
+## 9. Saving the Database (InMemory)
 
 ```rust
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use std::path::PathBuf;
 
 let db: BaseDB = /* database instance */;
 let db_path = PathBuf::from("my_database.json");
 
-// Lock the backend mutex
-let backend_guard = db.backend().lock().map_err(|_| anyhow::anyhow!("Failed to lock backend mutex"))?;
+// Lock the database mutex
+let database_guard = db.backend().lock().map_err(|_| anyhow::anyhow!("Failed to lock database mutex"))?;
 
-// Downcast to the concrete InMemoryBackend type
-if let Some(in_memory_backend) = backend_guard.as_any().downcast_ref::<InMemoryBackend>() {
-    match in_memory_backend.save_to_file(&db_path) {
+// Downcast to the concrete InMemory type
+if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemory>() {
+    match in_memory_database.save_to_file(&db_path) {
         Ok(_) => println!("Database saved successfully to {:?}", db_path),
         Err(e) => eprintln!("Error saving database: {}", e),
     }
 } else {
-    eprintln!("Backend is not InMemoryBackend, cannot save to file this way.");
+    eprintln!("Database is not InMemory, cannot save to file this way.");
 }
 ```

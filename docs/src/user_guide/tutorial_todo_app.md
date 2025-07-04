@@ -10,12 +10,12 @@ Note: This example uses the Eidetica library from the workspace at `crates/lib/`
 
 ### 1. The Database (`BaseDB`)
 
-The `BaseDB` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "backend") and provides access to data structures called Trees.
+The `BaseDB` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "database") and provides access to data structures called Trees.
 
-In the Todo example, we initialize or load the database using an `InMemoryBackend`, which can be persisted to a file:
+In the Todo example, we initialize or load the database using an `InMemory` database, which can be persisted to a file:
 
 ```rust
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
 use anyhow::Result;
@@ -23,14 +23,14 @@ use anyhow::Result;
 fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     if path.exists() {
         // Load existing DB from file
-        let backend = InMemoryBackend::load_from_file(path)?;
-        let db = BaseDB::new(Box::new(backend));
+        let database = InMemory::load_from_file(path)?;
+        let db = BaseDB::new(Box::new(database));
         // Authentication keys are automatically loaded with the database
         Ok(db)
     } else {
-        // Create a new in-memory backend
-        let backend = InMemoryBackend::new();
-        let db = BaseDB::new(Box::new(backend));
+        // Create a new in-memory database
+        let database = InMemory::new();
+        let db = BaseDB::new(Box::new(database));
         // Add authentication key (required for all operations)
         db.add_private_key("todo_app_key")?;
         Ok(db)
@@ -38,16 +38,16 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
 }
 
 fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
-    let backend = db.backend();
-    let backend_guard = backend.lock().unwrap();
+    let database = db.backend();
+    let database_guard = database.lock().unwrap();
 
-    // Cast is needed to call backend-specific methods like save_to_file
-    let in_memory_backend = backend_guard
+    // Cast is needed to call database-specific methods like save_to_file
+    let in_memory_database = database_guard
         .as_any()
-        .downcast_ref::<InMemoryBackend>()
-        .ok_or(anyhow::anyhow!("Failed to downcast backend"))?; // Simplified error
+        .downcast_ref::<InMemory>()
+        .ok_or(anyhow::anyhow!("Failed to downcast database"))?; // Simplified error
 
-    in_memory_backend.save_to_file(path)?;
+    in_memory_database.save_to_file(path)?;
     Ok(())
 }
 
