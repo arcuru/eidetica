@@ -1,5 +1,5 @@
 use eidetica::Error;
-use eidetica::backend::{Backend, InMemoryBackend, VerificationStatus};
+use eidetica::backend::{Database, VerificationStatus, database::InMemory};
 use eidetica::entry::{Entry, ID};
 use std::fs;
 use std::io::Write;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[test]
 fn test_in_memory_backend_basic_operations() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create and insert a test entry
     let entry = Entry::root_builder().build();
@@ -33,7 +33,7 @@ fn test_in_memory_backend_basic_operations() {
 
 #[test]
 fn test_in_memory_backend_tree_operations() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a root entry
     let root_entry = Entry::root_builder().build();
@@ -75,7 +75,7 @@ fn test_in_memory_backend_tree_operations() {
 
 #[test]
 fn test_in_memory_backend_subtree_operations() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a root entry with a subtree
     let root_entry = Entry::root_builder()
@@ -115,7 +115,7 @@ fn test_in_memory_backend_save_and_load() {
 
     // Setup: Create a backend with some data
     {
-        let backend = InMemoryBackend::new();
+        let backend = InMemory::new();
         let entry = Entry::root_builder().build();
         backend.put_verified(entry).unwrap();
 
@@ -128,7 +128,7 @@ fn test_in_memory_backend_save_and_load() {
     assert!(file_path.exists());
 
     // Load from file
-    let load_result = InMemoryBackend::load_from_file(&file_path);
+    let load_result = InMemory::load_from_file(&file_path);
     assert!(load_result.is_ok());
     let loaded_backend = load_result.unwrap();
 
@@ -142,17 +142,17 @@ fn test_in_memory_backend_save_and_load() {
 
 #[test]
 fn test_in_memory_backend_error_handling() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Test retrieving a non-existent entry
     let non_existent_id: ID = "non_existent_id".into();
     let get_result = backend.get(&non_existent_id);
     assert!(get_result.is_err());
 
-    // For some backend implementations like InMemoryBackend, get_tips might return
+    // For some database implementations like InMemory, get_tips might return
     // an empty vector instead of an error when the tree doesn't exist
     // Let's verify it returns either an error or an empty vector
-    // FIXME: Code smell, backends should be consistent. Update this test once the API is defined.
+    // FIXME: Code smell, databases should be consistent. Update this test once the API is defined.
     let tips_result = backend.get_tips(&non_existent_id);
     if let Ok(tips) = tips_result {
         // If it returns Ok, it should be an empty vector
@@ -181,7 +181,7 @@ fn test_in_memory_backend_error_handling() {
 
 #[test]
 fn test_in_memory_backend_complex_tree_structure() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a root entry
     let root_entry = Entry::root_builder().build();
@@ -253,7 +253,7 @@ fn test_in_memory_backend_complex_tree_structure() {
 
 #[test]
 fn test_backend_get_tree_from_tips() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
     let root_id: ID = "tree_root".into();
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -344,7 +344,7 @@ fn test_backend_get_tree_from_tips() {
 
 #[test]
 fn test_backend_get_subtree_from_tips() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
     let subtree_name = "my_subtree";
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -460,7 +460,7 @@ fn test_backend_get_subtree_from_tips() {
 
 #[test]
 fn test_calculate_entry_height() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a simple tree:
     // root -> A -> B -> C\
@@ -557,7 +557,7 @@ fn test_load_non_existent_file() {
     let _ = fs::remove_file(&path); // Ignore error if it doesn't exist
 
     // Load
-    let backend = InMemoryBackend::load_from_file(&path);
+    let backend = InMemory::load_from_file(&path);
 
     // Verify it's empty
     assert_eq!(backend.unwrap().all_roots().unwrap().len(), 0);
@@ -577,7 +577,7 @@ fn test_load_invalid_file() {
     }
 
     // Attempt to load
-    let result = InMemoryBackend::load_from_file(&path);
+    let result = InMemory::load_from_file(&path);
 
     // Verify it's an error
     assert!(result.is_err());
@@ -594,7 +594,7 @@ fn test_save_load_with_various_entries() {
     let file_path = test_dir.join("test_various_entries.json");
 
     // Setup a tree with multiple entries
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Top-level root
     let root_entry = Entry::root_builder().build();
@@ -635,7 +635,7 @@ fn test_save_load_with_various_entries() {
     backend.save_to_file(&file_path).unwrap();
 
     // Load back into a new backend
-    let loaded_backend = InMemoryBackend::load_from_file(&file_path).unwrap();
+    let loaded_backend = InMemory::load_from_file(&file_path).unwrap();
 
     // Verify loaded data
 
@@ -680,7 +680,7 @@ fn test_save_load_with_various_entries() {
 
 #[test]
 fn test_sort_entries() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a simple tree with mixed order
     let root = Entry::root_builder().build();
@@ -739,7 +739,7 @@ fn test_save_load_in_memory_backend() {
     fs::create_dir_all(&test_dir).unwrap();
     let path = test_dir.join("test_save_load.json");
 
-    let backend1 = InMemoryBackend::new();
+    let backend1 = InMemory::new();
     let entry1 = Entry::root_builder().build();
     let entry2 = Entry::root_builder().build();
 
@@ -753,7 +753,7 @@ fn test_save_load_in_memory_backend() {
     backend1.save_to_file(&path).unwrap();
 
     // Load into a new backend
-    let backend2 = InMemoryBackend::load_from_file(&path).unwrap();
+    let backend2 = InMemory::load_from_file(&path).unwrap();
 
     // Verify contents
     assert_eq!(backend2.get(&id1).unwrap(), entry1);
@@ -765,7 +765,7 @@ fn test_save_load_in_memory_backend() {
 
 #[test]
 fn test_all_roots() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Initially, there should be no roots
     assert!(backend.all_roots().unwrap().is_empty());
@@ -800,7 +800,7 @@ fn test_all_roots() {
 
 #[test]
 fn test_get_tips() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a simple tree structure:
     // Root -> A -> B
@@ -875,7 +875,7 @@ fn test_get_tips() {
 
 #[test]
 fn test_put_get_entry() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Test putting and getting an entry
     let entry = Entry::root_builder().build();
@@ -902,7 +902,7 @@ fn test_put_get_entry() {
 
 #[test]
 fn test_get_subtree_tips() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a tree with subtrees
     let root = Entry::root_builder().build();
@@ -983,7 +983,7 @@ fn test_get_subtree_tips() {
 
 #[test]
 fn test_get_tree() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a simple tree with three entries
     let root = Entry::root_builder().build();
@@ -1034,7 +1034,7 @@ fn test_get_tree() {
 
 #[test]
 fn test_get_subtree() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a tree with a subtree
     let root = Entry::root_builder().build();
@@ -1119,7 +1119,7 @@ fn test_get_subtree() {
 
 #[test]
 fn test_calculate_subtree_height() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a tree with a subtree that has a different structure
     let root = Entry::root_builder().build();
@@ -1197,7 +1197,7 @@ fn test_calculate_subtree_height() {
 
 #[test]
 fn test_verification_status_basic_operations() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a test entry
     let entry = Entry::builder("root").build();
@@ -1238,7 +1238,7 @@ fn test_verification_status_basic_operations() {
 
 #[test]
 fn test_verification_status_default_behavior() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create a test entry
     let entry = Entry::builder("root").build();
@@ -1263,7 +1263,7 @@ fn test_verification_status_default_behavior() {
 
 #[test]
 fn test_verification_status_multiple_entries() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create multiple test entries
     let entry1 = Entry::builder("root1").build();
@@ -1298,7 +1298,7 @@ fn test_verification_status_multiple_entries() {
 
 #[test]
 fn test_verification_status_not_found_errors() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     let nonexistent_id: ID = "nonexistent".into();
 
@@ -1317,7 +1317,7 @@ fn test_verification_status_not_found_errors() {
 
 #[test]
 fn test_verification_status_serialization() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Create test entries with different verification statuses
     let entry1 = Entry::builder("root1").build();
@@ -1337,8 +1337,7 @@ fn test_verification_status_serialization() {
         .save_to_file(temp_file)
         .expect("Failed to save backend");
 
-    let loaded_backend =
-        InMemoryBackend::load_from_file(temp_file).expect("Failed to load backend");
+    let loaded_backend = InMemory::load_from_file(temp_file).expect("Failed to load backend");
 
     // Verify statuses are preserved
     let status1 = loaded_backend
@@ -1357,7 +1356,7 @@ fn test_verification_status_serialization() {
 
 #[test]
 fn test_backend_verification_helpers() {
-    let backend = InMemoryBackend::new();
+    let backend = InMemory::new();
 
     // Test the convenience methods
     let entry1 = Entry::root_builder().build();

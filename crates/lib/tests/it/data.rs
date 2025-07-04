@@ -1,7 +1,7 @@
 use crate::helpers::*;
 use eidetica::Error;
 use eidetica::atomicop::AtomicOp;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::CRDT;
 use eidetica::crdt::Map;
@@ -970,7 +970,7 @@ fn setup_kvstore_for_editor_tests(_db: &BaseDB, op: &AtomicOp) -> eidetica::Resu
 
 #[test]
 fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -990,7 +990,7 @@ fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1038,7 +1038,7 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1090,7 +1090,7 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1112,7 +1112,7 @@ fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1147,7 +1147,7 @@ fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1206,7 +1206,7 @@ fn setup_kvstore_for_path_tests(op: &AtomicOp) -> eidetica::Result<KVStore> {
 
 #[test]
 fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1235,7 +1235,7 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
 
 #[test]
 fn test_kvstore_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1269,7 +1269,7 @@ fn test_kvstore_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
 
 #[test]
 fn test_kvstore_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1293,7 +1293,7 @@ fn test_kvstore_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> 
 
 #[test]
 fn test_kvstore_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1324,7 +1324,7 @@ fn test_kvstore_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
 
 #[test]
 fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1364,7 +1364,7 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
 
 #[test]
 fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1385,7 +1385,7 @@ fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> 
 
 #[test]
 fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1412,7 +1412,7 @@ fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
 
 #[test]
 fn test_kvstore_get_at_path_empty_path() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1432,7 +1432,7 @@ fn test_kvstore_get_at_path_empty_path() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_root_operations() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1505,7 +1505,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_delete_methods() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
@@ -1592,7 +1592,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
 #[test]
 fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;

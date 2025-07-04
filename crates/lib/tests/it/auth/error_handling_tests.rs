@@ -10,7 +10,7 @@ use eidetica::auth::types::{
     TreeReference,
 };
 use eidetica::auth::validation::AuthValidator;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::{Nested, Value};
 use eidetica::entry::ID;
@@ -32,18 +32,18 @@ fn test_delegation_without_backend() {
     let mut validator = AuthValidator::new();
     let settings = Nested::new();
 
-    // Should fail when backend is required but not provided
+    // Should fail when database is required but not provided
     let result = validator.resolve_sig_key(&delegation_path, &settings, None);
     assert!(result.is_err());
 
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("Backend required") || error_msg.contains("backend"));
+    assert!(error_msg.contains("Database required") || error_msg.contains("database"));
 }
 
 /// Test delegation with non-existent delegated tree
 #[test]
 fn test_delegation_nonexistent_tree() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;
@@ -105,7 +105,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 /// Test delegation with corrupted tree references
 #[test]
 fn test_delegation_corrupted_tree_references() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;
@@ -157,7 +157,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
 /// Test privilege escalation attempt through delegation
 #[test]
 fn test_privilege_escalation_through_delegation() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private keys to storage
     let admin_key = db.add_private_key("admin_in_delegated_tree")?;
@@ -246,7 +246,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
 /// Test delegation with tampered tips
 #[test]
 fn test_delegation_with_tampered_tips() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private keys to storage
     let user_key = db.add_private_key("user")?;
@@ -341,7 +341,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
 /// Test delegation chain with mixed key statuses
 #[test]
 fn test_delegation_mixed_key_statuses() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private keys to storage
     let active_user_key = db.add_private_key("active_user")?;
@@ -468,7 +468,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
 /// Test validation cache behavior under error conditions
 #[test]
 fn test_validation_cache_error_conditions() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;
@@ -532,7 +532,7 @@ fn test_error_message_consistency() {
 
     let mut validator = AuthValidator::new();
     let settings = Nested::new();
-    let db = BaseDB::new(Box::new(InMemoryBackend::new()));
+    let db = BaseDB::new(Box::new(InMemory::new()));
 
     for (sig_key, expected_error_type) in test_cases {
         let result = validator.resolve_sig_key(&sig_key, &settings, Some(db.backend()));
@@ -557,7 +557,7 @@ fn test_concurrent_validation_basic() -> Result<()> {
     use std::sync::Arc;
     use std::thread;
 
-    let db = Arc::new(BaseDB::new(Box::new(InMemoryBackend::new())));
+    let db = Arc::new(BaseDB::new(Box::new(InMemory::new())));
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;

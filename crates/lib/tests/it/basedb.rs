@@ -1,7 +1,7 @@
 use crate::helpers::*;
 use eidetica::Error;
-use eidetica::backend::Backend;
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::Database;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
@@ -10,7 +10,7 @@ use eidetica::subtree::KVStore;
 const TEST_KEY: &str = "test_key";
 
 fn setup_authenticated_db() -> BaseDB {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
     db.add_private_key(TEST_KEY)
         .expect("Failed to add test key");
@@ -84,7 +84,7 @@ fn test_all_trees() {
 
 #[test]
 fn test_get_backend() {
-    let backend: Box<dyn Backend> = Box::new(InMemoryBackend::new());
+    let backend: Box<dyn Database> = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     let retrieved_backend = db.backend();
@@ -262,7 +262,7 @@ fn test_find_tree() {
     assert!(found_tree3.iter().all(|t| t.get_name().unwrap() == "Tree3"));
 
     // Test: Find when no trees exist
-    let empty_backend = Box::new(InMemoryBackend::new());
+    let empty_backend = Box::new(InMemory::new());
     let empty_db = BaseDB::new(empty_backend);
     let found_empty_result = empty_db.find_tree("AnyName");
     assert!(matches!(found_empty_result, Err(Error::NotFound)));

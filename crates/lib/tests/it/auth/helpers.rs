@@ -1,6 +1,6 @@
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Nested;
 use eidetica::subtree::KVStore;
@@ -20,7 +20,7 @@ pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> Aut
 pub fn setup_test_db_with_keys(
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (BaseDB, Vec<ed25519_dalek::VerifyingKey>) {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     let mut public_keys = Vec::new();

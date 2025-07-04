@@ -1,11 +1,11 @@
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::{Nested, Value};
 
 #[test]
 fn test_settings_tips_in_metadata() {
     // Create a backend and database
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Add a test key
@@ -95,7 +95,7 @@ fn test_settings_tips_in_metadata() {
 #[test]
 fn test_entry_get_settings_from_subtree() {
     // Create a backend and database
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Add a test key
@@ -140,7 +140,7 @@ fn test_entry_get_settings_from_subtree() {
 #[test]
 fn test_settings_tips_propagation() {
     // Create a backend and database
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = BaseDB::new(backend);
 
     // Add a test key

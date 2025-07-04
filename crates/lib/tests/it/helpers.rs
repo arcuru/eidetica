@@ -1,4 +1,4 @@
-use eidetica::backend::InMemoryBackend;
+use eidetica::backend::database::InMemory;
 use eidetica::crdt::{Nested, Value};
 use eidetica::subtree::KVStore;
 
@@ -6,7 +6,7 @@ const DEFAULT_TEST_KEY_ID: &str = "test_key";
 
 /// Creates a basic authenticated database with the default test key
 pub fn setup_db() -> eidetica::basedb::BaseDB {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
     db.add_private_key(DEFAULT_TEST_KEY_ID)
         .expect("Failed to add default test key");
@@ -15,13 +15,13 @@ pub fn setup_db() -> eidetica::basedb::BaseDB {
 
 /// Creates a database without any default keys (for tests that manage keys manually)
 pub fn setup_empty_db() -> eidetica::basedb::BaseDB {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     eidetica::basedb::BaseDB::new(backend)
 }
 
 /// Creates an authenticated database with a specific key
 pub fn setup_db_with_key(key_id: &str) -> eidetica::basedb::BaseDB {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
     db.add_private_key(key_id).expect("Failed to add test key");
     db
@@ -29,7 +29,7 @@ pub fn setup_db_with_key(key_id: &str) -> eidetica::basedb::BaseDB {
 
 /// Creates an authenticated database with multiple keys
 pub fn setup_db_with_keys(key_ids: &[&str]) -> eidetica::basedb::BaseDB {
-    let backend = Box::new(InMemoryBackend::new());
+    let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
     for key_id in key_ids {
         db.add_private_key(key_id).expect("Failed to add test key");
@@ -37,7 +37,7 @@ pub fn setup_db_with_keys(key_ids: &[&str]) -> eidetica::basedb::BaseDB {
     db
 }
 
-/// Creates a basic tree using an InMemoryBackend with authentication
+/// Creates a basic tree using an InMemory database with authentication
 pub fn setup_tree() -> eidetica::Tree {
     let db = setup_db();
     db.new_tree_default(DEFAULT_TEST_KEY_ID)
