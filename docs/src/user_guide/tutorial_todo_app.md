@@ -80,7 +80,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             println!("Found existing todo tree.");
             Ok(trees.pop().unwrap()) // Safe unwrap as find_tree errors if empty
         }
-        Err(eidetica::Error::NotFound) => {
+        Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
             let mut settings = eidetica::crdt::Nested::new(); // Tree settings

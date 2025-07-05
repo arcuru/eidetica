@@ -29,3 +29,7 @@ Each design document typically includes:
 
 - [Authentication](authentication.md) - Mandatory cryptographic authentication for all entries
 - [Settings Storage](settings_storage.md) - How settings are stored and tracked in trees
+
+### Proposed
+
+- [Error Handling](error_handling.md) - Modular error architecture for improved debugging and user experience
