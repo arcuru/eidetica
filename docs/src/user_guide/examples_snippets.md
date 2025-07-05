@@ -49,7 +49,7 @@ let tree = match db.find_tree(tree_name) {
         println!("Found existing tree: {}", tree_name);
         trees.pop().unwrap() // Assume first one is correct
     }
-    Err(Error::NotFound) => {
+    Err(e) if e.is_not_found() => {
         println!("Creating new tree: {}", tree_name);
         let mut settings = Nested::new();
         settings.set_string("name", tree_name);
@@ -152,7 +152,7 @@ let config_viewer = tree.get_subtree_viewer::<KVStore>("configuration")?;
 
 match config_viewer.get("api_key") {
     Ok(api_key) => println!("Current API Key: {}", api_key),
-    Err(Error::NotFound) => println!("API Key not set."),
+    Err(e) if e.is_not_found() => println!("API Key not set."),
     Err(e) => return Err(e.into()),
 }
 
@@ -181,7 +181,7 @@ let tasks_viewer = tree.get_subtree_viewer::<RowStore<Task>>("tasks")?;
 let id_to_find = /* obtained previously, e.g., inserted_id */;
 match tasks_viewer.get(&id_to_find) {
     Ok(task) => println!("Found task {}: {:?}", id_to_find, task),
-    Err(Error::NotFound) => println!("Task {} not found.", id_to_find),
+    Err(e) if e.is_not_found() => println!("Task {} not found.", id_to_find),
     Err(e) => return Err(e.into()),
 }
 
@@ -295,7 +295,7 @@ if let Ok(user_data) = viewer_store.get("user123") {
     // Check if a preference exists
     match editor.get_value_mut("preferences").get_value("notifications") {
         Ok(_) => println!("Notifications setting exists"),
-        Err(Error::NotFound) => println!("Notifications setting was deleted"),
+        Err(e) if e.is_not_found() => println!("Notifications setting was deleted"),
         Err(_) => println!("Error accessing notifications setting"),
     }
 }
