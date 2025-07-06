@@ -13,6 +13,10 @@ use std::any::Any;
 
 // Category modules
 pub mod database;
+pub mod errors;
+
+// Re-export main types for easier access
+pub use errors::DatabaseError;
 
 /// Verification status for entries in the backend.
 ///

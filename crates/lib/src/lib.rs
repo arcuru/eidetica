@@ -65,6 +65,10 @@ pub enum Error {
     #[error(transparent)]
     Auth(auth::AuthError),
 
+    /// Structured database errors from the backend module
+    #[error(transparent)]
+    Backend(backend::DatabaseError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -92,6 +96,7 @@ impl Error {
     pub fn module(&self) -> &'static str {
         match self {
             Error::Auth(_) => "auth",
+            Error::Backend(_) => "backend",
             Error::Authentication(_)
             | Error::InvalidSignature
             | Error::KeyNotFound(_)
@@ -109,6 +114,7 @@ impl Error {
         match self {
             Error::NotFound | Error::KeyNotFound(_) => true,
             Error::Auth(auth_err) => auth_err.is_key_not_found(),
+            Error::Backend(backend_err) => backend_err.is_not_found(),
             _ => false,
         }
     }
@@ -138,5 +144,27 @@ impl Error {
                 | Error::PermissionDenied(_)
                 | Error::InvalidKeyFormat(_)
         )
+    }
+
+    /// Check if this error is database/backend-related.
+    pub fn is_database_error(&self) -> bool {
+        matches!(self, Error::Backend(_))
+    }
+
+    /// Check if this error indicates a data integrity issue.
+    pub fn is_integrity_error(&self) -> bool {
+        match self {
+            Error::Backend(backend_err) => backend_err.is_integrity_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is I/O related.
+    pub fn is_io_error(&self) -> bool {
+        match self {
+            Error::Io(_) => true,
+            Error::Backend(backend_err) => backend_err.is_io_error(),
+            _ => false,
+        }
     }
 }

@@ -10,6 +10,7 @@ mod storage;
 mod traversal;
 
 use crate::Result;
+use crate::backend::errors::DatabaseError;
 use crate::backend::{Database, VerificationStatus};
 use crate::entry::{Entry, ID};
 use ed25519_dalek::SigningKey;
@@ -178,11 +179,14 @@ impl Database for InMemory {
     /// * `id` - The ID of the entry to retrieve.
     ///
     /// # Returns
-    /// A `Result` containing the `Entry` if found, or an `Error::NotFound` otherwise.
+    /// A `Result` containing the `Entry` if found, or a `DatabaseError::EntryNotFound` otherwise.
     /// Returns an owned copy to support concurrent access with internal synchronization.
     fn get(&self, id: &ID) -> Result<Entry> {
         let entries = self.entries.read().unwrap();
-        entries.get(id).cloned().ok_or(crate::Error::NotFound)
+        entries
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DatabaseError::EntryNotFound { id: id.clone() }.into())
     }
 
     /// Gets the verification status of an entry.
@@ -191,13 +195,13 @@ impl Database for InMemory {
     /// * `id` - The ID of the entry to check.
     ///
     /// # Returns
-    /// A `Result` containing the `VerificationStatus` if the entry exists, or an `Error::NotFound` otherwise.
+    /// A `Result` containing the `VerificationStatus` if the entry exists, or a `DatabaseError::VerificationStatusNotFound` otherwise.
     fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         let verification_status_map = self.verification_status.read().unwrap();
         verification_status_map
             .get(id)
             .copied()
-            .ok_or(crate::Error::NotFound)
+            .ok_or_else(|| DatabaseError::VerificationStatusNotFound { id: id.clone() }.into())
     }
 
     fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
@@ -214,7 +218,7 @@ impl Database for InMemory {
     /// * `verification_status` - The new verification status
     ///
     /// # Returns
-    /// A `Result` indicating success or `Error::NotFound` if the entry doesn't exist.
+    /// A `Result` indicating success or `DatabaseError::EntryNotFound` if the entry doesn't exist.
     fn update_verification_status(
         &self,
         id: &ID,
@@ -225,7 +229,7 @@ impl Database for InMemory {
             verification_status_map.insert(id.clone(), verification_status);
             Ok(())
         } else {
-            Err(crate::Error::NotFound)
+            Err(DatabaseError::EntryNotFound { id: id.clone() }.into())
         }
     }
 

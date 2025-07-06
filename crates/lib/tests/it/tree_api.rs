@@ -1,5 +1,4 @@
 use crate::helpers::*;
-use eidetica::Error;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission, SigKey};
 use eidetica::crdt::Nested;
 use eidetica::subtree::KVStore;
@@ -34,7 +33,7 @@ fn test_get_entry_not_found() {
     // Try to get non-existent entry
     let result = tree.get_entry("non_existent_entry");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 /// Test get_entries with multiple entries
@@ -82,7 +81,7 @@ fn test_get_entries_not_found() {
     let entry_ids = vec![valid_entry_id.as_str(), "non_existent_entry"];
     let result = tree.get_entries(entry_ids);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 /// Test entry existence checking via get_entry
@@ -104,7 +103,7 @@ fn test_entry_existence_checking() {
     // Test get_entry with non-existent entry (should fail with NotFound)
     let result = tree.get_entry("non_existent_entry");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 /// Test tree validation - entries from different trees should be rejected
@@ -527,11 +526,11 @@ fn test_auth_helpers_error_handling() {
     // Test with non-existent entry
     let result = tree.get_entry("non_existent_entry");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 
     let result = tree.verify_entry_signature("non_existent_entry");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 /// Test performance: batch get_entries vs individual get_entry calls
