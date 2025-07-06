@@ -1,9 +1,9 @@
-use crate::Error;
+pub mod errors;
+
 use crate::Result;
 use crate::auth::crypto::sign_entry;
 use crate::auth::types::{Operation, SigInfo, SigKey};
 use crate::auth::validation::AuthValidator;
-use crate::basedb::errors::BaseError;
 use crate::constants::SETTINGS;
 use crate::crdt::CRDT;
 use crate::crdt::Nested;
@@ -15,6 +15,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+
+pub use errors::AtomicOpError;
 
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +77,7 @@ impl AtomicOp {
             let root_exists = tree.backend().get(tree.root_id()).is_ok();
 
             if root_exists {
-                return Err(BaseError::EmptyTipsNotAllowed.into());
+                return Err(AtomicOpError::EmptyTipsNotAllowed.into());
             }
             // If root doesn't exist, this is valid (creating the root entry)
         }
@@ -84,9 +86,8 @@ impl AtomicOp {
         for tip_id in tips {
             let entry = tree.backend().get(tip_id)?;
             if !entry.in_tree(tree.root_id()) {
-                return Err(BaseError::InvalidTip {
-                    tip_id: tip_id.clone(),
-                    tree_id: tree.root_id().clone(),
+                return Err(AtomicOpError::InvalidTip {
+                    tip_id: tip_id.to_string(),
                 }
                 .into());
             }
@@ -187,7 +188,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(BaseError::OperationAlreadyCommitted)?;
+            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
         builder.set_root_mut(root.as_ref().to_string());
         Ok(())
     }
@@ -218,7 +219,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(BaseError::OperationAlreadyCommitted)?;
+            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
@@ -265,7 +266,7 @@ impl AtomicOp {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref
                 .as_mut()
-                .ok_or(BaseError::OperationAlreadyCommitted)?;
+                .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
 
             // If we haven't cached the tips for this subtree yet, get them now
             let subtrees = builder.subtrees();
@@ -328,14 +329,20 @@ impl AtomicOp {
         let builder_ref = self.entry_builder.borrow();
         let builder = builder_ref
             .as_ref()
-            .ok_or(BaseError::OperationAlreadyCommitted)?;
+            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
 
         if let Ok(data) = builder.data(subtree_name) {
             if data.trim().is_empty() {
                 // If data is empty, return default
                 Ok(T::default())
             } else {
-                serde_json::from_str(data).map_err(Error::from)
+                serde_json::from_str(data).map_err(|e| {
+                    AtomicOpError::SubtreeDeserializationFailed {
+                        subtree: subtree_name.to_string(),
+                        reason: e.to_string(),
+                    }
+                    .into()
+                })
             }
         } else {
             // If subtree doesn't exist or has no data, return default
@@ -372,7 +379,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(BaseError::OperationAlreadyCommitted)?;
+            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
@@ -633,7 +640,7 @@ impl AtomicOp {
             let builder_cell = self.entry_builder.borrow();
             let builder = builder_cell
                 .as_ref()
-                .ok_or(BaseError::OperationAlreadyCommitted)?;
+                .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
             builder.subtrees().contains(&SETTINGS.to_string())
         };
 
@@ -663,7 +670,7 @@ impl AtomicOp {
         let builder_cell = self.entry_builder.borrow_mut();
         let builder_from_cell = builder_cell
             .as_ref()
-            .ok_or(BaseError::OperationAlreadyCommitted)?;
+            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
 
         // Clone the builder since we can't easily take ownership from RefCell<Option<>>
         let mut builder = builder_from_cell.clone();
@@ -707,7 +714,7 @@ impl AtomicOp {
             let signing_key = self.tree.backend().get_private_key(key_id)?;
 
             if signing_key.is_none() {
-                return Err(BaseError::SigningKeyNotFound {
+                return Err(AtomicOpError::SigningKeyNotFound {
                     key_id: key_id.clone(),
                 }
                 .into());
@@ -756,8 +763,8 @@ impl AtomicOp {
 
             signing_key
         } else {
-            // No authentication key configured - this is no longer allowed
-            return Err(BaseError::AuthenticationRequired.into());
+            // No authentication key configured
+            return Err(AtomicOpError::AuthenticationRequired.into());
         };
 
         // Remove empty subtrees and build the final immutable Entry
@@ -808,7 +815,7 @@ impl AtomicOp {
                         if has_permission {
                             crate::backend::VerificationStatus::Verified
                         } else {
-                            return Err(BaseError::InsufficientPermissions.into());
+                            return Err(AtomicOpError::InsufficientPermissions.into());
                         }
                     }
                     _ => {
@@ -826,23 +833,23 @@ impl AtomicOp {
                                         // Allow it since it's setting up authentication
                                         crate::backend::VerificationStatus::Verified
                                     } else {
-                                        return Err(BaseError::NoAuthConfiguration.into());
+                                        return Err(AtomicOpError::NoAuthConfiguration.into());
                                     }
                                 } else {
-                                    return Err(BaseError::NoAuthConfiguration.into());
+                                    return Err(AtomicOpError::NoAuthConfiguration.into());
                                 }
                             } else {
-                                return Err(BaseError::NoAuthConfiguration.into());
+                                return Err(AtomicOpError::NoAuthConfiguration.into());
                             }
                         } else {
-                            return Err(BaseError::NoAuthConfiguration.into());
+                            return Err(AtomicOpError::NoAuthConfiguration.into());
                         }
                     }
                 }
             }
             Ok(false) => {
                 // Signature verification failed
-                return Err(BaseError::SignatureVerificationFailed.into());
+                return Err(AtomicOpError::SignatureVerificationFailed.into());
             }
             Err(e) => {
                 // Authentication validation error
