@@ -61,6 +61,10 @@ pub enum Error {
     #[error("Invalid operation: {0}")]
     InvalidOperation(String),
 
+    /// Structured authentication errors from the auth module
+    #[error(transparent)]
+    Auth(auth::AuthError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -81,4 +85,58 @@ pub enum Error {
     /// Public key parsing or format validation failed
     #[error("Invalid key format: {0}")]
     InvalidKeyFormat(String),
+}
+
+impl Error {
+    /// Get the originating module for this error.
+    pub fn module(&self) -> &'static str {
+        match self {
+            Error::Auth(_) => "auth",
+            Error::Authentication(_)
+            | Error::InvalidSignature
+            | Error::KeyNotFound(_)
+            | Error::PermissionDenied(_)
+            | Error::InvalidKeyFormat(_) => "auth",
+            Error::Io(_) => "io",
+            Error::Serialize(_) => "serialize",
+            Error::NotFound | Error::AlreadyExists => "core",
+            Error::InvalidOperation(_) => "core",
+        }
+    }
+
+    /// Check if this error indicates a resource was not found.
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Error::NotFound | Error::KeyNotFound(_) => true,
+            Error::Auth(auth_err) => auth_err.is_key_not_found(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error indicates permission was denied.
+    pub fn is_permission_denied(&self) -> bool {
+        match self {
+            Error::PermissionDenied(_) => true,
+            Error::Auth(auth_err) => auth_err.is_permission_denied(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error indicates a conflict (already exists).
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Error::AlreadyExists)
+    }
+
+    /// Check if this error is authentication-related.
+    pub fn is_authentication_error(&self) -> bool {
+        matches!(
+            self,
+            Error::Auth(_)
+                | Error::Authentication(_)
+                | Error::InvalidSignature
+                | Error::KeyNotFound(_)
+                | Error::PermissionDenied(_)
+                | Error::InvalidKeyFormat(_)
+        )
+    }
 }

@@ -3,8 +3,8 @@
 //! This module provides Ed25519 signature generation and verification
 //! for authenticating entries in the database.
 
+use super::errors::AuthError;
 use crate::entry::Entry;
-use crate::{Error, Result};
 use base64ct::{Base64, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand;
@@ -13,30 +13,32 @@ use rand;
 ///
 /// Expected format: "ed25519:<base64_encoded_key>"
 /// The prefix "ed25519:" is required for crypto-agility
-pub fn parse_public_key(key_str: &str) -> Result<VerifyingKey> {
+pub fn parse_public_key(key_str: &str) -> Result<VerifyingKey, AuthError> {
     if !key_str.starts_with("ed25519:") {
-        return Err(Error::InvalidKeyFormat(
-            "Key must start with 'ed25519:' prefix".to_string(),
-        ));
+        return Err(AuthError::InvalidKeyFormat {
+            reason: "Key must start with 'ed25519:' prefix".to_string(),
+        });
     }
 
     let key_data = &key_str[8..]; // Skip "ed25519:" prefix
 
-    let key_bytes = Base64::decode_vec(key_data)
-        .map_err(|e| Error::InvalidKeyFormat(format!("Invalid base64 for key: {e}")))?;
-
-    if key_bytes.len() != 32 {
-        return Err(Error::InvalidKeyFormat(
-            "Ed25519 public key must be 32 bytes".to_string(),
-        ));
-    }
-
-    let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| {
-        Error::InvalidKeyFormat("Invalid key length after base64 decoding".to_string())
+    let key_bytes = Base64::decode_vec(key_data).map_err(|e| AuthError::InvalidKeyFormat {
+        reason: format!("Invalid base64 for key: {e}"),
     })?;
 
-    VerifyingKey::from_bytes(&key_array)
-        .map_err(|e| Error::InvalidKeyFormat(format!("Invalid Ed25519 key: {e}")))
+    if key_bytes.len() != 32 {
+        return Err(AuthError::InvalidKeyFormat {
+            reason: "Ed25519 public key must be 32 bytes".to_string(),
+        });
+    }
+
+    let key_array: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| AuthError::InvalidKeyFormat {
+            reason: "Invalid key length after base64 decoding".to_string(),
+        })?;
+
+    VerifyingKey::from_bytes(&key_array).map_err(|e| AuthError::KeyParsingFailed { source: e })
 }
 
 /// Format a public key as string
@@ -61,7 +63,7 @@ pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
 /// Sign an entry with an Ed25519 private key
 ///
 /// Returns base64-encoded signature string
-pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String> {
+pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String, crate::Error> {
     let signing_bytes = entry.signing_bytes()?;
     let signature = signing_key.sign(&signing_bytes);
     Ok(Base64::encode_string(&signature.to_bytes()))
@@ -72,24 +74,31 @@ pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String> {
 /// # Arguments
 /// * `entry` - The entry that was signed (with signature field set)
 /// * `verifying_key` - Public key for verification
-pub fn verify_entry_signature(entry: &Entry, verifying_key: &VerifyingKey) -> Result<bool> {
-    let signature_base64 = entry.sig.sig.as_ref().ok_or(Error::InvalidSignature)?;
+pub fn verify_entry_signature(
+    entry: &Entry,
+    verifying_key: &VerifyingKey,
+) -> Result<bool, AuthError> {
+    let signature_base64 = entry.sig.sig.as_ref().ok_or(AuthError::InvalidSignature)?;
 
     let signature_bytes =
-        Base64::decode_vec(signature_base64).map_err(|_| Error::InvalidSignature)?;
+        Base64::decode_vec(signature_base64).map_err(|_| AuthError::InvalidSignature)?;
 
     if signature_bytes.len() != 64 {
-        return Err(Error::InvalidSignature);
+        return Err(AuthError::InvalidSignature);
     }
 
     let signature_array: [u8; 64] = signature_bytes
         .try_into()
-        .map_err(|_| Error::InvalidSignature)?;
+        .map_err(|_| AuthError::InvalidSignature)?;
 
     let signature = Signature::from_bytes(&signature_array);
 
     // Get the canonical signing bytes (without signature)
-    let signing_bytes = entry.signing_bytes()?;
+    let signing_bytes = entry
+        .signing_bytes()
+        .map_err(|e| AuthError::InvalidAuthConfiguration {
+            reason: format!("Failed to get signing bytes: {e}"),
+        })?;
 
     match verifying_key.verify(&signing_bytes, &signature) {
         Ok(()) => Ok(true),
@@ -115,17 +124,17 @@ pub fn verify_signature(
     data: &[u8],
     signature_base64: &str,
     verifying_key: &VerifyingKey,
-) -> Result<bool> {
+) -> Result<bool, AuthError> {
     let signature_bytes =
-        Base64::decode_vec(signature_base64).map_err(|_| Error::InvalidSignature)?;
+        Base64::decode_vec(signature_base64).map_err(|_| AuthError::InvalidSignature)?;
 
     if signature_bytes.len() != 64 {
-        return Err(Error::InvalidSignature);
+        return Err(AuthError::InvalidSignature);
     }
 
     let signature_array: [u8; 64] = signature_bytes
         .try_into()
-        .map_err(|_| Error::InvalidSignature)?;
+        .map_err(|_| AuthError::InvalidSignature)?;
 
     let signature = Signature::from_bytes(&signature_array);
 

@@ -5,6 +5,7 @@
 //! CRDT and Merkle-DAG infrastructure.
 
 pub mod crypto;
+pub mod errors;
 pub mod permission;
 pub mod settings;
 pub mod types;
@@ -12,6 +13,7 @@ pub mod validation;
 
 // Re-export main types for easier access
 pub use crypto::*;
+pub use errors::AuthError;
 pub use permission::*;
 pub use settings::*;
 pub use types::*;
