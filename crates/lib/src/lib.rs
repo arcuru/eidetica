@@ -81,6 +81,10 @@ pub enum Error {
     #[error(transparent)]
     Subtree(subtree::SubtreeError),
 
+    /// Structured atomic operation errors from the atomicop module
+    #[error(transparent)]
+    AtomicOp(atomicop::AtomicOpError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -112,6 +116,7 @@ impl Error {
             Error::Base(_) => "basedb",
             Error::CRDT(_) => "crdt",
             Error::Subtree(_) => "subtree",
+            Error::AtomicOp(_) => "atomicop",
             Error::Authentication(_)
             | Error::InvalidSignature
             | Error::KeyNotFound(_)
@@ -165,6 +170,7 @@ impl Error {
             | Error::PermissionDenied(_)
             | Error::InvalidKeyFormat(_) => true,
             Error::Base(base_err) => base_err.is_authentication_error(),
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -201,6 +207,7 @@ impl Error {
         match self {
             Error::Base(base_err) => base_err.is_validation_error(),
             Error::Backend(backend_err) => backend_err.is_logical_error(),
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_validation_error(),
             _ => false,
         }
     }
@@ -269,6 +276,38 @@ impl Error {
     pub fn is_subtree_type_error(&self) -> bool {
         match self {
             Error::Subtree(subtree_err) => subtree_err.is_type_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error indicates an operation was already committed.
+    pub fn is_already_committed(&self) -> bool {
+        match self {
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_already_committed(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is related to entry operations.
+    pub fn is_entry_error(&self) -> bool {
+        match self {
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_entry_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is related to concurrency issues.
+    pub fn is_concurrency_error(&self) -> bool {
+        match self {
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_concurrency_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error indicates a timeout.
+    pub fn is_timeout_error(&self) -> bool {
+        match self {
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_timeout_error(),
             _ => false,
         }
     }
