@@ -21,12 +21,14 @@ pub mod value;
 
 // Then other modules that depend on value
 pub mod array;
+pub mod errors;
 pub mod map;
 pub mod nested;
 pub mod traits;
 
 // Re-export core types with new names
 pub use array::Array;
+pub use errors::CRDTError;
 pub use map::Map;
 pub use nested::Nested;
 pub use traits::{CRDT, Data};

@@ -3,7 +3,9 @@
 //! This module provides `Value` (formerly `NestedValue`), which represents the possible
 //! value types that can be stored in nested CRDT structures like `Nested`.
 
+use crate::crdt::errors::CRDTError;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Represents a value within a `Nested` structure, which can be either a String, another `Nested` map, an Array, or a tombstone.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -23,6 +25,33 @@ impl From<String> for Value {
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
         Value::String(s.to_string())
+    }
+}
+
+impl Value {
+    /// Type name for String variant
+    pub const STRING_TYPE: &'static str = "String";
+    /// Type name for Map variant  
+    pub const MAP_TYPE: &'static str = "Map";
+    /// Type name for Array variant
+    pub const ARRAY_TYPE: &'static str = "Array";
+    /// Type name for Deleted variant
+    pub const DELETED_TYPE: &'static str = "Deleted";
+
+    /// Returns a human-readable name for this value type
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::String(_) => Self::STRING_TYPE,
+            Value::Map(_) => Self::MAP_TYPE,
+            Value::Array(_) => Self::ARRAY_TYPE,
+            Value::Deleted => Self::DELETED_TYPE,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.type_name())
     }
 }
 
@@ -61,7 +90,7 @@ impl<T> TryFrom<Value> for HashMap<String, T>
 where
     T: for<'de> serde::Deserialize<'de>,
 {
-    type Error = String;
+    type Error = CRDTError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
@@ -73,13 +102,18 @@ where
                             map.insert(key.clone(), converted);
                         }
                         Err(e) => {
-                            return Err(format!("Failed to convert value for key '{key}': {e}"));
+                            return Err(CRDTError::DeserializationFailed {
+                                reason: format!("Failed to convert value for key '{key}': {e}"),
+                            });
                         }
                     }
                 }
                 Ok(map)
             }
-            _ => Err("Cannot convert non-map value to HashMap".to_string()),
+            value => Err(CRDTError::TypeMismatch {
+                expected: "Map containing HashMap data".to_string(),
+                actual: value.type_name().to_string(),
+            }),
         }
     }
 }
@@ -104,18 +138,26 @@ impl<T> TryFrom<Value> for Vec<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    type Error = String;
+    type Error = CRDTError;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::String(s) => {
-                serde_json::from_str(&s).map_err(|e| format!("Failed to deserialize Vec: {e}"))
+                serde_json::from_str(&s).map_err(|e| CRDTError::DeserializationFailed {
+                    reason: format!("Failed to deserialize Vec: {e}"),
+                })
             }
-            Value::Array(_) => {
-                Err("Cannot convert CRDT Array to Vec<T>, use Array methods instead".to_string())
-            }
-            Value::Map(_) => Err("Cannot convert map to Vec<T>".to_string()),
-            Value::Deleted => Err("Cannot convert deleted value to Vec<T>".to_string()),
+            Value::Array(_) => Err(CRDTError::TypeMismatch {
+                expected: "String containing JSON array data for Vec<T> conversion".to_string(),
+                actual: "CRDT Array (use Array-specific methods instead)".to_string(),
+            }),
+            Value::Map(_) => Err(CRDTError::TypeMismatch {
+                expected: "String containing JSON array data for Vec<T> conversion".to_string(),
+                actual: "Nested Map (use Map-specific methods instead)".to_string(),
+            }),
+            Value::Deleted => Err(CRDTError::InvalidValue {
+                reason: "Cannot convert deleted value to Vec<T>".to_string(),
+            }),
         }
     }
 }
@@ -123,6 +165,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_value_type_names() {
+        let string_val = Value::from("hello");
+        let map_val = Value::Map(crate::crdt::nested::Nested::new());
+        let array_val = Value::Array(crate::crdt::array::Array::new());
+        let deleted_val = Value::Deleted;
+
+        // Test instance method
+        assert_eq!(string_val.type_name(), "String");
+        assert_eq!(map_val.type_name(), "Map");
+        assert_eq!(array_val.type_name(), "Array");
+        assert_eq!(deleted_val.type_name(), "Deleted");
+
+        // Test constants
+        assert_eq!(Value::STRING_TYPE, "String");
+        assert_eq!(Value::MAP_TYPE, "Map");
+        assert_eq!(Value::ARRAY_TYPE, "Array");
+        assert_eq!(Value::DELETED_TYPE, "Deleted");
+
+        // Test Display implementation
+        assert_eq!(format!("{string_val}"), "String");
+        assert_eq!(format!("{map_val}"), "Map");
+        assert_eq!(format!("{array_val}"), "Array");
+        assert_eq!(format!("{deleted_val}"), "Deleted");
+    }
+
     use std::collections::HashMap;
 
     #[test]
