@@ -90,7 +90,7 @@ impl AuthSettings {
     pub fn get_key(&self, id: impl AsRef<str>) -> Option<Result<AuthKey>> {
         match self.inner.get_json::<AuthKey>(id.as_ref()) {
             Ok(key) => Some(Ok(key)),
-            Err(Error::NotFound) => None,
+            Err(e) if e.is_not_found() => None,
             Err(e) => Some(Err(AuthError::InvalidKeyFormat {
                 reason: e.to_string(),
             }
@@ -102,7 +102,7 @@ impl AuthSettings {
     pub fn get_delegated_tree(&self, id: impl AsRef<str>) -> Option<Result<DelegatedTreeRef>> {
         match self.inner.get_json::<DelegatedTreeRef>(id.as_ref()) {
             Ok(tree_ref) => Some(Ok(tree_ref)),
-            Err(Error::NotFound) => None,
+            Err(e) if e.is_not_found() => None,
             Err(e) => Some(Err(AuthError::InvalidAuthConfiguration {
                 reason: format!("Invalid delegated tree format: {e}"),
             }

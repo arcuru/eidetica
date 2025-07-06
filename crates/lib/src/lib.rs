@@ -46,20 +46,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Common error type for the Eidetica library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Entry not found")]
-    NotFound,
-
-    #[error("Already exists")]
-    AlreadyExists,
-
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("Serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
-
-    #[error("Invalid operation: {0}")]
-    InvalidOperation(String),
 
     /// Structured authentication errors from the auth module
     #[error(transparent)]
@@ -84,27 +75,6 @@ pub enum Error {
     /// Structured atomic operation errors from the atomicop module
     #[error(transparent)]
     AtomicOp(atomicop::AtomicOpError),
-
-    /// General authentication errors including configuration issues,
-    /// key resolution failures, and validation problems
-    #[error("Authentication error: {0}")]
-    Authentication(String),
-
-    /// Cryptographic signature verification failed
-    #[error("Invalid signature")]
-    InvalidSignature,
-
-    /// Authentication key ID not found in _settings.auth configuration
-    #[error("Key not found: {0}")]
-    KeyNotFound(String),
-
-    /// Insufficient permissions for the requested operation
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
-
-    /// Public key parsing or format validation failed
-    #[error("Invalid key format: {0}")]
-    InvalidKeyFormat(String),
 }
 
 impl Error {
@@ -117,22 +87,14 @@ impl Error {
             Error::CRDT(_) => "crdt",
             Error::Subtree(_) => "subtree",
             Error::AtomicOp(_) => "atomicop",
-            Error::Authentication(_)
-            | Error::InvalidSignature
-            | Error::KeyNotFound(_)
-            | Error::PermissionDenied(_)
-            | Error::InvalidKeyFormat(_) => "auth",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
-            Error::NotFound | Error::AlreadyExists => "core",
-            Error::InvalidOperation(_) => "core",
         }
     }
 
     /// Check if this error indicates a resource was not found.
     pub fn is_not_found(&self) -> bool {
         match self {
-            Error::NotFound | Error::KeyNotFound(_) => true,
             Error::Auth(auth_err) => auth_err.is_key_not_found(),
             Error::Backend(backend_err) => backend_err.is_not_found(),
             Error::Base(base_err) => base_err.is_not_found(),
@@ -145,8 +107,8 @@ impl Error {
     /// Check if this error indicates permission was denied.
     pub fn is_permission_denied(&self) -> bool {
         match self {
-            Error::PermissionDenied(_) => true,
             Error::Auth(auth_err) => auth_err.is_permission_denied(),
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -154,7 +116,6 @@ impl Error {
     /// Check if this error indicates a conflict (already exists).
     pub fn is_conflict(&self) -> bool {
         match self {
-            Error::AlreadyExists => true,
             Error::Base(base_err) => base_err.is_already_exists(),
             _ => false,
         }
@@ -163,12 +124,7 @@ impl Error {
     /// Check if this error is authentication-related.
     pub fn is_authentication_error(&self) -> bool {
         match self {
-            Error::Auth(_)
-            | Error::Authentication(_)
-            | Error::InvalidSignature
-            | Error::KeyNotFound(_)
-            | Error::PermissionDenied(_)
-            | Error::InvalidKeyFormat(_) => true,
+            Error::Auth(_) => true,
             Error::Base(base_err) => base_err.is_authentication_error(),
             Error::AtomicOp(atomicop_err) => atomicop_err.is_authentication_error(),
             _ => false,
@@ -216,8 +172,8 @@ impl Error {
     pub fn is_operation_error(&self) -> bool {
         match self {
             Error::Base(base_err) => base_err.is_operation_error(),
-            Error::InvalidOperation(_) => true,
             Error::Subtree(subtree_err) => subtree_err.is_operation_error(),
+            Error::AtomicOp(atomicop_err) => atomicop_err.is_validation_error(),
             _ => false,
         }
     }
