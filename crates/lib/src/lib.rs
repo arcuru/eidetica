@@ -73,6 +73,10 @@ pub enum Error {
     #[error(transparent)]
     Base(basedb::BaseError),
 
+    /// Structured CRDT errors from the crdt module
+    #[error(transparent)]
+    CRDT(crdt::CRDTError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -102,6 +106,7 @@ impl Error {
             Error::Auth(_) => "auth",
             Error::Backend(_) => "backend",
             Error::Base(_) => "basedb",
+            Error::CRDT(_) => "crdt",
             Error::Authentication(_)
             | Error::InvalidSignature
             | Error::KeyNotFound(_)
@@ -121,6 +126,7 @@ impl Error {
             Error::Auth(auth_err) => auth_err.is_key_not_found(),
             Error::Backend(backend_err) => backend_err.is_not_found(),
             Error::Base(base_err) => base_err.is_not_found(),
+            Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
             _ => false,
         }
     }
@@ -198,6 +204,35 @@ impl Error {
         match self {
             Error::Base(base_err) => base_err.is_operation_error(),
             Error::InvalidOperation(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this error is CRDT-related.
+    pub fn is_crdt_error(&self) -> bool {
+        matches!(self, Error::CRDT(_))
+    }
+
+    /// Check if this error is a CRDT merge failure.
+    pub fn is_crdt_merge_error(&self) -> bool {
+        match self {
+            Error::CRDT(crdt_err) => crdt_err.is_merge_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is a CRDT serialization failure.
+    pub fn is_crdt_serialization_error(&self) -> bool {
+        match self {
+            Error::CRDT(crdt_err) => crdt_err.is_serialization_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is a CRDT type mismatch.
+    pub fn is_crdt_type_error(&self) -> bool {
+        match self {
+            Error::CRDT(crdt_err) => crdt_err.is_type_error(),
             _ => false,
         }
     }

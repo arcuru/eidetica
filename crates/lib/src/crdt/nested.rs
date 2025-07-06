@@ -4,8 +4,9 @@
 //! key-value store where values can be strings, other nested maps, arrays, or tombstones.
 //! This enables building complex hierarchical data structures with CRDT semantics.
 
+use crate::Result;
+use crate::crdt::errors::CRDTError;
 use crate::crdt::{Array, CRDT, Data, Value};
-use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -208,11 +209,21 @@ impl Nested {
         T: for<'de> serde::Deserialize<'de>,
     {
         match self.data.get(key) {
-            Some(Value::String(json)) => Ok(serde_json::from_str::<T>(json)?),
-            Some(Value::Deleted) | None => Err(crate::Error::NotFound),
-            Some(_) => Err(crate::Error::InvalidOperation(format!(
-                "Key '{key}' is not a JSON string value"
-            ))),
+            Some(Value::String(json)) => serde_json::from_str::<T>(json).map_err(|e| {
+                CRDTError::DeserializationFailed {
+                    reason: format!("Failed to deserialize JSON for key '{key}': {e}"),
+                }
+                .into()
+            }),
+            Some(Value::Deleted) | None => Err(CRDTError::ElementNotFound {
+                key: key.to_string(),
+            }
+            .into()),
+            Some(value) => Err(CRDTError::TypeMismatch {
+                expected: "String containing JSON data for deserialization".to_string(),
+                actual: format!("{} value", value.type_name()),
+            }
+            .into()),
         }
     }
 
@@ -240,9 +251,14 @@ impl Nested {
         match self.data.entry(key_str) {
             std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
                 Value::Array(array) => Ok(array.add(value)),
-                _ => Err(Error::InvalidOperation(
-                    "Expected Array, found other type".to_string(),
-                )),
+                value => Err(CRDTError::TypeMismatch {
+                    expected: "Array for adding elements".to_string(),
+                    actual: format!(
+                        "{} value (use string/map operations instead)",
+                        value.type_name()
+                    ),
+                }
+                .into()),
             },
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let mut array = Array::new();
@@ -263,9 +279,14 @@ impl Nested {
 
         match self.data.get_mut(&key_str) {
             Some(Value::Array(array)) => Ok(array.remove(id)),
-            Some(_) => Err(Error::InvalidOperation(
-                "Expected Array, found other type".to_string(),
-            )),
+            Some(value) => Err(CRDTError::TypeMismatch {
+                expected: "Array for removing elements".to_string(),
+                actual: format!(
+                    "{} value (use string/map operations instead)",
+                    value.type_name()
+                ),
+            }
+            .into()),
             None => Ok(false),
         }
     }
@@ -328,9 +349,14 @@ impl Nested {
                 array.clear();
                 Ok(())
             }
-            Some(_) => Err(Error::InvalidOperation(
-                "Expected Array, found other type".to_string(),
-            )),
+            Some(value) => Err(CRDTError::TypeMismatch {
+                expected: "Array for clearing elements".to_string(),
+                actual: format!(
+                    "{} value (use string/map operations instead)",
+                    value.type_name()
+                ),
+            }
+            .into()),
             None => Ok(()), // Nothing to clear
         }
     }
