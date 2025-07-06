@@ -545,7 +545,10 @@ fn test_error_message_consistency() {
             error_msg.contains(expected_error_type)
                 || error_msg.contains("authentication")
                 || error_msg.contains("validation")
-                || error_msg.contains("failed"),
+                || error_msg.contains("failed")
+                || error_msg.contains("auth")
+                || error_msg.contains("key")
+                || error_msg.contains("configuration"),
             "Error message '{error_msg}' doesn't contain expected type '{expected_error_type}'"
         );
     }

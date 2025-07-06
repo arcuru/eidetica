@@ -3,7 +3,9 @@
 //! This module handles the complex logic of resolving delegation paths,
 //! including multi-tree traversal and permission clamping.
 
+use crate::Result;
 use crate::auth::crypto::parse_public_key;
+use crate::auth::errors::AuthError;
 use crate::auth::permission::clamp_permission;
 use crate::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
@@ -12,7 +14,6 @@ use crate::backend::Database;
 use crate::crdt::{Nested, Value};
 use crate::entry::ID;
 use crate::tree::Tree;
-use crate::{Error, Result};
 use std::sync::Arc;
 
 /// Delegation resolver for handling complex delegation paths
@@ -36,7 +37,7 @@ impl DelegationResolver {
         _depth: usize,
     ) -> Result<ResolvedAuth> {
         if steps.is_empty() {
-            return Err(Error::Authentication("Empty delegation path".to_string()));
+            return Err(AuthError::EmptyDelegationPath.into());
         }
 
         // Iterate through delegation steps
@@ -51,9 +52,10 @@ impl DelegationResolver {
             if is_final_step {
                 // Final step: resolve the actual key
                 if step.tips.is_some() {
-                    return Err(Error::Authentication(
-                        "Final delegation step must not have tips".to_string(),
-                    ));
+                    return Err(AuthError::InvalidDelegationStep {
+                        reason: "Final delegation step must not have tips".to_string(),
+                    }
+                    .into());
                 }
 
                 // Resolve the final key directly
@@ -69,9 +71,10 @@ impl DelegationResolver {
             } else {
                 // Intermediate step: load delegated tree
                 if step.tips.is_none() {
-                    return Err(Error::Authentication(
-                        "Non-final delegation step must have tips".to_string(),
-                    ));
+                    return Err(AuthError::InvalidDelegationStep {
+                        reason: "Non-final delegation step must have tips".to_string(),
+                    }
+                    .into());
                 }
 
                 let tips = step.tips.as_ref().unwrap();
@@ -84,36 +87,41 @@ impl DelegationResolver {
                 let root_id = delegated_tree_ref.tree.root.clone();
                 let delegated_tree =
                     Tree::new_from_id(root_id.clone(), Arc::clone(&current_backend)).map_err(
-                        |e| {
-                            Error::Authentication(format!(
-                                "Failed to load delegated tree with root '{root_id}': {e}"
-                            ))
+                        |e| AuthError::DelegatedTreeLoadFailed {
+                            tree_id: root_id.to_string(),
+                            source: Box::new(e),
                         },
                     )?;
 
                 // Validate tips
                 let current_tips = current_backend.get_tips(&root_id).map_err(|e| {
-                    Error::Authentication(format!(
-                        "Failed to get current tips for delegated tree '{root_id}': {e}"
-                    ))
+                    AuthError::InvalidAuthConfiguration {
+                        reason: format!(
+                            "Failed to get current tips for delegated tree '{root_id}': {e}"
+                        ),
+                    }
                 })?;
 
                 let tips_valid =
                     self.validate_tip_ancestry(tips, &current_tips, &current_backend)?;
                 if !tips_valid {
-                    return Err(Error::Authentication(format!(
-                        "Invalid delegation: claimed tips {tips:?} are not valid for delegated tree '{root_id}'"
-                    )));
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root_id.to_string(),
+                        claimed_tips: tips.clone(),
+                    }
+                    .into());
                 }
 
                 // Get delegated tree's settings
                 let delegated_settings_kvstore = delegated_tree.get_settings().map_err(|e| {
-                    Error::Authentication(format!("Failed to get delegated tree settings: {e}"))
+                    AuthError::InvalidAuthConfiguration {
+                        reason: format!("Failed to get delegated tree settings: {e}"),
+                    }
                 })?;
                 current_settings = delegated_settings_kvstore.get_all().map_err(|e| {
-                    Error::Authentication(format!(
-                        "Failed to get delegated tree settings data: {e}"
-                    ))
+                    AuthError::InvalidAuthConfiguration {
+                        reason: format!("Failed to get delegated tree settings data: {e}"),
+                    }
                 })?;
 
                 // Accumulate permission bounds
@@ -145,9 +153,10 @@ impl DelegationResolver {
         }
 
         // This should never be reached due to the final step handling above
-        Err(Error::Authentication(
-            "Invalid delegation path structure".to_string(),
-        ))
+        Err(AuthError::InvalidDelegationStep {
+            reason: "Invalid delegation path structure".to_string(),
+        }
+        .into())
     }
 
     /// Get delegated tree reference from auth settings
@@ -159,23 +168,24 @@ impl DelegationResolver {
         // Get the auth section
         let auth_section = settings
             .get("auth")
-            .ok_or_else(|| Error::Authentication("No auth configuration found".to_string()))?;
+            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
         let auth_nested = match auth_section {
             Value::Map(auth_map) => auth_map,
             _ => {
-                return Err(Error::Authentication(
-                    "Auth section must be a nested map".to_string(),
-                ));
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "Auth section must be a nested map".to_string(),
+                }
+                .into());
             }
         };
 
         // Parse the delegated tree reference
-        auth_nested
+        Ok(auth_nested
             .get_json::<DelegatedTreeRef>(tree_ref_id)
-            .map_err(|e| {
-                Error::Authentication(format!("Invalid delegated tree reference format: {e}"))
-            })
+            .map_err(|e| AuthError::InvalidAuthConfiguration {
+                reason: format!("Invalid delegated tree reference format: {e}"),
+            })?)
     }
 
     /// Validate tip ancestry using backend's DAG traversal
@@ -247,22 +257,25 @@ impl DelegationResolver {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
-            .ok_or_else(|| Error::Authentication("No auth configuration found".to_string()))?;
+            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
         // Extract the auth Nested from the Value
         let auth_nested = match auth_section {
             Value::Map(auth_map) => auth_map,
             _ => {
-                return Err(Error::Authentication(
-                    "Auth section must be a nested map".to_string(),
-                ));
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "Auth section must be a nested map".to_string(),
+                }
+                .into());
             }
         };
 
         // Use get_json to parse AuthKey
-        let auth_key = auth_nested
-            .get_json::<AuthKey>(key_id)
-            .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))?;
+        let auth_key = auth_nested.get_json::<AuthKey>(key_id).map_err(|e| {
+            AuthError::InvalidAuthConfiguration {
+                reason: format!("Invalid auth key format: {e}"),
+            }
+        })?;
 
         let public_key = parse_public_key(&auth_key.pubkey)?;
 

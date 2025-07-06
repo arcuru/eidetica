@@ -81,7 +81,7 @@ impl AuthValidator {
         }
 
         // Verify the signature using the entry-based verification
-        verify_entry_signature(entry, &resolved_auth.public_key)
+        verify_entry_signature(entry, &resolved_auth.public_key).map_err(|e| e.into())
     }
 
     /// Resolve authentication identifier to concrete authentication information

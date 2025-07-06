@@ -5,6 +5,7 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
+use super::errors::AuthError;
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::backend::Database;
@@ -77,13 +78,11 @@ impl AuthSettings {
                 }
                 Err(_) => {
                     // Not an AuthKey, might be a DelegatedTreeRef - for now just error
-                    Err(Error::Authentication(format!(
-                        "Cannot revoke non-key entry: {id}"
-                    )))
+                    Err(AuthError::CannotRevokeNonKey { id: id.to_string() }.into())
                 }
             }
         } else {
-            Err(Error::Authentication(format!("Key not found: {id}")))
+            Err(AuthError::KeyNotFound { id: id.to_string() }.into())
         }
     }
 
@@ -92,9 +91,10 @@ impl AuthSettings {
         match self.inner.get_json::<AuthKey>(id.as_ref()) {
             Ok(key) => Some(Ok(key)),
             Err(Error::NotFound) => None,
-            Err(e) => Some(Err(Error::Authentication(format!(
-                "Invalid auth key format: {e}"
-            )))),
+            Err(e) => Some(Err(AuthError::InvalidKeyFormat {
+                reason: e.to_string(),
+            }
+            .into())),
         }
     }
 
@@ -103,9 +103,10 @@ impl AuthSettings {
         match self.inner.get_json::<DelegatedTreeRef>(id.as_ref()) {
             Ok(tree_ref) => Some(Ok(tree_ref)),
             Err(Error::NotFound) => None,
-            Err(e) => Some(Err(Error::Authentication(format!(
-                "Invalid delegated tree format: {e}"
-            )))),
+            Err(e) => Some(Err(AuthError::InvalidAuthConfiguration {
+                reason: format!("Invalid delegated tree format: {e}"),
+            }
+            .into())),
         }
     }
 
@@ -153,15 +154,18 @@ impl AuthSettings {
                         key_status: auth_key.status,
                     })
                 } else {
-                    Err(Error::Authentication(format!("Key not found: {key_id}")))
+                    Err(AuthError::KeyNotFound {
+                        id: key_id.to_string(),
+                    }
+                    .into())
                 }
             }
             SigKey::DelegationPath(_) => {
                 // For delegation path entries, validate using the backend
                 let backend = backend.ok_or_else(|| {
-                    Error::Authentication(
-                        "Database required for delegation path validation".to_string(),
-                    )
+                    Error::from(AuthError::DatabaseRequired {
+                        operation: "delegation path validation".to_string(),
+                    })
                 })?;
 
                 // Use AuthValidator to resolve the delegation path
@@ -194,10 +198,10 @@ impl AuthSettings {
             Ok(signing_key.effective_permission >= target_key.permissions)
         } else {
             // Target key doesn't exist - this is an error for modification
-            Err(Error::InvalidOperation(format!(
-                "Cannot modify non-existent key: {}",
-                target_key_id.as_ref()
-            )))
+            Err(AuthError::KeyNotFound {
+                id: target_key_id.as_ref().to_string(),
+            }
+            .into())
         }
     }
 

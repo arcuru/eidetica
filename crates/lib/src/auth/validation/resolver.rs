@@ -3,11 +3,12 @@
 //! This module handles resolving authentication keys, both direct keys
 //! and delegation paths.
 
+use crate::Result;
 use crate::auth::crypto::parse_public_key;
+use crate::auth::errors::AuthError;
 use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
 use crate::backend::Database;
 use crate::crdt::{Nested, Value};
-use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -63,18 +64,17 @@ impl KeyResolver {
         // Prevent infinite recursion and overly deep delegation chains
         const MAX_DELEGATION_DEPTH: usize = 10;
         if depth >= MAX_DELEGATION_DEPTH {
-            return Err(Error::Authentication(format!(
-                "Maximum delegation depth ({MAX_DELEGATION_DEPTH}) exceeded - possible circular delegation"
-            )));
+            return Err(AuthError::DelegationDepthExceeded {
+                depth: MAX_DELEGATION_DEPTH,
+            }
+            .into());
         }
 
         match sig_key {
             SigKey::Direct(key_id) => self.resolve_direct_key(key_id, settings),
             SigKey::DelegationPath(steps) => {
-                let backend = backend.ok_or_else(|| {
-                    Error::Authentication(
-                        "Database required for delegated tree resolution".to_string(),
-                    )
+                let backend = backend.ok_or_else(|| AuthError::DatabaseRequired {
+                    operation: "delegated tree resolution".to_string(),
                 })?;
                 self.delegation_resolver
                     .resolve_delegation_path_with_depth(steps, settings, backend, depth)
@@ -87,22 +87,25 @@ impl KeyResolver {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
-            .ok_or_else(|| Error::Authentication("No auth configuration found".to_string()))?;
+            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
         // Extract the auth Nested from the Value
         let auth_nested = match auth_section {
             Value::Map(auth_map) => auth_map,
             _ => {
-                return Err(Error::Authentication(
-                    "Auth section must be a nested map".to_string(),
-                ));
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "Auth section must be a nested map".to_string(),
+                }
+                .into());
             }
         };
 
         // Use get_json to parse AuthKey
-        let auth_key = auth_nested
-            .get_json::<AuthKey>(key_id)
-            .map_err(|e| Error::Authentication(format!("Invalid auth key format: {e}")))?;
+        let auth_key = auth_nested.get_json::<AuthKey>(key_id).map_err(|e| {
+            AuthError::InvalidAuthConfiguration {
+                reason: format!("Invalid auth key format: {e}"),
+            }
+        })?;
 
         let public_key = parse_public_key(&auth_key.pubkey)?;
 
