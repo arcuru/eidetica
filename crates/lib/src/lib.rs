@@ -69,6 +69,10 @@ pub enum Error {
     #[error(transparent)]
     Backend(backend::DatabaseError),
 
+    /// Structured base database errors from the basedb module
+    #[error(transparent)]
+    Base(basedb::BaseError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -97,6 +101,7 @@ impl Error {
         match self {
             Error::Auth(_) => "auth",
             Error::Backend(_) => "backend",
+            Error::Base(_) => "basedb",
             Error::Authentication(_)
             | Error::InvalidSignature
             | Error::KeyNotFound(_)
@@ -115,6 +120,7 @@ impl Error {
             Error::NotFound | Error::KeyNotFound(_) => true,
             Error::Auth(auth_err) => auth_err.is_key_not_found(),
             Error::Backend(backend_err) => backend_err.is_not_found(),
+            Error::Base(base_err) => base_err.is_not_found(),
             _ => false,
         }
     }
@@ -130,20 +136,25 @@ impl Error {
 
     /// Check if this error indicates a conflict (already exists).
     pub fn is_conflict(&self) -> bool {
-        matches!(self, Error::AlreadyExists)
+        match self {
+            Error::AlreadyExists => true,
+            Error::Base(base_err) => base_err.is_already_exists(),
+            _ => false,
+        }
     }
 
     /// Check if this error is authentication-related.
     pub fn is_authentication_error(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Error::Auth(_)
-                | Error::Authentication(_)
-                | Error::InvalidSignature
-                | Error::KeyNotFound(_)
-                | Error::PermissionDenied(_)
-                | Error::InvalidKeyFormat(_)
-        )
+            | Error::Authentication(_)
+            | Error::InvalidSignature
+            | Error::KeyNotFound(_)
+            | Error::PermissionDenied(_)
+            | Error::InvalidKeyFormat(_) => true,
+            Error::Base(base_err) => base_err.is_authentication_error(),
+            _ => false,
+        }
     }
 
     /// Check if this error is database/backend-related.
@@ -164,6 +175,29 @@ impl Error {
         match self {
             Error::Io(_) => true,
             Error::Backend(backend_err) => backend_err.is_io_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is base database-related.
+    pub fn is_base_database_error(&self) -> bool {
+        matches!(self, Error::Base(_))
+    }
+
+    /// Check if this error is validation-related.
+    pub fn is_validation_error(&self) -> bool {
+        match self {
+            Error::Base(base_err) => base_err.is_validation_error(),
+            Error::Backend(backend_err) => backend_err.is_logical_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is operation-related.
+    pub fn is_operation_error(&self) -> bool {
+        match self {
+            Error::Base(base_err) => base_err.is_operation_error(),
+            Error::InvalidOperation(_) => true,
             _ => false,
         }
     }

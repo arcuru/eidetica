@@ -2,7 +2,7 @@ use crate::helpers::*;
 use eidetica::Error;
 use eidetica::backend::Database;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::basedb::{BaseDB, BaseError};
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
 use eidetica::subtree::KVStore;
@@ -248,7 +248,9 @@ fn test_find_tree() {
 
     // Test: Find non-existent name
     let found_none_result = db.find_tree("NonExistent");
-    assert!(matches!(found_none_result, Err(Error::NotFound)));
+    assert!(
+        matches!(found_none_result, Err(Error::Base(BaseError::TreeNotFound { name })) if name == "NonExistent")
+    );
 
     // Test: Find unique name
     let found_tree2 = db.find_tree("Tree2").expect("find_tree failed");
@@ -265,5 +267,7 @@ fn test_find_tree() {
     let empty_backend = Box::new(InMemory::new());
     let empty_db = BaseDB::new(empty_backend);
     let found_empty_result = empty_db.find_tree("AnyName");
-    assert!(matches!(found_empty_result, Err(Error::NotFound)));
+    assert!(
+        matches!(found_empty_result, Err(Error::Base(BaseError::TreeNotFound { name })) if name == "AnyName")
+    );
 }

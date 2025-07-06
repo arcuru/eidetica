@@ -53,7 +53,7 @@ fn test_authentication_validation_revoked_key() {
     let result = op.commit();
     assert!(result.is_err());
     let error_msg = format!("{:?}", result.unwrap_err());
-    assert!(error_msg.contains("authentication validation failed"));
+    assert!(error_msg.contains("Base(SignatureVerificationFailed)"));
 }
 
 #[test]
@@ -109,7 +109,8 @@ fn test_permission_checking_admin_operations() {
     let result = op.commit();
     assert!(result.is_err());
     let error_msg = format!("{:?}", result.unwrap_err());
-    assert!(error_msg.contains("authentication validation failed"));
+    // Check for the new structured error format
+    assert!(error_msg.contains("Base(InsufficientPermissions)"));
 }
 
 #[test]

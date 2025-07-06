@@ -4,13 +4,14 @@
 //! or a branch in a version control system. Each tree has a root entry and maintains
 //! the history and relationships between entries, interfacing with a backend storage system.
 
+use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::backend::Database;
+use crate::basedb::errors::BaseError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::{Nested, Value};
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
-use crate::{Error, Result};
 
 use crate::auth::crypto::format_public_key;
 use crate::auth::settings::AuthSettings;
@@ -60,9 +61,9 @@ impl Tree {
             // No auth config provided - bootstrap auth configuration with the provided key
             // Verify the key exists first
             let _private_key = backend.get_private_key(signing_key_id)?.ok_or_else(|| {
-                Error::Authentication(format!(
-                    "Provided signing key ID '{signing_key_id}' not found in backend"
-                ))
+                BaseError::SigningKeyNotFound {
+                    key_id: signing_key_id.to_string(),
+                }
             })?;
 
             // Bootstrap auth configuration with the provided key
@@ -333,10 +334,11 @@ impl Tree {
 
         // Check if the entry belongs to this tree
         if !entry.in_tree(&self.root) {
-            return Err(Error::Io(std::io::Error::other(format!(
-                "Entry '{}' does not belong to tree '{}'",
-                id, self.root
-            ))));
+            return Err(BaseError::EntryNotInTree {
+                entry_id: id,
+                tree_id: self.root.clone(),
+            }
+            .into());
         }
 
         Ok(entry)
@@ -385,10 +387,11 @@ impl Tree {
 
                 // Check if the entry belongs to this tree
                 if !entry.in_tree(&self.root) {
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "Entry '{}' does not belong to tree '{}'",
-                        id, self.root
-                    ))));
+                    return Err(BaseError::EntryNotInTree {
+                        entry_id: id,
+                        tree_id: self.root.clone(),
+                    }
+                    .into());
                 }
 
                 Ok(entry)
