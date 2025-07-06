@@ -160,8 +160,8 @@ fn test_missing_key() {
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        crate::Error::Auth(_) | crate::Error::Authentication(_) => {} // Expected
-        _ => panic!("Expected Auth or Authentication error"),
+        crate::Error::Auth(_) => {} // Expected
+        _ => panic!("Expected Auth error"),
     }
 }
 

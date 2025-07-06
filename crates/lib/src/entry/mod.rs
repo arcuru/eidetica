@@ -9,7 +9,6 @@ pub mod id;
 
 pub use id::ID;
 
-use crate::Error;
 use crate::Result;
 use crate::auth::types::SigInfo;
 use crate::constants::ROOT;
@@ -207,7 +206,13 @@ impl Entry {
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
-            .ok_or(Error::NotFound)
+            .ok_or_else(|| {
+                crate::subtree::SubtreeError::KeyNotFound {
+                    subtree: "entry".to_string(),
+                    key: subtree_name.as_ref().to_string(),
+                }
+                .into()
+            })
     }
 
     /// Get the IDs of the parent entries in the main tree history.
@@ -223,7 +228,13 @@ impl Entry {
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
-            .ok_or(Error::NotFound)
+            .ok_or_else(|| {
+                crate::subtree::SubtreeError::KeyNotFound {
+                    subtree: "entry".to_string(),
+                    key: subtree_name.as_ref().to_string(),
+                }
+                .into()
+            })
     }
 
     /// Create a canonical representation of this entry for signing purposes.
@@ -395,7 +406,13 @@ impl EntryBuilder {
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
-            .ok_or(Error::NotFound)
+            .ok_or_else(|| {
+                crate::subtree::SubtreeError::KeyNotFound {
+                    subtree: "entry".to_string(),
+                    key: subtree_name.as_ref().to_string(),
+                }
+                .into()
+            })
     }
 
     /// Get the IDs of the parent entries for the main tree.
@@ -411,7 +428,13 @@ impl EntryBuilder {
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
-            .ok_or(Error::NotFound)
+            .ok_or_else(|| {
+                crate::subtree::SubtreeError::KeyNotFound {
+                    subtree: "entry".to_string(),
+                    key: subtree_name.as_ref().to_string(),
+                }
+                .into()
+            })
     }
 
     /// Sort a list of parent IDs in alphabetical order.
