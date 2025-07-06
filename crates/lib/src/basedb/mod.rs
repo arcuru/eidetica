@@ -4,15 +4,20 @@
 //! `BaseDB` manages multiple `Tree` instances and interacts with the storage `Database`.
 //! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
 
+use crate::Result;
 use crate::auth::crypto::{format_public_key, generate_keypair};
 use crate::backend::Database;
 use crate::crdt::Nested;
 use crate::entry::ID;
 use crate::tree::Tree;
-use crate::{Error, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
 use std::sync::Arc;
+
+pub mod errors;
+
+// Re-export main types for easier access
+pub use errors::BaseError;
 
 /// Database implementation on top of the storage backend.
 ///
@@ -132,7 +137,7 @@ impl BaseDB {
     /// or an error.
     ///
     /// # Errors
-    /// Returns `Error::NotFound` if no trees with the specified name are found.
+    /// Returns `BaseError::TreeNotFound` if no trees with the specified name are found.
     pub fn find_tree(&self, name: impl AsRef<str>) -> Result<Vec<Tree>> {
         let name = name.as_ref();
         let all_trees = self.all_trees()?;
@@ -149,7 +154,10 @@ impl BaseDB {
         }
 
         if matching_trees.is_empty() {
-            Err(Error::NotFound)
+            Err(BaseError::TreeNotFound {
+                name: name.to_string(),
+            }
+            .into())
         } else {
             Ok(matching_trees)
         }
