@@ -1,7 +1,8 @@
+use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
-use crate::{Error, Result};
+use crate::subtree::errors::SubtreeError;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use uuid::Uuid;
@@ -79,7 +80,13 @@ where
         if let Ok(data) = local_data
             && let Some(value) = data.get(key)
         {
-            return Ok(serde_json::from_str(value)?);
+            return serde_json::from_str(value).map_err(|e| {
+                SubtreeError::DeserializationFailed {
+                    subtree: self.name.clone(),
+                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                }
+                .into()
+            });
         }
 
         // Otherwise, get the full state from the backend
@@ -87,8 +94,18 @@ where
 
         // Get the value
         match data.get(key) {
-            Some(value) => Ok(serde_json::from_str(value)?),
-            None => Err(Error::NotFound),
+            Some(value) => serde_json::from_str(value).map_err(|e| {
+                SubtreeError::DeserializationFailed {
+                    subtree: self.name.clone(),
+                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                }
+                .into()
+            }),
+            None => Err(SubtreeError::KeyNotFound {
+                subtree: self.name.clone(),
+                key: key.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -118,13 +135,21 @@ where
             .unwrap_or_default();
 
         // Serialize the row
-        let serialized_row = serde_json::to_string(&row)?;
+        let serialized_row =
+            serde_json::to_string(&row).map_err(|e| SubtreeError::SerializationFailed {
+                subtree: self.name.clone(),
+                reason: format!("Failed to serialize record: {e}"),
+            })?;
 
         // Update the data with the new row
         data.set(primary_key.clone(), serialized_row);
 
         // Serialize and update the atomic op
-        let serialized_data = serde_json::to_string(&data)?;
+        let serialized_data =
+            serde_json::to_string(&data).map_err(|e| SubtreeError::SerializationFailed {
+                subtree: self.name.clone(),
+                reason: format!("Failed to serialize subtree data: {e}"),
+            })?;
         self.atomic_op
             .update_subtree(&self.name, &serialized_data)?;
 
@@ -155,13 +180,21 @@ where
             .unwrap_or_default();
 
         // Serialize the row
-        let serialized_row = serde_json::to_string(&row)?;
+        let serialized_row =
+            serde_json::to_string(&row).map_err(|e| SubtreeError::SerializationFailed {
+                subtree: self.name.clone(),
+                reason: format!("Failed to serialize record for key '{key_str}': {e}"),
+            })?;
 
         // Update the data
         data.set(key_str.to_string(), serialized_row);
 
         // Serialize and update the atomic op
-        let serialized_data = serde_json::to_string(&data)?;
+        let serialized_data =
+            serde_json::to_string(&data).map_err(|e| SubtreeError::SerializationFailed {
+                subtree: self.name.clone(),
+                reason: format!("Failed to serialize subtree data: {e}"),
+            })?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)
     }
 
@@ -193,7 +226,13 @@ where
         // Iterate through all key-value pairs
         for (key, value) in data.as_hashmap().iter() {
             // Deserialize the row
-            let row: T = serde_json::from_str(value)?;
+            let row: T =
+                serde_json::from_str(value).map_err(|e| SubtreeError::DeserializationFailed {
+                    subtree: self.name.clone(),
+                    reason: format!(
+                        "Failed to deserialize record for key '{key}' during search: {e}"
+                    ),
+                })?;
 
             // Check if the row matches the query
             if query(&row) {

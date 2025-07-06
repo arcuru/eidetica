@@ -1140,12 +1140,12 @@ fn test_rowstore_error_handling() {
         // Test get with non-existent key
         let result = row_store.get("non_existent_key");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+        assert!(result.unwrap_err().is_not_found());
 
         // Test get with empty key
         let result = row_store.get("");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+        assert!(result.unwrap_err().is_not_found());
     }
 
     op.commit().expect("Failed to commit operation");
@@ -1157,7 +1157,7 @@ fn test_rowstore_error_handling() {
 
     let result = viewer.get("still_non_existent");
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), eidetica::Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 #[test]

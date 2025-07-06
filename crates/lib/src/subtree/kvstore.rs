@@ -1,7 +1,8 @@
+use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::{CRDT, Nested, Value};
 use crate::subtree::SubTree;
-use crate::{Error, Result};
+use crate::subtree::errors::SubtreeError;
 
 /// A simple key-value store SubTree
 ///
@@ -57,7 +58,11 @@ impl KVStore {
         // Get the value
         match data.get(key) {
             Some(value) => Ok(value.clone()),
-            None => Err(Error::NotFound),
+            None => Err(SubtreeError::KeyNotFound {
+                subtree: self.name.clone(),
+                key: key.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -72,17 +77,26 @@ impl KVStore {
     /// A `Result` containing the string value if found, or an error if the key is not found
     /// or if the value is not a string.
     pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
-        match self.get(key)? {
+        let key_ref = key.as_ref();
+        match self.get(key_ref)? {
             Value::String(value) => Ok(value),
-            Value::Map(_) => Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Expected string value, found a nested map",
-            ))),
-            Value::Array(_) => Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Expected string value, found an array",
-            ))),
-            Value::Deleted => Err(Error::NotFound),
+            Value::Map(_) => Err(SubtreeError::TypeMismatch {
+                subtree: self.name.clone(),
+                expected: "String".to_string(),
+                actual: "Map".to_string(),
+            }
+            .into()),
+            Value::Array(_) => Err(SubtreeError::TypeMismatch {
+                subtree: self.name.clone(),
+                expected: "String".to_string(),
+                actual: "Array".to_string(),
+            }
+            .into()),
+            Value::Deleted => Err(SubtreeError::KeyNotFound {
+                subtree: self.name.clone(),
+                key: key_ref.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -279,28 +293,53 @@ impl KVStore {
                     Some(next_value) => {
                         current_value_view = next_value.clone();
                     }
-                    None => return Err(Error::NotFound),
+                    None => {
+                        return Err(SubtreeError::KeyNotFound {
+                            subtree: self.name.clone(),
+                            key: path_slice
+                                .iter()
+                                .map(|s| s.as_ref())
+                                .collect::<Vec<_>>()
+                                .join("."),
+                        }
+                        .into());
+                    }
                 },
                 Value::Deleted => {
                     // A tombstone encountered in the path means the path doesn't lead to a value.
-                    return Err(Error::NotFound);
+                    return Err(SubtreeError::KeyNotFound {
+                        subtree: self.name.clone(),
+                        key: path_slice
+                            .iter()
+                            .map(|s| s.as_ref())
+                            .collect::<Vec<_>>()
+                            .join("."),
+                    }
+                    .into());
                 }
                 _ => {
                     // Expected a map to continue traversal, but found something else.
-                    return Err(Error::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "Path traversal failed: expected a map at segment before '{}', but found a non-map value.",
-                            key_segment_s.as_ref()
-                        ),
-                    )));
+                    return Err(SubtreeError::TypeMismatch {
+                        subtree: self.name.clone(),
+                        expected: "Map".to_string(),
+                        actual: "non-map value".to_string(),
+                    }
+                    .into());
                 }
             }
         }
 
         // Check if the final resolved value is a tombstone.
         match current_value_view {
-            Value::Deleted => Err(Error::NotFound),
+            Value::Deleted => Err(SubtreeError::KeyNotFound {
+                subtree: self.name.clone(),
+                key: path_slice
+                    .iter()
+                    .map(|s| s.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            }
+            .into()),
             _ => Ok(current_value_view),
         }
     }
@@ -338,9 +377,12 @@ impl KVStore {
                 let serialized_data = serde_json::to_string(&map_data)?;
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
-                return Err(Error::InvalidOperation(
-                    "Cannot set root of KVStore subtree: value must be a Value::Map".to_string(),
-                ));
+                return Err(SubtreeError::TypeMismatch {
+                    subtree: self.name.clone(),
+                    expected: "Map".to_string(),
+                    actual: "non-map value".to_string(),
+                }
+                .into());
             }
         }
 
@@ -377,9 +419,12 @@ impl KVStore {
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
-            return Err(Error::InvalidOperation(
-                "Path became empty unexpectedly during set_at_path".to_string(),
-            ));
+            return Err(SubtreeError::InvalidOperation {
+                subtree: self.name.clone(),
+                operation: "set_at_path".to_string(),
+                reason: "Path became empty unexpectedly".to_string(),
+            }
+            .into());
         }
 
         let serialized_data = serde_json::to_string(&subtree_data)?;

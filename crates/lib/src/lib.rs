@@ -77,6 +77,10 @@ pub enum Error {
     #[error(transparent)]
     CRDT(crdt::CRDTError),
 
+    /// Structured subtree errors from the subtree module
+    #[error(transparent)]
+    Subtree(subtree::SubtreeError),
+
     /// General authentication errors including configuration issues,
     /// key resolution failures, and validation problems
     #[error("Authentication error: {0}")]
@@ -107,6 +111,7 @@ impl Error {
             Error::Backend(_) => "backend",
             Error::Base(_) => "basedb",
             Error::CRDT(_) => "crdt",
+            Error::Subtree(_) => "subtree",
             Error::Authentication(_)
             | Error::InvalidSignature
             | Error::KeyNotFound(_)
@@ -127,6 +132,7 @@ impl Error {
             Error::Backend(backend_err) => backend_err.is_not_found(),
             Error::Base(base_err) => base_err.is_not_found(),
             Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
+            Error::Subtree(subtree_err) => subtree_err.is_not_found(),
             _ => false,
         }
     }
@@ -204,6 +210,15 @@ impl Error {
         match self {
             Error::Base(base_err) => base_err.is_operation_error(),
             Error::InvalidOperation(_) => true,
+            Error::Subtree(subtree_err) => subtree_err.is_operation_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is type-related.
+    pub fn is_type_error(&self) -> bool {
+        match self {
+            Error::Subtree(subtree_err) => subtree_err.is_type_error(),
             _ => false,
         }
     }
@@ -233,6 +248,27 @@ impl Error {
     pub fn is_crdt_type_error(&self) -> bool {
         match self {
             Error::CRDT(crdt_err) => crdt_err.is_type_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is subtree-related.
+    pub fn is_subtree_error(&self) -> bool {
+        matches!(self, Error::Subtree(_))
+    }
+
+    /// Check if this error is a subtree serialization failure.
+    pub fn is_subtree_serialization_error(&self) -> bool {
+        match self {
+            Error::Subtree(subtree_err) => subtree_err.is_serialization_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is a subtree type mismatch.
+    pub fn is_subtree_type_error(&self) -> bool {
+        match self {
+            Error::Subtree(subtree_err) => subtree_err.is_type_error(),
             _ => false,
         }
     }
