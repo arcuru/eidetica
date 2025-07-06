@@ -5,8 +5,9 @@
 //! parent-child relationships, and tip finding.
 
 use super::InMemory;
+use crate::Result;
+use crate::backend::errors::DatabaseError;
 use crate::entry::ID;
-use crate::{Error, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Build the complete path from tree/subtree root to a target entry
@@ -35,7 +36,7 @@ pub(crate) fn build_path_from_root(
     // Build path by following parents back to root
     loop {
         if visited.contains(&current) {
-            return Err(Error::Io(std::io::Error::other("Cycle detected in DAG")));
+            return Err(DatabaseError::CycleDetected { entry_id: current }.into());
         }
         visited.insert(current.clone());
         path.push(current.clone());
@@ -194,7 +195,11 @@ pub(crate) fn get_sorted_subtree_parents(
     subtree: &str,
 ) -> Result<Vec<ID>> {
     let entries = backend.entries.read().unwrap();
-    let entry = entries.get(entry_id).ok_or(Error::NotFound)?;
+    let entry = entries
+        .get(entry_id)
+        .ok_or_else(|| DatabaseError::EntryNotFound {
+            id: entry_id.clone(),
+        })?;
 
     if !entry.in_tree(tree_id) || !entry.in_subtree(subtree) {
         return Ok(Vec::new());
@@ -239,9 +244,10 @@ pub(crate) fn find_lca(
     entry_ids: &[ID],
 ) -> Result<ID> {
     if entry_ids.is_empty() {
-        return Err(Error::Io(std::io::Error::other(
-            "No entry IDs provided for LCA",
-        )));
+        return Err(DatabaseError::EmptyEntryList {
+            operation: "LCA".to_string(),
+        }
+        .into());
     }
 
     if entry_ids.len() == 1 {
@@ -253,15 +259,18 @@ pub(crate) fn find_lca(
         match super::storage::get(backend, entry_id) {
             Ok(entry) => {
                 if !entry.in_tree(tree) {
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "Entry {entry_id} is not in tree {tree}"
-                    ))));
+                    return Err(DatabaseError::EntryNotInTree {
+                        entry_id: entry_id.clone(),
+                        tree_id: tree.clone(),
+                    }
+                    .into());
                 }
             }
             Err(_) => {
-                return Err(Error::Io(std::io::Error::other(format!(
-                    "Entry {entry_id} not found"
-                ))));
+                return Err(DatabaseError::EntryNotFound {
+                    id: entry_id.clone(),
+                }
+                .into());
             }
         }
     }
@@ -315,7 +324,10 @@ pub(crate) fn find_lca(
         }
     }
 
-    Err(Error::Io(std::io::Error::other("No common ancestor found")))
+    Err(DatabaseError::NoCommonAncestor {
+        entry_ids: entry_ids.to_vec(),
+    }
+    .into())
 }
 
 /// Find the tip entries for the specified tree

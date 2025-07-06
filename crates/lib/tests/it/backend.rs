@@ -1,4 +1,3 @@
-use eidetica::Error;
 use eidetica::backend::{Database, VerificationStatus, database::InMemory};
 use eidetica::entry::{Entry, ID};
 use std::fs;
@@ -897,7 +896,8 @@ fn test_put_get_entry() {
     // Try to get a non-existent ID
     let non_existent: ID = "non_existent_id".into();
     let invalid_get = backend.get(&non_existent);
-    assert!(matches!(invalid_get, Err(Error::NotFound)));
+    assert!(invalid_get.is_err());
+    assert!(invalid_get.unwrap_err().is_not_found());
 }
 
 #[test]
@@ -1305,14 +1305,14 @@ fn test_verification_status_not_found_errors() {
     // Test getting status for nonexistent entry
     let result = backend.get_verification_status(&nonexistent_id);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 
     // Test updating status for nonexistent entry
     let mutable_backend = backend;
     let result =
         mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified);
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), Error::NotFound));
+    assert!(result.unwrap_err().is_not_found());
 }
 
 #[test]

@@ -1,15 +1,19 @@
 //! Core storage operations for InMemory database
 
 use super::{InMemory, TreeHeightsCache};
+use crate::Result;
 use crate::backend::VerificationStatus;
+use crate::backend::errors::DatabaseError;
 use crate::entry::{Entry, ID};
-use crate::{Error, Result};
 
 /// Retrieves an entry by ID from the internal `HashMap`.
 /// Used internally by traversal functions.
 pub(crate) fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
     let entries = backend.entries.read().unwrap();
-    entries.get(id).cloned().ok_or(Error::NotFound)
+    entries
+        .get(id)
+        .cloned()
+        .ok_or_else(|| DatabaseError::EntryNotFound { id: id.clone() }.into())
 }
 
 /// Stores an entry in the database with the specified verification status.

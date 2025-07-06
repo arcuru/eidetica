@@ -4,8 +4,9 @@
 //! as well as CRDT state caching for improved performance.
 
 use super::InMemory;
+use crate::Result;
+use crate::backend::errors::DatabaseError;
 use crate::entry::{Entry, ID};
-use crate::{Error, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Calculate the heights of all entries within a tree or subtree.
@@ -215,9 +216,9 @@ fn calculate_heights_original(
     while let Some(current_id) = queue.pop_front() {
         processed_nodes_count += 1;
         let current_height = *heights.get(&current_id).ok_or_else(|| {
-            Error::Io(std::io::Error::other(
-                format!("BFS height calculation: Height missing for node {current_id}").as_str(),
-            ))
+            DatabaseError::HeightCalculationCorruption {
+                reason: format!("Height missing for node {current_id}"),
+            }
         })?;
 
         // Process children within the context
@@ -243,16 +244,17 @@ fn calculate_heights_original(
                         }
                     } else {
                         // This indicates an issue: degree already 0 but node is being processed as child.
-                        return Err(Error::Io(std::io::Error::other(
-                            format!("BFS height calculation: Negative in-degree detected for child {child_id}").as_str()
-                        )));
+                        return Err(DatabaseError::HeightCalculationCorruption {
+                            reason: format!("Negative in-degree detected for child {child_id}"),
+                        }
+                        .into());
                     }
                 } else {
                     // This indicates an inconsistency: child_id was in children_map but not in_degree map
-                    return Err(Error::Io(std::io::Error::other(
-                        format!("BFS height calculation: In-degree missing for child {child_id}")
-                            .as_str(),
-                    )));
+                    return Err(DatabaseError::HeightCalculationCorruption {
+                        reason: format!("In-degree missing for child {child_id}"),
+                    }
+                    .into());
                 }
             }
         }
