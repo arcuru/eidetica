@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::backend::database::InMemory;
@@ -7,8 +6,7 @@ use eidetica::crdt::Nested;
 use eidetica::subtree::RowStore;
 use eidetica::subtree::YrsStore;
 use eidetica::y_crdt::{Map, Transact};
-use eidetica::Error;
-use eidetica::Tree;
+use eidetica::{Result, Tree};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -103,39 +101,45 @@ fn main() -> Result<()> {
     // Load or create the todo tree
     let todo_tree = load_or_create_todo_tree(&db)?;
 
-    // Handle the command
-    match &cli.command {
+    // Handle the command with proper error context
+    let result = match &cli.command {
         Commands::Add { title } => {
-            add_todo(&todo_tree, title.clone())?;
-            println!("Task added: {title}");
+            add_todo(&todo_tree, title.clone()).map(|_| println!("✓ Task added: {title}"))
         }
         Commands::Complete { id } => {
-            complete_todo(&todo_tree, id)?;
-            println!("Task completed: {id}");
+            complete_todo(&todo_tree, id).map(|_| println!("✓ Task completed: {id}"))
         }
-        Commands::List => {
-            list_todos(&todo_tree)?;
-        }
+        Commands::List => list_todos(&todo_tree),
         Commands::SetUser { name, email, bio } => {
-            set_user_info(&todo_tree, name.as_ref(), email.as_ref(), bio.as_ref())?;
-            println!("User information updated");
+            set_user_info(&todo_tree, name.as_ref(), email.as_ref(), bio.as_ref())
+                .map(|_| println!("✓ User information updated"))
         }
-        Commands::ShowUser => {
-            show_user_info(&todo_tree)?;
-        }
+        Commands::ShowUser => show_user_info(&todo_tree),
         Commands::SetPref { key, value } => {
-            set_user_preference(&todo_tree, key.clone(), value.clone())?;
-            println!("User preference set");
+            set_user_preference(&todo_tree, key.clone(), value.clone())
+                .map(|_| println!("✓ User preference set"))
         }
-        Commands::ShowPrefs => {
-            show_user_preferences(&todo_tree)?;
+        Commands::ShowPrefs => show_user_preferences(&todo_tree),
+    };
+
+    // Handle command errors with specific error messages
+    if let Err(e) = result {
+        // Check if it's an authentication error
+        if e.is_authentication_error() {
+            eprintln!("Authentication error: {e}");
+            eprintln!("Make sure you have the necessary permissions for this operation.");
+            return Err(e);
+        } else if e.is_operation_error() {
+            eprintln!("Operation error: {e}");
+            eprintln!("The operation could not be completed. The database may be in use.");
+            return Err(e);
         }
+        // For other errors, just propagate
+        return Err(e);
     }
 
     // Save the database
-    save_db(&db, &cli.database_path)?;
-
-    Ok(())
+    save_db(&db, &cli.database_path)
 }
 
 fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
@@ -149,15 +153,22 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
 
     // Ensure the todo app authentication key exists
     // First check if the key already exists
-    let existing_keys = db.list_private_keys().unwrap_or_default();
+    let existing_keys = db.list_private_keys()?;
+
     if !existing_keys.contains(&TODO_APP_KEY_ID.to_string()) {
         // Add the key if it doesn't exist
         match db.add_private_key(TODO_APP_KEY_ID) {
             Ok(_) => {
                 println!("✓ New authentication key created");
             }
+            Err(e) if e.is_conflict() => {
+                // Key was created concurrently, this is fine
+                println!("✓ Authentication key already exists");
+            }
             Err(e) => {
-                println!("Warning: Could not create authentication key: {e}");
+                // Authentication is required, so we must fail if key creation fails
+                eprintln!("✗ Failed to create authentication key: {e}");
+                return Err(e);
             }
         }
     } else {
@@ -174,7 +185,11 @@ fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
     let in_memory_database = database
         .as_any()
         .downcast_ref::<InMemory>()
-        .ok_or(anyhow!("Failed to downcast database to InMemory"))?;
+        .ok_or_else(|| {
+            eidetica::Error::Io(std::io::Error::other(
+                "Failed to downcast database to InMemory"
+            ))
+        })?;
 
     in_memory_database.save_to_file(path)?;
     Ok(())
@@ -190,7 +205,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             // We might want more robust handling later (e.g., error or config option).
             trees.pop().unwrap() // unwrap is safe because find_tree errors if empty
         }
-        Err(Error::NotFound) => {
+        Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
             let mut settings = Nested::new();
@@ -200,7 +215,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         }
         Err(e) => {
             // Propagate other errors
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -243,8 +258,17 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     // Get the todo from the RowStore
     let mut todo = match todos_store.get(id) {
         Ok(todo) => todo,
-        Err(Error::NotFound) => return Err(anyhow!("Todo with ID {} not found", id)),
-        Err(e) => return Err(anyhow!("Error retrieving todo: {}", e)),
+        Err(e) if e.is_not_found() => {
+            // Provide a user-friendly error message for not found
+            return Err(eidetica::subtree::SubtreeError::KeyNotFound {
+                subtree: "todos".to_string(),
+                key: id.to_string(),
+            }.into());
+        }
+        Err(e) => {
+            // For other errors, just propagate
+            return Err(e);
+        }
     };
 
     // Mark the todo as complete
