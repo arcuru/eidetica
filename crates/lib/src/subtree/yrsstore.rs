@@ -20,14 +20,41 @@
 //!
 //! This module is only available when the "y-crdt" feature is enabled.
 
+use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::{CRDT, Data};
 use crate::subtree::SubTree;
-use crate::{Error, Result};
+use crate::subtree::errors::SubtreeError;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use thiserror::Error;
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, ReadTxn, Transact, Update};
+
+/// Errors specific to Y-CRDT operations
+#[derive(Debug, Error)]
+pub enum YrsStoreError {
+    /// Y-CRDT operation failed
+    #[error("Y-CRDT operation failed: {operation} - {reason}")]
+    Operation { operation: String, reason: String },
+
+    /// Y-CRDT binary data is invalid
+    #[error("Invalid Y-CRDT binary data: {reason}")]
+    InvalidData { reason: String },
+
+    /// Y-CRDT merge operation failed
+    #[error("Y-CRDT merge failed: {reason}")]
+    Merge { reason: String },
+}
+
+impl From<YrsStoreError> for SubtreeError {
+    fn from(err: YrsStoreError) -> Self {
+        SubtreeError::ImplementationError {
+            subtree: "YrsStore".to_string(),
+            reason: err.to_string(),
+        }
+    }
+}
 
 /// A CRDT wrapper for Y-CRDT binary update data.
 ///
@@ -62,34 +89,30 @@ impl CRDT for YrsBinary {
         // Apply self's update if not empty
         if !self.data.is_empty() {
             let update = Update::decode_v1(&self.data).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to decode Y-CRDT update (self): {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::InvalidData {
+                    reason: format!("Failed to decode Y-CRDT update (self): {e}"),
+                })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to apply Y-CRDT update (self): {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::Merge {
+                    reason: format!("Failed to apply Y-CRDT update (self): {e}"),
+                })
             })?;
         }
 
         // Apply other's update if not empty
         if !other.data.is_empty() {
             let other_update = Update::decode_v1(&other.data).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to decode Y-CRDT update (other): {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::InvalidData {
+                    reason: format!("Failed to decode Y-CRDT update (other): {e}"),
+                })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(other_update).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to apply Y-CRDT update (other): {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::Merge {
+                    reason: format!("Failed to apply Y-CRDT update (other): {e}"),
+                })
             })?;
         }
 
@@ -221,18 +244,17 @@ impl YrsStore {
 
         if !local_data.is_empty() {
             let local_update = Update::decode_v1(local_data.as_bytes()).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to decode local Y-CRDT update: {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::InvalidData {
+                    reason: format!("Failed to decode local Y-CRDT update: {e}"),
+                })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(local_update).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to apply local Y-CRDT update: {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::Operation {
+                    operation: "apply_local_update".to_string(),
+                    reason: format!("Failed to apply local Y-CRDT update: {e}"),
+                })
             })?;
         }
 
@@ -335,19 +357,18 @@ impl YrsStore {
     pub fn apply_update(&self, update_data: &[u8]) -> Result<()> {
         let doc = self.doc()?;
         let update = Update::decode_v1(update_data).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to decode Y-CRDT update: {e}"),
-            ))
+            SubtreeError::from(YrsStoreError::InvalidData {
+                reason: format!("Failed to decode Y-CRDT update: {e}"),
+            })
         })?;
 
         {
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to apply Y-CRDT update: {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::Operation {
+                    operation: "apply_update".to_string(),
+                    reason: format!("Failed to apply Y-CRDT update: {e}"),
+                })
             })?;
         }
 
@@ -487,17 +508,16 @@ impl YrsStore {
         // Construct a temporary document to extract the state vector
         let temp_doc = Doc::new();
         let backend_update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to decode backend Y-CRDT update: {e}"),
-            ))
+            SubtreeError::from(YrsStoreError::InvalidData {
+                reason: format!("Failed to decode backend Y-CRDT update: {e}"),
+            })
         })?;
         let mut temp_txn = temp_doc.transact_mut();
         temp_txn.apply_update(backend_update).map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to apply backend Y-CRDT update: {e}"),
-            ))
+            SubtreeError::from(YrsStoreError::Operation {
+                operation: "get_initial_state_vector".to_string(),
+                reason: format!("Failed to apply backend Y-CRDT update: {e}"),
+            })
         })?;
         drop(temp_txn);
         let temp_txn = temp_doc.transact();
@@ -529,18 +549,17 @@ impl YrsStore {
         let doc = Doc::new();
         if !backend_data.is_empty() {
             let update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to decode Y-CRDT update: {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::InvalidData {
+                    reason: format!("Failed to decode Y-CRDT update: {e}"),
+                })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Failed to apply Y-CRDT update from backend: {e}"),
-                ))
+                SubtreeError::from(YrsStoreError::Operation {
+                    operation: "get_initial_doc".to_string(),
+                    reason: format!("Failed to apply Y-CRDT update from backend: {e}"),
+                })
             })?;
         }
 

@@ -1,5 +1,4 @@
 use crate::helpers::*;
-use eidetica::Error;
 use eidetica::atomicop::AtomicOp;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
@@ -1098,14 +1097,14 @@ fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
 
     let editor = store.get_value_mut("nonexistent");
     let result = editor.get();
-    assert!(matches!(result, Err(Error::NotFound)));
+    assert!(result.unwrap_err().is_not_found());
 
     let nested_editor = editor.get_value_mut("child");
     let nested_result = nested_editor.get();
-    assert!(matches!(nested_result, Err(Error::NotFound)));
+    assert!(nested_result.unwrap_err().is_not_found());
 
     let get_val_result = nested_editor.get_value("grandchild");
-    assert!(matches!(get_val_result, Err(Error::NotFound)));
+    assert!(get_val_result.unwrap_err().is_not_found());
 
     Ok(())
 }
@@ -1332,7 +1331,7 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
 
     let path = ["non", "existent", "key"];
     match store.get_at_path(path) {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound, got {v:?}"),
         Err(e) => panic!("Expected NotFound, got error {e:?}"),
     }
@@ -1344,7 +1343,7 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
 
     let path_intermediate_missing = ["existing_root_map", "non_existent_child_in_map", "key"];
     match store.get_at_path(path_intermediate_missing) {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound for intermediate missing key in map, got {v:?}"),
         Err(e) => panic!("Expected NotFound for intermediate missing key in map, got error {e:?}"),
     }
@@ -1354,7 +1353,7 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
     store.set_at_path(tombstone_path, Value::String("temp".to_string()))?;
     store.set_at_path(tombstone_path, Value::Deleted)?;
     match store.get_at_path(tombstone_path) {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound for tombstone path, got {v:?}"),
         Err(e) => panic!("Expected NotFound for tombstone path, got error {e:?}"),
     }
@@ -1376,9 +1375,9 @@ fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> 
     // Try to get a.b.c
     let path = ["a", "b", "c"];
     match store.get_at_path(path) {
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData => (),
-        Ok(v) => panic!("Expected Io(InvalidData), got {v:?}"),
-        Err(e) => panic!("Expected Io(InvalidData), got error {e:?}"),
+        Err(ref e) if e.is_type_error() => (),
+        Ok(v) => panic!("Expected type error, got {v:?}"),
+        Err(e) => panic!("Expected type error, got error {e:?}"),
     }
     Ok(())
 }
@@ -1395,9 +1394,9 @@ fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
 
     // Setting a non-map value at the root should fail
     match store.set_at_path(&path, Value::String("test".to_string())) {
-        Err(Error::InvalidOperation(_)) => (),
-        Ok(_) => panic!("Expected InvalidOperation when setting a non-map at root"),
-        Err(e) => panic!("Expected InvalidOperation, got error {e:?}"),
+        Err(ref e) if e.is_type_error() => (),
+        Ok(_) => panic!("Expected type error when setting a non-map at root"),
+        Err(e) => panic!("Expected type error, got error {e:?}"),
     }
 
     // Setting a map value at the root should succeed
@@ -1482,7 +1481,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
 
     // Verify deletion
     match root_editor.get_value("key1") {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound after deletion, got {v:?}"),
         Err(e) => panic!("Expected NotFound after deletion, got error {e:?}"),
     }
@@ -1493,7 +1492,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     let viewer_op = tree.new_operation()?;
     let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
     match viewer_store.get("key1") {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound after commit, got {v:?}"),
         Err(e) => panic!("Expected NotFound after commit, got error {e:?}"),
     }
@@ -1530,7 +1529,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // Verify the role is deleted
     match user_editor.get_value("role") {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound after delete_child, got {v:?}"),
         Err(e) => panic!("Expected NotFound after delete_child, got error {e:?}"),
     }
@@ -1549,7 +1548,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // Verify the profile is deleted
     match user_editor.get_value("profile") {
-        Err(Error::NotFound) => (),
+        Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound after delete_self, got {v:?}"),
         Err(e) => panic!("Expected NotFound after delete_self, got error {e:?}"),
     }
@@ -1604,11 +1603,11 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     // Attempting to set a non-map value at root should fail
     let result = root_editor.set(Value::String("test string".to_string()));
 
-    // Check that we get an InvalidOperation error
+    // Check that we get a type error
     match result {
-        Err(Error::InvalidOperation(_)) => (),
-        Ok(_) => panic!("Expected InvalidOperation error when setting non-map at root"),
-        Err(e) => panic!("Expected InvalidOperation, got error: {e:?}"),
+        Err(ref e) if e.is_type_error() => (),
+        Ok(_) => panic!("Expected type error when setting non-map at root"),
+        Err(e) => panic!("Expected type error, got error: {e:?}"),
     }
 
     // Setting a map value should succeed

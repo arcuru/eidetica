@@ -127,7 +127,7 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
 /// Helper for checking NotFound errors
 pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
     match result {
-        Err(eidetica::Error::NotFound) => (), // Expected
+        Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),
     }
 }

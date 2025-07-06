@@ -1,6 +1,9 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
 
+mod errors;
+pub use errors::SubtreeError;
+
 mod kvstore;
 pub use kvstore::KVStore;
 
