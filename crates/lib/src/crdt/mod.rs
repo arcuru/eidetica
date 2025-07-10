@@ -24,6 +24,7 @@ pub mod array;
 pub mod errors;
 pub mod map;
 pub mod nested;
+pub mod node;
 pub mod traits;
 
 // Re-export core types with new names
@@ -31,6 +32,7 @@ pub use array::Array;
 pub use errors::CRDTError;
 pub use map::Map;
 pub use nested::Nested;
+pub use node::{ListPosition, Node, NodeList, NodeValue};
 pub use traits::{CRDT, Data};
 pub use value::Value;
 

@@ -57,6 +57,10 @@ pub enum CRDTError {
     /// Invalid path for nested operations
     #[error("Invalid CRDT path: {path}")]
     InvalidPath { path: String },
+
+    /// List index out of bounds
+    #[error("List index out of bounds: index {index}, length {len}")]
+    ListIndexOutOfBounds { index: usize, len: usize },
 }
 
 impl CRDTError {
@@ -98,6 +102,11 @@ impl CRDTError {
         matches!(self, CRDTError::ElementNotFound { .. })
     }
 
+    /// Check if this error is related to list operations
+    pub fn is_list_error(&self) -> bool {
+        matches!(self, CRDTError::ListIndexOutOfBounds { .. })
+    }
+
     /// Get the operation type if this is an operation-specific error
     pub fn operation(&self) -> Option<&str> {
         match self {
@@ -130,5 +139,119 @@ impl CRDTError {
 impl From<CRDTError> for crate::Error {
     fn from(err: CRDTError) -> Self {
         crate::Error::CRDT(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crdt_error_list_index_out_of_bounds() {
+        let error = CRDTError::ListIndexOutOfBounds { index: 5, len: 3 };
+
+        assert!(error.is_list_error());
+        assert!(!error.is_merge_error());
+        assert!(!error.is_serialization_error());
+        assert!(!error.is_type_error());
+        assert!(!error.is_array_error());
+        assert!(!error.is_map_error());
+        assert!(!error.is_nested_error());
+        assert!(!error.is_not_found_error());
+
+        assert_eq!(error.operation(), None);
+        assert_eq!(error.path(), None);
+        assert_eq!(error.key(), None);
+
+        let display = format!("{error}");
+        assert!(display.contains("List index out of bounds"));
+        assert!(display.contains("index 5"));
+        assert!(display.contains("length 3"));
+    }
+
+    #[test]
+    fn test_crdt_error_classification() {
+        let merge_error = CRDTError::MergeFailed {
+            reason: "test".to_string(),
+        };
+        assert!(merge_error.is_merge_error());
+
+        let serialization_error = CRDTError::SerializationFailed {
+            reason: "test".to_string(),
+        };
+        assert!(serialization_error.is_serialization_error());
+
+        let type_error = CRDTError::TypeMismatch {
+            expected: "string".to_string(),
+            actual: "int".to_string(),
+        };
+        assert!(type_error.is_type_error());
+
+        let array_error = CRDTError::ArrayOperationFailed {
+            operation: "insert".to_string(),
+            reason: "test".to_string(),
+        };
+        assert!(array_error.is_array_error());
+        assert_eq!(array_error.operation(), Some("insert"));
+
+        let map_error = CRDTError::MapOperationFailed {
+            operation: "set".to_string(),
+            reason: "test".to_string(),
+        };
+        assert!(map_error.is_map_error());
+        assert_eq!(map_error.operation(), Some("set"));
+
+        let nested_error = CRDTError::NestedOperationFailed {
+            path: "user.profile".to_string(),
+            reason: "test".to_string(),
+        };
+        assert!(nested_error.is_nested_error());
+        assert_eq!(nested_error.path(), Some("user.profile"));
+
+        let not_found_error = CRDTError::ElementNotFound {
+            key: "missing".to_string(),
+        };
+        assert!(not_found_error.is_not_found_error());
+        assert_eq!(not_found_error.key(), Some("missing"));
+    }
+
+    #[test]
+    fn test_crdt_error_conversion_to_main_error() {
+        let crdt_error = CRDTError::ListIndexOutOfBounds { index: 1, len: 0 };
+        let main_error: crate::Error = crdt_error.into();
+
+        assert_eq!(main_error.module(), "crdt");
+
+        if let crate::Error::CRDT(inner) = main_error {
+            assert!(inner.is_list_error());
+        } else {
+            panic!("Expected CRDT error variant");
+        }
+    }
+
+    #[test]
+    fn test_crdt_error_display_messages() {
+        let errors = vec![
+            CRDTError::ListIndexOutOfBounds { index: 10, len: 5 },
+            CRDTError::MergeFailed {
+                reason: "conflict".to_string(),
+            },
+            CRDTError::TypeMismatch {
+                expected: "Node".to_string(),
+                actual: "Text".to_string(),
+            },
+            CRDTError::InvalidPath {
+                path: "invalid..path".to_string(),
+            },
+            CRDTError::ElementNotFound {
+                key: "nonexistent".to_string(),
+            },
+        ];
+
+        for error in errors {
+            let display = format!("{error}");
+            assert!(!display.is_empty());
+            assert!(display.len() > 10); // Should have meaningful error messages
+        }
     }
 }
