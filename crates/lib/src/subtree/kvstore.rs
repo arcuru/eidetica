@@ -77,8 +77,8 @@ impl KVStore {
     /// * `key` - The key to retrieve the value for.
     ///
     /// # Returns
-    /// A `Result` containing the Value if found, or `Error::NotFound`.
-    pub fn get(&self, key: impl AsRef<str>) -> Result<Value> {
+    /// A `Result` containing the NodeValue if found, or `Error::NotFound`.
+    pub fn get(&self, key: impl AsRef<str>) -> Result<NodeValue> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
         let local_data: Result<Nested> = self.atomic_op.get_local_data(&self.name);
@@ -87,7 +87,7 @@ impl KVStore {
         if let Ok(data) = local_data
             && let Some(value) = data.get(key)
         {
-            return Ok(node_value_to_value(value));
+            return Ok(value.clone());
         }
 
         // Otherwise, get the full state from the backend
@@ -95,7 +95,7 @@ impl KVStore {
 
         // Get the value
         match data.get(key) {
-            Some(value) => Ok(node_value_to_value(value)),
+            Some(value) => Ok(value.clone()),
             None => Err(SubtreeError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key.to_string(),
@@ -117,22 +117,28 @@ impl KVStore {
     pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
         let key_ref = key.as_ref();
         match self.get(key_ref)? {
-            Value::String(value) => Ok(value),
-            Value::Map(_) => Err(SubtreeError::TypeMismatch {
+            NodeValue::Text(value) => Ok(value),
+            NodeValue::Node(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "Map".to_string(),
+                actual: "Node".to_string(),
             }
             .into()),
-            Value::Array(_) => Err(SubtreeError::TypeMismatch {
+            NodeValue::List(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "Array".to_string(),
+                actual: "List".to_string(),
             }
             .into()),
-            Value::Deleted => Err(SubtreeError::KeyNotFound {
+            NodeValue::Deleted => Err(SubtreeError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key_ref.to_string(),
+            }
+            .into()),
+            _ => Err(SubtreeError::TypeMismatch {
+                subtree: self.name.clone(),
+                expected: "String".to_string(),
+                actual: "Other".to_string(),
             }
             .into()),
         }
@@ -150,11 +156,11 @@ impl KVStore {
     ///
     /// # Arguments
     /// * `key` - The key to set.
-    /// * `value` - The value to associate with the key.
+    /// * `value` - The value to associate with the key (can be &str, String, NodeValue, etc.)
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn set(&self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+    pub fn set(&self, key: impl AsRef<str>, value: impl Into<NodeValue>) -> Result<()> {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -162,11 +168,17 @@ impl KVStore {
             .unwrap_or_default();
 
         // Update the data
-        data.set_string(key.as_ref().to_string(), value.as_ref().to_string());
+        data.as_hashmap_mut()
+            .insert(key.as_ref().to_string(), value.into());
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
         self.atomic_op.update_subtree(&self.name, &serialized)
+    }
+
+    /// Convenience method to set a string value.
+    pub fn set_string(&self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+        self.set(key, NodeValue::Text(value.as_ref().to_string()))
     }
 
     /// Stages the setting of a nested value within the associated `AtomicOp`.
@@ -179,21 +191,52 @@ impl KVStore {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
+    /// Convenience method to get a List value.
+    pub fn get_list(&self, key: impl AsRef<str>) -> Result<NodeList> {
+        match self.get(key)? {
+            NodeValue::List(list) => Ok(list),
+            _ => Err(SubtreeError::TypeMismatch {
+                subtree: self.name.clone(),
+                expected: "List".to_string(),
+                actual: "Other".to_string(),
+            }
+            .into()),
+        }
+    }
+
+    /// Convenience method to get a Node value.
+    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Nested> {
+        match self.get(key)? {
+            NodeValue::Node(node) => Ok(node),
+            _ => Err(SubtreeError::TypeMismatch {
+                subtree: self.name.clone(),
+                expected: "Node".to_string(),
+                actual: "Other".to_string(),
+            }
+            .into()),
+        }
+    }
+
+    /// Convenience method to set a list value.
+    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<NodeList>) -> Result<()> {
+        self.set(key, NodeValue::List(list.into()))
+    }
+
+    /// Convenience method to set a node value.
+    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Nested>) -> Result<()> {
+        self.set(key, NodeValue::Node(node.into()))
+    }
+
+    /// Legacy method for backward compatibility - converts Value to NodeValue
     pub fn set_value(&self, key: impl AsRef<str>, value: Value) -> Result<()> {
-        // Get current data from the atomic op, or create new if not existing
-        let mut data = self
-            .atomic_op
-            .get_local_data::<Nested>(&self.name)
-            .unwrap_or_default();
-
-        // Update the data - convert Value to NodeValue
         let node_value = value_to_node_value(&value);
-        data.as_hashmap_mut()
-            .insert(key.as_ref().to_string(), node_value);
+        self.set(key, node_value)
+    }
 
-        // Serialize and update the atomic op
-        let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+    /// Legacy method for backward compatibility - converts NodeValue to Value
+    pub fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
+        let node_value = self.get(key)?;
+        Ok(node_value_to_value(&node_value))
     }
 
     /// Stages the deletion of a key within the associated `AtomicOp`.
@@ -469,73 +512,6 @@ impl KVStore {
 
         let serialized_data = serde_json::to_string(&subtree_data)?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)
-    }
-
-    // Array operations - high-level API that hides CRDT implementation details
-
-    /// Add an element to an array at the given key
-    /// Creates a new array if the key doesn't exist
-    /// Returns the unique ID of the added element
-    pub fn array_add(&self, key: impl AsRef<str>, value: Value) -> Result<String> {
-        let mut data = self.get_all()?;
-
-        let element_id = data.array_add(key.as_ref(), value)?;
-
-        let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)?;
-
-        Ok(element_id)
-    }
-
-    /// Remove an element by its ID from an array
-    /// Returns true if an element was removed, false otherwise
-    pub fn array_remove(&self, key: impl AsRef<str>, id: &str) -> Result<bool> {
-        let mut data = self.get_all()?;
-
-        let was_removed = data.array_remove(key.as_ref(), id)?;
-
-        let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)?;
-
-        Ok(was_removed)
-    }
-
-    /// Get an element by its ID from an array
-    pub fn array_get(&self, key: impl AsRef<str>, id: &str) -> Result<Option<Value>> {
-        let data = self.get_all()?;
-        Ok(data.array_get(key.as_ref(), id).map(node_value_to_value))
-    }
-
-    /// Get all element IDs from an array in UUID-sorted order
-    /// Returns an empty Vec if the key doesn't exist or isn't an array
-    pub fn array_ids(&self, key: impl AsRef<str>) -> Result<Vec<String>> {
-        let data = self.get_all()?;
-        Ok(data.array_ids(key.as_ref()))
-    }
-
-    /// Get the length of an array
-    /// Returns 0 if the key doesn't exist or isn't an array
-    pub fn array_len(&self, key: impl AsRef<str>) -> Result<usize> {
-        let data = self.get_all()?;
-        Ok(data.array_len(key.as_ref()))
-    }
-
-    /// Check if an array is empty
-    /// Returns true if the key doesn't exist, isn't an array, or the array is empty
-    pub fn array_is_empty(&self, key: impl AsRef<str>) -> Result<bool> {
-        let data = self.get_all()?;
-        Ok(data.array_is_empty(key.as_ref()))
-    }
-
-    /// Clear all elements from an array (tombstone them)
-    /// Does nothing if the key doesn't exist or isn't an array
-    pub fn array_clear(&self, key: impl AsRef<str>) -> Result<()> {
-        let mut data = self.get_all()?;
-
-        data.array_clear(key.as_ref())?;
-
-        let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
     }
 }
 

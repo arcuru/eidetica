@@ -1,5 +1,5 @@
 use eidetica::backend::database::InMemory;
-use eidetica::crdt::{Nested, NodeValue, Value};
+use eidetica::crdt::{Nested, NodeValue};
 use eidetica::subtree::KVStore;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
@@ -119,13 +119,13 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
         .get(key)
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))
     {
-        Value::String(value) => assert_eq!(value, expected),
-        _ => panic!("Expected string value for key {key}"),
+        NodeValue::Text(value) => assert_eq!(value, expected),
+        _ => panic!("Expected text value for key {key}"),
     }
 }
 
 /// Helper for checking NotFound errors
-pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
+pub fn assert_key_not_found(result: Result<NodeValue, eidetica::Error>) {
     match result {
         Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),

@@ -225,13 +225,13 @@ fn test_atomicop_nested_values() {
 
     // Check the string value
     match store2.get("string_key").unwrap() {
-        Value::String(value) => assert_eq!(value, "string_value"),
+        NodeValue::Text(value) => assert_eq!(value, "string_value"),
         _ => panic!("Expected string value"),
     }
 
     // Check the nested map
     match store2.get("map_key").unwrap() {
-        Value::Map(map) => {
+        NodeValue::Node(map) => {
             match map.get("inner1") {
                 Some(NodeValue::Text(value)) => assert_eq!(value, "value1"),
                 _ => panic!("Expected string value for inner1"),

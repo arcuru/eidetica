@@ -56,7 +56,7 @@ fn bench_add_entries(c: &mut Criterion) {
                         kv_store
                             .set(
                                 black_box(&format!("new_key_{tree_size}")),
-                                black_box(&format!("new_value_{tree_size}")),
+                                black_box(format!("new_value_{tree_size}").as_str()),
                             )
                             .expect("Failed to set value");
 
@@ -92,7 +92,7 @@ fn bench_batch_add_entries(c: &mut Criterion) {
                         kv_store
                             .set(
                                 black_box(&format!("batch_key_{i}")),
-                                black_box(&format!("batch_value_{i}")),
+                                black_box(format!("batch_value_{i}").as_str()),
                             )
                             .expect("Failed to set value");
                     }
@@ -130,7 +130,7 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
                     kv_store
                         .set(
                             black_box(&format!("inc_key_{counter}")),
-                            black_box(&format!("inc_value_{counter}")),
+                            black_box(format!("inc_value_{counter}").as_str()),
                         )
                         .expect("Failed to set value");
 
