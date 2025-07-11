@@ -59,7 +59,7 @@ Internally, `RowStore<T>` manages its state (likely a map of IDs to `T` instance
 
 #### KVStore
 
-`KVStore` is a key-value store implementation that uses the `Nested` CRDT to provide nested data structures and reliable deletion tracking across distributed systems.
+`KVStore` is a key-value store implementation that uses the `Node` CRDT to provide nested data structures and reliable deletion tracking across distributed systems.
 
 ```mermaid
 classDiagram
@@ -70,7 +70,7 @@ classDiagram
         +set<K, V>(key: K, value: V) Result<()> where K: Into<String>, V: Into<String>
         +set_value<K>(key: K, value: Value) Result<()> where K: Into<String>
         +delete<K>(key: K) Result<()> where K: Into<String>
-        +get_all() Result<Nested>
+        +get_all() Result<Node>
         +get_value_mut<K>(key: K) ValueEditor where K: Into<String>
         +get_root_mut() ValueEditor
         +get_at_path<S, P>(path: P) Result<Value> where S: AsRef<str>, P: AsRef<[S]>
@@ -92,7 +92,7 @@ classDiagram
 
 **Features:**
 
-- **Flexible Data Structure**: Based on `Nested`, which allows storing both simple string values and nested map structures.
+- **Flexible Data Structure**: Based on `Node`, which allows storing both simple string values and nested map structures.
 - **Tombstone Support**: When a key is deleted, a tombstone is created to ensure the deletion propagates correctly during synchronization, even if the value doesn't exist in some replicas.
 - **Key Operations**:
 
@@ -101,7 +101,7 @@ classDiagram
   - `set`: Sets a simple string value for a key
   - `set_value`: Sets any valid `Value` (String, Map, or Deleted) for a key
   - `delete`: Marks a key as deleted by creating a tombstone
-  - `get_all`: Returns the entire store as a `Nested` structure, including tombstones
+  - `get_all`: Returns the entire store as a `Node` structure, including tombstones
   - `get_value_mut`: Returns a `ValueEditor` for modifying values at a specific key path
   - `get_root_mut`: Returns a `ValueEditor` for the root of the KVStore's subtree
   - `get_at_path`: Retrieves a value at a specific nested path
@@ -131,7 +131,7 @@ let kv = op.get_subtree::<KVStore>("config")?;
 kv.set("username", "alice")?;
 
 // Create nested structures
-let mut preferences = Nested::new();
+let mut preferences = Node::new();
 preferences.set_string("theme", "dark");
 preferences.set_string("language", "en");
 kv.set_value("user_prefs", Value::Map(preferences))?;

@@ -60,14 +60,14 @@ Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/i
 
 - **Data Structure Helpers**:
 
-  - `create_kvnested()`: Creates a Nested with specified key-value pairs
-  - `create_nested_kvnested()`: Creates a nested Nested structure
+  - `create_kvnested()`: Creates a Node with specified key-value pairs
+  - `create_nested_kvnested()`: Creates a nested Node structure
   - `create_kvoverwrite()`: Creates a Map with initial data
 
 - **Assertion Helpers**:
   - `assert_kvstore_value()`: Verifies a KVStore contains an expected string value
   - `assert_key_not_found()`: Verifies a key doesn't exist in a store
-  - `assert_nested_value()`: Checks deep nested values inside a Nested structure
+  - `assert_nested_value()`: Checks deep nested values inside a Node structure
   - `assert_path_deleted()`: Validates that a path is deleted (has tombstone or is missing)
 
 Using these helpers improves test readability, reduces code duplication, and ensures consistent test setup across the codebase.
