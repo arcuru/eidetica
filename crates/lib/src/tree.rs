@@ -10,7 +10,7 @@ use crate::backend::Database;
 use crate::basedb::errors::BaseError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Node;
-use crate::crdt::node::NodeValue;
+use crate::crdt::map::Value;
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
 
@@ -53,7 +53,7 @@ impl Tree {
     ) -> Result<Self> {
         let signing_key_id = signing_key_id.as_ref();
         // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(NodeValue::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
+        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
         let (super_user_key_id, final_tree_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key

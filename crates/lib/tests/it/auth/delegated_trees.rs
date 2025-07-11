@@ -12,7 +12,7 @@ use eidetica::auth::types::{
 };
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Nested;
+use eidetica::crdt::Map;
 use eidetica::entry::ID;
 
 /// Test simple tree creation with auth
@@ -25,10 +25,10 @@ fn test_simple_tree_creation_with_auth() -> Result<()> {
     let main_admin_key = db.add_private_key("main_admin")?;
 
     // Create main tree with explicit auth configuration
-    let mut main_settings = Nested::new();
+    let mut main_settings = Map::new();
     main_settings.set_string("name", "main_project_tree");
 
-    let mut main_auth = Nested::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
@@ -61,10 +61,10 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Create delegated tree first
-    let mut delegated_settings = Nested::new();
+    let mut delegated_settings = Map::new();
     delegated_settings.set_string("name", "user_personal_tree");
 
-    let mut delegated_auth = Nested::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -80,10 +80,10 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
 
     // Create main tree with delegation
-    let mut main_settings = Nested::new();
+    let mut main_settings = Map::new();
     main_settings.set_string("name", "main_project_tree");
 
-    let mut main_auth = Nested::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
@@ -153,8 +153,8 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Create delegated tree with Admin permissions
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -170,8 +170,8 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
 
     // Create main tree with Read-only delegation
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
@@ -242,8 +242,8 @@ fn test_nested_delegation() -> Result<()> {
     let user_key = db.add_private_key("user")?;
 
     // Create user tree (bottom level)
-    let mut user_settings = Nested::new();
-    let mut user_auth = Nested::new();
+    let mut user_settings = Map::new();
+    let mut user_auth = Map::new();
     user_auth
         .set_json(
             "user", // Key name must match the private key ID
@@ -258,8 +258,8 @@ fn test_nested_delegation() -> Result<()> {
     let user_tree = db.new_tree(user_settings, "user")?;
 
     // Create org tree (middle level) that delegates to user tree
-    let mut org_settings = Nested::new();
-    let mut org_auth = Nested::new();
+    let mut org_settings = Map::new();
+    let mut org_auth = Map::new();
     org_auth
         .set_json(
             "org_admin", // Key name matches private key ID
@@ -292,8 +292,8 @@ fn test_nested_delegation() -> Result<()> {
     let org_tree = db.new_tree(org_settings, "org_admin")?;
 
     // Create main tree (top level) that delegates to org tree
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin",
@@ -369,8 +369,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Create delegated tree with user key (initially active)
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -386,8 +386,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
 
     // Create main tree with delegation
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
@@ -441,8 +441,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
     // Create a new delegated tree with the same key but revoked
-    let mut revoked_settings = Nested::new();
-    let mut revoked_auth = Nested::new();
+    let mut revoked_settings = Map::new();
+    let mut revoked_auth = Map::new();
     revoked_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -484,8 +484,8 @@ fn test_delegation_depth_limits() -> Result<()> {
     let user_key = db.add_private_key("user")?;
 
     // Create a simple delegated tree
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "user", // Key name must match the private key ID
@@ -500,8 +500,8 @@ fn test_delegation_depth_limits() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "user")?;
 
     // Create main tree settings
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "admin", // Key name must match the private key ID
@@ -579,8 +579,8 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // ---------------- Delegated tree ----------------
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -607,8 +607,8 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // ---------------- Main tree with delegation ----------------
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin",
@@ -678,8 +678,8 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Delegated tree with user key Write(12)
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -705,8 +705,8 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Main tree delegates with max Write(8) (more privileged) and no min
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin",
@@ -769,8 +769,8 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
 
     // Setup simple tree with direct key
     let admin_key = db.add_private_key("admin")?;
-    let mut settings = Nested::new();
-    let mut auth = Nested::new();
+    let mut settings = Map::new();
+    let mut auth = Map::new();
     auth.set_json(
         "admin",
         AuthKey {
@@ -827,8 +827,8 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let delegated_admin_key = db.add_private_key("delegated_admin")?;
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
-    let mut delegated_settings = Nested::new();
-    let mut delegated_auth = Nested::new();
+    let mut delegated_settings = Map::new();
+    let mut delegated_auth = Map::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -856,8 +856,8 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let bogus_tip = ID::new("nonexistent_tip_hash");
 
     // Main tree with delegation using bogus tip
-    let mut main_settings = Nested::new();
-    let mut main_auth = Nested::new();
+    let mut main_settings = Map::new();
+    let mut main_auth = Map::new();
     main_auth
         .set_json(
             "main_admin",

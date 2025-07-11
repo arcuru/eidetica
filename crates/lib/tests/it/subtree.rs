@@ -1,12 +1,13 @@
 use crate::helpers::*;
-use eidetica::crdt::{Nested, NodeValue, Value};
+use eidetica::crdt::Map;
+use eidetica::crdt::map::Value;
 use eidetica::subtree::{KVStore, RowStore};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "y-crdt")]
 use eidetica::subtree::YrsStore;
 #[cfg(feature = "y-crdt")]
-use yrs::{Doc, GetString, Map, ReadTxn, Text, Transact};
+use yrs::{Doc, GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestRecord {
@@ -114,15 +115,15 @@ fn test_kvstore_get_all_via_viewer() {
     assert_eq!(all_data_map.len(), 3);
     assert_eq!(
         all_data_map.get("key_a"),
-        Some(&NodeValue::Text("val_a".to_string()))
+        Some(&Value::Text("val_a".to_string()))
     );
     assert_eq!(
         all_data_map.get("key_b"),
-        Some(&NodeValue::Text("val_b_updated".to_string()))
+        Some(&Value::Text("val_b_updated".to_string()))
     );
     assert_eq!(
         all_data_map.get("key_c"),
-        Some(&NodeValue::Text("val_c".to_string()))
+        Some(&Value::Text("val_c".to_string()))
     );
 }
 
@@ -190,7 +191,7 @@ fn test_kvstore_set_value() {
         kv_store.set("key1", "value1").expect("Failed to set key1");
 
         // Set map value
-        let mut nested = Nested::new();
+        let mut nested = Map::new();
         nested.set_string("inner", "nested_value");
         kv_store
             .set_value("key2", Value::Map(nested.clone()))
@@ -201,8 +202,8 @@ fn test_kvstore_set_value() {
 
         // Verify map value exists and has correct structure
         match kv_store.get("key2").expect("Failed to get key2") {
-            NodeValue::Node(map) => match map.get("inner") {
-                Some(NodeValue::Text(value)) => assert_eq!(value, "nested_value"),
+            Value::Map(map) => match map.get("inner") {
+                Some(Value::Text(value)) => assert_eq!(value, "nested_value"),
                 _ => panic!("Expected string value in nested map"),
             },
             _ => panic!("Expected map value for key2"),
@@ -222,8 +223,8 @@ fn test_kvstore_set_value() {
 
     // Check map value persisted and can be accessed
     match viewer.get("key2").expect("Failed to get key2 from viewer") {
-        NodeValue::Node(map) => match map.get("inner") {
-            Some(NodeValue::Text(value)) => assert_eq!(value, "nested_value"),
+        Value::Map(map) => match map.get("inner") {
+            Some(Value::Text(value)) => assert_eq!(value, "nested_value"),
             _ => panic!("Expected string value in nested map from viewer"),
         },
         _ => panic!("Expected map value for key2 from viewer"),
@@ -241,10 +242,10 @@ fn test_kvstore_list_basic_operations() {
             .expect("Failed to get KVStore");
 
         // Create a list and add elements
-        let mut fruits = eidetica::crdt::node::NodeList::new();
-        fruits.push(NodeValue::Text("apple".to_string()));
-        fruits.push(NodeValue::Text("banana".to_string()));
-        fruits.push(NodeValue::Text("orange".to_string()));
+        let mut fruits = eidetica::crdt::map::Array::new();
+        fruits.push(Value::Text("apple".to_string()));
+        fruits.push(Value::Text("banana".to_string()));
+        fruits.push(Value::Text("orange".to_string()));
 
         // Set the list
         kv_store
@@ -262,21 +263,21 @@ fn test_kvstore_list_basic_operations() {
         // Test getting elements by index
         assert_eq!(
             retrieved_fruits.get(0),
-            Some(&NodeValue::Text("apple".to_string()))
+            Some(&Value::Text("apple".to_string()))
         );
         assert_eq!(
             retrieved_fruits.get(1),
-            Some(&NodeValue::Text("banana".to_string()))
+            Some(&Value::Text("banana".to_string()))
         );
         assert_eq!(
             retrieved_fruits.get(2),
-            Some(&NodeValue::Text("orange".to_string()))
+            Some(&Value::Text("orange".to_string()))
         );
 
         // Test modifying the list
         let mut modified_fruits = retrieved_fruits.clone();
         modified_fruits.remove(2); // Remove orange
-        modified_fruits.push(NodeValue::Text("grape".to_string())); // Add grape
+        modified_fruits.push(Value::Text("grape".to_string())); // Add grape
 
         // Update the list
         kv_store
@@ -290,15 +291,15 @@ fn test_kvstore_list_basic_operations() {
         assert_eq!(updated_fruits.len(), 3);
         assert_eq!(
             updated_fruits.get(0),
-            Some(&NodeValue::Text("apple".to_string()))
+            Some(&Value::Text("apple".to_string()))
         );
         assert_eq!(
             updated_fruits.get(1),
-            Some(&NodeValue::Text("banana".to_string()))
+            Some(&Value::Text("banana".to_string()))
         );
         assert_eq!(
             updated_fruits.get(2),
-            Some(&NodeValue::Text("grape".to_string()))
+            Some(&Value::Text("grape".to_string()))
         );
     }
 
@@ -316,15 +317,15 @@ fn test_kvstore_list_basic_operations() {
     assert_eq!(viewer_fruits.len(), 3);
     assert_eq!(
         viewer_fruits.get(0),
-        Some(&NodeValue::Text("apple".to_string()))
+        Some(&Value::Text("apple".to_string()))
     );
     assert_eq!(
         viewer_fruits.get(1),
-        Some(&NodeValue::Text("banana".to_string()))
+        Some(&Value::Text("banana".to_string()))
     );
     assert_eq!(
         viewer_fruits.get(2),
-        Some(&NodeValue::Text("grape".to_string()))
+        Some(&Value::Text("grape".to_string()))
     );
 }
 
@@ -346,8 +347,8 @@ fn test_kvstore_list_nonexistent_key() {
         assert!(list_result.is_err());
 
         // Create a new list
-        let mut new_list = eidetica::crdt::node::NodeList::new();
-        new_list.push(NodeValue::Text("first_item".to_string()));
+        let mut new_list = eidetica::crdt::map::Array::new();
+        new_list.push(Value::Text("first_item".to_string()));
 
         kv_store
             .set_list("new_list", new_list)
@@ -360,7 +361,7 @@ fn test_kvstore_list_nonexistent_key() {
         assert_eq!(retrieved_list.len(), 1);
         assert_eq!(
             retrieved_list.get(0),
-            Some(&NodeValue::Text("first_item".to_string()))
+            Some(&Value::Text("first_item".to_string()))
         );
     }
 }
@@ -376,9 +377,9 @@ fn test_kvstore_list_persistence() {
             .get_subtree::<KVStore>("my_kv")
             .expect("Failed to get KVStore");
 
-        let mut colors = eidetica::crdt::node::NodeList::new();
-        colors.push(NodeValue::Text("red".to_string()));
-        colors.push(NodeValue::Text("green".to_string()));
+        let mut colors = eidetica::crdt::map::Array::new();
+        colors.push(Value::Text("red".to_string()));
+        colors.push(Value::Text("green".to_string()));
 
         kv_store
             .set_list("colors", colors)
@@ -398,13 +399,13 @@ fn test_kvstore_list_persistence() {
             .get_list("colors")
             .expect("Failed to get colors list");
         assert_eq!(colors.len(), 2);
-        assert_eq!(colors.get(0), Some(&NodeValue::Text("red".to_string())));
-        assert_eq!(colors.get(1), Some(&NodeValue::Text("green".to_string())));
+        assert_eq!(colors.get(0), Some(&Value::Text("red".to_string())));
+        assert_eq!(colors.get(1), Some(&Value::Text("green".to_string())));
 
         // Modify the list - remove first element and add blue
         let mut updated_colors = colors.clone();
         updated_colors.remove(0); // Remove red
-        updated_colors.push(NodeValue::Text("blue".to_string())); // Add blue
+        updated_colors.push(Value::Text("blue".to_string())); // Add blue
 
         kv_store
             .set_list("colors", updated_colors)
@@ -423,14 +424,8 @@ fn test_kvstore_list_persistence() {
 
     // List should have 2 elements after removing one and adding one
     assert_eq!(final_colors.len(), 2);
-    assert_eq!(
-        final_colors.get(0),
-        Some(&NodeValue::Text("green".to_string()))
-    );
-    assert_eq!(
-        final_colors.get(1),
-        Some(&NodeValue::Text("blue".to_string()))
-    );
+    assert_eq!(final_colors.get(0), Some(&Value::Text("green".to_string())));
+    assert_eq!(final_colors.get(1), Some(&Value::Text("blue".to_string())));
 }
 
 #[test]
@@ -448,7 +443,7 @@ fn test_subtree_basic() {
         kv_store.set("key2", "value2").expect("Failed to set key2");
 
         // Set a nested map value
-        let mut nested = Nested::new();
+        let mut nested = Map::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
         kv_store
@@ -470,14 +465,14 @@ fn test_subtree_basic() {
 
     // Check nested map
     match viewer.get("nested").expect("Failed to get nested map") {
-        NodeValue::Node(map) => {
+        Value::Map(map) => {
             // Check nested values
             match map.get("nested_key1") {
-                Some(NodeValue::Text(value)) => assert_eq!(value, "nested_value1"),
+                Some(Value::Text(value)) => assert_eq!(value, "nested_value1"),
                 _ => panic!("Expected string value for nested_key1"),
             }
             match map.get("nested_key2") {
-                Some(NodeValue::Text(value)) => assert_eq!(value, "nested_value2"),
+                Some(Value::Text(value)) => assert_eq!(value, "nested_value2"),
                 _ => panic!("Expected string value for nested_key2"),
             }
         }
@@ -500,7 +495,7 @@ fn test_kvstore_update_nested_value() {
             .expect("Op1: Failed to get KVStore");
 
         // Create level1 -> level2_str structure
-        let mut l1_map = Nested::new();
+        let mut l1_map = Map::new();
         l1_map.set_string("level2_str", "initial_value");
         kv_store
             .set_value("level1", Value::Map(l1_map))
@@ -516,10 +511,10 @@ fn test_kvstore_update_nested_value() {
             .expect("Op2: Failed to get KVStore");
 
         // Create an entirely new map structure that will replace the old one
-        let mut l2_map = Nested::new();
+        let mut l2_map = Map::new();
         l2_map.set_string("deep_key", "deep_value");
 
-        let mut new_l1_map = Nested::new();
+        let mut new_l1_map = Map::new();
         new_l1_map.set_map("level2_map", l2_map);
 
         // Completely replace the previous value at level1
@@ -529,15 +524,13 @@ fn test_kvstore_update_nested_value() {
 
         // Verify the update within the same operation
         match kv_store.get("level1").expect("Failed to get level1") {
-            NodeValue::Node(retrieved_l1_map) => {
+            Value::Map(retrieved_l1_map) => {
                 // Check if level2_map exists with the expected content
                 match retrieved_l1_map.get("level2_map") {
-                    Some(NodeValue::Node(retrieved_l2_map)) => {
-                        match retrieved_l2_map.get("deep_key") {
-                            Some(NodeValue::Text(val)) => assert_eq!(val, "deep_value"),
-                            _ => panic!("Expected string 'deep_value' at deep_key"),
-                        }
-                    }
+                    Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                        Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
+                        _ => panic!("Expected string 'deep_value' at deep_key"),
+                    },
                     _ => panic!("Expected 'level2_map' to be a map"),
                 }
             }
@@ -553,11 +546,11 @@ fn test_kvstore_update_nested_value() {
 
     // Verify the structure after commit
     match viewer.get("level1").expect("Viewer: Failed to get level1") {
-        NodeValue::Node(retrieved_l1_map) => {
+        Value::Map(retrieved_l1_map) => {
             // Check if level2_map exists with expected content
             match retrieved_l1_map.get("level2_map") {
-                Some(NodeValue::Node(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
-                    Some(NodeValue::Text(val)) => assert_eq!(val, "deep_value"),
+                Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                    Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
                     _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
                 },
                 _ => panic!("Viewer: Expected 'level2_map' to be a map"),

@@ -1,5 +1,5 @@
 use crate::helpers::*;
-use eidetica::crdt::NodeValue;
+use eidetica::crdt::map::Value;
 use eidetica::subtree::KVStore;
 
 #[test]
@@ -39,22 +39,22 @@ fn test_simple_linear_chain() {
     // - city: "nyc" (from C)
 
     match final_state.get("counter").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "3"),
+        Value::Text(v) => assert_eq!(v, "3"),
         _ => panic!("Expected string for counter"),
     }
 
     match final_state.get("name").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "alice"),
+        Value::Text(v) => assert_eq!(v, "alice"),
         _ => panic!("Expected string for name"),
     }
 
     match final_state.get("age").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "25"),
+        Value::Text(v) => assert_eq!(v, "25"),
         _ => panic!("Expected string for age"),
     }
 
     match final_state.get("city").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "nyc"),
+        Value::Text(v) => assert_eq!(v, "nyc"),
         _ => panic!("Expected string for city"),
     }
 }
@@ -98,7 +98,7 @@ fn test_caching_consistency() {
 
     // Check the final value
     match state1.get("value").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "3"),
+        Value::Text(v) => assert_eq!(v, "3"),
         _ => panic!("Expected string for value"),
     }
 }
@@ -128,17 +128,17 @@ fn test_parent_merge_semantics() {
 
     // Should have both base and child data, with child overriding shared field
     match final_state.get("base_field").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "base_value"),
+        Value::Text(v) => assert_eq!(v, "base_value"),
         _ => panic!("Expected string for base_field"),
     }
 
     match final_state.get("child_field").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "child_value"),
+        Value::Text(v) => assert_eq!(v, "child_value"),
         _ => panic!("Expected string for child_field"),
     }
 
     match final_state.get("shared_field").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "updated"),
+        Value::Text(v) => assert_eq!(v, "updated"),
         _ => panic!("Expected string for shared_field"),
     }
 }
@@ -167,7 +167,7 @@ fn test_deep_chain_performance() {
 
     // Check that we have the final step
     match final_state.get("step").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, &CHAIN_LENGTH.to_string()),
+        Value::Text(v) => assert_eq!(v, &CHAIN_LENGTH.to_string()),
         _ => panic!("Expected string for step"),
     }
 
@@ -176,7 +176,7 @@ fn test_deep_chain_performance() {
         let key = format!("step_{i}");
         let expected = format!("value_{i}");
         match final_state.get(&key).unwrap() {
-            NodeValue::Text(v) => assert_eq!(v, &expected),
+            Value::Text(v) => assert_eq!(v, &expected),
             _ => panic!("Expected string for {key}"),
         }
     }
@@ -216,17 +216,17 @@ fn test_multiple_reads_consistency() {
     // Check that the expected final state is correct
     let final_state = &results[0];
     match final_state.get("key1").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "updated1"),
+        Value::Text(v) => assert_eq!(v, "updated1"),
         _ => panic!("Expected string for key1"),
     }
 
     match final_state.get("key2").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "value2"),
+        Value::Text(v) => assert_eq!(v, "value2"),
         _ => panic!("Expected string for key2"),
     }
 
     match final_state.get("key3").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "value3"),
+        Value::Text(v) => assert_eq!(v, "value3"),
         _ => panic!("Expected string for key3"),
     }
 }
@@ -305,32 +305,32 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Verify final values are correct (latest values should win)
     match final_state.get("count").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "4", "count should be final value"),
+        Value::Text(v) => assert_eq!(v, "4", "count should be final value"),
         _ => panic!("Expected string for count"),
     }
 
     match final_state.get("name").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "updated", "name should be updated value"),
+        Value::Text(v) => assert_eq!(v, "updated", "name should be updated value"),
         _ => panic!("Expected string for name"),
     }
 
     match final_state.get("status").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "completed", "status should be final value"),
+        Value::Text(v) => assert_eq!(v, "completed", "status should be final value"),
         _ => panic!("Expected string for status"),
     }
 
     match final_state.get("category").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "type_a", "category should be preserved"),
+        Value::Text(v) => assert_eq!(v, "type_a", "category should be preserved"),
         _ => panic!("Expected string for category"),
     }
 
     match final_state.get("priority").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "high", "priority should be preserved"),
+        Value::Text(v) => assert_eq!(v, "high", "priority should be preserved"),
         _ => panic!("Expected string for priority"),
     }
 
     match final_state.get("result").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "success", "result should be preserved"),
+        Value::Text(v) => assert_eq!(v, "success", "result should be preserved"),
         _ => panic!("Expected string for result"),
     }
 
@@ -507,27 +507,27 @@ fn test_true_diamond_pattern() {
 
     // Check specific values
     match final_state.get("base").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "A", "base should be from A"),
+        Value::Text(v) => assert_eq!(v, "A", "base should be from A"),
         _ => panic!("Expected string for base"),
     }
 
     match final_state.get("b_specific").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "B_data", "b_specific should be from B"),
+        Value::Text(v) => assert_eq!(v, "B_data", "b_specific should be from B"),
         _ => panic!("Expected string for b_specific"),
     }
 
     match final_state.get("c_specific").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "C_data", "c_specific should be from C"),
+        Value::Text(v) => assert_eq!(v, "C_data", "c_specific should be from C"),
         _ => panic!("Expected string for c_specific"),
     }
 
     match final_state.get("merge_marker").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "D_created", "merge_marker should be from D"),
+        Value::Text(v) => assert_eq!(v, "D_created", "merge_marker should be from D"),
         _ => panic!("Expected string for merge_marker"),
     }
 
     match final_state.get("final_data").unwrap() {
-        NodeValue::Text(v) => assert_eq!(v, "merged", "final_data should be from D"),
+        Value::Text(v) => assert_eq!(v, "merged", "final_data should be from D"),
         _ => panic!("Expected string for final_data"),
     }
 

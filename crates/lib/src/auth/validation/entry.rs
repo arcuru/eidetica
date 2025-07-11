@@ -7,7 +7,8 @@ use crate::Result;
 use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
 use crate::backend::Database;
-use crate::crdt::{Nested, NodeValue};
+use crate::crdt::Map;
+use crate::crdt::map::Value;
 use crate::entry::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ impl AuthValidator {
     pub fn validate_entry(
         &mut self,
         entry: &Entry,
-        settings_state: &Nested,
+        settings_state: &Map,
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
@@ -55,7 +56,7 @@ impl AuthValidator {
 
         // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
         match settings_state.get("auth") {
-            Some(NodeValue::Node(auth_map)) => {
+            Some(Value::Map(auth_map)) => {
                 // If 'auth' section exists and is a map, check if it's empty
                 if auth_map.as_hashmap().is_empty() {
                     return Ok(true);
@@ -93,7 +94,7 @@ impl AuthValidator {
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
-        settings: &Nested,
+        settings: &Map,
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver

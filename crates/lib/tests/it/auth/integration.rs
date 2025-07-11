@@ -3,14 +3,14 @@ use crate::create_auth_keys;
 use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::Nested;
+use eidetica::crdt::Map;
 use eidetica::subtree::KVStore;
 
 #[test]
 fn test_authenticated_operations() {
     let db = setup_db_with_key("TEST_KEY");
     let tree = db
-        .new_tree(Nested::new(), "TEST_KEY")
+        .new_tree(Map::new(), "TEST_KEY")
         .expect("Failed to create tree");
 
     // Create an authenticated operation
@@ -47,7 +47,7 @@ fn test_operation_auth_methods() {
     db.add_private_key("TEST_KEY")
         .expect("Failed to add test key");
     let tree = db
-        .new_tree(Nested::new(), "TEST_KEY")
+        .new_tree(Map::new(), "TEST_KEY")
         .expect("Failed to create tree");
 
     // Test operations with different auth key IDs
@@ -74,7 +74,7 @@ fn test_tree_default_authentication() {
 
     // Create a tree - automatically sets default auth key
     let mut tree = db
-        .new_tree(Nested::new(), "DEFAULT_KEY")
+        .new_tree(Map::new(), "DEFAULT_KEY")
         .expect("Failed to create tree");
 
     // Tree should have the provided key as default
@@ -139,7 +139,7 @@ fn test_missing_authentication_key_error() {
     db.add_private_key("TEST_KEY")
         .expect("Failed to add test key");
     let tree = db
-        .new_tree(Nested::new(), "TEST_KEY")
+        .new_tree(Map::new(), "TEST_KEY")
         .expect("Failed to create tree");
 
     // Create an authenticated operation with a non-existent key (this succeeds)
@@ -168,8 +168,8 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     let key2 = db.add_private_key("KEY2").expect("Failed to add key2");
 
     // Create initial tree with KEY1 only
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             "KEY1",
@@ -195,7 +195,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to get settings subtree");
 
     // Add KEY2 to auth settings
-    let mut new_auth_settings = Nested::new();
+    let mut new_auth_settings = Map::new();
     new_auth_settings
         .set_json(
             "KEY1",
@@ -250,8 +250,8 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     let valid_key = db.add_private_key("VALID_KEY").expect("Failed to add key");
 
     // Create tree with valid auth settings
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             "VALID_KEY",
@@ -339,7 +339,7 @@ fn test_validation_pipeline_with_missing_keys() {
     // Add test key and create tree
     db.add_private_key("TEST_KEY")
         .expect("Failed to add test key");
-    let settings = Nested::new();
+    let settings = Map::new();
     let mut tree = db
         .new_tree(settings, "TEST_KEY")
         .expect("Failed to create tree");
@@ -384,8 +384,8 @@ fn test_validation_pipeline_entry_level_validation() {
         .expect("Failed to add key");
 
     // Create auth settings with admin, active and revoked keys
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
 
     auth_settings
         .set_json(

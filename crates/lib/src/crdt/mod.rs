@@ -6,35 +6,34 @@
 //!
 //! # Core Types
 //!
-//! - [`Array`] - An ordered collection with UUID-based element identification
-//! - [`Node`] - A recursive key-value structure supporting nested maps and arrays
-//! - [`Value`] - The value type for nested structures
+//! - [`Map`] - A recursive key-value structure supporting nested maps and lists
+//! - [`map::Array`] - An ordered collection with rational number positioning
+//! - [`map::Value`] - The value type for nested structures
+//! - [`map::array::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # Traits
 //!
 //! - [`Data`] - Marker trait for types that can be stored in Eidetica
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
-// First declare the value module to break circular dependencies
-pub mod value;
-
-// Then other modules that depend on value
-pub mod array;
+// Core modules
 pub mod errors;
-pub mod node;
+pub mod map;
 pub mod traits;
 
-// Re-export core types with new names
-pub use array::Array;
+// Re-export core types
 pub use errors::CRDTError;
-pub use node::{ListPosition, Node, NodeList, NodeValue};
+pub use map::Map;
 pub use traits::{CRDT, Data};
-pub use value::Value;
 
-// Backward compatibility alias
-pub use node::Node as Nested;
+// Backward compatibility aliases - Map is now the main type
+pub use map::Array as NodeList;
+pub use map::Map as Node;
+pub use map::Map as Nested;
+pub use map::Value as NodeValue;
 
 // Legacy aliases for backward compatibility
-pub use array::Array as CrdtArray;
-pub use node::Node as KVNested;
-pub use value::Value as NestedValue;
+pub use map::Array as CrdtArray; // Use Array instead of removed Array
+pub use map::Map as KVNested;
+pub use map::Value as NestedValue;
+pub use map::array::Position as ListPosition; // Backward compatibility for ListPosition

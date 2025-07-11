@@ -1,46 +1,9 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
-use crate::crdt::node::{NodeList, NodeValue};
-use crate::crdt::{CRDT, Node, Value};
+use crate::crdt::map::{Array, Value};
+use crate::crdt::{CRDT, Node};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
-
-// Helper function to convert Value to NodeValue
-fn value_to_node_value(value: &Value) -> NodeValue {
-    match value {
-        Value::String(s) => NodeValue::Text(s.clone()),
-        Value::Map(nested) => NodeValue::Node(nested.clone()),
-        Value::Array(arr) => {
-            // Convert array to a simple list representation
-            let mut list = NodeList::new();
-            for id in arr.ids() {
-                if let Some(val) = arr.get(&id) {
-                    let node_val = value_to_node_value(val);
-                    list.push(node_val);
-                }
-            }
-            NodeValue::List(list)
-        }
-        Value::Deleted => NodeValue::Deleted,
-    }
-}
-
-// Helper function to convert NodeValue to Value
-fn node_value_to_value(node_value: &NodeValue) -> Value {
-    match node_value {
-        NodeValue::Text(s) => Value::String(s.clone()),
-        NodeValue::Node(nested) => Value::Map(nested.clone()),
-        NodeValue::List(_list) => {
-            // For now, convert lists to empty arrays
-            // TODO: Implement proper list-to-array conversion
-            Value::Array(crate::crdt::array::Array::new())
-        }
-        NodeValue::Null => Value::String("null".to_string()),
-        NodeValue::Bool(b) => Value::String(b.to_string()),
-        NodeValue::Int(i) => Value::String(i.to_string()),
-        NodeValue::Deleted => Value::Deleted,
-    }
-}
 
 /// A simple key-value store SubTree
 ///
@@ -77,8 +40,8 @@ impl KVStore {
     /// * `key` - The key to retrieve the value for.
     ///
     /// # Returns
-    /// A `Result` containing the NodeValue if found, or `Error::NotFound`.
-    pub fn get(&self, key: impl AsRef<str>) -> Result<NodeValue> {
+    /// A `Result` containing the MapValue if found, or `Error::NotFound`.
+    pub fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
         let local_data: Result<Node> = self.atomic_op.get_local_data(&self.name);
@@ -117,20 +80,20 @@ impl KVStore {
     pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
         let key_ref = key.as_ref();
         match self.get(key_ref)? {
-            NodeValue::Text(value) => Ok(value),
-            NodeValue::Node(_) => Err(SubtreeError::TypeMismatch {
+            Value::Text(value) => Ok(value),
+            Value::Map(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Node".to_string(),
             }
             .into()),
-            NodeValue::List(_) => Err(SubtreeError::TypeMismatch {
+            Value::Array(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "List".to_string(),
             }
             .into()),
-            NodeValue::Deleted => Err(SubtreeError::KeyNotFound {
+            Value::Deleted => Err(SubtreeError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key_ref.to_string(),
             }
@@ -156,11 +119,11 @@ impl KVStore {
     ///
     /// # Arguments
     /// * `key` - The key to set.
-    /// * `value` - The value to associate with the key (can be &str, String, NodeValue, etc.)
+    /// * `value` - The value to associate with the key (can be &str, String, MapValue, etc.)
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn set(&self, key: impl AsRef<str>, value: impl Into<NodeValue>) -> Result<()> {
+    pub fn set(&self, key: impl AsRef<str>, value: impl Into<Value>) -> Result<()> {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -178,7 +141,7 @@ impl KVStore {
 
     /// Convenience method to set a string value.
     pub fn set_string(&self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        self.set(key, NodeValue::Text(value.as_ref().to_string()))
+        self.set(key, Value::Text(value.as_ref().to_string()))
     }
 
     /// Stages the setting of a nested value within the associated `AtomicOp`.
@@ -192,9 +155,9 @@ impl KVStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     /// Convenience method to get a List value.
-    pub fn get_list(&self, key: impl AsRef<str>) -> Result<NodeList> {
+    pub fn get_list(&self, key: impl AsRef<str>) -> Result<Array> {
         match self.get(key)? {
-            NodeValue::List(list) => Ok(list),
+            Value::Array(list) => Ok(list),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "List".to_string(),
@@ -207,7 +170,7 @@ impl KVStore {
     /// Convenience method to get a Node value.
     pub fn get_node(&self, key: impl AsRef<str>) -> Result<Node> {
         match self.get(key)? {
-            NodeValue::Node(node) => Ok(node),
+            Value::Map(node) => Ok(node),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "Node".to_string(),
@@ -218,25 +181,23 @@ impl KVStore {
     }
 
     /// Convenience method to set a list value.
-    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<NodeList>) -> Result<()> {
-        self.set(key, NodeValue::List(list.into()))
+    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<Array>) -> Result<()> {
+        self.set(key, Value::Array(list.into()))
     }
 
     /// Convenience method to set a node value.
     pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Node>) -> Result<()> {
-        self.set(key, NodeValue::Node(node.into()))
+        self.set(key, Value::Map(node.into()))
     }
 
-    /// Legacy method for backward compatibility - converts Value to NodeValue
+    /// Legacy method for backward compatibility - now just an alias to set
     pub fn set_value(&self, key: impl AsRef<str>, value: Value) -> Result<()> {
-        let node_value = value_to_node_value(&value);
-        self.set(key, node_value)
+        self.set(key, value)
     }
 
-    /// Legacy method for backward compatibility - converts NodeValue to Value
+    /// Legacy method for backward compatibility - now just an alias to get
     pub fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
-        let node_value = self.get(key)?;
-        Ok(node_value_to_value(&node_value))
+        self.get(key)
     }
 
     /// Stages the deletion of a key within the associated `AtomicOp`.
@@ -373,7 +334,7 @@ impl KVStore {
             match current_value_view {
                 Value::Map(map_data) => match map_data.get(key_segment_s.as_ref()) {
                     Some(next_value) => {
-                        current_value_view = node_value_to_value(next_value);
+                        current_value_view = next_value.clone();
                     }
                     None => {
                         return Err(SubtreeError::KeyNotFound {
@@ -479,14 +440,14 @@ impl KVStore {
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.as_ref().to_string();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| NodeValue::Node(Node::default())) {
-                NodeValue::Node(map) => map,
+            current_map_mut = match entry.or_insert_with(|| Value::Map(Node::default())) {
+                Value::Map(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = NodeValue::Node(Node::default());
+                    *non_map_val = Value::Map(Node::default());
                     match non_map_val {
-                        NodeValue::Node(map) => map,
+                        Value::Map(map) => map,
                         _ => unreachable!("Just assigned a map"),
                     }
                 }
@@ -495,7 +456,7 @@ impl KVStore {
 
         // Set the value at the final key in the path.
         if let Some(last_key_s) = path_slice.last() {
-            let node_value = value_to_node_value(&value);
+            let node_value = value;
             current_map_mut
                 .as_hashmap_mut()
                 .insert(last_key_s.as_ref().to_string(), node_value);

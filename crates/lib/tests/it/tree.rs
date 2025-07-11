@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
-use eidetica::crdt::Nested;
+use eidetica::crdt::Map;
 use eidetica::subtree::KVStore;
 
 #[test]
@@ -782,14 +782,14 @@ fn test_new_operation_with_invalid_tree_tips() {
     let db = setup_db_with_keys(&[TEST_KEY1, TEST_KEY2]);
 
     // Create tree1
-    let mut tree1_settings = Nested::new();
+    let mut tree1_settings = Map::new();
     tree1_settings.set_string("name", "tree1");
     let tree1 = db
         .new_tree(tree1_settings, TEST_KEY1)
         .expect("Failed to create tree1");
 
     // Create tree2 with same backend but different root
-    let mut tree2_settings = Nested::new();
+    let mut tree2_settings = Map::new();
     tree2_settings.set_string("name", "tree2");
     let tree2 = db
         .new_tree(tree2_settings, TEST_KEY2)
