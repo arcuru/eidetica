@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
-use crate::crdt::{CRDT, Map};
+use crate::crdt::{CRDT, Node};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// by handling the details of:
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
-/// - Storage within the underlying CRDT (Map)
+/// - Storage within the underlying CRDT (Node)
 pub struct RowStore<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
@@ -74,11 +74,12 @@ where
     pub fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
-        let local_data: Result<Map> = self.atomic_op.get_local_data(&self.name);
+        let local_data: Result<Node> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
-            && let Some(value) = data.get(key)
+            && let Some(node_value) = data.get(key)
+            && let Some(value) = node_value.as_text()
         {
             return serde_json::from_str(value).map_err(|e| {
                 SubtreeError::DeserializationFailed {
@@ -90,10 +91,10 @@ where
         }
 
         // Otherwise, get the full state from the backend
-        let data: Map = self.atomic_op.get_full_state(&self.name)?;
+        let data: Node = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the value
-        match data.get(key) {
+        match data.get(key).and_then(|v| v.as_text()) {
             Some(value) => serde_json::from_str(value).map_err(|e| {
                 SubtreeError::DeserializationFailed {
                     subtree: self.name.clone(),
@@ -131,7 +132,7 @@ where
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Map>(&self.name)
+            .get_local_data::<Node>(&self.name)
             .unwrap_or_default();
 
         // Serialize the row
@@ -176,7 +177,7 @@ where
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Map>(&self.name)
+            .get_local_data::<Node>(&self.name)
             .unwrap_or_default();
 
         // Serialize the row
@@ -213,10 +214,10 @@ where
         let mut result = Vec::new();
 
         // Get data from the atomic op if it exists
-        let local_data = self.atomic_op.get_local_data::<Map>(&self.name);
+        let local_data = self.atomic_op.get_local_data::<Node>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Map>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Node>(&self.name)?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {
@@ -224,19 +225,23 @@ where
         }
 
         // Iterate through all key-value pairs
-        for (key, value) in data.as_hashmap().iter() {
-            // Deserialize the row
-            let row: T =
-                serde_json::from_str(value).map_err(|e| SubtreeError::DeserializationFailed {
-                    subtree: self.name.clone(),
-                    reason: format!(
-                        "Failed to deserialize record for key '{key}' during search: {e}"
-                    ),
+        for (key, node_value) in data.as_hashmap().iter() {
+            // Skip non-text values
+            if let Some(value) = node_value.as_text() {
+                // Deserialize the row
+                let row: T = serde_json::from_str(value).map_err(|e| {
+                    SubtreeError::DeserializationFailed {
+                        subtree: self.name.clone(),
+                        reason: format!(
+                            "Failed to deserialize record for key '{key}' during search: {e}"
+                        ),
+                    }
                 })?;
 
-            // Check if the row matches the query
-            if query(&row) {
-                result.push((key.clone(), row));
+                // Check if the row matches the query
+                if query(&row) {
+                    result.push((key.clone(), row));
+                }
             }
         }
 

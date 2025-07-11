@@ -132,17 +132,6 @@ pub fn assert_key_not_found(result: Result<NodeValue, eidetica::Error>) {
     }
 }
 
-/// Helper to create a KVOverWrite with initial data
-pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::crdt::Map {
-    let mut kv = eidetica::crdt::Map::new();
-
-    for (key, value) in values {
-        kv.set(*key, *value);
-    }
-
-    kv
-}
-
 /// Helper to check deep nested values inside a Node structure
 pub fn assert_nested_value(kv: &Node, path: &[&str], expected: &str) {
     let mut current = kv;
