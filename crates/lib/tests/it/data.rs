@@ -1034,7 +1034,7 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
 
     // Get the whole user object
     let user_data = store.get("user")?;
-    if let Value::Map(user_map) = user_data {
+    if let NodeValue::Node(user_map) = user_data {
         if let Some(NodeValue::Node(profile_map)) = user_map.get("profile") {
             assert_eq!(
                 profile_map.get("name"),
@@ -1085,8 +1085,8 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
 
     // Verify that 'user' is now a map
     let user_data = store.get("user")?;
-    assert!(matches!(user_data, Value::Map(_)));
-    if let Value::Map(user_map) = user_data {
+    assert!(matches!(user_data, NodeValue::Node(_)));
+    if let NodeValue::Node(user_map) = user_data {
         if let Some(NodeValue::Node(profile_map)) = user_map.get("profile") {
             assert_eq!(
                 profile_map.get("name"),
@@ -1143,7 +1143,7 @@ fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
     assert_eq!(retrieved_value, Value::String("deep_value".to_string()));
 
     let a_val = store.get("a")?;
-    if let Value::Map(a_map) = a_val {
+    if let NodeValue::Node(a_map) = a_val {
         if let Some(NodeValue::Node(b_map)) = a_map.get("b") {
             if let Some(NodeValue::Text(c_val)) = b_map.get("c") {
                 assert_eq!(c_val, "deep_value");
@@ -1174,7 +1174,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     name_within_user_editor.set(Value::String("dave".to_string()))?;
 
     let user_data = store.get("user")?;
-    if let Value::Map(user_map) = user_data {
+    if let NodeValue::Node(user_map) = user_data {
         assert_eq!(
             user_map.get("name"),
             Some(&NodeValue::Text("dave".to_string()))
@@ -1191,7 +1191,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     email_within_profile_editor.set(Value::String("dave@example.com".to_string()))?;
 
     let user_data_updated = store.get("user")?;
-    if let Value::Map(user_map_updated) = user_data_updated {
+    if let NodeValue::Node(user_map_updated) = user_data_updated {
         if let Some(NodeValue::Node(profile_map_updated)) = user_map_updated.get("profile") {
             assert_eq!(
                 profile_map_updated.get("email"),
@@ -1234,7 +1234,10 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
     assert_eq!(retrieved, value);
 
     // Verify with regular get as well
-    assert_eq!(store.get("simple_key")?, value);
+    assert_eq!(
+        store.get("simple_key")?,
+        NodeValue::Text("simple_value".to_string())
+    );
 
     op.commit()?;
 
@@ -1242,7 +1245,10 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
     let viewer_op = tree.new_operation()?;
     let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
     assert_eq!(viewer_store.get_at_path(path)?, value);
-    assert_eq!(viewer_store.get("simple_key")?, value);
+    assert_eq!(
+        viewer_store.get("simple_key")?,
+        NodeValue::Text("simple_value".to_string())
+    );
 
     Ok(())
 }
@@ -1576,7 +1582,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // But the parent object (user) should still exist
     match store.get("user")? {
-        Value::Map(_) => (),
+        NodeValue::Node(_) => (),
         _ => panic!("Expected user map to still exist"),
     }
 
@@ -1588,7 +1594,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // User exists but has no role or profile
     match viewer_store.get("user")? {
-        Value::Map(map) => {
+        NodeValue::Node(map) => {
             let entries = map.as_hashmap();
 
             // Check that the entries are properly marked as deleted (tombstones)

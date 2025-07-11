@@ -882,8 +882,16 @@ impl NodeList {
         }
     }
 
-    /// Returns the number of items in the list
+    /// Returns the number of items in the list (excluding tombstones)
     pub fn len(&self) -> usize {
+        self.items
+            .values()
+            .filter(|v| !matches!(v, NodeValue::Deleted))
+            .count()
+    }
+
+    /// Returns the total number of items including tombstones
+    pub fn total_len(&self) -> usize {
         self.items.len()
     }
 
@@ -893,6 +901,7 @@ impl NodeList {
     }
 
     /// Pushes a value to the end of the list
+    /// Returns the index of the newly added element
     pub fn push(&mut self, value: impl Into<NodeValue>) -> usize {
         let value = value.into();
         let position = if let Some((last_pos, _)) = self.items.last_key_value() {
@@ -904,7 +913,8 @@ impl NodeList {
         };
 
         self.items.insert(position, value);
-        self.len() - 1 // Return the index of the newly inserted item
+        // Return the index (count of non-tombstone elements - 1)
+        self.len() - 1
     }
 
     /// Inserts a value at a specific index
@@ -940,16 +950,35 @@ impl NodeList {
         Ok(())
     }
 
-    /// Gets a value by index (0-based)
+    /// Gets a value by index (0-based), filtering out tombstones
     pub fn get(&self, index: usize) -> Option<&NodeValue> {
-        self.items.values().nth(index)
+        self.items
+            .values()
+            .filter(|v| !matches!(v, NodeValue::Deleted))
+            .nth(index)
     }
 
-    /// Gets a mutable reference to a value by index (0-based)
+    /// Gets a mutable reference to a value by index (0-based), filtering out tombstones
     pub fn get_mut(&mut self, index: usize) -> Option<&mut NodeValue> {
-        // This is inefficient but necessary for mutable access by index
-        let position = self.items.keys().nth(index).cloned()?;
-        self.items.get_mut(&position)
+        // Find the position of the nth non-tombstone element
+        let mut current_index = 0;
+        let mut target_position = None;
+
+        for (pos, value) in &self.items {
+            if !matches!(value, NodeValue::Deleted) {
+                if current_index == index {
+                    target_position = Some(pos.clone());
+                    break;
+                }
+                current_index += 1;
+            }
+        }
+
+        if let Some(pos) = target_position {
+            self.items.get_mut(&pos)
+        } else {
+            None
+        }
     }
 
     /// Inserts a value at a specific position (advanced API)
@@ -968,15 +997,54 @@ impl NodeList {
     }
 
     /// Sets a value at a specific index, returns the old value if present
+    /// Only considers non-tombstone elements for indexing
     pub fn set(&mut self, index: usize, value: impl Into<NodeValue>) -> Option<NodeValue> {
-        let position = self.items.keys().nth(index).cloned()?;
-        self.items.insert(position, value.into())
+        let value = value.into();
+        // Find the position of the nth non-tombstone element
+        let mut current_index = 0;
+        let mut target_position = None;
+
+        for (pos, val) in &self.items {
+            if !matches!(val, NodeValue::Deleted) {
+                if current_index == index {
+                    target_position = Some(pos.clone());
+                    break;
+                }
+                current_index += 1;
+            }
+        }
+
+        if let Some(pos) = target_position {
+            self.items.insert(pos, value)
+        } else {
+            None
+        }
     }
 
-    /// Removes a value by index
+    /// Removes a value by index (tombstones it for CRDT semantics)
+    /// Only considers non-tombstone elements for indexing
     pub fn remove(&mut self, index: usize) -> Option<NodeValue> {
-        let position = self.items.keys().nth(index).cloned()?;
-        self.items.remove(&position)
+        // Find the position of the nth non-tombstone element
+        let mut current_index = 0;
+        let mut target_position = None;
+
+        for (pos, val) in &self.items {
+            if !matches!(val, NodeValue::Deleted) {
+                if current_index == index {
+                    target_position = Some(pos.clone());
+                    break;
+                }
+                current_index += 1;
+            }
+        }
+
+        if let Some(pos) = target_position {
+            let old_value = self.items.get(&pos).cloned();
+            self.items.insert(pos, NodeValue::Deleted);
+            old_value
+        } else {
+            None
+        }
     }
 
     /// Removes a value by position
@@ -984,8 +1052,15 @@ impl NodeList {
         self.items.remove(position)
     }
 
-    /// Returns an iterator over the values in order
+    /// Returns an iterator over the values in order (excluding tombstones)
     pub fn iter(&self) -> impl Iterator<Item = &NodeValue> {
+        self.items
+            .values()
+            .filter(|v| !matches!(v, NodeValue::Deleted))
+    }
+
+    /// Returns an iterator over all values including tombstones
+    pub fn iter_all(&self) -> impl Iterator<Item = &NodeValue> {
         self.items.values()
     }
 
@@ -1670,7 +1745,7 @@ impl Node {
             Some(NodeValue::List(list)) => {
                 let index = list.push(node_value);
                 // Return a string representation of the index for compatibility
-                Ok(format!("index:{index}"))
+                Ok(index.to_string())
             }
             Some(_) => Err(CRDTError::TypeMismatch {
                 expected: "List for adding elements".to_string(),
@@ -1681,7 +1756,7 @@ impl Node {
                 let mut list = NodeList::new();
                 let index = list.push(node_value);
                 self.set(key_str, NodeValue::List(list));
-                Ok(format!("index:{index}"))
+                Ok(index.to_string())
             }
         }
     }
