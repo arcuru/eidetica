@@ -4,7 +4,7 @@ use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::CRDT;
 use eidetica::crdt::Map;
-use eidetica::crdt::{Nested, Value};
+use eidetica::crdt::{Nested, NodeValue, Value};
 use eidetica::entry::Entry;
 use eidetica::subtree::KVStore;
 use std::collections::HashMap;
@@ -394,12 +394,12 @@ fn test_kvnested_basic() {
 
     // Test get values
     match kv.get("key1") {
-        Some(Value::String(s)) => assert_eq!(s, "value1"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "value1"),
         _ => panic!("Expected string value for key1"),
     }
 
     match kv.get("key2") {
-        Some(Value::String(s)) => assert_eq!(s, "value2"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "value2"),
         _ => panic!("Expected string value for key2"),
     }
 
@@ -422,17 +422,17 @@ fn test_kvnested_basic() {
     let merged = kv1.merge(&kv2).expect("Merge failed");
 
     match merged.get("a") {
-        Some(Value::String(s)) => assert_eq!(s, "value_a"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "value_a"),
         _ => panic!("Expected string value for merged key a"),
     }
 
     match merged.get("b") {
-        Some(Value::String(s)) => assert_eq!(s, "updated_b"), // Should be updated
+        Some(NodeValue::Text(s)) => assert_eq!(s, "updated_b"), // Should be updated
         _ => panic!("Expected string value for merged key b"),
     }
 
     match merged.get("c") {
-        Some(Value::String(s)) => assert_eq!(s, "value_c"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "value_c"),
         _ => panic!("Expected string value for merged key c"),
     }
 }
@@ -450,7 +450,7 @@ fn test_kvnested_tombstones() {
     // Remove a string value
     let removed = kv.remove("str_key");
     match removed {
-        Some(Value::String(s)) => assert_eq!(s, "str_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "str_value"),
         _ => panic!("Expected to remove a string value"),
     }
 
@@ -467,7 +467,7 @@ fn test_kvnested_tombstones() {
 
     // The string should be revived
     match merged.get("str_key") {
-        Some(Value::String(s)) => assert_eq!(s, "revived_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "revived_value"),
         _ => panic!("Expected revived string value"),
     }
 
@@ -482,7 +482,7 @@ fn test_kvnested_tombstones() {
 
     // But the revived string should remain
     match final_merged.get("str_key") {
-        Some(Value::String(s)) => assert_eq!(s, "revived_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "revived_value"),
         _ => panic!("Expected string value to remain"),
     }
 }
@@ -532,40 +532,40 @@ fn test_kvnested_recursive_merge() {
 
     // Check merged result - top level
     match merged.get("key1") {
-        Some(Value::String(s)) => assert_eq!(s, "value1_updated"), // kv2 overwrites
+        Some(NodeValue::Text(s)) => assert_eq!(s, "value1_updated"), // kv2 overwrites
         _ => panic!("Expected updated string at top level"),
     }
 
     // Level 2 - should contain keys from both sources
     match merged.get("level2") {
-        Some(Value::Map(level2_merged)) => {
+        Some(NodeValue::Node(level2_merged)) => {
             // Both unique keys should be present
             match level2_merged.get("level2_key1") {
-                Some(Value::String(s)) => assert_eq!(s, "level2_value1"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "level2_value1"),
                 _ => panic!("Expected level2_key1 preserved"),
             }
 
             match level2_merged.get("level2_key2") {
-                Some(Value::String(s)) => assert_eq!(s, "level2_value2"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "level2_value2"),
                 _ => panic!("Expected level2_key2 added"),
             }
 
             // Shared key should have kv2's value (last write wins)
             match level2_merged.get("shared_key") {
-                Some(Value::String(s)) => assert_eq!(s, "kv2_value"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "kv2_value"),
                 _ => panic!("Expected shared_key with kv2's value"),
             }
 
             // Level 3 - should contain keys from both sources
             match level2_merged.get("level3") {
-                Some(Value::Map(level3_merged)) => {
+                Some(NodeValue::Node(level3_merged)) => {
                     match level3_merged.get("level3_key1") {
-                        Some(Value::String(s)) => assert_eq!(s, "level3_value1"),
+                        Some(NodeValue::Text(s)) => assert_eq!(s, "level3_value1"),
                         _ => panic!("Expected level3_key1 preserved"),
                     }
 
                     match level3_merged.get("level3_key2") {
-                        Some(Value::String(s)) => assert_eq!(s, "level3_value2"),
+                        Some(NodeValue::Text(s)) => assert_eq!(s, "level3_value2"),
                         _ => panic!("Expected level3_key2 added"),
                     }
                 }
@@ -599,14 +599,14 @@ fn test_kvnested_serialization() {
 
     // Verify string survived
     match deserialized.get("string_key") {
-        Some(Value::String(s)) => assert_eq!(s, "string_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "string_value"),
         _ => panic!("Expected string value"),
     }
 
     // Verify nested map survived
     match deserialized.get("map_key") {
-        Some(Value::Map(m)) => match m.get("inner") {
-            Some(Value::String(s)) => assert_eq!(s, "inner_value"),
+        Some(NodeValue::Node(m)) => match m.get("inner") {
+            Some(NodeValue::Text(s)) => assert_eq!(s, "inner_value"),
             _ => panic!("Expected inner string value"),
         },
         _ => panic!("Expected map value"),
@@ -615,7 +615,7 @@ fn test_kvnested_serialization() {
     // Verify tombstone survived
     assert!(deserialized.as_hashmap().contains_key("deleted_key"));
     match deserialized.as_hashmap().get("deleted_key") {
-        Some(Value::Deleted) => (),
+        Some(NodeValue::Deleted) => (),
         _ => panic!("Expected tombstone"),
     }
 }
@@ -643,7 +643,7 @@ fn test_kvnested_cascading_delete() {
 
     // Verify tombstone exists
     match kv.as_hashmap().get("level1") {
-        Some(Value::Deleted) => (),
+        Some(NodeValue::Deleted) => (),
         _ => panic!("Expected tombstone for level1"),
     }
 
@@ -654,8 +654,8 @@ fn test_kvnested_cascading_delete() {
 
     // Verify level1 is accessible again
     match kv.get("level1") {
-        Some(Value::Map(m)) => match m.get("new_value") {
-            Some(Value::String(s)) => assert_eq!(s, "resurrected"),
+        Some(NodeValue::Node(m)) => match m.get("new_value") {
+            Some(NodeValue::Text(s)) => assert_eq!(s, "resurrected"),
             _ => panic!("Expected string in new level1"),
         },
         _ => panic!("Expected map for level1"),
@@ -681,8 +681,8 @@ fn test_kvnested_type_conflicts() {
     // Direction 1: kv1 -> kv2 (map should win)
     let merged1 = kv1.merge(&kv2).expect("Merge 1 failed");
     match merged1.get("conflict_key") {
-        Some(Value::Map(m)) => match m.get("inner") {
-            Some(Value::String(s)) => assert_eq!(s, "inner_value"),
+        Some(NodeValue::Node(m)) => match m.get("inner") {
+            Some(NodeValue::Text(s)) => assert_eq!(s, "inner_value"),
             _ => panic!("Expected inner string in map"),
         },
         _ => panic!("Expected map to win in merge 1"),
@@ -691,7 +691,7 @@ fn test_kvnested_type_conflicts() {
     // Direction 2: kv2 -> kv1 (map should win)
     let merged2 = kv2.merge(&kv1).expect("Merge 2 failed");
     match merged2.get("conflict_key") {
-        Some(Value::String(s)) => assert_eq!(s, "string_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "string_value"),
         _ => panic!("Expected string to win in merge 2"),
     }
 }
@@ -729,22 +729,22 @@ fn test_kvnested_complex_merge_with_tombstones() {
     // Verify top level
     assert_eq!(merged.get("top_level_key"), None); // Should be tombstone
     match merged.get("new_top_key") {
-        Some(Value::String(s)) => assert_eq!(s, "new_top_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "new_top_value"),
         _ => panic!("Expected new_top_key"),
     }
 
     // Verify level1
     match merged.get("level1") {
-        Some(Value::Map(level1_merged)) => {
+        Some(NodeValue::Node(level1_merged)) => {
             // Verify level1.key1 (only in kv1, should be preserved)
             match level1_merged.get("key1") {
-                Some(Value::String(s)) => assert_eq!(s, "value1"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "value1"),
                 _ => panic!("Expected level1.key1 preserved"),
             }
 
             // Verify level1.key2 (only in kv2, should be added)
             match level1_merged.get("key2") {
-                Some(Value::String(s)) => assert_eq!(s, "value2"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "value2"),
                 _ => panic!("Expected level1.key2 added"),
             }
 
@@ -752,13 +752,13 @@ fn test_kvnested_complex_merge_with_tombstones() {
             assert_eq!(level1_merged.get("to_delete"), None);
             // Verify it's a tombstone
             match level1_merged.as_hashmap().get("to_delete") {
-                Some(Value::Deleted) => (),
+                Some(NodeValue::Deleted) => (),
                 _ => panic!("Expected tombstone for level1.to_delete"),
             }
 
             // Verify level1.to_update (updated in kv2, should have new value)
             match level1_merged.get("to_update") {
-                Some(Value::String(s)) => assert_eq!(s, "updated_value"),
+                Some(NodeValue::Text(s)) => assert_eq!(s, "updated_value"),
                 _ => panic!("Expected level1.to_update updated"),
             }
         }
@@ -781,7 +781,7 @@ fn test_kvnested_multi_generation_updates() {
 
     // Verify gen1
     match gen1.get("key") {
-        Some(Value::String(s)) => assert_eq!(s, "branch1_value"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "branch1_value"),
         _ => panic!("Expected branch1 value in gen1"),
     }
 
@@ -793,7 +793,7 @@ fn test_kvnested_multi_generation_updates() {
     // Verify gen2
     assert_eq!(gen2.get("key"), None);
     match gen2.as_hashmap().get("key") {
-        Some(Value::Deleted) => (),
+        Some(NodeValue::Deleted) => (),
         _ => panic!("Expected tombstone in gen2"),
     }
 
@@ -804,7 +804,7 @@ fn test_kvnested_multi_generation_updates() {
 
     // Verify gen3
     match gen3.get("key") {
-        Some(Value::String(s)) => assert_eq!(s, "resurrected"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "resurrected"),
         _ => panic!("Expected resurrected value in gen3"),
     }
 
@@ -817,8 +817,8 @@ fn test_kvnested_multi_generation_updates() {
 
     // Verify gen4
     match gen4.get("key") {
-        Some(Value::Map(m)) => match m.get("inner") {
-            Some(Value::String(s)) => assert_eq!(s, "inner_value"),
+        Some(NodeValue::Node(m)) => match m.get("inner") {
+            Some(NodeValue::Text(s)) => assert_eq!(s, "inner_value"),
             _ => panic!("Expected inner string in gen4"),
         },
         _ => panic!("Expected map in gen4"),
@@ -836,13 +836,19 @@ fn test_kvnested_set_deleted_and_get() {
     assert_eq!(kv.get("deleted_key"), None);
 
     // as_hashmap() should show the tombstone
-    assert_eq!(kv.as_hashmap().get("deleted_key"), Some(&Value::Deleted));
+    assert_eq!(
+        kv.as_hashmap().get("deleted_key"),
+        Some(&NodeValue::Deleted)
+    );
 
     // Set another key with a value, then set to Deleted
     kv.set_string("another_key", "value");
     kv.set("another_key", Value::Deleted);
     assert_eq!(kv.get("another_key"), None);
-    assert_eq!(kv.as_hashmap().get("another_key"), Some(&Value::Deleted));
+    assert_eq!(
+        kv.as_hashmap().get("another_key"),
+        Some(&NodeValue::Deleted)
+    );
 }
 
 #[test]
@@ -862,7 +868,7 @@ fn test_kvnested_remove_non_existent() {
     // as_hashmap() should show a tombstone was created
     assert_eq!(
         kv.as_hashmap().get("non_existent_key"),
-        Some(&Value::Deleted)
+        Some(&NodeValue::Deleted)
     );
 }
 
@@ -878,7 +884,7 @@ fn test_kvnested_remove_existing_tombstone() {
     assert_eq!(kv.get("key_to_tombstone"), None);
     assert_eq!(
         kv.as_hashmap().get("key_to_tombstone"),
-        Some(&Value::Deleted)
+        Some(&NodeValue::Deleted)
     );
 
     // Try to remove the key again (which is now a tombstone)
@@ -896,7 +902,7 @@ fn test_kvnested_remove_existing_tombstone() {
     // as_hashmap() should still show the tombstone
     assert_eq!(
         kv.as_hashmap().get("key_to_tombstone"),
-        Some(&Value::Deleted)
+        Some(&NodeValue::Deleted)
     );
 
     // Directly set a tombstone and then remove it
@@ -906,7 +912,7 @@ fn test_kvnested_remove_existing_tombstone() {
     assert_eq!(kv.get("direct_tombstone"), None);
     assert_eq!(
         kv.as_hashmap().get("direct_tombstone"),
-        Some(&Value::Deleted)
+        Some(&NodeValue::Deleted)
     );
 }
 
@@ -931,15 +937,24 @@ fn test_kvnested_merge_dual_tombstones() {
 
     // Check key1_kv1 (only in kv1, tombstoned)
     assert_eq!(merged.get("key1_kv1"), None);
-    assert_eq!(merged.as_hashmap().get("key1_kv1"), Some(&Value::Deleted));
+    assert_eq!(
+        merged.as_hashmap().get("key1_kv1"),
+        Some(&NodeValue::Deleted)
+    );
 
     // Check key2_kv2 (only in kv2, tombstoned)
     assert_eq!(merged.get("key2_kv2"), None);
-    assert_eq!(merged.as_hashmap().get("key2_kv2"), Some(&Value::Deleted));
+    assert_eq!(
+        merged.as_hashmap().get("key2_kv2"),
+        Some(&NodeValue::Deleted)
+    );
 
     // Check common_key (tombstoned in both, kv2's tombstone should prevail, resulting in a tombstone)
     assert_eq!(merged.get("common_key"), None);
-    assert_eq!(merged.as_hashmap().get("common_key"), Some(&Value::Deleted));
+    assert_eq!(
+        merged.as_hashmap().get("common_key"),
+        Some(&NodeValue::Deleted)
+    );
 
     // What if one has a value and the other a tombstone (kv2's tombstone wins)
     let mut kv3 = Nested::new();
@@ -952,13 +967,13 @@ fn test_kvnested_merge_dual_tombstones() {
     assert_eq!(merged2.get("val_then_tomb"), None);
     assert_eq!(
         merged2.as_hashmap().get("val_then_tomb"),
-        Some(&Value::Deleted)
+        Some(&NodeValue::Deleted)
     );
 
     // What if one has a tombstone and the other a value (kv4's value wins)
     let merged3 = kv4.merge(&kv3).expect("Merge tomb then val failed");
     match merged3.get("val_then_tomb") {
-        Some(Value::String(s)) => assert_eq!(s, "i_existed"),
+        Some(NodeValue::Text(s)) => assert_eq!(s, "i_existed"),
         _ => panic!("Expected value to overwrite tombstone"),
     }
 }
@@ -1011,7 +1026,7 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
     if let Value::Map(profile_map) = profile_map_value {
         assert_eq!(
             profile_map.get("name"),
-            Some(&Value::String("bob".to_string()))
+            Some(&NodeValue::Text("bob".to_string()))
         );
     } else {
         panic!("Expected user.profile to be a map");
@@ -1020,10 +1035,10 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
     // Get the whole user object
     let user_data = store.get("user")?;
     if let Value::Map(user_map) = user_data {
-        if let Some(Value::Map(profile_map)) = user_map.get("profile") {
+        if let Some(NodeValue::Node(profile_map)) = user_map.get("profile") {
             assert_eq!(
                 profile_map.get("name"),
-                Some(&Value::String("bob".to_string()))
+                Some(&NodeValue::Text("bob".to_string()))
             );
         } else {
             panic!("Expected user.profile (nested) to be a map");
@@ -1059,7 +1074,7 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
     if let Value::Map(profile_map_direct) = profile_value_after_set {
         assert_eq!(
             profile_map_direct.get("name"),
-            Some(&Value::String("charlie".to_string()))
+            Some(&NodeValue::Text("charlie".to_string()))
         );
     } else {
         panic!("Expected profile_editor.get() to be a map");
@@ -1072,10 +1087,10 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
     let user_data = store.get("user")?;
     assert!(matches!(user_data, Value::Map(_)));
     if let Value::Map(user_map) = user_data {
-        if let Some(Value::Map(profile_map)) = user_map.get("profile") {
+        if let Some(NodeValue::Node(profile_map)) = user_map.get("profile") {
             assert_eq!(
                 profile_map.get("name"),
-                Some(&Value::String("charlie".to_string()))
+                Some(&NodeValue::Text("charlie".to_string()))
             );
         } else {
             panic!("Expected user.profile to be a map after overwrite");
@@ -1129,8 +1144,8 @@ fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
 
     let a_val = store.get("a")?;
     if let Value::Map(a_map) = a_val {
-        if let Some(Value::Map(b_map)) = a_map.get("b") {
-            if let Some(Value::String(c_val)) = b_map.get("c") {
+        if let Some(NodeValue::Node(b_map)) = a_map.get("b") {
+            if let Some(NodeValue::Text(c_val)) = b_map.get("c") {
                 assert_eq!(c_val, "deep_value");
             } else {
                 panic!("Expected a.b.c to be a string");
@@ -1162,7 +1177,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     if let Value::Map(user_map) = user_data {
         assert_eq!(
             user_map.get("name"),
-            Some(&Value::String("dave".to_string()))
+            Some(&NodeValue::Text("dave".to_string()))
         );
     } else {
         panic!("Expected user to be a map with name field");
@@ -1177,10 +1192,10 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
 
     let user_data_updated = store.get("user")?;
     if let Value::Map(user_map_updated) = user_data_updated {
-        if let Some(Value::Map(profile_map_updated)) = user_map_updated.get("profile") {
+        if let Some(NodeValue::Node(profile_map_updated)) = user_map_updated.get("profile") {
             assert_eq!(
                 profile_map_updated.get("email"),
-                Some(&Value::String("dave@example.com".to_string()))
+                Some(&NodeValue::Text("dave@example.com".to_string()))
             );
         } else {
             panic!("Expected user.profile to be a map with email field");
@@ -1188,7 +1203,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
         // Check that "user.name" is still there
         assert_eq!(
             user_map_updated.get("name"),
-            Some(&Value::String("dave".to_string()))
+            Some(&NodeValue::Text("dave".to_string()))
         );
     } else {
         panic!("Expected user to be a map after profile update");
@@ -1251,7 +1266,10 @@ fn test_kvstore_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
     let profile_path = ["user", "profile"];
     match store.get_at_path(profile_path)? {
         Value::Map(profile_map) => {
-            assert_eq!(profile_map.get("email"), Some(&value));
+            assert_eq!(
+                profile_map.get("email"),
+                Some(&NodeValue::Text("test@example.com".to_string()))
+            );
         }
         _ => panic!("Expected user.profile to be a map"),
     }
@@ -1314,7 +1332,10 @@ fn test_kvstore_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
     // Verify that 'user.profile' is now a map
     match store.get_at_path(["user", "profile"])? {
         Value::Map(profile_map) => {
-            assert_eq!(profile_map.get("name"), Some(&new_value));
+            assert_eq!(
+                profile_map.get("name"),
+                Some(&NodeValue::Text("charlie".to_string()))
+            );
         }
         _ => panic!("Expected user.profile to be a map after overwrite"),
     }
@@ -1572,13 +1593,13 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
             // Check that the entries are properly marked as deleted (tombstones)
             match entries.get("role") {
-                Some(Value::Deleted) => (),
+                Some(NodeValue::Deleted) => (),
                 Some(other) => panic!("Expected role to be deleted, got {other:?}"),
                 None => panic!("Expected role key with tombstone to exist"),
             }
 
             match entries.get("profile") {
-                Some(Value::Deleted) => (),
+                Some(NodeValue::Deleted) => (),
                 Some(other) => panic!("Expected profile to be deleted, got {other:?}"),
                 None => panic!("Expected profile key with tombstone to exist"),
             }

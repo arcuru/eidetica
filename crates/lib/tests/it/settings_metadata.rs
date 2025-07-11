@@ -1,6 +1,6 @@
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::{Nested, Value};
+use eidetica::crdt::{Nested, NodeValue};
 
 #[test]
 fn test_settings_tips_in_metadata() {
@@ -120,11 +120,11 @@ fn test_entry_get_settings_from_subtree() {
 
     // Verify the settings contain what we expect
     match parsed_settings.get("name").unwrap() {
-        Value::String(s) => assert_eq!(s, "test_tree"),
+        NodeValue::Text(s) => assert_eq!(s, "test_tree"),
         _ => panic!("Expected string value for name"),
     }
     match parsed_settings.get("version").unwrap() {
-        Value::String(s) => assert_eq!(s, "1.0"),
+        NodeValue::Text(s) => assert_eq!(s, "1.0"),
         _ => panic!("Expected string value for version"),
     }
 
@@ -132,7 +132,7 @@ fn test_entry_get_settings_from_subtree() {
     let op = tree.new_operation().unwrap();
     let op_settings = op.get_settings().unwrap();
     match op_settings.get("name").unwrap() {
-        Value::String(s) => assert_eq!(s, "test_tree"),
+        NodeValue::Text(s) => assert_eq!(s, "test_tree"),
         _ => panic!("Expected string value for name"),
     }
 }

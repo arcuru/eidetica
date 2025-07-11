@@ -1,5 +1,5 @@
 use eidetica::backend::database::InMemory;
-use eidetica::crdt::{Nested, Value};
+use eidetica::crdt::{Nested, NodeValue, Value};
 use eidetica::subtree::KVStore;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
@@ -151,7 +151,7 @@ pub fn assert_nested_value(kv: &Nested, path: &[&str], expected: &str) {
     // Navigate through the nested maps
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(Value::Map(map)) => current = map,
+            Some(NodeValue::Node(map)) => current = map,
             Some(other) => panic!("Expected map at path element '{key}', got {other:?}"),
             None => panic!("Path element '{key}' not found in nested structure"),
         }
@@ -160,7 +160,7 @@ pub fn assert_nested_value(kv: &Nested, path: &[&str], expected: &str) {
     // Check final value
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(Value::String(value)) => assert_eq!(value, expected),
+        Some(NodeValue::Text(value)) => assert_eq!(value, expected),
         Some(other) => panic!("Expected string at path end '{final_key}', got {other:?}"),
         None => panic!("Final path element '{final_key}' not found in nested structure"),
     }
@@ -178,8 +178,8 @@ pub fn assert_path_deleted(kv: &Nested, path: &[&str]) {
     // If early path doesn't exist, that's fine - the path is deleted
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(Value::Map(map)) => current = map,
-            Some(Value::Deleted) => return, // Found tombstone
+            Some(NodeValue::Node(map)) => current = map,
+            Some(NodeValue::Deleted) => return, // Found tombstone
             Some(other) => panic!("Unexpected value at path element '{key}', got {other:?}"),
             None => return, // Path doesn't exist, which is valid for a deleted path
         }
@@ -188,8 +188,8 @@ pub fn assert_path_deleted(kv: &Nested, path: &[&str]) {
     // Check final key
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(Value::Deleted) => (), // Tombstone, as expected
-        None => (),                 // Key doesn't exist, which is valid
+        Some(NodeValue::Deleted) => (), // Tombstone, as expected
+        None => (),                     // Key doesn't exist, which is valid
         Some(other) => panic!("Expected tombstone at path end '{final_key}', got {other:?}"),
     }
 }
