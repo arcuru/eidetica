@@ -7,7 +7,7 @@
 use crate::Result;
 use crate::auth::crypto::{format_public_key, generate_keypair};
 use crate::backend::Database;
-use crate::crdt::Node;
+use crate::crdt::Map;
 use crate::entry::ID;
 use crate::tree::Tree;
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -47,7 +47,7 @@ impl BaseDB {
     /// Create a new tree in the database.
     ///
     /// A `Tree` represents a collection of related entries, analogous to a table.
-    /// It is initialized with settings defined by a `Node` CRDT.
+    /// It is initialized with settings defined by a `Map` CRDT.
     /// All trees must now be created with authentication.
     ///
     /// # Arguments
@@ -56,7 +56,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: Node, signing_key_id: impl AsRef<str>) -> Result<Tree> {
+    pub fn new_tree(&self, settings: Map, signing_key_id: impl AsRef<str>) -> Result<Tree> {
         Tree::new(settings, Arc::clone(&self.backend), signing_key_id)
     }
 
@@ -69,7 +69,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
     pub fn new_tree_default(&self, signing_key_id: impl AsRef<str>) -> Result<Tree> {
-        let mut settings = Node::new();
+        let mut settings = Map::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
         // This prevents content-addressable collision when creating multiple trees
