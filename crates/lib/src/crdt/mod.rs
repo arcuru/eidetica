@@ -23,7 +23,6 @@ pub mod value;
 pub mod array;
 pub mod errors;
 pub mod map;
-pub mod nested;
 pub mod node;
 pub mod traits;
 
@@ -31,13 +30,15 @@ pub mod traits;
 pub use array::Array;
 pub use errors::CRDTError;
 pub use map::Map;
-pub use nested::Nested;
 pub use node::{ListPosition, Node, NodeList, NodeValue};
 pub use traits::{CRDT, Data};
 pub use value::Value;
 
+// Use Node as the new Nested implementation
+pub use node::Node as Nested;
+
 // Legacy aliases for backward compatibility
 pub use array::Array as CrdtArray;
 pub use map::Map as KVOverWrite;
-pub use nested::Nested as KVNested;
+pub use node::Node as KVNested; // Point to Node instead of old Nested
 pub use value::Value as NestedValue;

@@ -12,7 +12,7 @@ use eidetica::auth::types::{
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::{Nested, Value};
+use eidetica::crdt::Nested;
 use eidetica::entry::ID;
 
 /// Test delegation resolution with missing backend
@@ -124,9 +124,9 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
 
     // Add corrupted delegation (invalid tips)
     let mut corrupted_delegate = Nested::new();
-    corrupted_delegate.set("permission-bounds", Value::String("invalid".to_string()));
-    corrupted_delegate.set("tree", Value::String("not_a_tree_ref".to_string()));
-    auth.set("corrupted_delegate", Value::Map(corrupted_delegate));
+    corrupted_delegate.set("permission-bounds", "invalid");
+    corrupted_delegate.set("tree", "not_a_tree_ref");
+    auth.set("corrupted_delegate", corrupted_delegate);
 
     let mut settings = Nested::new();
     settings.set_map("auth", auth);

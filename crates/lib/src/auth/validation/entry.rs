@@ -7,7 +7,7 @@ use crate::Result;
 use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
 use crate::backend::Database;
-use crate::crdt::{Nested, Value};
+use crate::crdt::{Nested, NodeValue};
 use crate::entry::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl AuthValidator {
 
         // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
         match settings_state.get("auth") {
-            Some(Value::Map(auth_map)) => {
+            Some(NodeValue::Node(auth_map)) => {
                 // If 'auth' section exists and is a map, check if it's empty
                 if auth_map.as_hashmap().is_empty() {
                     return Ok(true);

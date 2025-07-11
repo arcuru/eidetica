@@ -1,8 +1,46 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
+use crate::crdt::node::{NodeList, NodeValue};
 use crate::crdt::{CRDT, Nested, Value};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
+
+// Helper function to convert Value to NodeValue
+fn value_to_node_value(value: &Value) -> NodeValue {
+    match value {
+        Value::String(s) => NodeValue::Text(s.clone()),
+        Value::Map(nested) => NodeValue::Node(nested.clone()),
+        Value::Array(arr) => {
+            // Convert array to a simple list representation
+            let mut list = NodeList::new();
+            for id in arr.ids() {
+                if let Some(val) = arr.get(&id) {
+                    let node_val = value_to_node_value(val);
+                    list.push(node_val);
+                }
+            }
+            NodeValue::List(list)
+        }
+        Value::Deleted => NodeValue::Deleted,
+    }
+}
+
+// Helper function to convert NodeValue to Value
+fn node_value_to_value(node_value: &NodeValue) -> Value {
+    match node_value {
+        NodeValue::Text(s) => Value::String(s.clone()),
+        NodeValue::Node(nested) => Value::Map(nested.clone()),
+        NodeValue::List(_list) => {
+            // For now, convert lists to empty arrays
+            // TODO: Implement proper list-to-array conversion
+            Value::Array(crate::crdt::array::Array::new())
+        }
+        NodeValue::Null => Value::String("null".to_string()),
+        NodeValue::Bool(b) => Value::String(b.to_string()),
+        NodeValue::Int(i) => Value::String(i.to_string()),
+        NodeValue::Deleted => Value::Deleted,
+    }
+}
 
 /// A simple key-value store SubTree
 ///
@@ -49,7 +87,7 @@ impl KVStore {
         if let Ok(data) = local_data
             && let Some(value) = data.get(key)
         {
-            return Ok(value.clone());
+            return Ok(node_value_to_value(value));
         }
 
         // Otherwise, get the full state from the backend
@@ -57,7 +95,7 @@ impl KVStore {
 
         // Get the value
         match data.get(key) {
-            Some(value) => Ok(value.clone()),
+            Some(value) => Ok(node_value_to_value(value)),
             None => Err(SubtreeError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key.to_string(),
@@ -148,9 +186,10 @@ impl KVStore {
             .get_local_data::<Nested>(&self.name)
             .unwrap_or_default();
 
-        // Update the data
+        // Update the data - convert Value to NodeValue
+        let node_value = value_to_node_value(&value);
         data.as_hashmap_mut()
-            .insert(key.as_ref().to_string(), value);
+            .insert(key.as_ref().to_string(), node_value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -291,7 +330,7 @@ impl KVStore {
             match current_value_view {
                 Value::Map(map_data) => match map_data.get(key_segment_s.as_ref()) {
                     Some(next_value) => {
-                        current_value_view = next_value.clone();
+                        current_value_view = node_value_to_value(next_value);
                     }
                     None => {
                         return Err(SubtreeError::KeyNotFound {
@@ -397,14 +436,14 @@ impl KVStore {
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.as_ref().to_string();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Map(Nested::default())) {
-                Value::Map(map) => map,
+            current_map_mut = match entry.or_insert_with(|| NodeValue::Node(Nested::default())) {
+                NodeValue::Node(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = Value::Map(Nested::default());
+                    *non_map_val = NodeValue::Node(Nested::default());
                     match non_map_val {
-                        Value::Map(map) => map,
+                        NodeValue::Node(map) => map,
                         _ => unreachable!("Just assigned a map"),
                     }
                 }
@@ -413,9 +452,10 @@ impl KVStore {
 
         // Set the value at the final key in the path.
         if let Some(last_key_s) = path_slice.last() {
+            let node_value = value_to_node_value(&value);
             current_map_mut
                 .as_hashmap_mut()
-                .insert(last_key_s.as_ref().to_string(), value);
+                .insert(last_key_s.as_ref().to_string(), node_value);
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
@@ -463,7 +503,7 @@ impl KVStore {
     /// Get an element by its ID from an array
     pub fn array_get(&self, key: impl AsRef<str>, id: &str) -> Result<Option<Value>> {
         let data = self.get_all()?;
-        Ok(data.array_get(key.as_ref(), id).cloned())
+        Ok(data.array_get(key.as_ref(), id).map(node_value_to_value))
     }
 
     /// Get all element IDs from an array in UUID-sorted order

@@ -3,7 +3,7 @@ use crate::create_auth_keys;
 use crate::helpers::*;
 use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::{Nested, Value};
+use eidetica::crdt::{Nested, NodeValue};
 use eidetica::subtree::KVStore;
 
 #[test]
@@ -232,14 +232,14 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Test with settings containing non-map auth section
     let mut corrupted_settings = Nested::new();
-    corrupted_settings.set("auth", "invalid_string_value".to_string());
+    corrupted_settings.set("auth", "invalid_string_value");
 
     let result = validator.validate_entry(&entry, &corrupted_settings, None);
     assert!(result.is_err(), "Should fail with corrupted auth section");
 
     // Test with settings containing deleted auth section
     let mut deleted_settings = Nested::new();
-    deleted_settings.set("auth", Value::Deleted);
+    deleted_settings.set("auth", NodeValue::Deleted);
 
     let result = validator.validate_entry(&entry, &deleted_settings, None);
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
