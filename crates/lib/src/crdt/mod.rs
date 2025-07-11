@@ -8,7 +8,7 @@
 //!
 //! - [`Map`] - A simple last-write-wins key-value store
 //! - [`Array`] - An ordered collection with UUID-based element identification
-//! - [`Nested`] - A recursive key-value structure supporting nested maps and arrays
+//! - [`Node`] - A recursive key-value structure supporting nested maps and arrays
 //! - [`Value`] - The value type for nested structures
 //!
 //! # Traits
@@ -34,11 +34,11 @@ pub use node::{ListPosition, Node, NodeList, NodeValue};
 pub use traits::{CRDT, Data};
 pub use value::Value;
 
-// Use Node as the new Nested implementation
+// Backward compatibility alias
 pub use node::Node as Nested;
 
 // Legacy aliases for backward compatibility
 pub use array::Array as CrdtArray;
 pub use map::Map as KVOverWrite;
-pub use node::Node as KVNested; // Point to Node instead of old Nested
+pub use node::Node as KVNested;
 pub use value::Value as NestedValue;

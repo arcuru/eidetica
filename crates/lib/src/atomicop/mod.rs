@@ -6,7 +6,7 @@ use crate::auth::types::{Operation, SigInfo, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::crdt::CRDT;
-use crate::crdt::Nested;
+use crate::crdt::Node;
 use crate::crdt::NodeValue;
 use crate::entry::{Entry, EntryBuilder, ID};
 use crate::subtree::SubTree;
@@ -146,7 +146,7 @@ impl AtomicOp {
     ///
     /// # Returns
     ///
-    /// Returns a `Result<Nested>` containing the merged settings data. The settings
+    /// Returns a `Result<Node>` containing the merged settings data. The settings
     /// include both:
     /// - Historical settings computed from all relevant entries in the tree
     /// - Any staged changes to the `_settings` subtree in this operation
@@ -163,15 +163,15 @@ impl AtomicOp {
     /// - Unable to compute historical settings state
     /// - Unable to deserialize settings data
     /// - CRDT merge operation fails
-    pub fn get_settings(&self) -> Result<Nested> {
+    pub fn get_settings(&self) -> Result<Node> {
         // Get historical settings from the tree
-        let mut historical_settings = self.get_full_state::<Nested>(SETTINGS)?;
+        let mut historical_settings = self.get_full_state::<Node>(SETTINGS)?;
 
         // Get any staged changes to the _settings subtree in this operation
-        let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
+        let staged_settings = self.get_local_data::<Node>(SETTINGS)?;
 
         // Always merge - get_local_data returns Default::default() if no staged data,
-        // which is an empty Nested that won't affect the merge
+        // which is an empty Node that won't affect the merge
         historical_settings = historical_settings.merge(&staged_settings)?;
 
         Ok(historical_settings)
@@ -645,14 +645,14 @@ impl AtomicOp {
         };
 
         // Get settings using full CRDT state computation
-        let historical_settings = self.get_full_state::<Nested>(SETTINGS)?;
+        let historical_settings = self.get_full_state::<Node>(SETTINGS)?;
 
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial tree creation with auth)
         let effective_settings_for_validation = if has_settings_update {
             let historical_has_auth = matches!(historical_settings.get("auth"), Some(NodeValue::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
             if !historical_has_auth {
-                let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
+                let staged_settings = self.get_local_data::<Node>(SETTINGS)?;
                 let staged_has_auth = matches!(staged_settings.get("auth"), Some(NodeValue::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
                 if staged_has_auth {
                     staged_settings
@@ -727,7 +727,7 @@ impl AtomicOp {
             // If not configured historically, check if this entry is setting up auth for the first time
             let auth_configured = if !auth_configured_historical && has_settings_update {
                 // Check if the staged settings contain auth configuration
-                let staged_settings = self.get_local_data::<Nested>(SETTINGS)?;
+                let staged_settings = self.get_local_data::<Node>(SETTINGS)?;
                 matches!(staged_settings.get("auth"), Some(NodeValue::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
             } else {
                 auth_configured_historical
@@ -825,7 +825,7 @@ impl AtomicOp {
                             // This operation is updating settings - check if it's adding auth configuration
                             if let Ok(settings_data) = entry.data(SETTINGS) {
                                 if let Ok(new_settings) =
-                                    serde_json::from_str::<Nested>(settings_data)
+                                    serde_json::from_str::<Node>(settings_data)
                                 {
                                     if matches!(new_settings.get("auth"), Some(NodeValue::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
                                     {

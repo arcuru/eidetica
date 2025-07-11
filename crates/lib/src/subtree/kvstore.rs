@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::node::{NodeList, NodeValue};
-use crate::crdt::{CRDT, Nested, Value};
+use crate::crdt::{CRDT, Node, Value};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 
@@ -44,9 +44,9 @@ fn node_value_to_value(node_value: &NodeValue) -> Value {
 
 /// A simple key-value store SubTree
 ///
-/// It assumes that the SubTree data is a Nested CRDT, which allows for nested map structures.
+/// It assumes that the SubTree data is a Node CRDT, which allows for nested map structures.
 /// This implementation supports string values, as well as deletions via tombstones.
-/// For more complex data structures, consider using the nested capabilities of Nested directly.
+/// For more complex data structures, consider using the nested capabilities of Node directly.
 pub struct KVStore {
     name: String,
     atomic_op: AtomicOp,
@@ -81,7 +81,7 @@ impl KVStore {
     pub fn get(&self, key: impl AsRef<str>) -> Result<NodeValue> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
-        let local_data: Result<Nested> = self.atomic_op.get_local_data(&self.name);
+        let local_data: Result<Node> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
@@ -91,7 +91,7 @@ impl KVStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Nested = self.atomic_op.get_full_state(&self.name)?;
+        let data: Node = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the value
         match data.get(key) {
@@ -146,7 +146,7 @@ impl KVStore {
 
     /// Stages the setting of a key-value pair within the associated `AtomicOp`.
     ///
-    /// This method updates the `Nested` data held within the `AtomicOp` for this
+    /// This method updates the `Node` data held within the `AtomicOp` for this
     /// `KVStore` instance's subtree name. The change is **not** persisted to the backend
     /// until the `AtomicOp::commit()` method is called.
     ///
@@ -164,7 +164,7 @@ impl KVStore {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Nested>(&self.name)
+            .get_local_data::<Node>(&self.name)
             .unwrap_or_default();
 
         // Update the data
@@ -205,7 +205,7 @@ impl KVStore {
     }
 
     /// Convenience method to get a Node value.
-    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Nested> {
+    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Node> {
         match self.get(key)? {
             NodeValue::Node(node) => Ok(node),
             _ => Err(SubtreeError::TypeMismatch {
@@ -223,7 +223,7 @@ impl KVStore {
     }
 
     /// Convenience method to set a node value.
-    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Nested>) -> Result<()> {
+    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Node>) -> Result<()> {
         self.set(key, NodeValue::Node(node.into()))
     }
 
@@ -241,7 +241,7 @@ impl KVStore {
 
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
-    /// This method removes the key-value pair from the `Nested` data held within
+    /// This method removes the key-value pair from the `Node` data held within
     /// the `AtomicOp` for this `KVStore` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `AtomicOp::commit()` method is called.
@@ -281,7 +281,7 @@ impl KVStore {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Nested>(&self.name)
+            .get_local_data::<Node>(&self.name)
             .unwrap_or_default();
 
         // Remove the key (creates a tombstone)
@@ -300,13 +300,13 @@ impl KVStore {
     /// The staged data takes precedence in case of conflicts (overwrites).
     ///
     /// # Returns
-    /// A `Result` containing the merged `Nested` data structure.
-    pub fn get_all(&self) -> Result<Nested> {
+    /// A `Result` containing the merged `Node` data structure.
+    pub fn get_all(&self) -> Result<Node> {
         // First get the local data directly from the atomic op
-        let local_data = self.atomic_op.get_local_data::<Nested>(&self.name);
+        let local_data = self.atomic_op.get_local_data::<Node>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Nested>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Node>(&self.name)?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {
@@ -470,7 +470,7 @@ impl KVStore {
 
         let mut subtree_data = self
             .atomic_op
-            .get_local_data::<Nested>(&self.name)
+            .get_local_data::<Node>(&self.name)
             .unwrap_or_default();
 
         let mut current_map_mut = &mut subtree_data;
@@ -479,12 +479,12 @@ impl KVStore {
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.as_ref().to_string();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| NodeValue::Node(Nested::default())) {
+            current_map_mut = match entry.or_insert_with(|| NodeValue::Node(Node::default())) {
                 NodeValue::Node(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = NodeValue::Node(Nested::default());
+                    *non_map_val = NodeValue::Node(Node::default());
                     match non_map_val {
                         NodeValue::Node(map) => map,
                         _ => unreachable!("Just assigned a map"),

@@ -62,19 +62,6 @@ impl From<crate::crdt::node::Node> for Value {
     }
 }
 
-// Keep backward compatibility for old Nested type
-/*impl From<crate::crdt::nested::Nested> for Value {
-    fn from(nested: crate::crdt::nested::Nested) -> Self {
-        // Convert nested to Node
-        let mut node = crate::crdt::node::Node::new();
-        for (key, val) in nested.as_hashmap() {
-            let node_value = value_to_node_value(val);
-            node.set_raw(key, node_value);
-        }
-        Value::Map(node)
-    }
-}*/
-
 // Helper function to convert Value to NodeValue
 #[allow(dead_code)]
 fn value_to_node_value(value: &Value) -> NodeValue {
