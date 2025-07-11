@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission, SigKey};
-use eidetica::crdt::Nested;
+use eidetica::crdt::Map;
 use eidetica::subtree::KVStore;
 
 /// Test basic entry retrieval functionality
@@ -112,13 +112,13 @@ fn test_tree_validation_rejects_foreign_entries() {
     let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
-    let mut settings1 = Nested::new();
+    let mut settings1 = Map::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
         .new_tree(settings1, "test_key")
         .expect("Failed to create tree1");
 
-    let mut settings2 = Nested::new();
+    let mut settings2 = Map::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
         .new_tree(settings2, "test_key")
@@ -173,13 +173,13 @@ fn test_tree_validation_get_entries() {
     let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
-    let mut settings1 = Nested::new();
+    let mut settings1 = Map::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
         .new_tree(settings1, "test_key")
         .expect("Failed to create tree1");
 
-    let mut settings2 = Nested::new();
+    let mut settings2 = Map::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
         .new_tree(settings2, "test_key")
@@ -236,8 +236,8 @@ fn test_auth_helpers_signed_entries() {
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
 
     // Create auth settings
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             key_id.to_string(),
@@ -314,8 +314,8 @@ fn test_verify_entry_signature_auth_scenarios() {
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
 
     // Create auth settings
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             key_id.to_string(),
@@ -378,8 +378,8 @@ fn test_verify_entry_signature_unauthorized_key() {
         .expect("Failed to add unauthorized key");
 
     // Create auth settings with only the authorized key
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             authorized_key_id.to_string(),
@@ -438,8 +438,8 @@ fn test_verify_entry_signature_validates_tree_auth() {
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
 
     // Create auth settings
-    let mut settings = Nested::new();
-    let mut auth_settings = Nested::new();
+    let mut settings = Map::new();
+    let mut auth_settings = Map::new();
     auth_settings
         .set_json(
             key_id.to_string(),

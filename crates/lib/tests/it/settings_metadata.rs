@@ -1,6 +1,7 @@
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::{Nested, NodeValue};
+use eidetica::crdt::Map;
+use eidetica::crdt::map::Value;
 
 #[test]
 fn test_settings_tips_in_metadata() {
@@ -13,7 +14,7 @@ fn test_settings_tips_in_metadata() {
     db.add_private_key(key_id).unwrap();
 
     // Create initial settings
-    let mut settings = Nested::new();
+    let mut settings = Map::new();
     settings.set("name".to_string(), "test_tree".to_string());
 
     // Create a tree with authentication
@@ -103,7 +104,7 @@ fn test_entry_get_settings_from_subtree() {
     db.add_private_key(key_id).unwrap();
 
     // Create initial settings with some data
-    let mut settings = Nested::new();
+    let mut settings = Map::new();
     settings.set("name".to_string(), "test_tree".to_string());
     settings.set("version".to_string(), "1.0".to_string());
 
@@ -116,15 +117,15 @@ fn test_entry_get_settings_from_subtree() {
     // Entry shouldn't know about settings - that's AtomicOp's job
     // But we can verify the entry has the _settings subtree data
     let settings_data = root_entry.data("_settings").unwrap();
-    let parsed_settings: Nested = serde_json::from_str(settings_data).unwrap();
+    let parsed_settings: Map = serde_json::from_str(settings_data).unwrap();
 
     // Verify the settings contain what we expect
     match parsed_settings.get("name").unwrap() {
-        NodeValue::Text(s) => assert_eq!(s, "test_tree"),
+        Value::Text(s) => assert_eq!(s, "test_tree"),
         _ => panic!("Expected string value for name"),
     }
     match parsed_settings.get("version").unwrap() {
-        NodeValue::Text(s) => assert_eq!(s, "1.0"),
+        Value::Text(s) => assert_eq!(s, "1.0"),
         _ => panic!("Expected string value for version"),
     }
 
@@ -132,7 +133,7 @@ fn test_entry_get_settings_from_subtree() {
     let op = tree.new_operation().unwrap();
     let op_settings = op.get_settings().unwrap();
     match op_settings.get("name").unwrap() {
-        NodeValue::Text(s) => assert_eq!(s, "test_tree"),
+        Value::Text(s) => assert_eq!(s, "test_tree"),
         _ => panic!("Expected string value for name"),
     }
 }
@@ -148,7 +149,7 @@ fn test_settings_tips_propagation() {
     db.add_private_key(key_id).unwrap();
 
     // Create a tree
-    let settings = Nested::new();
+    let settings = Map::new();
     let tree = db.new_tree(settings, key_id).unwrap();
 
     // Create a chain of entries

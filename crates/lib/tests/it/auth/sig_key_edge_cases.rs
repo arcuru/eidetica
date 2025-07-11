@@ -9,7 +9,7 @@ use eidetica::auth::types::{AuthKey, DelegationStep, KeyStatus, Permission, SigI
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Nested;
+use eidetica::crdt::Map;
 use eidetica::entry::ID;
 
 /// Test SigKey with empty delegation path
@@ -19,7 +19,7 @@ fn test_empty_delegation_path() -> Result<()> {
 
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
-    let settings = Nested::new();
+    let settings = Map::new();
     let db = BaseDB::new(Box::new(InMemory::new()));
 
     let result = validator.resolve_sig_key(&empty_delegation, &settings, Some(db.backend()));
@@ -37,7 +37,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     let admin_key = db.add_private_key("")?;
 
     // Create tree with empty key ID
-    let mut auth = Nested::new();
+    let mut auth = Map::new();
     auth.set_json(
         "", // Empty key ID
         AuthKey {
@@ -48,7 +48,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     )
     .unwrap();
 
-    let mut settings = Nested::new();
+    let mut settings = Map::new();
     settings.set_map("auth", auth);
 
     // This should work - empty key is technically valid
@@ -80,7 +80,7 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let settings = Nested::new();
+    let settings = Map::new();
     let db = BaseDB::new(Box::new(InMemory::new()));
 
     let result = validator.resolve_sig_key(&delegation_path, &settings, Some(db.backend()));
@@ -257,7 +257,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     let admin_key = db.add_private_key("admin")?;
 
     // Create a tree that delegates to itself
-    let mut auth = Nested::new();
+    let mut auth = Map::new();
     auth.set_json(
         "admin",
         AuthKey {
@@ -268,7 +268,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     )
     .unwrap();
 
-    let mut settings = Nested::new();
+    let mut settings = Map::new();
     settings.set_map("auth", auth);
     let tree = db.new_tree(settings, "admin")?;
     let tree_tips = tree.get_tips()?;

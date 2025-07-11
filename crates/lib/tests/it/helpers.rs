@@ -1,5 +1,6 @@
 use eidetica::backend::database::InMemory;
-use eidetica::crdt::{Node, NodeValue};
+use eidetica::crdt::Map;
+use eidetica::crdt::map::Value;
 use eidetica::subtree::KVStore;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
@@ -85,9 +86,9 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     tree
 }
 
-/// Creates a Node with the specified key-value pairs
-pub fn create_kvnested(values: &[(&str, &str)]) -> Node {
-    let mut kv = Node::new();
+/// Creates a Map with the specified key-value pairs
+pub fn create_kvnested(values: &[(&str, &str)]) -> Map {
+    let mut kv = Map::new();
 
     for (key, value) in values {
         kv.set_string(*key, *value);
@@ -96,12 +97,12 @@ pub fn create_kvnested(values: &[(&str, &str)]) -> Node {
     kv
 }
 
-/// Creates a nested Node structure
-pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Node {
-    let mut root = Node::new();
+/// Creates a nested Map structure
+pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Map {
+    let mut root = Map::new();
 
     for (outer_key, inner_values) in structure {
-        let mut inner = Node::new();
+        let mut inner = Map::new();
 
         for (inner_key, inner_value) in *inner_values {
             inner.set_string(*inner_key, *inner_value);
@@ -119,28 +120,28 @@ pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
         .get(key)
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))
     {
-        NodeValue::Text(value) => assert_eq!(value, expected),
+        Value::Text(value) => assert_eq!(value, expected),
         _ => panic!("Expected text value for key {key}"),
     }
 }
 
 /// Helper for checking NotFound errors
-pub fn assert_key_not_found(result: Result<NodeValue, eidetica::Error>) {
+pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
     match result {
         Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),
     }
 }
 
-/// Helper to check deep nested values inside a Node structure
-pub fn assert_nested_value(kv: &Node, path: &[&str], expected: &str) {
+/// Helper to check deep nested values inside a Map structure
+pub fn assert_nested_value(kv: &Map, path: &[&str], expected: &str) {
     let mut current = kv;
     let last_idx = path.len() - 1;
 
     // Navigate through the nested maps
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(NodeValue::Node(map)) => current = map,
+            Some(Value::Map(map)) => current = map,
             Some(other) => panic!("Expected map at path element '{key}', got {other:?}"),
             None => panic!("Path element '{key}' not found in nested structure"),
         }
@@ -149,14 +150,14 @@ pub fn assert_nested_value(kv: &Node, path: &[&str], expected: &str) {
     // Check final value
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(NodeValue::Text(value)) => assert_eq!(value, expected),
+        Some(Value::Text(value)) => assert_eq!(value, expected),
         Some(other) => panic!("Expected string at path end '{final_key}', got {other:?}"),
         None => panic!("Final path element '{final_key}' not found in nested structure"),
     }
 }
 
 /// Helper to validate that a path is deleted (has tombstone or is missing)
-pub fn assert_path_deleted(kv: &Node, path: &[&str]) {
+pub fn assert_path_deleted(kv: &Map, path: &[&str]) {
     if path.is_empty() {
         panic!("Empty path provided to assert_path_deleted");
     }
@@ -167,8 +168,8 @@ pub fn assert_path_deleted(kv: &Node, path: &[&str]) {
     // If early path doesn't exist, that's fine - the path is deleted
     for key in path.iter().take(last_idx) {
         match current.get(key) {
-            Some(NodeValue::Node(map)) => current = map,
-            Some(NodeValue::Deleted) => return, // Found tombstone
+            Some(Value::Map(map)) => current = map,
+            Some(Value::Deleted) => return, // Found tombstone
             Some(other) => panic!("Unexpected value at path element '{key}', got {other:?}"),
             None => return, // Path doesn't exist, which is valid for a deleted path
         }
@@ -177,8 +178,8 @@ pub fn assert_path_deleted(kv: &Node, path: &[&str]) {
     // Check final key
     let final_key = path[last_idx];
     match current.get(final_key) {
-        Some(NodeValue::Deleted) => (), // Tombstone, as expected
-        None => (),                     // Key doesn't exist, which is valid
+        Some(Value::Deleted) => (), // Tombstone, as expected
+        None => (),                 // Key doesn't exist, which is valid
         Some(other) => panic!("Expected tombstone at path end '{final_key}', got {other:?}"),
     }
 }

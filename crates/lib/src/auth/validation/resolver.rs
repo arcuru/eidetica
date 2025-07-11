@@ -8,7 +8,8 @@ use crate::auth::crypto::parse_public_key;
 use crate::auth::errors::AuthError;
 use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
 use crate::backend::Database;
-use crate::crdt::{Nested, NodeValue};
+use crate::crdt::Nested;
+use crate::crdt::map::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -91,7 +92,7 @@ impl KeyResolver {
 
         // Extract the auth Nested from the Value
         let auth_nested = match auth_section {
-            NodeValue::Node(auth_map) => auth_map,
+            Value::Map(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),

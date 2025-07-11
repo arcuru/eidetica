@@ -11,7 +11,8 @@ use crate::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
 };
 use crate::backend::Database;
-use crate::crdt::{Nested, NodeValue};
+use crate::crdt::Map;
+use crate::crdt::map::Value;
 use crate::entry::ID;
 use crate::tree::Tree;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ impl DelegationResolver {
     pub fn resolve_delegation_path_with_depth(
         &mut self,
         steps: &[DelegationStep],
-        settings: &Nested,
+        settings: &Map,
         backend: &Arc<dyn Database>,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
@@ -163,7 +164,7 @@ impl DelegationResolver {
     fn get_delegated_tree_ref(
         &self,
         tree_ref_id: &str,
-        settings: &Nested,
+        settings: &Map,
     ) -> Result<DelegatedTreeRef> {
         // Get the auth section
         let auth_section = settings
@@ -171,7 +172,7 @@ impl DelegationResolver {
             .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
         let auth_nested = match auth_section {
-            NodeValue::Node(auth_map) => auth_map,
+            Value::Map(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),
@@ -253,7 +254,7 @@ impl DelegationResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    fn resolve_direct_key(&self, key_id: &str, settings: &Nested) -> Result<ResolvedAuth> {
+    fn resolve_direct_key(&self, key_id: &str, settings: &Map) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
@@ -261,7 +262,7 @@ impl DelegationResolver {
 
         // Extract the auth Nested from the Value
         let auth_nested = match auth_section {
-            NodeValue::Node(auth_map) => auth_map,
+            Value::Map(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),
