@@ -33,28 +33,28 @@ classDiagram
     class Value {
         <<enum>>
         +String(String)
-        +Map(Nested)
+        +Map(Node)
         +Deleted
     }
 
-    class Nested {
-        -HashMap<String, Value> data
-        +new() Nested
-        +get(key: &str) Option<&Value>
-        +set(key: String, value: Value) &mut Self
+    class Node {
+        -HashMap<String, NodeValue> data
+        +new() Node
+        +get(key: &str) Option<&NodeValue>
+        +set(key: String, value: NodeValue) &mut Self
         +set_string(key: String, value: String) &mut Self
-        +set_map(key: String, value: Nested) &mut Self
-        +remove(key: &str) Option<Value>
-        +as_hashmap() &HashMap<String, Value>
+        +set_map(key: String, value: Node) &mut Self
+        +remove(key: &str) Option<NodeValue>
+        +as_hashmap() &HashMap<String, NodeValue>
         +merge(&self, other: &Self) Result<Self>
     }
 
     CRDT --|> Data : requires
     Map ..|> CRDT : implements
     Map ..|> Data : implements
-    Nested ..|> CRDT : implements
-    Nested ..|> Data : implements
-    Nested -- Value : uses
+    Node ..|> CRDT : implements
+    Node ..|> Data : implements
+    Node -- NodeValue : uses
 ```
 
 - **CRDT Trait**: Defines a `merge` operation for resolving conflicts between divergent states. Implementors must also implement `Serialize`, `Deserialize`, and `Default`.
@@ -68,10 +68,10 @@ classDiagram
   - During merge, if a key exists in both CRDTs, the `other` value always wins (last-write-wins)
   - Tombstones are preserved during merges to ensure proper deletion propagation
 
-- **Nested**: A nested key-value CRDT implementation:
+- **Node**: A nested key-value CRDT implementation:
 
-  - Supports arbitrary nesting of maps and string values via the `Value` enum
-  - `Value` can be a `String`, another `Nested` map, or `Deleted` (tombstone)
+  - Supports arbitrary nesting of maps and string values via the `NodeValue` enum
+  - `NodeValue` can be a `Text`, another `Node` map, or `Deleted` (tombstone)
   - Implements recursive merging for nested maps
   - Provides specific methods for setting string values (`set_string`) and map values (`set_map`)
   - Uses tombstones (`Value::Deleted`) to track deletions
@@ -109,7 +109,7 @@ Tombstones are an important concept in CRDTs to ensure proper deletion propagati
 1. Instead of physically removing data, we mark it as deleted with a tombstone
 2. Tombstones are retained and synchronized between replicas
 3. This ensures that a deletion in one replica eventually propagates to all replicas
-4. Both `Map` and `Nested` use tombstones to represent deleted entries
+4. Both `Map` and `Node` use tombstones to represent deleted entries
 
 ### CRDT Merge Algorithm Implementation
 

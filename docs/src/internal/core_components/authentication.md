@@ -9,7 +9,7 @@ The authentication system is deeply integrated with Eidetica's core, validating 
 - **Mandatory Signing**: All entries require valid Ed25519 signatures
 - **AuthValidator**: Central validation component with caching for performance
 - **Permission Hierarchy**: Three-tier system with integrated priority levels
-- **Key Management**: Stored in `_settings.auth` using Nested CRDT for conflict resolution
+- **Key Management**: Stored in `_settings.auth` using Node CRDT for conflict resolution
 - **Direct Keys**: Fully implemented authentication via keys stored in tree settings
 - **Delegated Trees**: Fully implemented with comprehensive test coverage
 
@@ -125,7 +125,7 @@ The permission model integrates priority directly into Admin and Write levels:
 
 #### Key Storage Format
 
-Authentication keys are stored in the `_settings.auth` subtree using the Nested CRDT:
+Authentication keys are stored in the `_settings.auth` subtree using the Node CRDT:
 
 ```rust
 // Rust representation
@@ -158,7 +158,7 @@ Authentication is deeply integrated throughout Eidetica:
 - **AtomicOp**: Handles entry signing during commit operations
 - **Tree Creation**: Requires initial admin key for new trees
 - **Database Storage**: Validates authentication before storing entries
-- **Settings Management**: `_settings.auth` uses Nested CRDT with LWW conflict resolution
+- **Settings Management**: `_settings.auth` uses Node CRDT with LWW conflict resolution
 - **Validation Pipeline**: Every entry validated before acceptance
 
 #### Implementation Status

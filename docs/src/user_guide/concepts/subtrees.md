@@ -27,7 +27,7 @@ Subtrees offer several advantages:
 
 ### KVStore (Key-Value Store)
 
-The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Nested` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
+The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Node` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
 
 #### Basic Usage
 
@@ -58,7 +58,7 @@ op.commit()?;
 
 ```rust
 // Create nested structures
-let mut preferences = Nested::new();
+let mut preferences = Node::new();
 preferences.set_string("theme", "dark");
 preferences.set_string("language", "en");
 
