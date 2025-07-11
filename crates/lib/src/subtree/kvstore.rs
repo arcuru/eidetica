@@ -1,15 +1,15 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::map::{Array, Value};
-use crate::crdt::{CRDT, Node};
+use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 
 /// A simple key-value store SubTree
 ///
-/// It assumes that the SubTree data is a Node CRDT, which allows for nested map structures.
+/// It assumes that the SubTree data is a Map CRDT, which allows for nested map structures.
 /// This implementation supports string values, as well as deletions via tombstones.
-/// For more complex data structures, consider using the nested capabilities of Node directly.
+/// For more complex data structures, consider using the nested capabilities of Map directly.
 pub struct KVStore {
     name: String,
     atomic_op: AtomicOp,
@@ -44,7 +44,7 @@ impl KVStore {
     pub fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
-        let local_data: Result<Node> = self.atomic_op.get_local_data(&self.name);
+        let local_data: Result<Map> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
@@ -54,7 +54,7 @@ impl KVStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Node = self.atomic_op.get_full_state(&self.name)?;
+        let data: Map = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the value
         match data.get(key) {
@@ -84,7 +84,7 @@ impl KVStore {
             Value::Map(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "Node".to_string(),
+                actual: "Map".to_string(),
             }
             .into()),
             Value::Array(_) => Err(SubtreeError::TypeMismatch {
@@ -109,7 +109,7 @@ impl KVStore {
 
     /// Stages the setting of a key-value pair within the associated `AtomicOp`.
     ///
-    /// This method updates the `Node` data held within the `AtomicOp` for this
+    /// This method updates the `Map` data held within the `AtomicOp` for this
     /// `KVStore` instance's subtree name. The change is **not** persisted to the backend
     /// until the `AtomicOp::commit()` method is called.
     ///
@@ -127,7 +127,7 @@ impl KVStore {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Node>(&self.name)
+            .get_local_data::<Map>(&self.name)
             .unwrap_or_default();
 
         // Update the data
@@ -167,13 +167,13 @@ impl KVStore {
         }
     }
 
-    /// Convenience method to get a Node value.
-    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Node> {
+    /// Convenience method to get a Map value.
+    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Map> {
         match self.get(key)? {
             Value::Map(node) => Ok(node),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
-                expected: "Node".to_string(),
+                expected: "Map".to_string(),
                 actual: "Other".to_string(),
             }
             .into()),
@@ -186,7 +186,7 @@ impl KVStore {
     }
 
     /// Convenience method to set a node value.
-    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Node>) -> Result<()> {
+    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Map>) -> Result<()> {
         self.set(key, Value::Map(node.into()))
     }
 
@@ -202,7 +202,7 @@ impl KVStore {
 
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
-    /// This method removes the key-value pair from the `Node` data held within
+    /// This method removes the key-value pair from the `Map` data held within
     /// the `AtomicOp` for this `KVStore` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `AtomicOp::commit()` method is called.
@@ -242,7 +242,7 @@ impl KVStore {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Node>(&self.name)
+            .get_local_data::<Map>(&self.name)
             .unwrap_or_default();
 
         // Remove the key (creates a tombstone)
@@ -261,13 +261,13 @@ impl KVStore {
     /// The staged data takes precedence in case of conflicts (overwrites).
     ///
     /// # Returns
-    /// A `Result` containing the merged `Node` data structure.
-    pub fn get_all(&self) -> Result<Node> {
+    /// A `Result` containing the merged `Map` data structure.
+    pub fn get_all(&self) -> Result<Map> {
         // First get the local data directly from the atomic op
-        let local_data = self.atomic_op.get_local_data::<Node>(&self.name);
+        let local_data = self.atomic_op.get_local_data::<Map>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Node>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Map>(&self.name)?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {
@@ -431,7 +431,7 @@ impl KVStore {
 
         let mut subtree_data = self
             .atomic_op
-            .get_local_data::<Node>(&self.name)
+            .get_local_data::<Map>(&self.name)
             .unwrap_or_default();
 
         let mut current_map_mut = &mut subtree_data;
@@ -440,12 +440,12 @@ impl KVStore {
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.as_ref().to_string();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Map(Node::default())) {
+            current_map_mut = match entry.or_insert_with(|| Value::Map(Map::default())) {
                 Value::Map(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = Value::Map(Node::default());
+                    *non_map_val = Value::Map(Map::default());
                     match non_map_val {
                         Value::Map(map) => map,
                         _ => unreachable!("Just assigned a map"),

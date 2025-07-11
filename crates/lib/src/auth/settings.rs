@@ -1,6 +1,6 @@
 //! Authentication settings management for Eidetica
 //!
-//! This module provides a simple wrapper around Nested for managing authentication
+//! This module provides a simple wrapper around Map for managing authentication
 //! settings. AuthSettings is a view/interface layer over the auth portion of the
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
@@ -9,44 +9,42 @@ use super::errors::AuthError;
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::backend::Database;
-use crate::crdt::Nested;
+use crate::crdt::Map;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Authentication settings view/interface over Nested data
+/// Authentication settings view/interface over Map data
 ///
 /// This provides a convenient interface for working with authentication data
-/// stored in the _settings.auth subtree. The underlying Nested CRDT handles
+/// stored in the _settings.auth subtree. The underlying Map CRDT handles
 /// all merging at the settings level - this is just a view with auth-specific
 /// convenience methods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
-    /// Nested data from _settings.auth - this is a view, not the authoritative copy
-    inner: Nested,
+    /// Map data from _settings.auth - this is a view, not the authoritative copy
+    inner: Map,
 }
 
 impl AuthSettings {
     /// Create a new empty auth settings view
     pub fn new() -> Self {
-        Self {
-            inner: Nested::new(),
-        }
+        Self { inner: Map::new() }
     }
 
-    /// Create from existing Nested (e.g., from _settings.auth)
-    pub fn from_kvnested(kvnested: Nested) -> Self {
+    /// Create from existing Map (e.g., from _settings.auth)
+    pub fn from_kvnested(kvnested: Map) -> Self {
         Self { inner: kvnested }
     }
 
-    /// Get the underlying Nested for direct access
-    pub fn as_kvnested(&self) -> &Nested {
+    /// Get the underlying Map for direct access
+    pub fn as_kvnested(&self) -> &Map {
         &self.inner
     }
 
-    /// Get mutable access to the underlying Nested
-    pub fn as_kvnested_mut(&mut self) -> &mut Nested {
+    /// Get mutable access to the underlying Map
+    pub fn as_kvnested_mut(&mut self) -> &mut Map {
         &mut self.inner
     }
 
@@ -296,7 +294,7 @@ mod tests {
         settings1.add_key("KEY_1", key1).unwrap();
         settings2.add_key("KEY_2", key2).unwrap();
 
-        // Test that we can access the underlying Nested for merging at higher level
+        // Test that we can access the underlying Map for merging at higher level
         let kvnested1 = settings1.as_kvnested().clone();
         let kvnested2 = settings2.as_kvnested().clone();
 

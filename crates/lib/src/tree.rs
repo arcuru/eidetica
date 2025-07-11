@@ -9,7 +9,7 @@ use crate::atomicop::AtomicOp;
 use crate::backend::Database;
 use crate::basedb::errors::BaseError;
 use crate::constants::{ROOT, SETTINGS};
-use crate::crdt::Node;
+use crate::crdt::Map;
 use crate::crdt::map::Value;
 use crate::entry::{Entry, ID};
 use crate::subtree::{KVStore, SubTree};
@@ -40,14 +40,14 @@ impl Tree {
     /// and storing it in the backend. All trees must now be created with authentication.
     ///
     /// # Arguments
-    /// * `settings` - A `Node` CRDT containing the initial settings for the tree.
+    /// * `settings` - A `Map` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
     /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
-        initial_settings: Node,
+        initial_settings: Map,
         backend: Arc<dyn Database>,
         signing_key_id: impl AsRef<str>,
     ) -> Result<Self> {
@@ -314,12 +314,12 @@ impl Tree {
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::crdt::Node;
+    /// # use eidetica::crdt::Map;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(Node::new(), "TEST_KEY")?;
+    /// # let tree = db.new_tree(Map::new(), "TEST_KEY")?;
     /// # let op = tree.new_operation()?;
     /// let entry_id = op.commit()?;
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
@@ -364,12 +364,12 @@ impl Tree {
     /// # use eidetica::*;
     /// # use eidetica::basedb::BaseDB;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::crdt::Node;
+    /// # use eidetica::crdt::Map;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = BaseDB::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(Node::new(), "TEST_KEY")?;
+    /// # let tree = db.new_tree(Map::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
     /// let entries = tree.get_entries(entry_ids)?;
     /// # Ok(())
@@ -450,7 +450,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result` containing the historical settings data
-    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<Node> {
+    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<Map> {
         // TODO: Implement full historical settings reconstruction from entry metadata
         // For now, use current settings for simplicity and backward compatibility
         //

@@ -41,17 +41,17 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::{CRDT, Data, Node};
+/// use eidetica::crdt::{CRDT, Data, Map};
 /// use eidetica::Result;
 ///
-/// let mut kv1 = Node::new();
+/// let mut kv1 = Map::new();
 /// kv1.set("key", "value1");
 ///
-/// let mut kv2 = Node::new();
+/// let mut kv2 = Map::new();
 /// kv2.set("key", "value2");
 ///
 /// let merged = kv1.merge(&kv2).unwrap();
-/// // Node uses last-write-wins semantics for scalar values
+/// // Map uses last-write-wins semantics for scalar values
 /// ```
 pub trait CRDT: Data {
     /// Merge this CRDT with another instance, returning a new merged instance.

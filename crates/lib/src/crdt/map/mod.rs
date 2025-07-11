@@ -8,7 +8,7 @@
 //! # Core Types
 //!
 //! - [`Map`] - The root tree structure containing child nodes
-//! - [`MapValue`] - Values that can be stored in tree nodes (leaf or branch values)
+//! - [`Value`] - Values that can be stored in tree nodes (leaf or branch values)
 //! - [`Array`] - Ordered collections with stable positioning using rational numbers
 //! - [`array::Position`] - Rational number-based positions for stable list ordering
 //!
