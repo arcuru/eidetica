@@ -1,5 +1,5 @@
 use eidetica::backend::database::InMemory;
-use eidetica::crdt::{Nested, NodeValue};
+use eidetica::crdt::{Node, NodeValue};
 use eidetica::subtree::KVStore;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
@@ -60,7 +60,7 @@ pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, ei
     (db, tree)
 }
 
-/// Creates a tree with initial settings using Nested with authentication
+/// Creates a tree with initial settings using Node with authentication
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let db = setup_db();
     let tree = db
@@ -85,9 +85,9 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     tree
 }
 
-/// Creates a Nested with the specified key-value pairs
-pub fn create_kvnested(values: &[(&str, &str)]) -> Nested {
-    let mut kv = Nested::new();
+/// Creates a Node with the specified key-value pairs
+pub fn create_kvnested(values: &[(&str, &str)]) -> Node {
+    let mut kv = Node::new();
 
     for (key, value) in values {
         kv.set_string(*key, *value);
@@ -96,12 +96,12 @@ pub fn create_kvnested(values: &[(&str, &str)]) -> Nested {
     kv
 }
 
-/// Creates a nested Nested structure
-pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Nested {
-    let mut root = Nested::new();
+/// Creates a nested Node structure
+pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Node {
+    let mut root = Node::new();
 
     for (outer_key, inner_values) in structure {
-        let mut inner = Nested::new();
+        let mut inner = Node::new();
 
         for (inner_key, inner_value) in *inner_values {
             inner.set_string(*inner_key, *inner_value);
@@ -143,8 +143,8 @@ pub fn create_kvoverwrite(values: &[(&str, &str)]) -> eidetica::crdt::Map {
     kv
 }
 
-/// Helper to check deep nested values inside a Nested structure
-pub fn assert_nested_value(kv: &Nested, path: &[&str], expected: &str) {
+/// Helper to check deep nested values inside a Node structure
+pub fn assert_nested_value(kv: &Node, path: &[&str], expected: &str) {
     let mut current = kv;
     let last_idx = path.len() - 1;
 
@@ -167,7 +167,7 @@ pub fn assert_nested_value(kv: &Nested, path: &[&str], expected: &str) {
 }
 
 /// Helper to validate that a path is deleted (has tombstone or is missing)
-pub fn assert_path_deleted(kv: &Nested, path: &[&str]) {
+pub fn assert_path_deleted(kv: &Node, path: &[&str]) {
     if path.is_empty() {
         panic!("Empty path provided to assert_path_deleted");
     }

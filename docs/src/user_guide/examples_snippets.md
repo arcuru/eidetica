@@ -38,7 +38,7 @@ if db_path.exists() {
 ## 2. Creating or Loading a Tree
 
 ```rust
-use eidetica::crdt::Nested;
+use eidetica::crdt::Node;
 
 let db: BaseDB = /* obtained from step 1 */;
 let tree_name = "my_app_data";
@@ -51,7 +51,7 @@ let tree = match db.find_tree(tree_name) {
     }
     Err(e) if e.is_not_found() => {
         println!("Creating new tree: {}", tree_name);
-        let mut settings = Nested::new();
+        let mut settings = Node::new();
         settings.set_string("name", tree_name);
         db.new_tree(settings, auth_key)? // All trees require authentication
     }
@@ -203,7 +203,8 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust
-use eidetica::subtree::{KVStore, Value, Nested};
+use eidetica::subtree::{KVStore, Value};
+use eidetica::crdt::Node;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -230,7 +231,7 @@ let user_store = op.get_subtree::<KVStore>("users")?;
         .set(Value::String("jane@example.com".to_string()))?;
 
     // Set preferences as a map
-    let mut preferences = Nested::new();
+    let mut preferences = Node::new();
     preferences.set_string("theme".to_string(), "dark".to_string());
     preferences.set_string("notifications".to_string(), "enabled".to_string());
 

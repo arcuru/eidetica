@@ -1589,19 +1589,8 @@ impl Node {
     }
 }
 
-// Compatibility methods for Nested API
+// JSON serialization methods
 impl Node {
-    /// Set a key-value pair with automatic conversion from Value enum.
-    /// This provides compatibility with the existing Nested API.
-    pub fn set_value<K>(&mut self, key: K, value: crate::crdt::Value) -> &mut Self
-    where
-        K: Into<String>,
-    {
-        let node_value = Self::value_to_node_value(value);
-        self.set(key.into(), node_value);
-        self
-    }
-
     /// Set a key-value pair with a raw NodeValue (for advanced use).
     pub fn set_raw<K>(&mut self, key: K, value: NodeValue) -> &mut Self
     where
@@ -1610,11 +1599,6 @@ impl Node {
         self.set(key.into(), value);
         self
     }
-
-    // /// Get a raw Value by key (for compatibility with Nested API).
-    /*pub fn get_raw(&self, key: &str) -> Option<crate::crdt::Value> {
-        self.get(key).map(Self::node_value_to_value)
-    }*/
 
     /// Set a key-value pair with automatic JSON serialization for any Serialize type.
     pub fn set_json<K, T>(&mut self, key: K, value: T) -> crate::Result<&mut Self>
@@ -1685,39 +1669,6 @@ impl Node {
             _ => None,
         }
     }
-
-    /// Set a key-value pair where the value is an array.
-    pub fn set_array<K>(&mut self, key: K, value: crate::crdt::Array) -> &mut Self
-    where
-        K: Into<String>,
-    {
-        // Convert Array to NodeList
-        let mut node_list = NodeList::new();
-        for id in value.ids() {
-            if let Some(array_value) = value.get(&id) {
-                let node_value = Self::value_to_node_value(array_value.clone());
-                node_list.push(node_value);
-            }
-        }
-        self.set(key.into(), NodeValue::List(node_list));
-        self
-    }
-
-    // /// Get an array by key.
-    /*pub fn get_array(&self, key: &str) -> Option<crate::crdt::Array> {
-        match self.get(key) {
-            Some(NodeValue::List(list)) => {
-                // Convert NodeList to Array
-                let mut array = crate::crdt::Array::new();
-                for value in list.iter() {
-                    let array_value = Self::node_value_to_value(value);
-                    array.add(array_value);
-                }
-                Some(array)
-            }
-            _ => None,
-        }
-    }*/
 
     /// Get a reference to the internal HashMap compatible with Nested API.
     /// Returns a converted HashMap<String, Value> for compatibility.
