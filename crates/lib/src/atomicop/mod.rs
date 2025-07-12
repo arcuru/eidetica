@@ -171,7 +171,7 @@ impl AtomicOp {
         let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
 
         // Always merge - get_local_data returns Default::default() if no staged data,
-        // which is an empty Node that won't affect the merge
+        // which is an empty Map that won't affect the merge
         historical_settings = historical_settings.merge(&staged_settings)?;
 
         Ok(historical_settings)

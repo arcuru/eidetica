@@ -89,7 +89,7 @@ impl AuthValidator {
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Nested settings containing auth configuration
+    /// * `settings` - Map settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,

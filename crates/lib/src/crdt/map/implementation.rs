@@ -1,7 +1,7 @@
 //! Tree-based Map CRDT implementation.
 //!
 //! This module provides a Map CRDT that aligns with Eidetica's tree-based architecture,
-//! replacing the legacy Node implementation with cleaner semantics and better performance.
+//! replacing the legacy Map implementation with cleaner semantics and better performance.
 //! The implementation uses conflict-free replicated data types (CRDTs) to enable
 //! distributed collaboration without requiring coordination between nodes.
 //!
@@ -9,8 +9,8 @@
 //!
 //! - [`Map`] - The root tree structure containing child nodes
 //! - [`Value`] - Values that can be stored in tree nodes (leaf or branch values)
-//! - [`Array`] - Ordered collections with stable positioning using rational numbers
-//! - [`array::Position`] - Rational number-based positions for stable list ordering
+//! - [`List`] - Ordered collections with stable positioning using rational numbers
+//! - [`list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # CRDT Architecture
 //!
@@ -22,16 +22,16 @@
 //! - **Stable ordering** for lists using rational number positions
 //!
 //! ## List Ordering with Rational Numbers
-//! The [`Array`] uses a unique approach to maintain stable ordering across
-//! concurrent insertions. Instead of traditional array indices, each list item
-//! has a [`array::Position`] containing:
+//! The [`List`] uses a unique approach to maintain stable ordering across
+//! concurrent insertions. Instead of traditional list indices, each list item
+//! has a [`list::Position`] containing:
 //! - A rational number (numerator/denominator) for ordering
 //! - A unique UUID for deterministic tie-breaking
 //!
 //! This allows insertion between any two existing elements without reordering:
 //! ```
-//! # use eidetica::crdt::map::{Array, array::Position};
-//! let mut list = Array::new();
+//! # use eidetica::crdt::map::{List, list::Position};
+//! let mut list = List::new();
 //!
 //! // Simple index-based operations
 //! list.push("first");   // Returns index 0
@@ -98,7 +98,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use super::array::Position;
+use super::list::Position;
 use uuid::Uuid;
 
 use crate::crdt::CRDTError;
@@ -113,12 +113,12 @@ use crate::crdt::traits::{CRDT, Data};
 ///
 /// # How Rational Number Positioning Works
 ///
-/// Traditional array indices (0, 1, 2, 3...) don't work well for distributed
+/// Traditional list indices (0, 1, 2, 3...) don't work well for distributed
 /// systems because inserting between positions requires reordering. Rational numbers
 /// solve this by creating infinite space between any two positions:
 ///
 /// ```
-/// # use eidetica::crdt::map::{Array, array::Position};
+/// # use eidetica::crdt::map::{List, list::Position};
 /// let pos1 = Position::new(1, 1);  // 1.0
 /// let pos2 = Position::new(2, 1);  // 2.0
 ///
@@ -147,7 +147,7 @@ use crate::crdt::traits::{CRDT, Data};
 /// (assuming B's UUID < D's UUID)
 /// ```
 ///
-/// Values that can be stored in Node tree structures.
+/// Values that can be stored in Map tree structures.
 ///
 /// `Value` provides tree-based naming aligned with Eidetica's forest metaphor,
 /// supporting both leaf values (terminal nodes) and branch values (containing other nodes).
@@ -163,7 +163,7 @@ use crate::crdt::traits::{CRDT, Data};
 ///
 /// ## Branch Values (Container Nodes)
 /// - [`Value::Map`] - Nested tree structures
-/// - [`Value::Array`] - Ordered collections with stable positioning
+/// - [`Value::List`] - Ordered collections with stable positioning
 ///
 /// ## CRDT Semantics
 /// - [`Value::Deleted`] - Tombstone marker for deleted values
@@ -196,7 +196,7 @@ use crate::crdt::traits::{CRDT, Data};
 /// # CRDT Merge Behavior
 ///
 /// - **Leaf values**: Last-write-wins semantics
-/// - **Branch values**: Structural merging (recursive for Node, positional for List)
+/// - **Branch values**: Structural merging (recursive for Map, positional for List)
 /// - **Tombstones**: Deletion markers that win over any non-deleted value
 /// - **Resurrection**: Non-deleted values can overwrite tombstones
 ///
@@ -226,7 +226,7 @@ pub enum Value {
     /// Sub-tree containing other nodes
     Map(Map),
     /// Ordered collection of values
-    Array(Array),
+    List(List),
 
     // CRDT semantics
     /// Tombstone marker for deleted values
@@ -235,7 +235,7 @@ pub enum Value {
 
 /// Ordered list with stable positioning for CRDT operations.
 ///
-/// `Array` maintains a stable ordering of elements using [`Position`] keys
+/// `List` maintains a stable ordering of elements using [`Position`] keys
 /// in a `BTreeMap`. This design enables concurrent insertions without requiring
 /// coordination between distributed replicas.
 ///
@@ -249,8 +249,8 @@ pub enum Value {
 /// # Usage Patterns
 ///
 /// ```
-/// # use eidetica::crdt::map::{Array, array::Position};
-/// let mut list = Array::new();
+/// # use eidetica::crdt::map::{List, list::Position};
+/// let mut list = List::new();
 ///
 /// // Simple append operations
 /// list.push("first");  // Returns index 0
@@ -282,14 +282,14 @@ pub enum Value {
 /// (order determined by Position comparison)
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Array {
+pub struct List {
     /// Internal storage using BTreeMap for ordered access
     items: BTreeMap<Position, Value>,
 }
 
 /// The root tree structure containing child nodes.
 ///
-/// `Node` represents a tree-like structure where each node can contain
+/// `Map` represents a tree-like structure where each node can contain
 /// multiple named children, aligned with Eidetica's forest metaphor.
 /// Each child is identified by a string key and can contain any [`Value`].
 ///
@@ -303,7 +303,7 @@ pub struct Array {
 ///
 /// # API Levels
 ///
-/// The Node API provides multiple levels of ergonomics:
+/// The Map API provides multiple levels of ergonomics:
 ///
 /// ## Basic Access
 /// ```
@@ -353,12 +353,12 @@ pub struct Array {
 ///
 /// # Builder Pattern
 /// ```
-/// # use eidetica::crdt::map::{Map, Array};
+/// # use eidetica::crdt::map::{Map, List};
 /// let map = Map::new()
 ///     .with_text("name", "Alice")
 ///     .with_int("age", 30)
 ///     .with_bool("active", true)
-///     .with_list("tags", Array::new());
+///     .with_list("tags", List::new());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Map {
@@ -377,7 +377,7 @@ impl Value {
 
     /// Returns true if this is a branch value (can contain other nodes)
     pub fn is_branch(&self) -> bool {
-        matches!(self, Value::Map(_) | Value::Array(_))
+        matches!(self, Value::Map(_) | Value::List(_))
     }
 
     /// Returns true if this value represents a deletion
@@ -398,7 +398,7 @@ impl Value {
             Value::Int(_) => "int",
             Value::Text(_) => "text",
             Value::Map(_) => "node",
-            Value::Array(_) => "list",
+            Value::List(_) => "list",
             Value::Deleted => "deleted",
         }
     }
@@ -469,17 +469,17 @@ impl Value {
     }
 
     /// Attempts to convert to a list (returns immutable reference)
-    pub fn as_list(&self) -> Option<&Array> {
+    pub fn as_list(&self) -> Option<&List> {
         match self {
-            Value::Array(list) => Some(list),
+            Value::List(list) => Some(list),
             _ => None,
         }
     }
 
     /// Attempts to convert to a mutable list reference
-    pub fn as_list_mut(&mut self) -> Option<&mut Array> {
+    pub fn as_list_mut(&mut self) -> Option<&mut List> {
         match self {
-            Value::Array(list) => Some(list),
+            Value::List(list) => Some(list),
             _ => None,
         }
     }
@@ -518,8 +518,8 @@ impl Value {
                     *self = other.clone();
                 }
             }
-            Value::Array(other_list) => {
-                if let Value::Array(self_list) = self {
+            Value::List(other_list) => {
+                if let Value::List(self_list) = self {
                     self_list.merge(other_list);
                 } else {
                     // Different types, replace with other
@@ -541,7 +541,7 @@ impl Value {
             Value::Int(n) => n.to_string(),
             Value::Text(s) => format!("\"{}\"", s.replace('\"', "\\\"")),
             Value::Map(node) => node.to_json_string(),
-            Value::Array(list) => {
+            Value::List(list) => {
                 let items: Vec<String> = list.iter().map(|v| v.to_json_string()).collect();
                 format!("[{}]", items.join(","))
             }
@@ -558,7 +558,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{n}"),
             Value::Text(s) => write!(f, "{s}"),
             Value::Map(node) => write!(f, "{node}"),
-            Value::Array(list) => {
+            Value::List(list) => {
                 let items: Vec<String> = list.iter().map(|v| v.to_string()).collect();
                 write!(f, "[{}]", items.join(", "))
             }
@@ -630,9 +630,9 @@ impl From<Map> for Value {
     }
 }
 
-impl From<Array> for Value {
-    fn from(value: Array) -> Self {
-        Value::Array(value)
+impl From<List> for Value {
+    fn from(value: List) -> Self {
+        Value::List(value)
     }
 }
 
@@ -743,10 +743,10 @@ impl PartialEq<Value> for bool {
 // Data trait implementations
 impl Data for Position {}
 impl Data for Value {}
-impl Data for Array {}
+impl Data for List {}
 impl Data for Map {}
 
-impl Array {
+impl List {
     /// Creates a new empty list
     pub fn new() -> Self {
         Self {
@@ -944,8 +944,8 @@ impl Array {
         self.items.values_mut()
     }
 
-    /// Merges another Array into this one (CRDT merge operation)
-    pub fn merge(&mut self, other: &Array) {
+    /// Merges another List into this one (CRDT merge operation)
+    pub fn merge(&mut self, other: &List) {
         for (position, value) in &other.items {
             match self.items.get_mut(position) {
                 Some(existing_value) => {
@@ -971,15 +971,15 @@ impl Array {
     }
 }
 
-impl Default for Array {
+impl Default for List {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl FromIterator<Value> for Array {
+impl FromIterator<Value> for List {
     fn from_iter<T: IntoIterator<Item = Value>>(iter: T) -> Self {
-        let mut list = Array::new();
+        let mut list = List::new();
         for value in iter {
             list.push(value);
         }
@@ -1071,7 +1071,7 @@ impl Map {
     }
 
     /// Gets a list value by key
-    pub fn get_list(&self, key: impl AsRef<str>) -> Option<&Array> {
+    pub fn get_list(&self, key: impl AsRef<str>) -> Option<&List> {
         self.get(key).and_then(|v| v.as_list())
     }
 
@@ -1131,7 +1131,7 @@ impl Map {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::{Map, Array};
+    /// # use eidetica::crdt::map::{Map, List};
     /// let mut map = Map::new();
     /// map.set_path("user.profile.name", "Alice").unwrap();
     ///
@@ -1161,7 +1161,7 @@ impl Map {
                 Value::Map(node) => {
                     current_value = node.get(part)?;
                 }
-                Value::Array(list) => {
+                Value::List(list) => {
                     // Try to parse as index
                     if let Ok(index) = part.parse::<usize>() {
                         current_value = list.get(index)?;
@@ -1197,7 +1197,7 @@ impl Map {
     }
 
     /// Gets a list value by path
-    pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&Array> {
+    pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&List> {
         self.get_path(path).and_then(|v| v.as_list())
     }
 
@@ -1216,7 +1216,7 @@ impl Map {
                 Value::Map(node) => {
                     current_value = node.get_mut(part)?;
                 }
-                Value::Array(list) => {
+                Value::List(list) => {
                     // Try to parse as index
                     if let Ok(index) = part.parse::<usize>() {
                         current_value = list.get_mut(index)?;
@@ -1279,7 +1279,7 @@ impl Map {
                 Some(Value::Map(node)) => {
                     current_map = node;
                 }
-                _ => unreachable!(), // We just ensured this is a Node
+                _ => unreachable!(), // We just ensured this is a Map
             }
         }
 
@@ -1345,9 +1345,9 @@ impl Map {
 }
 
 impl CRDT for Map {
-    /// Merges another Node into this one using CRDT semantics.
+    /// Merges another Map into this one using CRDT semantics.
     ///
-    /// This method implements the core CRDT merge operation for Node structures.
+    /// This method implements the core CRDT merge operation for Map structures.
     /// It recursively merges all child nodes while preserving CRDT properties:
     /// - Associativity: (A ∪ B) ∪ C = A ∪ (B ∪ C)
     /// - Idempotency: A ∪ A = A
@@ -1449,8 +1449,8 @@ impl Map {
     }
 
     /// Builder method to set a list value
-    pub fn with_list(self, key: impl Into<String>, value: impl Into<Array>) -> Self {
-        self.with(key, Value::Array(value.into()))
+    pub fn with_list(self, key: impl Into<String>, value: impl Into<List>) -> Self {
+        self.with(key, Value::List(value.into()))
     }
 }
 
@@ -1535,9 +1535,9 @@ impl Map {
         }
     }
 
-    /// Get a reference to the internal HashMap compatible with Nested API.
+    /// Get a reference to the internal HashMap compatible with Map API.
     /// Returns a converted HashMap<String, Value> for compatibility.
-    /// Get a reference to the internal HashMap compatible with Nested API.
+    /// Get a reference to the internal HashMap compatible with Map API.
     /// Returns a reference to the underlying Value storage.
     pub fn as_hashmap(&self) -> &HashMap<String, Value> {
         &self.children
@@ -1549,8 +1549,8 @@ impl Map {
         &mut self.children
     }
 
-    /// Array operations compatibility methods
-    pub fn array_add<K>(&mut self, key: K, value: Value) -> crate::Result<String>
+    /// List operations compatibility methods
+    pub fn list_add<K>(&mut self, key: K, value: Value) -> crate::Result<String>
     where
         K: Into<String>,
     {
@@ -1558,7 +1558,7 @@ impl Map {
         let map_value = value;
 
         match self.children.get_mut(&key_str) {
-            Some(Value::Array(list)) => {
+            Some(Value::List(list)) => {
                 let index = list.push(map_value);
                 // Return a string representation of the index for compatibility
                 Ok(index.to_string())
@@ -1569,21 +1569,21 @@ impl Map {
             }
             .into()),
             None => {
-                let mut list = Array::new();
+                let mut list = List::new();
                 let index = list.push(map_value);
-                self.set(key_str, Value::Array(list));
+                self.set(key_str, Value::List(list));
                 Ok(index.to_string())
             }
         }
     }
 
-    /// Array remove operation - tombstones element by position ID
-    pub fn array_remove<K>(&mut self, key: K, id: &str) -> crate::Result<bool>
+    /// List remove operation - tombstones element by position ID
+    pub fn list_remove<K>(&mut self, key: K, id: &str) -> crate::Result<bool>
     where
         K: Into<String>,
     {
         match self.children.get_mut(&key.into()) {
-            Some(Value::Array(list)) => {
+            Some(Value::List(list)) => {
                 // Parse the position ID (format: "numerator:denominator")
                 let parts: Vec<&str> = id.split(':').collect();
                 if parts.len() >= 2 {
@@ -1621,13 +1621,13 @@ impl Map {
         }
     }
 
-    /// Get an element by its ID from an array
-    pub fn array_get<K>(&self, key: K, id: &str) -> Option<&Value>
+    /// Get an element by its ID from a list
+    pub fn list_get<K>(&self, key: K, id: &str) -> Option<&Value>
     where
         K: AsRef<str>,
     {
         match self.children.get(key.as_ref()) {
-            Some(Value::Array(list)) => {
+            Some(Value::List(list)) => {
                 // Parse the position ID (format: "numerator:denominator")
                 let parts: Vec<&str> = id.split(':').collect();
                 if parts.len() >= 2
@@ -1651,15 +1651,15 @@ impl Map {
         }
     }
 
-    /// Get all element IDs from an array in order
+    /// Get all element IDs from a list in order
     /// Returns string representations of list positions for compatibility
     /// Filters out tombstones (deleted elements)
-    pub fn array_ids<K>(&self, key: K) -> Vec<String>
+    pub fn list_ids<K>(&self, key: K) -> Vec<String>
     where
         K: AsRef<str>,
     {
         match self.children.get(key.as_ref()) {
-            Some(Value::Array(list)) => list
+            Some(Value::List(list)) => list
                 .iter_with_positions()
                 .filter_map(|(pos, value)| {
                     // Filter out tombstones
@@ -1673,13 +1673,13 @@ impl Map {
         }
     }
 
-    /// Get array length (excluding tombstones)
-    pub fn array_len<K>(&self, key: K) -> usize
+    /// Get list length (excluding tombstones)
+    pub fn list_len<K>(&self, key: K) -> usize
     where
         K: AsRef<str>,
     {
         match self.children.get(key.as_ref()) {
-            Some(Value::Array(list)) => list
+            Some(Value::List(list)) => list
                 .iter_with_positions()
                 .filter(|(_, value)| !matches!(value, Value::Deleted))
                 .count(),
@@ -1687,24 +1687,24 @@ impl Map {
         }
     }
 
-    /// Check if array is empty
-    pub fn array_is_empty<K>(&self, key: K) -> bool
+    /// Check if list is empty
+    pub fn list_is_empty<K>(&self, key: K) -> bool
     where
         K: AsRef<str>,
     {
         match self.children.get(key.as_ref()) {
-            Some(Value::Array(list)) => list.is_empty(),
+            Some(Value::List(list)) => list.is_empty(),
             _ => true,
         }
     }
 
-    /// Clear array
-    pub fn array_clear<K>(&mut self, key: K) -> crate::Result<()>
+    /// Clear list
+    pub fn list_clear<K>(&mut self, key: K) -> crate::Result<()>
     where
         K: AsRef<str>,
     {
         match self.get_mut(key.as_ref()) {
-            Some(Value::Array(list)) => {
+            Some(Value::List(list)) => {
                 list.clear();
                 Ok(())
             }
@@ -1718,8 +1718,8 @@ impl Map {
     }
 }
 
-// Custom serialization for Array to handle Position keys
-impl serde::Serialize for Array {
+// Custom serialization for List to handle Position keys
+impl serde::Serialize for List {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -1734,7 +1734,7 @@ impl serde::Serialize for Array {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Array {
+impl<'de> serde::Deserialize<'de> for List {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -1742,10 +1742,10 @@ impl<'de> serde::Deserialize<'de> for Array {
         use serde::de::{MapAccess, Visitor};
         use std::fmt;
 
-        struct ArrayVisitor;
+        struct ListVisitor;
 
-        impl<'de> Visitor<'de> for ArrayVisitor {
-            type Value = Array;
+        impl<'de> Visitor<'de> for ListVisitor {
+            type Value = List;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("a map with position keys")
@@ -1773,10 +1773,10 @@ impl<'de> serde::Deserialize<'de> for Array {
                         items.insert(position, value);
                     }
                 }
-                Ok(Array { items })
+                Ok(List { items })
             }
         }
 
-        deserializer.deserialize_map(ArrayVisitor)
+        deserializer.deserialize_map(ListVisitor)
     }
 }

@@ -1,7 +1,7 @@
 //! Map-based CRDT implementation.
 //!
 //! This module provides a Map CRDT that aligns with Eidetica's tree-based architecture,
-//! replacing the legacy Node implementation with cleaner semantics and better performance.
+//! replacing the legacy "Nested/Node" implementation with cleaner semantics and better performance.
 //! The implementation uses conflict-free replicated data types (CRDTs) to enable
 //! distributed collaboration without requiring coordination between nodes.
 //!
@@ -9,8 +9,8 @@
 //!
 //! - [`Map`] - The root tree structure containing child nodes
 //! - [`Value`] - Values that can be stored in tree nodes (leaf or branch values)
-//! - [`Array`] - Ordered collections with stable positioning using rational numbers
-//! - [`array::Position`] - Rational number-based positions for stable list ordering
+//! - [`List`] - Ordered collections with stable positioning using rational numbers
+//! - [`list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # CRDT Architecture
 //!
@@ -22,16 +22,16 @@
 //! - **Stable ordering** for lists using rational number positions
 //!
 //! ## List Ordering with Rational Numbers
-//! The [`Array`] uses a unique approach to maintain stable ordering across
-//! concurrent insertions. Instead of traditional array indices, each list item
-//! has a [`array::Position`] containing:
+//! The [`List`] uses Rational Numbers to maintain stable ordering across
+//! concurrent insertions. Instead of traditional indices, each list item
+//! has a [`list::Position`] containing:
 //! - A rational number (numerator/denominator) for ordering
 //! - A unique UUID for deterministic tie-breaking
 //!
 //! This allows insertion between any two existing elements without reordering:
 //! ```
-//! # use eidetica::crdt::map::{Array, array::Position};
-//! let mut list = Array::new();
+//! # use eidetica::crdt::map::{List, list::Position};
+//! let mut list = List::new();
 //!
 //! // Simple index-based operations
 //! list.push("first");   // Returns index 0
@@ -95,8 +95,8 @@
 //! - **CRDT semantics**: Proper conflict resolution and merge behavior
 //! - **Tombstone hiding**: Internal deletion markers are hidden from public API
 
-pub mod array;
 mod implementation;
+pub mod list;
 mod tests;
 
 pub use implementation::*;

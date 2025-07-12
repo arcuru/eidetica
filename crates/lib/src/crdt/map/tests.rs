@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod test_map {
-    use crate::crdt::map::array::Position;
-    use crate::crdt::map::{Array, Value};
+    use crate::crdt::map::list::Position;
+    use crate::crdt::map::{List, Value};
     use crate::crdt::{CRDT, CRDTError, Map};
 
     // Value tests
@@ -41,7 +41,7 @@ mod test_map {
     #[test]
     fn test_map_value_branch_types() {
         let map_val = Value::Map(Map::new());
-        let list_val = Value::Array(Array::new());
+        let list_val = Value::List(List::new());
 
         assert!(!map_val.is_leaf());
         assert!(!list_val.is_leaf());
@@ -63,7 +63,7 @@ mod test_map {
         assert_eq!(Value::Int(42).type_name(), "int");
         assert_eq!(Value::Text("hello".to_string()).type_name(), "text");
         assert_eq!(Value::Map(Map::new()).type_name(), "node");
-        assert_eq!(Value::Array(Array::new()).type_name(), "list");
+        assert_eq!(Value::List(List::new()).type_name(), "list");
         assert_eq!(Value::Deleted.type_name(), "deleted");
     }
 
@@ -73,7 +73,7 @@ mod test_map {
         let int_val = Value::Int(42);
         let text_val = Value::Text("hello".to_string());
         let map_val = Value::Map(Map::new());
-        let list_val = Value::Array(Array::new());
+        let list_val = Value::List(List::new());
 
         // Test as_bool
         assert_eq!(bool_val.as_bool(), Some(true));
@@ -107,7 +107,7 @@ mod test_map {
         let from_i64: Value = 42i64.into();
         let from_string: Value = "hello".into();
         let from_node: Value = Map::new().into();
-        let from_list: Value = Array::new().into();
+        let from_list: Value = List::new().into();
 
         assert_eq!(from_bool.as_bool(), Some(true));
         assert_eq!(from_i64.as_int(), Some(42));
@@ -146,10 +146,10 @@ mod test_map {
         assert_eq!(val3.as_int(), Some(100)); // Resurrection
     }
 
-    // Array tests
+    // List tests
     #[test]
-    fn test_node_list_basic_operations() {
-        let mut list = Array::new();
+    fn test_list_basic_operations() {
+        let mut list = List::new();
 
         assert!(list.is_empty());
         assert_eq!(list.len(), 0);
@@ -175,8 +175,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_set_operations() {
-        let mut list = Array::new();
+    fn test_list_set_operations() {
+        let mut list = List::new();
 
         list.push("original");
         list.push(100);
@@ -196,8 +196,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_remove_operations() {
-        let mut list = Array::new();
+    fn test_list_remove_operations() {
+        let mut list = List::new();
 
         list.push("first");
         list.push("second");
@@ -218,8 +218,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_at_position() {
-        let mut list = Array::new();
+    fn test_list_insert_at_position() {
+        let mut list = List::new();
 
         let pos1 = Position::new(10, 1);
         let pos2 = Position::new(20, 1);
@@ -236,8 +236,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_iterators() {
-        let mut list = Array::new();
+    fn test_list_iterators() {
+        let mut list = List::new();
 
         list.push("a");
         list.push("b");
@@ -264,9 +264,9 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_merge() {
-        let mut list1 = Array::new();
-        let mut list2 = Array::new();
+    fn test_list_merge() {
+        let mut list1 = List::new();
+        let mut list2 = List::new();
 
         let pos1 = Position::new(10, 1);
         let pos2 = Position::new(20, 1);
@@ -297,14 +297,14 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_from_iterator() {
+    fn test_list_from_iterator() {
         let values = vec![
             Value::Text("a".to_string()),
             Value::Int(42),
             Value::Bool(true),
         ];
 
-        let list: Array = values.into_iter().collect();
+        let list: List = values.into_iter().collect();
         assert_eq!(list.len(), 3);
         assert_eq!(list.get(0).and_then(|v| v.as_text()), Some("a"));
         assert_eq!(list.get(1).and_then(|v| v.as_int()), Some(42));
@@ -446,7 +446,7 @@ mod test_map {
         let mut map = Map::new();
 
         // Create a node with a list
-        let mut list = Array::new();
+        let mut list = List::new();
         list.push("item1");
         list.push("item2");
         map.set("items", list);
@@ -520,7 +520,7 @@ mod test_map {
             .with_int("age", 30)
             .with_bool("active", true)
             .with_node("profile", Map::new().with_text("bio", "Developer"))
-            .with_list("tags", Array::new());
+            .with_list("tags", List::new());
 
         assert_eq!(map.get_text("name"), Some("Alice"));
         assert_eq!(map.get_int("age"), Some(30));
@@ -718,23 +718,23 @@ mod test_map {
     }
 
     #[test]
-    fn test_map_array_serialization() {
+    fn test_map_list_serialization() {
         let mut map = Map::new();
 
-        // Add an array element
-        let result = map.array_add("fruits", Value::Text("apple".to_string()));
+        // Add a list element
+        let result = map.list_add("fruits", Value::Text("apple".to_string()));
         assert!(result.is_ok());
 
-        // Check array length before serialization
-        let length_before = map.array_len("fruits");
+        // Check list length before serialization
+        let length_before = map.list_len("fruits");
         assert_eq!(length_before, 1);
 
         // Serialize and deserialize
         let serialized = serde_json::to_string(&map).unwrap();
         let deserialized: Map = serde_json::from_str(&serialized).unwrap();
 
-        // Check array length after deserialization
-        let length_after = deserialized.array_len("fruits");
+        // Check list length after deserialization
+        let length_after = deserialized.list_len("fruits");
         assert_eq!(length_after, 1);
 
         // Check if they're equal
@@ -743,8 +743,8 @@ mod test_map {
 
     // Additional tests for new API methods
     #[test]
-    fn test_node_list_push_returns_index() {
-        let mut list = Array::new();
+    fn test_list_push_returns_index() {
+        let mut list = List::new();
 
         // Test push returns correct sequential indices
         let idx1 = list.push("first");
@@ -763,8 +763,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_push_different_types() {
-        let mut list = Array::new();
+    fn test_list_push_different_types() {
+        let mut list = List::new();
 
         let idx1 = list.push("hello");
         let idx2 = list.push(42);
@@ -783,8 +783,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_at_valid_indices() {
-        let mut list = Array::new();
+    fn test_list_insert_at_valid_indices() {
+        let mut list = List::new();
 
         // Insert at beginning of empty list
         assert!(list.insert(0, "first").is_ok());
@@ -805,8 +805,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_at_beginning() {
-        let mut list = Array::new();
+    fn test_list_insert_at_beginning() {
+        let mut list = List::new();
 
         list.push("second");
         list.push("third");
@@ -820,8 +820,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_at_end() {
-        let mut list = Array::new();
+    fn test_list_insert_at_end() {
+        let mut list = List::new();
 
         list.push("first");
         list.push("second");
@@ -833,8 +833,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_index_out_of_bounds() {
-        let mut list = Array::new();
+    fn test_list_insert_index_out_of_bounds() {
+        let mut list = List::new();
 
         // Insert beyond bounds in empty list
         let result = list.insert(1, "invalid");
@@ -864,8 +864,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_mixed_with_push() {
-        let mut list = Array::new();
+    fn test_list_insert_mixed_with_push() {
+        let mut list = List::new();
 
         // Mix insert and push operations
         let idx1 = list.push("a");
@@ -885,8 +885,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_maintains_stable_ordering() {
-        let mut list = Array::new();
+    fn test_list_insert_maintains_stable_ordering() {
+        let mut list = List::new();
 
         // Add initial items
         list.push("first");
@@ -896,7 +896,7 @@ mod test_map {
         assert!(list.insert(1, "second").is_ok());
 
         // Create another list with same operations
-        let mut list2 = Array::new();
+        let mut list2 = List::new();
         list2.push("first");
         list2.push("third");
         assert!(list2.insert(1, "second").is_ok());
@@ -912,20 +912,20 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_with_nested_values() {
-        let mut list = Array::new();
+    fn test_list_insert_with_nested_values() {
+        let mut list = List::new();
 
         // Insert nested structures
-        let mut nested_node = Map::new();
-        nested_node.set("name", "Alice");
-        nested_node.set("age", 30);
+        let mut nested_map = Map::new();
+        nested_map.set("name", "Alice");
+        nested_map.set("age", 30);
 
-        let mut nested_list = Array::new();
+        let mut nested_list = List::new();
         nested_list.push(1);
         nested_list.push(2);
         nested_list.push(3);
 
-        assert!(list.insert(0, nested_node).is_ok());
+        assert!(list.insert(0, nested_map).is_ok());
         assert!(list.insert(1, nested_list).is_ok());
 
         assert_eq!(list.len(), 2);
@@ -933,9 +933,9 @@ mod test_map {
         assert!(list.get(1).unwrap().as_list().is_some());
 
         // Verify nested content
-        let node = list.get(0).unwrap().as_node().unwrap();
-        assert_eq!(node.get_text("name"), Some("Alice"));
-        assert_eq!(node.get_int("age"), Some(30));
+        let map = list.get(0).unwrap().as_node().unwrap();
+        assert_eq!(map.get_text("name"), Some("Alice"));
+        assert_eq!(map.get_int("age"), Some(30));
 
         let inner_list = list.get(1).unwrap().as_list().unwrap();
         assert_eq!(inner_list.len(), 3);
@@ -943,8 +943,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_error_integration() {
-        let mut list = Array::new();
+    fn test_list_error_integration() {
+        let mut list = List::new();
 
         let result = list.insert(5, "test");
         assert!(result.is_err());
@@ -954,15 +954,15 @@ mod test_map {
         assert!(!error.is_merge_error());
         assert!(!error.is_serialization_error());
         assert!(!error.is_type_error());
-        assert!(!error.is_array_error());
+        assert!(!error.is_list_operation_error());
         assert!(!error.is_map_error());
         assert!(!error.is_nested_error());
         assert!(!error.is_not_found_error());
     }
 
     #[test]
-    fn test_node_list_push_after_removals() {
-        let mut list = Array::new();
+    fn test_list_push_after_removals() {
+        let mut list = List::new();
 
         // Add items
         list.push("a");
@@ -981,8 +981,8 @@ mod test_map {
     }
 
     #[test]
-    fn test_node_list_insert_after_removals() {
-        let mut list = Array::new();
+    fn test_list_insert_after_removals() {
+        let mut list = List::new();
 
         // Add items
         list.push("a");

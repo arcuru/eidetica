@@ -8,5 +8,5 @@
 //! the `crdt` module directly.
 
 // Re-export everything from the crdt module for backward compatibility
-pub use crate::crdt::map::{Array, Value};
+pub use crate::crdt::map::{List, Value};
 pub use crate::crdt::{CRDT, Data, Map};
