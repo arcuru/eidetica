@@ -83,7 +83,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eidetica::crdt::Node::new(); // Tree settings
+            let mut settings = eidetica::crdt::Map::new(); // Tree settings
             settings.set_string("name", tree_name);
             let tree = db.new_tree(settings, auth_key)?;
 

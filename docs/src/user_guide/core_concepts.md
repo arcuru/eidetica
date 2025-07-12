@@ -167,8 +167,7 @@ Eidetica is under active development, and some features mentioned in this docume
 - In-memory database with file persistence
 - KVStore and RowStore subtree implementations
 - CRDT functionality:
-  - Map (simple key-value with tombstone support for deletions)
-  - Node (hierarchical nested key-value structure with recursive merging)
+  - Map (hierarchical nested key-value structure with recursive merging and tombstone support for deletions)
 - Atomic operations across subtrees
 - Tombstone support for proper deletion handling in distributed environments
 

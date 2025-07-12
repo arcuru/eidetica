@@ -62,10 +62,10 @@ println!("Available keys: {:?}", keys);
 All trees require authentication from creation:
 
 ```rust
-use eidetica::crdt::Node;
+use eidetica::crdt::Map;
 
 // Create tree settings
-let mut settings = Node::new();
+let mut settings = Map::new();
 settings.set_string("name", "my_data");
 
 // Create tree with authentication
@@ -222,7 +222,7 @@ Here's a complete example showing authentication in a multi-user context:
 ```rust
 use eidetica::{BaseDB, Tree, backend::database::InMemory};
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
-use eidetica::crdt::Node;
+use eidetica::crdt::Map;
 
 fn setup_multi_user_app() -> Result<Tree> {
     // Create database with admin key
@@ -231,7 +231,7 @@ fn setup_multi_user_app() -> Result<Tree> {
     db.add_private_key("SUPER_ADMIN")?;
 
     // Create application tree
-    let mut settings = Node::new();
+    let mut settings = Map::new();
     settings.set_string("name", "multi_user_app");
     let tree = db.new_tree(settings, "SUPER_ADMIN")?;
 

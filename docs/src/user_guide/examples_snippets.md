@@ -38,7 +38,7 @@ if db_path.exists() {
 ## 2. Creating or Loading a Tree
 
 ```rust
-use eidetica::crdt::Node;
+use eidetica::crdt::Map;
 
 let db: BaseDB = /* obtained from step 1 */;
 let tree_name = "my_app_data";
@@ -51,7 +51,7 @@ let tree = match db.find_tree(tree_name) {
     }
     Err(e) if e.is_not_found() => {
         println!("Creating new tree: {}", tree_name);
-        let mut settings = Node::new();
+        let mut settings = Map::new();
         settings.set_string("name", tree_name);
         db.new_tree(settings, auth_key)? // All trees require authentication
     }
@@ -204,7 +204,7 @@ match tasks_viewer.iter() {
 
 ```rust
 use eidetica::subtree::{KVStore, Value};
-use eidetica::crdt::Node;
+use eidetica::crdt::Map;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -231,7 +231,7 @@ let user_store = op.get_subtree::<KVStore>("users")?;
         .set(Value::String("jane@example.com".to_string()))?;
 
     // Set preferences as a map
-    let mut preferences = Node::new();
+    let mut preferences = Map::new();
     preferences.set_string("theme".to_string(), "dark".to_string());
     preferences.set_string("notifications".to_string(), "enabled".to_string());
 
@@ -323,7 +323,7 @@ The `YrsStore` subtree provides access to Y-CRDT (Yrs) documents for collaborati
 
 ```rust
 use eidetica::subtree::YrsStore;
-use eidetica::y_crdt::{Map, Transact};
+use eidetica::y_crdt::{Map as YMap, Transact};
 
 let tree: Tree = /* obtained from step 2 */;
 
