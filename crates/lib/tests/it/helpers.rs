@@ -193,7 +193,7 @@ pub fn setup_tree_with_multiple_dicts(
 
     for (subtree_name, values) in subtree_values {
         let dict = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<Dict>(*subtree_name)
             .unwrap_or_else(|_| panic!("Failed to get Dict '{subtree_name}'"));
 
         for (key, value) in *values {

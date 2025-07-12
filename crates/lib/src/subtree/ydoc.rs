@@ -202,9 +202,9 @@ pub struct YDoc {
 }
 
 impl SubTree for YDoc {
-    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
+    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.as_ref().to_string(),
+            name: subtree_name.into(),
             atomic_op: op.clone(),
             cached_backend_data: RefCell::new(None),
         })
