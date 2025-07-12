@@ -1,7 +1,7 @@
 use eidetica::backend::database::InMemory;
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 const DEFAULT_TEST_KEY_ID: &str = "test_key";
 
@@ -72,7 +72,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let settings_store = op
-            .get_subtree::<KVStore>("_settings")
+            .get_subtree::<Dict>("_settings")
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings {
@@ -114,8 +114,8 @@ pub fn create_nested_kvnested(structure: &[(&str, &[(&str, &str)])]) -> Map {
     root
 }
 
-/// Helper for common assertions around KVStore value retrieval
-pub fn assert_kvstore_value(store: &KVStore, key: &str, expected: &str) {
+/// Helper for common assertions around Dict value retrieval
+pub fn assert_dict_value(store: &Dict, key: &str, expected: &str) {
     match store
         .get(key)
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))
@@ -184,21 +184,20 @@ pub fn assert_path_deleted(kv: &Map, path: &[&str]) {
     }
 }
 
-/// Creates a tree with multiple KVStore subtrees and preset values
-pub fn setup_tree_with_multiple_kvstores(
+/// Creates a tree with multiple Dict subtrees and preset values
+pub fn setup_tree_with_multiple_dicts(
     subtree_values: &[(&str, &[(&str, &str)])],
 ) -> eidetica::Tree {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     for (subtree_name, values) in subtree_values {
-        let kv_store = op
-            .get_subtree::<KVStore>(subtree_name)
-            .unwrap_or_else(|_| panic!("Failed to get KVStore '{subtree_name}'"));
+        let dict = op
+            .get_subtree::<Dict>(subtree_name)
+            .unwrap_or_else(|_| panic!("Failed to get Dict '{subtree_name}'"));
 
         for (key, value) in *values {
-            kv_store
-                .set(*key, *value)
+            dict.set(*key, *value)
                 .unwrap_or_else(|_| panic!("Failed to set value for '{subtree_name}.{key}'"));
         }
     }

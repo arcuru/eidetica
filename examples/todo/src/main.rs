@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Map;
-use eidetica::subtree::RowStore;
-use eidetica::subtree::YrsStore;
+use eidetica::subtree::Table;
+use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
 use eidetica::{Result, Tree};
 use serde::{Deserialize, Serialize};
@@ -230,14 +230,14 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
     // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'todos' RowStore subtree
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table subtree
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
 
     // Create a new todo
     let todo = Todo::new(title);
 
-    // Insert the todo into the RowStore
-    // The RowStore will generate a unique ID for it
+    // Insert the todo into the Table
+    // The Table will generate a unique ID for it
     let todo_id = todos_store.insert(todo)?;
 
     // Commit the operation
@@ -252,10 +252,10 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'todos' RowStore subtree
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table subtree
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
 
-    // Get the todo from the RowStore
+    // Get the todo from the Table
     let mut todo = match todos_store.get(id) {
         Ok(todo) => todo,
         Err(e) if e.is_not_found() => {
@@ -274,7 +274,7 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     // Mark the todo as complete
     todo.complete();
 
-    // Update the todo in the RowStore
+    // Update the todo in the Table
     todos_store.set(id, todo)?;
 
     // Commit the operation
@@ -287,8 +287,8 @@ fn list_todos(tree: &Tree) -> Result<()> {
     // Start an atomic operation (for read-only, uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'todos' RowStore subtree
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table subtree
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
 
     // Search for all todos (predicate always returns true)
     let todos_with_ids = todos_store.search(|_| true)?;
@@ -320,8 +320,8 @@ fn set_user_info(
     // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_info' YrsStore subtree
-    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+    // Get a handle to the 'user_info' YDoc subtree
+    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -351,8 +351,8 @@ fn show_user_info(tree: &Tree) -> Result<()> {
     // Start an atomic operation (for read-only, uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_info' YrsStore subtree
-    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+    // Get a handle to the 'user_info' YDoc subtree
+    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
     // Read user information from the Y-CRDT document
     user_info_store.with_doc(|doc| {
@@ -386,8 +386,8 @@ fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
     // Start an atomic operation (uses default auth key)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YrsStore subtree
-    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+    // Get a handle to the 'user_prefs' YDoc subtree
+    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
 
     // Update user preference using the Y-CRDT document
     user_prefs_store.with_doc_mut(|doc| {
@@ -407,8 +407,8 @@ fn show_user_preferences(tree: &Tree) -> Result<()> {
     // Start an atomic operation (for read-only)
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YrsStore subtree
-    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+    // Get a handle to the 'user_prefs' YDoc subtree
+    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
 
     // Read user preferences from the Y-CRDT document
     user_prefs_store.with_doc(|doc| {

@@ -114,12 +114,12 @@ impl DelegationResolver {
                 }
 
                 // Get delegated tree's settings
-                let delegated_settings_kvstore = delegated_tree.get_settings().map_err(|e| {
+                let delegated_settings_dict = delegated_tree.get_settings().map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!("Failed to get delegated tree settings: {e}"),
                     }
                 })?;
-                current_settings = delegated_settings_kvstore.get_all().map_err(|e| {
+                current_settings = delegated_settings_dict.get_all().map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!("Failed to get delegated tree settings data: {e}"),
                     }

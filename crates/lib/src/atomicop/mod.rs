@@ -196,7 +196,7 @@ impl AtomicOp {
     /// Stages an update for a specific subtree within this atomic operation.
     ///
     /// This method is primarily intended for internal use by `SubTree` implementations
-    /// (like `KVStore::set`). It records the serialized `data` for the given `subtree`
+    /// (like `Dict::set`). It records the serialized `data` for the given `subtree`
     /// name within the operation's internal `EntryBuilder`.
     ///
     /// If this is the first modification to the named subtree within this operation,
@@ -243,7 +243,7 @@ impl AtomicOp {
     ///
     /// This method creates and returns an instance of the specified `SubTree` type `T`,
     /// associated with this `AtomicOp`. The returned `SubTree` handle can be used to
-    /// stage changes (e.g., using `KVStore::set`) for the `subtree_name`.
+    /// stage changes (e.g., using `Dict::set`) for the `subtree_name`.
     /// These changes are recorded within this `AtomicOp`.
     ///
     /// If this is the first time this `subtree_name` is accessed within the operation,

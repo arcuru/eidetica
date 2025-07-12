@@ -10,12 +10,12 @@ use crate::subtree::errors::SubtreeError;
 /// It assumes that the SubTree data is a Map CRDT, which allows for nested map structures.
 /// This implementation supports string values, as well as deletions via tombstones.
 /// For more complex data structures, consider using the nested capabilities of Map directly.
-pub struct KVStore {
+pub struct Dict {
     name: String,
     atomic_op: AtomicOp,
 }
 
-impl SubTree for KVStore {
+impl SubTree for Dict {
     fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.as_ref().to_string(),
@@ -28,7 +28,7 @@ impl SubTree for KVStore {
     }
 }
 
-impl KVStore {
+impl Dict {
     /// Gets a value associated with a key from the SubTree.
     ///
     /// This method prioritizes returning data staged within the current `AtomicOp`.
@@ -110,10 +110,10 @@ impl KVStore {
     /// Stages the setting of a key-value pair within the associated `AtomicOp`.
     ///
     /// This method updates the `Map` data held within the `AtomicOp` for this
-    /// `KVStore` instance's subtree name. The change is **not** persisted to the backend
+    /// `Dict` instance's subtree name. The change is **not** persisted to the backend
     /// until the `AtomicOp::commit()` method is called.
     ///
-    /// Calling this method on a `KVStore` obtained via `Tree::get_subtree_viewer` is possible
+    /// Calling this method on a `Dict` obtained via `Tree::get_subtree_viewer` is possible
     /// but the changes will be ephemeral and discarded, as the viewer's underlying `AtomicOp`
     /// is not intended to be committed.
     ///
@@ -203,7 +203,7 @@ impl KVStore {
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
     /// This method removes the key-value pair from the `Map` data held within
-    /// the `AtomicOp` for this `KVStore` instance's subtree name. A tombstone is created,
+    /// the `AtomicOp` for this `Dict` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `AtomicOp::commit()` method is called.
     ///
@@ -214,10 +214,10 @@ impl KVStore {
     /// # Examples
     /// ```rust,no_run
     /// # use eidetica::Tree;
-    /// # use eidetica::subtree::KVStore;
+    /// # use eidetica::subtree::Dict;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation().unwrap();
-    /// let store = op.get_subtree::<KVStore>("my_data").unwrap();
+    /// let store = op.get_subtree::<Dict>("my_data").unwrap();
     ///
     /// // First set a value
     /// store.set("user1", "Alice").unwrap();
@@ -284,26 +284,26 @@ impl KVStore {
     /// later using `ValueEditor::set()`.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `KVStore`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Dict`'s backend.
     pub fn get_value_mut(&self, key: impl AsRef<str>) -> ValueEditor<'_> {
         ValueEditor::new(self, vec![key.as_ref().to_string()])
     }
 
-    /// Gets a mutable editor for the root of this KVStore's subtree.
+    /// Gets a mutable editor for the root of this Dict's subtree.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `KVStore`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Dict`'s backend.
     pub fn get_root_mut(&self) -> ValueEditor<'_> {
         ValueEditor::new(self, Vec::new())
     }
 
-    /// Retrieves a `Value` from the KVStore using a specified path.
+    /// Retrieves a `Value` from the Dict using a specified path.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure. If the path is empty, it retrieves the entire
-    /// content of this KVStore's named subtree as a `Value::Map`.
+    /// content of this Dict's named subtree as a `Value::Map`.
     ///
-    /// This method operates on the fully merged view of the KVStore's data,
+    /// This method operates on the fully merged view of the Dict's data,
     /// including any local changes from the current `AtomicOp` layered on top
     /// of the backend state.
     ///
@@ -324,7 +324,7 @@ impl KVStore {
     {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
-            // Requesting the root of this KVStore's named subtree
+            // Requesting the root of this Dict's named subtree
             return Ok(Value::Map(self.get_all()?));
         }
 
@@ -387,7 +387,7 @@ impl KVStore {
         }
     }
 
-    /// Sets a `Value` at a specified path within the `KVStore`'s `AtomicOp`.
+    /// Sets a `Value` at a specified path within the `Dict`'s `AtomicOp`.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure.
@@ -414,7 +414,7 @@ impl KVStore {
     {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
-            // Setting the root of this KVStore's named subtree.
+            // Setting the root of this Dict's named subtree.
             // The value must be a map.
             if let Value::Map(map_data) = value {
                 let serialized_data = serde_json::to_string(&map_data)?;
@@ -476,17 +476,17 @@ impl KVStore {
     }
 }
 
-/// An editor for a `Value` obtained from a `KVStore`.
+/// An editor for a `Value` obtained from a `Dict`.
 ///
 /// This provides a mutable lens into a value, allowing modifications
-/// to be staged and then saved back to the KVStore.
+/// to be staged and then saved back to the Dict.
 pub struct ValueEditor<'a> {
-    kv_store: &'a KVStore,
+    kv_store: &'a Dict,
     keys: Vec<String>,
 }
 
 impl<'a> ValueEditor<'a> {
-    pub fn new<K>(kv_store: &'a KVStore, keys: K) -> Self
+    pub fn new<K>(kv_store: &'a Dict, keys: K) -> Self
     where
         K: Into<Vec<String>>,
     {
@@ -498,10 +498,10 @@ impl<'a> ValueEditor<'a> {
 
     /// Uses the stored keys to traverse the nested data structure and retrieve the value.
     ///
-    /// This method starts from the fully merged view of the KVStore's subtree (local
+    /// This method starts from the fully merged view of the Dict's subtree (local
     /// AtomicOp changes layered on top of backend state) and navigates using the path
     /// specified by `self.keys`. If `self.keys` is empty, it retrieves the root
-    /// of the KVStore's subtree.
+    /// of the Dict's subtree.
     ///
     /// Returns `Error::NotFound` if any part of the path does not exist, or if the
     /// final value is a tombstone (`Value::Deleted`).
@@ -511,7 +511,7 @@ impl<'a> ValueEditor<'a> {
         self.kv_store.get_at_path(&self.keys)
     }
 
-    /// Sets a `Value` at the path specified by `self.keys` within the `KVStore`'s `AtomicOp`.
+    /// Sets a `Value` at the path specified by `self.keys` within the `Dict`'s `AtomicOp`.
     ///
     /// This method modifies the local data associated with the `AtomicOp`. The changes
     /// are not persisted to the backend until `AtomicOp::commit()` is called.

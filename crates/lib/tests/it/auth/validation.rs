@@ -5,7 +5,7 @@ use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 #[test]
 fn test_backend_authentication_validation() {
@@ -21,7 +21,7 @@ fn test_backend_authentication_validation() {
         .new_authenticated_operation("TEST_KEY")
         .expect("Failed to create authenticated operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit");
@@ -48,7 +48,7 @@ fn test_authentication_validation_revoked_key() {
         .new_authenticated_operation("REVOKED_KEY")
         .expect("Failed to create authenticated operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op.commit();
@@ -103,7 +103,7 @@ fn test_permission_checking_admin_operations() {
         .new_authenticated_operation("WRITE_KEY")
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("_settings")
+        .get_subtree::<Dict>("_settings")
         .expect("Failed to get settings subtree");
     store
         .set("forbidden_setting", "value")
@@ -133,7 +133,7 @@ fn test_mandatory_authentication_enforcement() {
     // Test 1: Normal operation with default auth should succeed
     let op1 = tree.new_operation().expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store1.set("test", "value").expect("Failed to set value");
     let result1 = op1.commit();
@@ -146,7 +146,7 @@ fn test_mandatory_authentication_enforcement() {
     tree.clear_default_auth_key();
     let op2 = tree.new_operation().expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store2.set("test2", "value2").expect("Failed to set value");
     let result2 = op2.commit();
@@ -180,7 +180,7 @@ fn test_multiple_authenticated_entries() {
     tree.clear_default_auth_key();
     let op1 = tree.new_operation().expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store1
         .set("unsigned", "value")
@@ -193,7 +193,7 @@ fn test_multiple_authenticated_entries() {
         .new_authenticated_operation("TEST_KEY")
         .expect("Failed to create authenticated operation");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store2.set("signed", "value").expect("Failed to set value");
     let entry_id2 = op2.commit().expect("Failed to commit signed");

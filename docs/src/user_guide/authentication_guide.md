@@ -78,13 +78,13 @@ let tree = db.new_tree(settings, "ADMIN_KEY")?;
 All operations are automatically authenticated using the tree's default key:
 
 ```rust
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 // Start an operation (uses tree's default authentication key)
 let op = tree.new_operation()?;
 
 // Make changes
-let store = op.get_subtree::<KVStore>("config")?;
+let store = op.get_subtree::<Dict>("config")?;
 store.set("api_url", "https://api.example.com")?;
 
 // Commit (automatically signs with the tree's key)

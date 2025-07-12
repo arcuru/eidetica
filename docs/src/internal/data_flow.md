@@ -16,7 +16,7 @@ sequenceDiagram
     participant Tree
     participant Operation
     participant EntryBuilder
-    participant RowStore_Todo_
+    participant Table_Todo_
     participant AuthValidator
     participant Database
 
@@ -27,19 +27,19 @@ sequenceDiagram
     User->>Tree: Add Todo "Buy Milk"
     Tree->>Operation: new_operation()
     Note over Operation: Optional: with_auth("key_id")
-    Operation->>RowStore_Todo_: get_subtree("todos")
-    RowStore_Todo_->>Database: Load relevant entries
+    Operation->>Table_Todo_: get_subtree("todos")
+    Table_Todo_->>Database: Load relevant entries
     Note over Database: Check CRDT cache (Entry_ID, Subtree)
     alt Cache Hit
-        Database->>RowStore_Todo_: Return cached CRDT state
+        Database->>Table_Todo_: Return cached CRDT state
     else Cache Miss
         Database->>Database: Compute state via recursive LCA algorithm
         Database->>Database: Cache computed state
-        Database->>RowStore_Todo_: Return computed CRDT state
+        Database->>Table_Todo_: Return computed CRDT state
     end
-    User->>Operation: (via RowStore handle) insert(Todo{title:"Buy Milk"})
-    Operation->>RowStore_Todo_: Serialize Todo, generate ID
-    Operation->>EntryBuilder: Initialize with updated RowStore data & parents
+    User->>Operation: (via Table handle) insert(Todo{title:"Buy Milk"})
+    Operation->>Table_Todo_: Serialize Todo, generate ID
+    Operation->>EntryBuilder: Initialize with updated Table data & parents
     EntryBuilder->>Operation: Return built Entry
     User->>Operation: commit()
 
@@ -56,18 +56,18 @@ sequenceDiagram
 
     User->>Tree: List Todos
     Tree->>Operation: new_operation()
-    Operation->>RowStore_Todo_: get_subtree("todos")
-    RowStore_Todo_->>Database: Load relevant entries
+    Operation->>Table_Todo_: get_subtree("todos")
+    Table_Todo_->>Database: Load relevant entries
     Note over Database: Check CRDT cache (Entry_ID, Subtree)
     alt Cache Hit (likely for repeated queries)
-        Database->>RowStore_Todo_: Return cached CRDT state
+        Database->>Table_Todo_: Return cached CRDT state
     else Cache Miss (first-time query)
         Database->>Database: Compute state via recursive LCA algorithm
         Database->>Database: Cache computed state for future use
-        Database->>RowStore_Todo_: Return computed CRDT state
+        Database->>Table_Todo_: Return computed CRDT state
     end
-    User->>Operation: (via RowStore handle) search(...)
-    RowStore_Todo_->>User: Return Vec<(ID, Todo)>
+    User->>Operation: (via Table handle) search(...)
+    Table_Todo_->>User: Return Vec<(ID, Todo)>
 ```
 
 ### Authentication Flow Details

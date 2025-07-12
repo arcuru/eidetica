@@ -4,16 +4,16 @@ use crate::atomicop::AtomicOp;
 mod errors;
 pub use errors::SubtreeError;
 
-mod kvstore;
-pub use kvstore::KVStore;
+mod dict;
+pub use dict::Dict;
 
-mod rowstore;
-pub use rowstore::RowStore;
+mod table;
+pub use table::Table;
 
 #[cfg(feature = "y-crdt")]
-mod yrsstore;
+mod ydoc;
 #[cfg(feature = "y-crdt")]
-pub use yrsstore::{YrsBinary, YrsStore};
+pub use ydoc::{YDoc, YrsBinary};
 
 /// A trait representing a named, CRDT-based data structure within a `Tree`.
 ///

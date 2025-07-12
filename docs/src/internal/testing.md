@@ -56,7 +56,7 @@ Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/i
 
   - `setup_tree()`: Creates a basic tree with an InMemoryDatabase
   - `setup_tree_with_settings()`: Creates a tree with initial settings
-  - `setup_tree_with_multiple_kvstores()`: Creates a tree with multiple KVStore subtrees and preset values
+  - `setup_tree_with_multiple_dicts()`: Creates a tree with multiple Dict subtrees and preset values
 
 - **Data Structure Helpers**:
 
@@ -65,7 +65,7 @@ Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/i
   - `create_kvoverwrite()`: Creates a Map with initial data
 
 - **Assertion Helpers**:
-  - `assert_kvstore_value()`: Verifies a KVStore contains an expected string value
+  - `assert_dict_value()`: Verifies a Dict contains an expected string value
   - `assert_key_not_found()`: Verifies a key doesn't exist in a store
   - `assert_nested_value()`: Checks deep nested values inside a Map structure
   - `assert_path_deleted()`: Validates that a path is deleted (has tombstone or is missing)
@@ -84,11 +84,11 @@ fn test_component_functionality() {
 
     // Action - perform the operation being tested
     let operation = tree.new_operation().expect("Failed to create operation");
-    let store = KVStore::new(&operation, "data").expect("Failed to create store");
+    let store = Dict::new(&operation, "data").expect("Failed to create store");
     store.set("key", "value").expect("Failed to set value");
 
     // Assertion - verify the expected outcome using a helper
-    assert_kvstore_value(&store, "key", "value");
+    assert_dict_value(&store, "key", "value");
 }
 ```
 

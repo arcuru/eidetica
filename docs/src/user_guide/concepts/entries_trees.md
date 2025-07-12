@@ -39,7 +39,7 @@ You interact with Trees through Operations:
 let op = tree.new_operation()?;
 
 // Access subtrees and perform actions
-let settings = op.get_subtree::<KVStore>("settings")?;
+let settings = op.get_subtree::<Dict>("settings")?;
 settings.set("version", "1.2.0")?;
 
 // Commit the changes, creating a new Entry

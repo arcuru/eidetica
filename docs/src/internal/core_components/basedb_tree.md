@@ -59,7 +59,7 @@ A `Tree` is analogous to a table in a traditional database. Each `Tree` is ident
     - If accessed for the first time in this op, the current tips of that _specific subtree_ are fetched and set as `subtree_parents` in the internal `Entry`.
     - A `SubTree` handle (`T`) is returned, holding a reference to the `AtomicOp`.
 3.  **Staging Changes (via `SubTree` handle methods):**
-    - User calls methods on the `SubTree` handle (e.g., `KVStore::set`).
+    - User calls methods on the `SubTree` handle (e.g., `Dict::set`).
     - The handle serializes the data and calls `AtomicOp::update_subtree` internally.
     - `update_subtree` updates the `RawData` for the corresponding `SubTreeNode` within the `AtomicOp`'s internal `Entry`.
 4.  **Commit (`AtomicOp::commit`):**

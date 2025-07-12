@@ -4,13 +4,13 @@ While [Entries](entry.md) store subtree data as raw serialized strings (`RawData
 
 **Note on Naming:** Subtree names beginning with an underscore (e.g., `_settings`, `_root`) are reserved for internal Eidetica use. Avoid using this prefix for user-defined subtrees to prevent conflicts.
 
-Currently, the main specialized implementations are `RowStore<T>`, `KVStore`, and `YrsStore` (requires the "y-crdt" feature).
+Currently, the main specialized implementations are `Table<T>`, `Dict`, and `YDoc` (requires the "y-crdt" feature).
 
 <!-- TODO: Add a section on the `SubtreeType` trait and how new types can be created. -->
 
 ### The `SubTree` Trait
 
-Specific subtree types (like `RowStore`, `KVStore`, `YrsStore`, or custom CRDT implementations) are accessed through handles that implement the [`SubTree`](../../src/subtree/mod.rs) trait. This trait requires:
+Specific subtree types (like `Table`, `Dict`, `YDoc`, or custom CRDT implementations) are accessed through handles that implement the [`SubTree`](../../src/subtree/mod.rs) trait. This trait requires:
 
 - `fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self>`: An associated function used by `AtomicOp::get_subtree` to create a handle instance linked to the current operation.
 - `fn name(&self) -> &str`: A method to retrieve the name of the subtree this handle manages.
@@ -27,13 +27,13 @@ To create a custom `SubTree` type:
     - Use `op.get_full_state::<MyCRDT>()` to get the merged historical state.
     - Use `op.update_subtree(self.name(), &serialized_new_state)` to stage updated CRDT data back into the operation.
 
-#### RowStore<T>
+#### Table<T>
 
-`RowStore<T>` is a specialized subtree type designed for managing collections of records (structs `T`) where each record needs a unique, stable identifier.
+`Table<T>` is a specialized subtree type designed for managing collections of records (structs `T`) where each record needs a unique, stable identifier.
 
 ```mermaid
 classDiagram
-    class RowStore~T~ {
+    class Table~T~ {
         <<SubtreeType>>
         # Internal state likely uses HashMap<ID, T>
         +insert(value: T) Result<ID>
@@ -47,23 +47,23 @@ classDiagram
 **Features:**
 
 - **Record Management**: Stores instances of a user-defined type `T` (where `T: Serialize + Deserialize`).
-- **Automatic ID Generation**: Automatically generates a unique UUID (as `String`) for each record inserted via `insert()`. This ID is used for subsequent `get()` and `set()` operations. Note: These are RowStore-specific record IDs, distinct from Eidetica's main `ID` type.
+- **Automatic ID Generation**: Automatically generates a unique UUID (as `String`) for each record inserted via `insert()`. This ID is used for subsequent `get()` and `set()` operations. Note: These are Table-specific record IDs, distinct from Eidetica's main `ID` type.
 - **CRUD Operations**: Provides `insert`, `get`, `set`, and `search` methods for managing records.
-- **Typed Access**: Accessed via `Operation::get_subtree::<RowStore<T>>("subtree_name")?`, providing type safety.
+- **Typed Access**: Accessed via `Operation::get_subtree::<Table<T>>("subtree_name")?`, providing type safety.
 
-Internally, `RowStore<T>` manages its state (likely a map of IDs to `T` instances) and serializes it (e.g., to JSON) into the `RawData` field of the containing `Entry` when an `Operation` is committed.
+Internally, `Table<T>` manages its state (likely a map of IDs to `T` instances) and serializes it (e.g., to JSON) into the `RawData` field of the containing `Entry` when an `Operation` is committed.
 
 <!-- TODO: Confirm the exact internal representation and serialization format. -->
 
-`RowStore` is suitable for scenarios like managing a list of users, tasks (as in the Todo example), or any collection where individual items need to be addressed by a persistent ID.
+`Table` is suitable for scenarios like managing a list of users, tasks (as in the Todo example), or any collection where individual items need to be addressed by a persistent ID.
 
-#### KVStore
+#### Dict
 
-`KVStore` is a key-value store implementation that uses the `Map` CRDT to provide nested data structures and reliable deletion tracking across distributed systems.
+`Dict` is a key-value store implementation that uses the `Map` CRDT to provide nested data structures and reliable deletion tracking across distributed systems.
 
 ```mermaid
 classDiagram
-    class KVStore {
+    class Dict {
         <<SubtreeType>>
         +get<K>(key: K) Result<Value> where K: Into<String>
         +get_string<K>(key: K) Result<String> where K: Into<String>
@@ -78,7 +78,7 @@ classDiagram
     }
 
     class ValueEditor {
-        +new<K>(kv_store: &KVStore, keys: K) Self where K: Into<Vec<String>>
+        +new<K>(kv_store: &Dict, keys: K) Self where K: Into<Vec<String>>
         +get() Result<Value>
         +set(value: Value) Result<()>
         +get_value<K>(key: K) Result<Value> where K: Into<String>
@@ -87,7 +87,7 @@ classDiagram
         +delete_child<K>(key: K) Result<()> where K: Into<String>
     }
 
-    KVStore --> ValueEditor : creates
+    Dict --> ValueEditor : creates
 ```
 
 **Features:**
@@ -103,29 +103,29 @@ classDiagram
   - `delete`: Marks a key as deleted by creating a tombstone
   - `get_all`: Returns the entire store as a `Map` structure, including tombstones
   - `get_value_mut`: Returns a `ValueEditor` for modifying values at a specific key path
-  - `get_root_mut`: Returns a `ValueEditor` for the root of the KVStore's subtree
+  - `get_root_mut`: Returns a `ValueEditor` for the root of the Dict's subtree
   - `get_at_path`: Retrieves a value at a specific nested path
   - `set_at_path`: Sets a value at a specific nested path
 
-- **ValueEditor**: Provides a fluent API for navigating and modifying nested structures in the KVStore:
+- **ValueEditor**: Provides a fluent API for navigating and modifying nested structures in the Dict:
 
   - Allows traversing into nested maps through method chaining
   - Supports reading, writing, and deleting values at any level of nesting
   - Changes made via ValueEditor are staged in the AtomicOp and must be committed to persist
 
-- **Merge Strategy**: When merging two KVStore states:
+- **Merge Strategy**: When merging two Dict states:
   - If both have string values for a key, the newer one wins
   - If both have map values, the maps are recursively merged
   - If types differ (map vs string) or one side has a tombstone, the newer value wins
   - Tombstones are preserved during merges to ensure proper deletion propagation
 
-`KVStore` is ideal for configuration data, metadata, and hierarchical data structures that benefit from nested organization. The tombstone mechanism ensures consistent behavior in distributed environments where deletions need to propagate reliably.
+`Dict` is ideal for configuration data, metadata, and hierarchical data structures that benefit from nested organization. The tombstone mechanism ensures consistent behavior in distributed environments where deletions need to propagate reliably.
 
 Example usage:
 
 ```rust
 let op = tree.new_operation()?;
-let kv = op.get_subtree::<KVStore>("config")?;
+let kv = op.get_subtree::<Dict>("config")?;
 
 // Set simple string values
 kv.set("username", "alice")?;
@@ -154,13 +154,13 @@ editor.delete_child("deprecated_setting")?;
 op.commit()?;
 ```
 
-#### YrsStore (Y-CRDT Integration)
+#### YDoc (Y-CRDT Integration)
 
-`YrsStore` provides seamless integration with Y-CRDT (Yjs) for real-time collaborative editing and automatic conflict resolution. This implementation is only available when the "y-crdt" feature is enabled.
+`YDoc` provides seamless integration with Y-CRDT (Yjs) for real-time collaborative editing and automatic conflict resolution. This implementation is only available when the "y-crdt" feature is enabled.
 
 ```mermaid
 classDiagram
-    class YrsStore {
+    class YDoc {
         <<SubtreeType>>
         +doc() Result<Doc>
         +with_doc<F, R>(f: F) Result<R> where F: FnOnce(&Doc) -> Result<R>
@@ -179,7 +179,7 @@ classDiagram
         +merge(&self, other: &Self) Result<Self>
     }
 
-    YrsStore --> YrsBinary : uses for storage
+    YDoc --> YrsBinary : uses for storage
 ```
 
 **Features:**
@@ -192,7 +192,7 @@ classDiagram
 
 **Architecture:**
 
-The `YrsStore` integrates Y-CRDT with Eidetica's CRDT system through the `YrsBinary` wrapper, which implements the required `Data` and `CRDT` traits. Key architectural features include:
+The `YDoc` integrates Y-CRDT with Eidetica's CRDT system through the `YrsBinary` wrapper, which implements the required `Data` and `CRDT` traits. Key architectural features include:
 
 - **Caching Strategy**: Caches the expensive `get_full_state()` operation from the backend and constructs documents on-demand
 - **Differential Updates**: When saving, calculates diffs relative to the current backend state rather than full snapshots
@@ -225,14 +225,14 @@ Example usage:
 // Enable the y-crdt feature in Cargo.toml:
 // eidetica = { version = "0.1", features = ["y-crdt"] }
 
-use eidetica::subtree::YrsStore;
+use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map, Text, Transact};
 
 let op = tree.new_operation()?;
-let yrs_store = op.get_subtree::<YrsStore>("collaborative_doc")?;
+let ydoc_store = op.get_subtree::<YDoc>("collaborative_doc")?;
 
 // Work directly with the Y-CRDT document
-yrs_store.with_doc_mut(|doc| {
+ydoc_store.with_doc_mut(|doc| {
     let text = doc.get_or_insert_text("content");
     let metadata = doc.get_or_insert_map("metadata");
 
@@ -250,10 +250,10 @@ yrs_store.with_doc_mut(|doc| {
 
 // Apply external updates from other clients
 let external_update = receive_update_from_network();
-yrs_store.apply_update(&external_update)?;
+ydoc_store.apply_update(&external_update)?;
 
 // Get updates to send to other clients
-let update_to_broadcast = yrs_store.get_update()?;
+let update_to_broadcast = ydoc_store.get_update()?;
 send_update_to_network(update_to_broadcast);
 
 // Commit changes (saves only the differential updates)

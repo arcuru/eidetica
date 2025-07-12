@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// A Row-based SubTree
 ///
-/// `RowStore` provides a record-oriented storage abstraction for entries in a subtree,
+/// `Table` provides a record-oriented storage abstraction for entries in a subtree,
 /// similar to a database table with automatic primary key generation.
 ///
 /// # Features
@@ -25,7 +25,7 @@ use uuid::Uuid;
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
 /// - Storage within the underlying CRDT (Map)
-pub struct RowStore<T>
+pub struct Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
@@ -34,7 +34,7 @@ where
     phantom: PhantomData<T>,
 }
 
-impl<T> SubTree for RowStore<T>
+impl<T> SubTree for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
@@ -51,11 +51,11 @@ where
     }
 }
 
-impl<T> RowStore<T>
+impl<T> Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
-    /// Retrieves a row from the RowStore by its primary key.
+    /// Retrieves a row from the Table by its primary key.
     ///
     /// This method first checks for the record in the current atomic operation's
     /// local changes, and if not found, retrieves it from the persistent state.
@@ -110,7 +110,7 @@ where
         }
     }
 
-    /// Inserts a new row into the RowStore and returns its generated primary key.
+    /// Inserts a new row into the Table and returns its generated primary key.
     ///
     /// This method:
     /// 1. Generates a new UUIDv4 as the primary key
@@ -158,7 +158,7 @@ where
         Ok(primary_key)
     }
 
-    /// Updates an existing row in the RowStore with a new value.
+    /// Updates an existing row in the Table with a new value.
     ///
     /// This method completely replaces the existing record with the provided one.
     /// If the record doesn't exist yet, it will be created with the given key.

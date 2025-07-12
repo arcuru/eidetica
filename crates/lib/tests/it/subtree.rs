@@ -1,11 +1,11 @@
 use crate::helpers::*;
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::{KVStore, RowStore};
+use eidetica::subtree::{Dict, Table};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "y-crdt")]
-use eidetica::subtree::YrsStore;
+use eidetica::subtree::YDoc;
 #[cfg(feature = "y-crdt")]
 use yrs::{Doc, GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
 
@@ -22,46 +22,41 @@ struct SimpleRecord {
 }
 
 #[test]
-fn test_kvstore_set_and_get_via_op() {
+fn test_dict_set_and_get_via_op() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
 
         // Set initial values
-        kv_store.set("key1", "value1").expect("Failed to set key1");
-        kv_store.set("key2", "value2").expect("Failed to set key2");
+        dict.set("key1", "value1").expect("Failed to set key1");
+        dict.set("key2", "value2").expect("Failed to set key2");
 
         // Get staged values within the same operation
-        assert_kvstore_value(&kv_store, "key1", "value1");
-        assert_kvstore_value(&kv_store, "key2", "value2");
+        assert_dict_value(&dict, "key1", "value1");
+        assert_dict_value(&dict, "key2", "value2");
 
         // Using get_string convenience method
         assert_eq!(
-            kv_store
-                .get_string("key1")
+            dict.get_string("key1")
                 .expect("Failed get_string staged key1"),
             "value1"
         );
         assert_eq!(
-            kv_store
-                .get_string("key2")
+            dict.get_string("key2")
                 .expect("Failed get_string staged key2"),
             "value2"
         );
 
         // Overwrite a value
-        kv_store
-            .set("key1", "value1_updated")
+        dict.set("key1", "value1_updated")
             .expect("Failed to overwrite key1");
 
-        assert_kvstore_value(&kv_store, "key1", "value1_updated");
+        assert_dict_value(&dict, "key1", "value1_updated");
 
         // Get non-existent key
-        assert_key_not_found(kv_store.get("non_existent"));
+        assert_key_not_found(dict.get("non_existent"));
     }
 
     // Commit the operation
@@ -69,45 +64,40 @@ fn test_kvstore_set_and_get_via_op() {
 
     // Verify final state with a viewer
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
 
-    assert_kvstore_value(&viewer, "key1", "value1_updated");
-    assert_kvstore_value(&viewer, "key2", "value2");
+    assert_dict_value(&viewer, "key1", "value1_updated");
+    assert_dict_value(&viewer, "key2", "value2");
     assert_key_not_found(viewer.get("non_existent"));
 }
 
 #[test]
-fn test_kvstore_get_all_via_viewer() {
+fn test_dict_get_all_via_viewer() {
     let tree = setup_tree();
 
     // Op 1: Set initial data
     let op1 = tree.new_operation().expect("Op1: Failed start");
     {
-        let kv_store = op1
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Op1: Failed get");
-        kv_store.set("key_a", "val_a").expect("Op1: Failed set a");
-        kv_store.set("key_b", "val_b").expect("Op1: Failed set b");
+        let dict = op1.get_subtree::<Dict>("my_kv").expect("Op1: Failed get");
+        dict.set("key_a", "val_a").expect("Op1: Failed set a");
+        dict.set("key_b", "val_b").expect("Op1: Failed set b");
     }
     op1.commit().expect("Op1: Failed commit");
 
     // Op 2: Update one, add another
     let op2 = tree.new_operation().expect("Op2: Failed start");
     {
-        let kv_store = op2
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Op2: Failed get");
-        kv_store
-            .set("key_b", "val_b_updated")
+        let dict = op2.get_subtree::<Dict>("my_kv").expect("Op2: Failed get");
+        dict.set("key_b", "val_b_updated")
             .expect("Op2: Failed update b");
-        kv_store.set("key_c", "val_c").expect("Op2: Failed set c");
+        dict.set("key_c", "val_c").expect("Op2: Failed set c");
     }
     op2.commit().expect("Op2: Failed commit");
 
     // Verify get_all using a viewer
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data");
     let all_data_map = all_data_crdt.as_hashmap();
@@ -128,12 +118,12 @@ fn test_kvstore_get_all_via_viewer() {
 }
 
 #[test]
-fn test_kvstore_get_all_empty() {
+fn test_dict_get_all_empty() {
     let tree = setup_tree();
 
     // Get viewer for a non-existent subtree
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("empty_kv")
+        .get_subtree_viewer::<Dict>("empty_kv")
         .expect("Failed to get viewer for empty");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data from empty");
     let all_data_map = all_data_crdt.as_hashmap();
@@ -142,27 +132,25 @@ fn test_kvstore_get_all_empty() {
 }
 
 #[test]
-fn test_kvstore_delete() {
+fn test_dict_delete() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
 
         // Set initial values
-        kv_store.set("key1", "value1").expect("Failed to set key1");
-        kv_store.set("key2", "value2").expect("Failed to set key2");
+        dict.set("key1", "value1").expect("Failed to set key1");
+        dict.set("key2", "value2").expect("Failed to set key2");
 
         // Delete a key
-        kv_store.delete("key1").expect("Failed to delete key1");
+        dict.delete("key1").expect("Failed to delete key1");
 
         // Verify key1 is deleted
-        assert_key_not_found(kv_store.get("key1"));
+        assert_key_not_found(dict.get("key1"));
 
         // key2 should still be accessible
-        assert_kvstore_value(&kv_store, "key2", "value2");
+        assert_dict_value(&dict, "key2", "value2");
     }
 
     // Commit the operation
@@ -170,38 +158,35 @@ fn test_kvstore_delete() {
 
     // Verify the deletion persisted
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
     assert_key_not_found(viewer.get("key1"));
 
-    assert_kvstore_value(&viewer, "key2", "value2");
+    assert_dict_value(&viewer, "key2", "value2");
 }
 
 #[test]
-fn test_kvstore_set_value() {
+fn test_dict_set_value() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
 
         // Set string value
-        kv_store.set("key1", "value1").expect("Failed to set key1");
+        dict.set("key1", "value1").expect("Failed to set key1");
 
         // Set map value
         let mut nested = Map::new();
         nested.set_string("inner", "nested_value");
-        kv_store
-            .set_value("key2", Value::Map(nested.clone()))
+        dict.set_value("key2", Value::Map(nested.clone()))
             .expect("Failed to set key2");
 
         // Verify string value
-        assert_kvstore_value(&kv_store, "key1", "value1");
+        assert_dict_value(&dict, "key1", "value1");
 
         // Verify map value exists and has correct structure
-        match kv_store.get("key2").expect("Failed to get key2") {
+        match dict.get("key2").expect("Failed to get key2") {
             Value::Map(map) => match map.get("inner") {
                 Some(Value::Text(value)) => assert_eq!(value, "nested_value"),
                 _ => panic!("Expected string value in nested map"),
@@ -215,11 +200,11 @@ fn test_kvstore_set_value() {
 
     // Get viewer to verify persistence
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
 
     // Check string value persisted
-    assert_kvstore_value(&viewer, "key1", "value1");
+    assert_dict_value(&viewer, "key1", "value1");
 
     // Check map value persisted and can be accessed
     match viewer.get("key2").expect("Failed to get key2 from viewer") {
@@ -232,14 +217,12 @@ fn test_kvstore_set_value() {
 }
 
 #[test]
-fn test_kvstore_list_basic_operations() {
+fn test_dict_list_basic_operations() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
 
         // Create a list and add elements
         let mut fruits = eidetica::crdt::map::List::new();
@@ -248,14 +231,11 @@ fn test_kvstore_list_basic_operations() {
         fruits.push(Value::Text("orange".to_string()));
 
         // Set the list
-        kv_store
-            .set_list("fruits", fruits)
+        dict.set_list("fruits", fruits)
             .expect("Failed to set fruits list");
 
         // Get the list back
-        let retrieved_fruits = kv_store
-            .get_list("fruits")
-            .expect("Failed to get fruits list");
+        let retrieved_fruits = dict.get_list("fruits").expect("Failed to get fruits list");
 
         // Test length
         assert_eq!(retrieved_fruits.len(), 3);
@@ -280,12 +260,11 @@ fn test_kvstore_list_basic_operations() {
         modified_fruits.push(Value::Text("grape".to_string())); // Add grape
 
         // Update the list
-        kv_store
-            .set_list("fruits", modified_fruits)
+        dict.set_list("fruits", modified_fruits)
             .expect("Failed to update fruits list");
 
         // Verify the changes
-        let updated_fruits = kv_store
+        let updated_fruits = dict
             .get_list("fruits")
             .expect("Failed to get updated fruits list");
         assert_eq!(updated_fruits.len(), 3);
@@ -308,7 +287,7 @@ fn test_kvstore_list_basic_operations() {
 
     // Verify with viewer
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
 
     let viewer_fruits = viewer
@@ -330,34 +309,29 @@ fn test_kvstore_list_basic_operations() {
 }
 
 #[test]
-fn test_kvstore_list_nonexistent_key() {
+fn test_dict_list_nonexistent_key() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
 
         // Test getting non-existent list should return NotFound error
-        assert_key_not_found(kv_store.get("nonexistent"));
+        assert_key_not_found(dict.get("nonexistent"));
 
         // Test getting non-existent list with get_list should also return NotFound
-        let list_result = kv_store.get_list("nonexistent");
+        let list_result = dict.get_list("nonexistent");
         assert!(list_result.is_err());
 
         // Create a new list
         let mut new_list = eidetica::crdt::map::List::new();
         new_list.push(Value::Text("first_item".to_string()));
 
-        kv_store
-            .set_list("new_list", new_list)
+        dict.set_list("new_list", new_list)
             .expect("Failed to set new list");
 
         // Verify the new list was created
-        let retrieved_list = kv_store
-            .get_list("new_list")
-            .expect("Failed to get new list");
+        let retrieved_list = dict.get_list("new_list").expect("Failed to get new list");
         assert_eq!(retrieved_list.len(), 1);
         assert_eq!(
             retrieved_list.get(0),
@@ -367,22 +341,21 @@ fn test_kvstore_list_nonexistent_key() {
 }
 
 #[test]
-fn test_kvstore_list_persistence() {
+fn test_dict_list_persistence() {
     let tree = setup_tree();
 
     // Create list in first operation
     let op1 = tree.new_operation().expect("Failed to start op1");
     {
-        let kv_store = op1
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op1
+            .get_subtree::<Dict>("my_kv")
+            .expect("Failed to get Dict");
 
         let mut colors = eidetica::crdt::map::List::new();
         colors.push(Value::Text("red".to_string()));
         colors.push(Value::Text("green".to_string()));
 
-        kv_store
-            .set_list("colors", colors)
+        dict.set_list("colors", colors)
             .expect("Failed to set colors list");
     }
     op1.commit().expect("Failed to commit op1");
@@ -390,14 +363,12 @@ fn test_kvstore_list_persistence() {
     // Modify list in second operation
     let op2 = tree.new_operation().expect("Failed to start op2");
     {
-        let kv_store = op2
-            .get_subtree::<KVStore>("my_kv")
-            .expect("Failed to get KVStore");
+        let dict = op2
+            .get_subtree::<Dict>("my_kv")
+            .expect("Failed to get Dict");
 
         // List should persist from previous operation
-        let colors = kv_store
-            .get_list("colors")
-            .expect("Failed to get colors list");
+        let colors = dict.get_list("colors").expect("Failed to get colors list");
         assert_eq!(colors.len(), 2);
         assert_eq!(colors.get(0), Some(&Value::Text("red".to_string())));
         assert_eq!(colors.get(1), Some(&Value::Text("green".to_string())));
@@ -407,15 +378,14 @@ fn test_kvstore_list_persistence() {
         updated_colors.remove(0); // Remove red
         updated_colors.push(Value::Text("blue".to_string())); // Add blue
 
-        kv_store
-            .set_list("colors", updated_colors)
+        dict.set_list("colors", updated_colors)
             .expect("Failed to update colors list");
     }
     op2.commit().expect("Failed to commit op2");
 
     // Verify final state
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("my_kv")
+        .get_subtree_viewer::<Dict>("my_kv")
         .expect("Failed to get viewer");
 
     let final_colors = viewer
@@ -434,20 +404,19 @@ fn test_subtree_basic() {
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let kv_store = op
-            .get_subtree::<KVStore>("test_store")
-            .expect("Failed to get KVStore");
+        let dict = op
+            .get_subtree::<Dict>("test_store")
+            .expect("Failed to get Dict");
 
         // Set basic string values
-        kv_store.set("key1", "value1").expect("Failed to set key1");
-        kv_store.set("key2", "value2").expect("Failed to set key2");
+        dict.set("key1", "value1").expect("Failed to set key1");
+        dict.set("key2", "value2").expect("Failed to set key2");
 
         // Set a nested map value
         let mut nested = Map::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
-        kv_store
-            .set_value("nested", Value::Map(nested.clone()))
+        dict.set_value("nested", Value::Map(nested.clone()))
             .expect("Failed to set nested map");
     }
 
@@ -456,12 +425,12 @@ fn test_subtree_basic() {
 
     // Get a viewer to check the subtree
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("test_store")
+        .get_subtree_viewer::<Dict>("test_store")
         .expect("Failed to get viewer");
 
     // Check string values
-    assert_kvstore_value(&viewer, "key1", "value1");
-    assert_kvstore_value(&viewer, "key2", "value2");
+    assert_dict_value(&viewer, "key1", "value1");
+    assert_dict_value(&viewer, "key2", "value2");
 
     // Check nested map
     match viewer.get("nested").expect("Failed to get nested map") {
@@ -484,21 +453,20 @@ fn test_subtree_basic() {
 }
 
 #[test]
-fn test_kvstore_update_nested_value() {
+fn test_dict_update_nested_value() {
     let tree = setup_tree();
 
     // First operation: Create initial nested structure
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     {
-        let kv_store = op1
-            .get_subtree::<KVStore>("nested_test")
-            .expect("Op1: Failed to get KVStore");
+        let dict = op1
+            .get_subtree::<Dict>("nested_test")
+            .expect("Op1: Failed to get Dict");
 
         // Create level1 -> level2_str structure
         let mut l1_map = Map::new();
         l1_map.set_string("level2_str", "initial_value");
-        kv_store
-            .set_value("level1", Value::Map(l1_map))
+        dict.set_value("level1", Value::Map(l1_map))
             .expect("Op1: Failed to set level1");
     }
     op1.commit().expect("Op1: Failed to commit");
@@ -506,9 +474,9 @@ fn test_kvstore_update_nested_value() {
     // Second operation: Update with another structure
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     {
-        let kv_store = op2
-            .get_subtree::<KVStore>("nested_test")
-            .expect("Op2: Failed to get KVStore");
+        let dict = op2
+            .get_subtree::<Dict>("nested_test")
+            .expect("Op2: Failed to get Dict");
 
         // Create an entirely new map structure that will replace the old one
         let mut l2_map = Map::new();
@@ -518,12 +486,11 @@ fn test_kvstore_update_nested_value() {
         new_l1_map.set_map("level2_map", l2_map);
 
         // Completely replace the previous value at level1
-        kv_store
-            .set_value("level1", Value::Map(new_l1_map.clone()))
+        dict.set_value("level1", Value::Map(new_l1_map.clone()))
             .expect("Op2: Failed to overwrite level1");
 
         // Verify the update within the same operation
-        match kv_store.get("level1").expect("Failed to get level1") {
+        match dict.get("level1").expect("Failed to get level1") {
             Value::Map(retrieved_l1_map) => {
                 // Check if level2_map exists with the expected content
                 match retrieved_l1_map.get("level2_map") {
@@ -541,7 +508,7 @@ fn test_kvstore_update_nested_value() {
 
     // Verify the update persists after commit
     let viewer = tree
-        .get_subtree_viewer::<KVStore>("nested_test")
+        .get_subtree_viewer::<Dict>("nested_test")
         .expect("Failed to get viewer");
 
     // Verify the structure after commit
@@ -562,24 +529,23 @@ fn test_kvstore_update_nested_value() {
 
 #[cfg(feature = "y-crdt")]
 #[test]
-fn test_yrsstore_basic_text_operations() {
+fn test_ydoc_basic_text_operations() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let yrs_store = op
-            .get_subtree::<YrsStore>("yrs_text")
-            .expect("Failed to get YrsStore");
+        let ydoc = op
+            .get_subtree::<YDoc>("yrs_text")
+            .expect("Failed to get YDoc");
 
         // Perform text operations within a single operation
-        yrs_store
-            .with_doc_mut(|doc| {
-                let text = doc.get_or_insert_text("document");
-                let mut txn = doc.transact_mut();
-                text.insert(&mut txn, 0, "Hello, World!");
-                Ok(())
-            })
-            .expect("Failed to perform text operations");
+        ydoc.with_doc_mut(|doc| {
+            let text = doc.get_or_insert_text("document");
+            let mut txn = doc.transact_mut();
+            text.insert(&mut txn, 0, "Hello, World!");
+            Ok(())
+        })
+        .expect("Failed to perform text operations");
     }
 
     // Commit the operation
@@ -587,8 +553,8 @@ fn test_yrsstore_basic_text_operations() {
 
     // Verify the text content persisted
     let viewer = tree
-        .get_subtree_viewer::<YrsStore>("yrs_text")
-        .expect("Failed to get YrsStore viewer");
+        .get_subtree_viewer::<YDoc>("yrs_text")
+        .expect("Failed to get YDoc viewer");
 
     viewer
         .with_doc(|doc| {
@@ -603,28 +569,27 @@ fn test_yrsstore_basic_text_operations() {
 
 #[cfg(feature = "y-crdt")]
 #[test]
-fn test_yrsstore_incremental_updates_save_diffs_only() {
+fn test_ydoc_incremental_updates_save_diffs_only() {
     let tree = setup_tree();
 
     // Operation 1: Create initial large text content
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     let first_diff_size = {
-        let yrs_store = op1
-            .get_subtree::<YrsStore>("yrs_diff_test")
-            .expect("Op1: Failed to get YrsStore");
+        let ydoc = op1
+            .get_subtree::<YDoc>("yrs_diff_test")
+            .expect("Op1: Failed to get YDoc");
 
-        yrs_store
-            .with_doc_mut(|doc| {
-                let text = doc.get_or_insert_text("document");
-                let mut txn = doc.transact_mut();
+        ydoc.with_doc_mut(|doc| {
+            let text = doc.get_or_insert_text("document");
+            let mut txn = doc.transact_mut();
 
-                // Create a large initial document (about 10KB of text)
-                let large_content =
-                    "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(200);
-                text.insert(&mut txn, 0, &large_content);
-                Ok(())
-            })
-            .expect("Op1: Failed to perform text operations");
+            // Create a large initial document (about 10KB of text)
+            let large_content =
+                "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(200);
+            text.insert(&mut txn, 0, &large_content);
+            Ok(())
+        })
+        .expect("Op1: Failed to perform text operations");
 
         // Get the actual diff stored in the atomic operation (not the full document state)
         let local_diff: eidetica::subtree::YrsBinary = op1
@@ -638,19 +603,18 @@ fn test_yrsstore_incremental_updates_save_diffs_only() {
     // Operation 2: Add a small change (this should only save the diff)
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     let second_diff_size = {
-        let yrs_store = op2
-            .get_subtree::<YrsStore>("yrs_diff_test")
-            .expect("Op2: Failed to get YrsStore");
+        let ydoc = op2
+            .get_subtree::<YDoc>("yrs_diff_test")
+            .expect("Op2: Failed to get YDoc");
 
-        yrs_store
-            .with_doc_mut(|doc| {
-                let text = doc.get_or_insert_text("document");
-                let mut txn = doc.transact_mut();
-                // Add just a small amount of text at a specific position
-                text.insert(&mut txn, 12, " SMALL_CHANGE");
-                Ok(())
-            })
-            .expect("Op2: Failed to perform text operations");
+        ydoc.with_doc_mut(|doc| {
+            let text = doc.get_or_insert_text("document");
+            let mut txn = doc.transact_mut();
+            // Add just a small amount of text at a specific position
+            text.insert(&mut txn, 12, " SMALL_CHANGE");
+            Ok(())
+        })
+        .expect("Op2: Failed to perform text operations");
 
         // Get the actual diff stored in the atomic operation
         let local_diff: eidetica::subtree::YrsBinary = op2
@@ -679,8 +643,8 @@ fn test_yrsstore_incremental_updates_save_diffs_only() {
 
     // Verify final content is correct
     let viewer = tree
-        .get_subtree_viewer::<YrsStore>("yrs_diff_test")
-        .expect("Failed to get YrsStore viewer");
+        .get_subtree_viewer::<YDoc>("yrs_diff_test")
+        .expect("Failed to get YDoc viewer");
 
     viewer
         .with_doc(|doc| {
@@ -707,26 +671,25 @@ fn test_yrsstore_incremental_updates_save_diffs_only() {
 
 #[cfg(feature = "y-crdt")]
 #[test]
-fn test_yrsstore_map_operations() {
+fn test_ydoc_map_operations() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let yrs_store = op
-            .get_subtree::<YrsStore>("yrs_map")
-            .expect("Failed to get YrsStore");
+        let ydoc = op
+            .get_subtree::<YDoc>("yrs_map")
+            .expect("Failed to get YDoc");
 
         // Perform map operations within a single operation
-        yrs_store
-            .with_doc_mut(|doc| {
-                let map = doc.get_or_insert_map("root");
-                let mut txn = doc.transact_mut();
-                map.insert(&mut txn, "key1", "value1");
-                map.insert(&mut txn, "key2", 42);
-                map.insert(&mut txn, "key3", true);
-                Ok(())
-            })
-            .expect("Failed to perform map operations");
+        ydoc.with_doc_mut(|doc| {
+            let map = doc.get_or_insert_map("root");
+            let mut txn = doc.transact_mut();
+            map.insert(&mut txn, "key1", "value1");
+            map.insert(&mut txn, "key2", 42);
+            map.insert(&mut txn, "key3", true);
+            Ok(())
+        })
+        .expect("Failed to perform map operations");
     }
 
     // Commit the operation
@@ -734,8 +697,8 @@ fn test_yrsstore_map_operations() {
 
     // Verify the map content persisted
     let viewer = tree
-        .get_subtree_viewer::<YrsStore>("yrs_map")
-        .expect("Failed to get YrsStore viewer");
+        .get_subtree_viewer::<YDoc>("yrs_map")
+        .expect("Failed to get YDoc viewer");
 
     viewer
         .with_doc(|doc| {
@@ -761,76 +724,73 @@ fn test_yrsstore_map_operations() {
 
 #[cfg(feature = "y-crdt")]
 #[test]
-fn test_yrsstore_multiple_operations_with_diffs() {
+fn test_ydoc_multiple_operations_with_diffs() {
     let tree = setup_tree();
 
     // Operation 1: Create initial state
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     {
-        let yrs_store = op1
-            .get_subtree::<YrsStore>("yrs_multi")
-            .expect("Op1: Failed to get YrsStore");
+        let ydoc = op1
+            .get_subtree::<YDoc>("yrs_multi")
+            .expect("Op1: Failed to get YDoc");
 
-        yrs_store
-            .with_doc_mut(|doc| {
-                let map = doc.get_or_insert_map("data");
-                let text = doc.get_or_insert_text("notes");
+        ydoc.with_doc_mut(|doc| {
+            let map = doc.get_or_insert_map("data");
+            let text = doc.get_or_insert_text("notes");
 
-                let mut txn = doc.transact_mut();
-                map.insert(&mut txn, "version", 1);
-                text.insert(&mut txn, 0, "Version 1 notes");
-                Ok(())
-            })
-            .expect("Op1: Failed to perform operations");
+            let mut txn = doc.transact_mut();
+            map.insert(&mut txn, "version", 1);
+            text.insert(&mut txn, 0, "Version 1 notes");
+            Ok(())
+        })
+        .expect("Op1: Failed to perform operations");
     }
     op1.commit().expect("Op1: Failed to commit");
 
     // Operation 2: Update existing data
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     {
-        let yrs_store = op2
-            .get_subtree::<YrsStore>("yrs_multi")
-            .expect("Op2: Failed to get YrsStore");
+        let ydoc = op2
+            .get_subtree::<YDoc>("yrs_multi")
+            .expect("Op2: Failed to get YDoc");
 
-        yrs_store
-            .with_doc_mut(|doc| {
-                let map = doc.get_or_insert_map("data");
-                let text = doc.get_or_insert_text("notes");
+        ydoc.with_doc_mut(|doc| {
+            let map = doc.get_or_insert_map("data");
+            let text = doc.get_or_insert_text("notes");
 
-                let mut txn = doc.transact_mut();
-                map.insert(&mut txn, "version", 2);
-                map.insert(&mut txn, "author", "test_user");
-                let text_len = text.len(&txn);
-                text.insert(&mut txn, text_len, " - Updated in v2");
-                Ok(())
-            })
-            .expect("Op2: Failed to perform operations");
+            let mut txn = doc.transact_mut();
+            map.insert(&mut txn, "version", 2);
+            map.insert(&mut txn, "author", "test_user");
+            let text_len = text.len(&txn);
+            text.insert(&mut txn, text_len, " - Updated in v2");
+            Ok(())
+        })
+        .expect("Op2: Failed to perform operations");
     }
     op2.commit().expect("Op2: Failed to commit");
 
     // Operation 3: Add more data
     let op3 = tree.new_operation().expect("Op3: Failed to start");
     {
-        let yrs_store = op3
-            .get_subtree::<YrsStore>("yrs_multi")
-            .expect("Op3: Failed to get YrsStore");
+        let ydoc = op3
+            .get_subtree::<YDoc>("yrs_multi")
+            .expect("Op3: Failed to get YDoc");
 
-        yrs_store
-            .with_doc_mut(|doc| {
-                let map = doc.get_or_insert_map("data");
+        ydoc.with_doc_mut(|doc| {
+            let map = doc.get_or_insert_map("data");
 
-                let mut txn = doc.transact_mut();
-                map.insert(&mut txn, "features", vec!["diff_saving", "crdt_support"]);
-                Ok(())
-            })
-            .expect("Op3: Failed to perform operations");
+            let mut txn = doc.transact_mut();
+            map.insert(&mut txn, "features", vec!["diff_saving", "crdt_support"]);
+            Ok(())
+        })
+        .expect("Op3: Failed to perform operations");
     }
     op3.commit().expect("Op3: Failed to commit");
 
     // Verify final state
     let viewer = tree
-        .get_subtree_viewer::<YrsStore>("yrs_multi")
-        .expect("Failed to get YrsStore viewer");
+        .get_subtree_viewer::<YDoc>("yrs_multi")
+        .expect("Failed to get YDoc viewer");
 
     viewer
         .with_doc(|doc| {
@@ -856,7 +816,7 @@ fn test_yrsstore_multiple_operations_with_diffs() {
 
 #[cfg(feature = "y-crdt")]
 #[test]
-fn test_yrsstore_apply_external_update() {
+fn test_ydoc_apply_external_update() {
     let tree = setup_tree();
 
     // Create a document externally to simulate remote changes
@@ -871,23 +831,22 @@ fn test_yrsstore_apply_external_update() {
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
     };
 
-    // Apply the external update to our YrsStore
+    // Apply the external update to our YDoc
     let op = tree.new_operation().expect("Failed to start operation");
     {
-        let yrs_store = op
-            .get_subtree::<YrsStore>("yrs_external")
-            .expect("Failed to get YrsStore");
+        let ydoc = op
+            .get_subtree::<YDoc>("yrs_external")
+            .expect("Failed to get YDoc");
 
-        yrs_store
-            .apply_update(&external_update)
+        ydoc.apply_update(&external_update)
             .expect("Failed to apply external update");
     }
     op.commit().expect("Failed to commit operation");
 
     // Verify the external update was applied
     let viewer = tree
-        .get_subtree_viewer::<YrsStore>("yrs_external")
-        .expect("Failed to get YrsStore viewer");
+        .get_subtree_viewer::<YDoc>("yrs_external")
+        .expect("Failed to get YDoc viewer");
 
     viewer
         .with_doc(|doc| {
@@ -900,17 +859,17 @@ fn test_yrsstore_apply_external_update() {
         .expect("Failed to verify external update");
 }
 
-// RowStore Tests
+// Table Tests
 
 #[test]
-fn test_rowstore_basic_crud_operations() {
+fn test_table_basic_crud_operations() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     let primary_key = {
-        let row_store = op
-            .get_subtree::<RowStore<TestRecord>>("test_records")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<TestRecord>>("test_records")
+            .expect("Failed to get Table");
 
         let record = TestRecord {
             name: "John Doe".to_string(),
@@ -919,13 +878,13 @@ fn test_rowstore_basic_crud_operations() {
         };
 
         // Test insert
-        let pk = row_store
+        let pk = table
             .insert(record.clone())
             .expect("Failed to insert record");
         assert!(!pk.is_empty(), "Primary key should not be empty");
 
         // Test get within same operation
-        let retrieved = row_store.get(&pk).expect("Failed to get record");
+        let retrieved = table.get(&pk).expect("Failed to get record");
         assert_eq!(retrieved, record);
 
         // Test update/set
@@ -934,12 +893,12 @@ fn test_rowstore_basic_crud_operations() {
             age: 31,
             email: "john.smith@example.com".to_string(),
         };
-        row_store
+        table
             .set(&pk, updated_record.clone())
             .expect("Failed to update record");
 
         // Verify update within same operation
-        let retrieved_updated = row_store.get(&pk).expect("Failed to get updated record");
+        let retrieved_updated = table.get(&pk).expect("Failed to get updated record");
         assert_eq!(retrieved_updated, updated_record);
 
         pk
@@ -950,8 +909,8 @@ fn test_rowstore_basic_crud_operations() {
 
     // Verify persistence after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("test_records")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<TestRecord>>("test_records")
+        .expect("Failed to get Table viewer");
 
     let retrieved_after_commit = viewer
         .get(&primary_key)
@@ -965,26 +924,26 @@ fn test_rowstore_basic_crud_operations() {
 }
 
 #[test]
-fn test_rowstore_multiple_records() {
+fn test_table_multiple_records() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     let mut inserted_keys = Vec::new();
     {
-        let row_store = op
-            .get_subtree::<RowStore<SimpleRecord>>("simple_records")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<SimpleRecord>>("simple_records")
+            .expect("Failed to get Table");
 
         // Insert multiple records
         for i in 1..=5 {
             let record = SimpleRecord { value: i * 10 };
-            let key = row_store.insert(record).expect("Failed to insert record");
+            let key = table.insert(record).expect("Failed to insert record");
             inserted_keys.push(key);
         }
 
         // Verify all records can be retrieved
         for (i, key) in inserted_keys.iter().enumerate() {
-            let record = row_store.get(key).expect("Failed to get record");
+            let record = table.get(key).expect("Failed to get record");
             assert_eq!(record.value, (i as i32 + 1) * 10);
         }
     }
@@ -993,8 +952,8 @@ fn test_rowstore_multiple_records() {
 
     // Verify all records persist after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<SimpleRecord>>("simple_records")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<SimpleRecord>>("simple_records")
+        .expect("Failed to get Table viewer");
 
     for (i, key) in inserted_keys.iter().enumerate() {
         let record = viewer.get(key).expect("Failed to get record after commit");
@@ -1003,14 +962,14 @@ fn test_rowstore_multiple_records() {
 }
 
 #[test]
-fn test_rowstore_search_functionality() {
+fn test_table_search_functionality() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let row_store = op
-            .get_subtree::<RowStore<TestRecord>>("search_records")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<TestRecord>>("search_records")
+            .expect("Failed to get Table");
 
         // Insert test data
         let records = vec![
@@ -1037,11 +996,11 @@ fn test_rowstore_search_functionality() {
         ];
 
         for record in records {
-            row_store.insert(record).expect("Failed to insert record");
+            table.insert(record).expect("Failed to insert record");
         }
 
         // Test search by age
-        let age_25_results = row_store
+        let age_25_results = table
             .search(|record| record.age == 25)
             .expect("Failed to search by age");
         assert_eq!(age_25_results.len(), 2);
@@ -1050,7 +1009,7 @@ fn test_rowstore_search_functionality() {
         }
 
         // Test search by email domain
-        let example_domain_results = row_store
+        let example_domain_results = table
             .search(|record| record.email.contains("example.com"))
             .expect("Failed to search by email domain");
         assert_eq!(example_domain_results.len(), 2);
@@ -1059,14 +1018,14 @@ fn test_rowstore_search_functionality() {
         }
 
         // Test search by name prefix
-        let name_starting_with_b = row_store
+        let name_starting_with_b = table
             .search(|record| record.name.starts_with('B'))
             .expect("Failed to search by name prefix");
         assert_eq!(name_starting_with_b.len(), 1);
         assert_eq!(name_starting_with_b[0].1.name, "Bob Smith");
 
         // Test search with no matches
-        let no_matches = row_store
+        let no_matches = table
             .search(|record| record.age > 100)
             .expect("Failed to search with no matches");
         assert_eq!(no_matches.len(), 0);
@@ -1076,8 +1035,8 @@ fn test_rowstore_search_functionality() {
 
     // Test search after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("search_records")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<TestRecord>>("search_records")
+        .expect("Failed to get Table viewer");
 
     let age_30_results = viewer
         .search(|record| record.age == 30)
@@ -1087,22 +1046,22 @@ fn test_rowstore_search_functionality() {
 }
 
 #[test]
-fn test_rowstore_error_handling() {
+fn test_table_error_handling() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let row_store = op
-            .get_subtree::<RowStore<TestRecord>>("error_test")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<TestRecord>>("error_test")
+            .expect("Failed to get Table");
 
         // Test get with non-existent key
-        let result = row_store.get("non_existent_key");
+        let result = table.get("non_existent_key");
         assert!(result.is_err());
         assert!(result.unwrap_err().is_not_found());
 
         // Test get with empty key
-        let result = row_store.get("");
+        let result = table.get("");
         assert!(result.is_err());
         assert!(result.unwrap_err().is_not_found());
     }
@@ -1111,8 +1070,8 @@ fn test_rowstore_error_handling() {
 
     // Test error handling after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("error_test")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<TestRecord>>("error_test")
+        .expect("Failed to get Table viewer");
 
     let result = viewer.get("still_non_existent");
     assert!(result.is_err());
@@ -1120,20 +1079,20 @@ fn test_rowstore_error_handling() {
 }
 
 #[test]
-fn test_rowstore_uuid_generation() {
+fn test_table_uuid_generation() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     let mut generated_keys = std::collections::HashSet::new();
     {
-        let row_store = op
-            .get_subtree::<RowStore<SimpleRecord>>("uuid_test")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<SimpleRecord>>("uuid_test")
+            .expect("Failed to get Table");
 
         // Generate multiple keys and verify they're unique
         for i in 1..=100 {
             let record = SimpleRecord { value: i };
-            let key = row_store.insert(record).expect("Failed to insert record");
+            let key = table.insert(record).expect("Failed to insert record");
 
             // Verify UUID format (should be 36 characters with hyphens)
             assert_eq!(key.len(), 36);
@@ -1151,8 +1110,8 @@ fn test_rowstore_uuid_generation() {
 
     // Verify all records are retrievable with their unique keys
     let viewer = tree
-        .get_subtree_viewer::<RowStore<SimpleRecord>>("uuid_test")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<SimpleRecord>>("uuid_test")
+        .expect("Failed to get Table viewer");
 
     for key in &generated_keys {
         let record = viewer.get(key).expect("Failed to get record by UUID");
@@ -1161,15 +1120,15 @@ fn test_rowstore_uuid_generation() {
 }
 
 #[test]
-fn test_rowstore_multiple_operations() {
+fn test_table_multiple_operations() {
     let tree = setup_tree();
 
     // Operation 1: Insert initial records
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     let (key1, key2) = {
-        let row_store = op1
-            .get_subtree::<RowStore<TestRecord>>("multi_op_test")
-            .expect("Op1: Failed to get RowStore");
+        let table = op1
+            .get_subtree::<Table<TestRecord>>("multi_op_test")
+            .expect("Op1: Failed to get Table");
 
         let record1 = TestRecord {
             name: "Initial User 1".to_string(),
@@ -1182,10 +1141,10 @@ fn test_rowstore_multiple_operations() {
             email: "user2@initial.com".to_string(),
         };
 
-        let k1 = row_store
+        let k1 = table
             .insert(record1)
             .expect("Op1: Failed to insert record1");
-        let k2 = row_store
+        let k2 = table
             .insert(record2)
             .expect("Op1: Failed to insert record2");
         (k1, k2)
@@ -1195,9 +1154,9 @@ fn test_rowstore_multiple_operations() {
     // Operation 2: Update existing records and add new ones
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     let key3 = {
-        let row_store = op2
-            .get_subtree::<RowStore<TestRecord>>("multi_op_test")
-            .expect("Op2: Failed to get RowStore");
+        let table = op2
+            .get_subtree::<Table<TestRecord>>("multi_op_test")
+            .expect("Op2: Failed to get Table");
 
         // Update existing record
         let updated_record1 = TestRecord {
@@ -1205,7 +1164,7 @@ fn test_rowstore_multiple_operations() {
             age: 21,
             email: "user1@updated.com".to_string(),
         };
-        row_store
+        table
             .set(&key1, updated_record1)
             .expect("Op2: Failed to update record1");
 
@@ -1215,18 +1174,18 @@ fn test_rowstore_multiple_operations() {
             age: 30,
             email: "user3@new.com".to_string(),
         };
-        let k3 = row_store
+        let k3 = table
             .insert(record3)
             .expect("Op2: Failed to insert record3");
 
         // Verify we can see updated and new data within operation
-        let retrieved1 = row_store
+        let retrieved1 = table
             .get(&key1)
             .expect("Op2: Failed to get updated record1");
         assert_eq!(retrieved1.name, "Updated User 1");
         assert_eq!(retrieved1.age, 21);
 
-        let retrieved2 = row_store
+        let retrieved2 = table
             .get(&key2)
             .expect("Op2: Failed to get unchanged record2");
         assert_eq!(retrieved2.name, "Initial User 2");
@@ -1238,8 +1197,8 @@ fn test_rowstore_multiple_operations() {
 
     // Verify final state
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("multi_op_test")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<TestRecord>>("multi_op_test")
+        .expect("Failed to get Table viewer");
 
     // Check updated record
     let final_record1 = viewer.get(&key1).expect("Failed to get final record1");
@@ -1267,17 +1226,17 @@ fn test_rowstore_multiple_operations() {
 }
 
 #[test]
-fn test_rowstore_empty_search() {
+fn test_table_empty_search() {
     let tree = setup_tree();
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let row_store = op
-            .get_subtree::<RowStore<SimpleRecord>>("empty_search_test")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<SimpleRecord>>("empty_search_test")
+            .expect("Failed to get Table");
 
         // Search in empty store
-        let results = row_store
+        let results = table
             .search(|_| true)
             .expect("Failed to search empty store");
         assert_eq!(results.len(), 0);
@@ -1287,8 +1246,8 @@ fn test_rowstore_empty_search() {
 
     // Search in empty store after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<SimpleRecord>>("empty_search_test")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<SimpleRecord>>("empty_search_test")
+        .expect("Failed to get Table viewer");
 
     let results = viewer
         .search(|_| true)
@@ -1297,18 +1256,18 @@ fn test_rowstore_empty_search() {
 }
 
 #[test]
-fn test_rowstore_with_authenticated_tree() {
-    let db = setup_db_with_key("rowstore_auth_key");
+fn test_table_with_authenticated_tree() {
+    let db = setup_db_with_key("table_auth_key");
     let tree = db
-        .new_tree_default("rowstore_auth_key")
+        .new_tree_default("table_auth_key")
         .expect("Failed to create authenticated tree");
 
     let op = tree.new_operation().expect("Failed to start operation");
 
     let primary_key = {
-        let row_store = op
-            .get_subtree::<RowStore<TestRecord>>("auth_records")
-            .expect("Failed to get RowStore");
+        let table = op
+            .get_subtree::<Table<TestRecord>>("auth_records")
+            .expect("Failed to get Table");
 
         let record = TestRecord {
             name: "Authenticated User".to_string(),
@@ -1317,14 +1276,12 @@ fn test_rowstore_with_authenticated_tree() {
         };
 
         // Insert record in authenticated tree
-        let pk = row_store
+        let pk = table
             .insert(record.clone())
             .expect("Failed to insert authenticated record");
 
         // Verify retrieval within same operation
-        let retrieved = row_store
-            .get(&pk)
-            .expect("Failed to get authenticated record");
+        let retrieved = table.get(&pk).expect("Failed to get authenticated record");
         assert_eq!(retrieved, record);
 
         pk
@@ -1335,8 +1292,8 @@ fn test_rowstore_with_authenticated_tree() {
 
     // Verify persistence in authenticated tree
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("auth_records")
-        .expect("Failed to get RowStore viewer for authenticated tree");
+        .get_subtree_viewer::<Table<TestRecord>>("auth_records")
+        .expect("Failed to get Table viewer for authenticated tree");
 
     let retrieved_after_commit = viewer
         .get(&primary_key)
@@ -1347,15 +1304,15 @@ fn test_rowstore_with_authenticated_tree() {
 }
 
 #[test]
-fn test_rowstore_complex_data_merging() {
+fn test_table_complex_data_merging() {
     let tree = setup_tree();
 
     // Create base entry with initial data
     let op_base = tree.new_operation().expect("Base: Failed to start");
     let key1 = {
-        let row_store = op_base
-            .get_subtree::<RowStore<TestRecord>>("merge_test")
-            .expect("Base: Failed to get RowStore");
+        let table = op_base
+            .get_subtree::<Table<TestRecord>>("merge_test")
+            .expect("Base: Failed to get Table");
 
         let record = TestRecord {
             name: "Original User".to_string(),
@@ -1363,9 +1320,7 @@ fn test_rowstore_complex_data_merging() {
             email: "original@test.com".to_string(),
         };
 
-        row_store
-            .insert(record)
-            .expect("Base: Failed to insert record")
+        table.insert(record).expect("Base: Failed to insert record")
     };
     let base_entry_id = op_base.commit().expect("Base: Failed to commit");
 
@@ -1374,16 +1329,16 @@ fn test_rowstore_complex_data_merging() {
         .new_operation_with_tips([base_entry_id.clone()])
         .expect("Branch A: Failed to start with custom tips");
     {
-        let row_store = op_branch_a
-            .get_subtree::<RowStore<TestRecord>>("merge_test")
-            .expect("Branch A: Failed to get RowStore");
+        let table = op_branch_a
+            .get_subtree::<Table<TestRecord>>("merge_test")
+            .expect("Branch A: Failed to get Table");
 
         let updated_record = TestRecord {
             name: "Updated by Branch A".to_string(),
             age: 26,
             email: "updated_a@test.com".to_string(),
         };
-        row_store
+        table
             .set(&key1, updated_record)
             .expect("Branch A: Failed to update record");
 
@@ -1395,16 +1350,16 @@ fn test_rowstore_complex_data_merging() {
         .new_operation_with_tips([base_entry_id])
         .expect("Branch B: Failed to start with custom tips");
     {
-        let row_store = op_branch_b
-            .get_subtree::<RowStore<TestRecord>>("merge_test")
-            .expect("Branch B: Failed to get RowStore");
+        let table = op_branch_b
+            .get_subtree::<Table<TestRecord>>("merge_test")
+            .expect("Branch B: Failed to get Table");
 
         let updated_record = TestRecord {
             name: "Updated by Branch B".to_string(),
             age: 27,
             email: "updated_b@test.com".to_string(),
         };
-        row_store
+        table
             .set(&key1, updated_record)
             .expect("Branch B: Failed to update record");
 
@@ -1418,11 +1373,11 @@ fn test_rowstore_complex_data_merging() {
 
     // Read the merged state to trigger CRDT resolution
     let merged_record = {
-        let row_store = op_merge
-            .get_subtree::<RowStore<TestRecord>>("merge_test")
-            .expect("Merge: Failed to get RowStore");
+        let table = op_merge
+            .get_subtree::<Table<TestRecord>>("merge_test")
+            .expect("Merge: Failed to get Table");
 
-        row_store
+        table
             .get(&key1)
             .expect("Merge: Failed to get merged record")
     };
@@ -1449,8 +1404,8 @@ fn test_rowstore_complex_data_merging() {
 
     // Verify the merged state persists after commit
     let viewer = tree
-        .get_subtree_viewer::<RowStore<TestRecord>>("merge_test")
-        .expect("Failed to get RowStore viewer");
+        .get_subtree_viewer::<Table<TestRecord>>("merge_test")
+        .expect("Failed to get Table viewer");
 
     let final_record = viewer
         .get(&key1)

@@ -28,8 +28,8 @@ Using an `Operation` follows a distinct lifecycle:
 2.  **Subtree Access**: Get handles to the specific `Subtree`s you want to interact with. This implicitly loads the current state (tips) of that subtree into the operation if accessed for the first time.
     ```rust
     // Get handles within a scope or manage their lifetime
-    let users_store = op.get_subtree::<RowStore<User>>("users")?;
-    let config_store = op.get_subtree::<KVStore>("config")?;
+    let users_store = op.get_subtree::<Table<User>>("users")?;
+    let config_store = op.get_subtree::<Dict>("config")?;
     ```
 3.  **Staging Changes**: Use the methods provided by the `Subtree` handles (`set`, `insert`, `get`, `remove`, etc.). These methods interact with the data staged _within the `Operation`_.
     ```rust
@@ -50,7 +50,7 @@ Using an `Operation` follows a distinct lifecycle:
 While `Operation`s are essential for writes, you can perform reads without an explicit `Operation` using `Tree::get_subtree_viewer`:
 
 ```rust
-let users_viewer = tree.get_subtree_viewer::<RowStore<User>>("users")?;
+let users_viewer = tree.get_subtree_viewer::<Table<User>>("users")?;
 if let Some(user) = users_viewer.get(&user_id)? {
     // Read data based on the current tips of the 'users' subtree
 }

@@ -87,7 +87,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             settings.set_string("name", tree_name);
             let tree = db.new_tree(settings, auth_key)?;
 
-            // No initial commit needed here as subtrees like RowStore handle
+            // No initial commit needed here as subtrees like Table handle
             // their creation upon first access within an operation.
 
             Ok(tree)
@@ -134,14 +134,14 @@ Read-only access also typically uses an `Operation` to ensure a consistent view 
 
 - **Analogy:** You can think of a Subtree _loosely_ like a table or a collection within a Tree.
 - **Flexibility:** Subtrees aren't tied to a single data type or structure. They are generic containers identified by a name (e.g., "todos").
-- **Implementations:** Eidetica provides several `Subtree` implementations for common data patterns. The Todo example uses `RowStore<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
+- **Implementations:** Eidetica provides several `Subtree` implementations for common data patterns. The Todo example uses `Table<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
 - **Extensibility:** You can implement your own `Subtree` types to model complex or domain-specific data structures.
 
-The Todo example uses a `RowStore` to store `Todo` structs:
+The Todo example uses a `Table` to store `Todo` structs:
 
 ```rust
 use eidetica::{Tree, Error};
-use eidetica::subtree::RowStore;
+use eidetica::subtree::Table;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use anyhow::{anyhow, Result};
@@ -158,10 +158,10 @@ pub struct Todo {
 
 fn add_todo(tree: &Tree, title: String) -> Result<()> {
     let op = tree.new_operation()?;
-    // Get a handle to the 'todos' subtree, specifying its type is RowStore<Todo>
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    // Get a handle to the 'todos' subtree, specifying its type is Table<Todo>
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     let todo = Todo::new(title);
-    // Insert the data - RowStore assigns an ID
+    // Insert the data - Table assigns an ID
     let todo_id = todos_store.insert(todo)?;
     op.commit()?;
     println!("Added todo with ID: {}", todo_id);
@@ -170,7 +170,7 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
 
 fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     let op = tree.new_operation()?;
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     // Get data by ID
     let mut todo = todos_store.get(id).map_err(|e| anyhow!("Get failed: {}", e))?;
     todo.complete();
@@ -182,7 +182,7 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
 
 fn list_todos(tree: &Tree) -> Result<()> {
     let op = tree.new_operation()?;
-    let todos_store = op.get_subtree::<RowStore<Todo>>("todos")?;
+    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     // Search/scan the subtree
     let todos_with_ids = todos_store.search(|_| true)?; // Get all
     // ... print todos ...
@@ -204,19 +204,19 @@ pub struct Todo {
 }
 ```
 
-### 6. Y-CRDT Integration (`YrsStore`)
+### 6. Y-CRDT Integration (`YDoc`)
 
-The Todo example also demonstrates the use of `YrsStore` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
+The Todo example also demonstrates the use of `YDoc` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
 
 ```rust
-use eidetica::subtree::YrsStore;
+use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map, Transact};
 
 fn set_user_info(tree: &Tree, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_info' YrsStore subtree
-    let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+    // Get a handle to the 'user_info' YDoc subtree
+    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -243,8 +243,8 @@ fn set_user_info(tree: &Tree, name: Option<&String>, email: Option<&String>, bio
 fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
     let op = tree.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YrsStore subtree
-    let user_prefs_store = op.get_subtree::<YrsStore>("user_prefs")?;
+    // Get a handle to the 'user_prefs' YDoc subtree
+    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
 
     // Update user preference using the Y-CRDT document
     user_prefs_store.with_doc_mut(|doc| {
@@ -263,9 +263,9 @@ fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
 
 The Todo example demonstrates how different subtree types can coexist within the same tree:
 
-- **"todos"** (RowStore<Todo>): Stores todo items with automatic ID generation
-- **"user_info"** (YrsStore): Stores user profile information using Y-CRDT Maps
-- **"user_prefs"** (YrsStore): Stores user preferences using Y-CRDT Maps
+- **"todos"** (Table<Todo>): Stores todo items with automatic ID generation
+- **"user_info"** (YDoc): Stores user profile information using Y-CRDT Maps
+- **"user_prefs"** (YDoc): Stores user preferences using Y-CRDT Maps
 
 This shows how Eidetica allows you to choose the most appropriate data structure for each type of data within your application, optimizing for different use cases (record storage vs. collaborative editing).
 

@@ -3,7 +3,7 @@ use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Map;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 // ===== TEST HELPERS AND MACROS =====
 
@@ -80,7 +80,7 @@ pub fn test_operation_succeeds(
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>(subtree_name)
+        .get_subtree::<Dict>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -99,7 +99,7 @@ pub fn test_operation_fails(
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>(subtree_name)
+        .get_subtree::<Dict>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 

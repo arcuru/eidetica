@@ -25,16 +25,16 @@ Subtrees offer several advantages:
 
 ## Available Subtree Types
 
-### KVStore (Key-Value Store)
+### Dict (Key-Value Store)
 
-The `KVStore` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Map` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
+The `Dict` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Map` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
 
 #### Basic Usage
 
 ```rust
-// Get a KVStore subtree
+// Get a Dict subtree
 let op = tree.new_operation()?;
-let config = op.get_subtree::<KVStore>("config")?;
+let config = op.get_subtree::<Dict>("config")?;
 
 // Set simple string values
 config.set("api_url", "https://api.example.com")?;
@@ -54,7 +54,7 @@ op.commit()?;
 
 #### Working with Nested Structures
 
-`KVStore` can handle nested map structures, allowing you to build hierarchical data:
+`Dict` can handle nested map structures, allowing you to build hierarchical data:
 
 ```rust
 // Create nested structures
@@ -62,7 +62,7 @@ let mut preferences = Map::new();
 preferences.set_string("theme", "dark");
 preferences.set_string("language", "en");
 
-// Set this map as a value in the KVStore
+// Set this map as a value in the Dict
 config.set_value("user_prefs", Value::Map(preferences))?;
 
 // Later retrieve and modify the nested data
@@ -77,7 +77,7 @@ if let Value::Map(mut prefs) = config.get("user_prefs")? {
 
 #### Using ValueEditor for Fluent API
 
-The `ValueEditor` provides a more ergonomic way to work with nested data structures in `KVStore`. It allows you to navigate and modify nested values without having to manually extract and reinsert the intermediate maps:
+The `ValueEditor` provides a more ergonomic way to work with nested data structures in `Dict`. It allows you to navigate and modify nested values without having to manually extract and reinsert the intermediate maps:
 
 ```rust
 // Get an editor for a specific key
@@ -126,7 +126,7 @@ op.commit()?;
 
 #### Path-Based Operations
 
-`KVStore` also provides direct path-based access, which the `ValueEditor` uses internally:
+`Dict` also provides direct path-based access, which the `ValueEditor` uses internally:
 
 ```rust
 // Set a value using a path array
@@ -141,7 +141,7 @@ let notification_setting = config.get_at_path(
 )?;
 ```
 
-Use cases for `KVStore`:
+Use cases for `Dict`:
 
 - Configuration settings
 - User preferences
@@ -149,9 +149,9 @@ Use cases for `KVStore`:
 - Structured document storage
 - Application state
 
-### RowStore
+### Table
 
-The `RowStore<T>` subtree manages collections of serializable items, similar to a table in a database:
+The `Table<T>` subtree manages collections of serializable items, similar to a table in a database:
 
 ```rust
 // Define a struct for your data
@@ -162,9 +162,9 @@ struct User {
     active: bool,
 }
 
-// Get a RowStore subtree
+// Get a Table subtree
 let op = tree.new_operation()?;
-let users = op.get_subtree::<RowStore<User>>("users")?;
+let users = op.get_subtree::<Table<User>>("users")?;
 
 // Insert items (returns a generated ID)
 let user = User {
@@ -198,7 +198,7 @@ for result in users.iter()? {
 op.commit()?;
 ```
 
-Use cases for `RowStore`:
+Use cases for `Table`:
 
 - Collections of structured objects
 - Record storage (users, products, todos, etc.)
@@ -230,9 +230,9 @@ While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Sub
 
 Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
 
-- **`KVStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using `Map`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
+- **`Dict`**: Implements a **Last-Writer-Wins (LWW)** strategy using `Map`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
 
-- **`RowStore<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
+- **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 
 **Note:** The CRDT merge logic happens internally when an `Operation` loads the initial state of a Subtree or when a `SubtreeViewer` is created. You typically don't invoke merge logic directly.
 
@@ -244,6 +244,6 @@ Eidetica's architecture allows for adding new Subtree implementations. Potential
 
 - **ObjectStore**: For storing large binary blobs.
 
-These are **not yet implemented**. Development is currently focused on the core API and the existing `KVStore` and `RowStore` types.
+These are **not yet implemented**. Development is currently focused on the core API and the existing `Dict` and `Table` types.
 
 <!-- TODO: Update this list if/when new subtree types become available or development starts -->

@@ -4,7 +4,7 @@ use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Map;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 #[test]
 fn test_authenticated_operations() {
@@ -23,7 +23,7 @@ fn test_authenticated_operations() {
 
     // Test that we can use the operation
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -103,7 +103,7 @@ fn test_tree_default_authentication() {
 
     // Try to use the operation - should fail at commit
     let store = op3
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op3.commit();
@@ -122,7 +122,7 @@ fn test_mandatory_authentication() {
 
     // Should be able to use it normally
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -147,7 +147,7 @@ fn test_missing_authentication_key_error() {
         .new_authenticated_operation("NONEXISTENT_KEY")
         .expect("Operation creation should succeed");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -191,7 +191,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .new_authenticated_operation("KEY1")
         .expect("Failed to create operation");
     let settings_store = op1
-        .get_subtree::<KVStore>("_settings")
+        .get_subtree::<Dict>("_settings")
         .expect("Failed to get settings subtree");
 
     // Add KEY2 to auth settings
@@ -228,7 +228,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .new_authenticated_operation("KEY2")
         .expect("Failed to create operation with KEY2");
     let data_store = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get data subtree");
     data_store
         .set("test", "value")
@@ -276,7 +276,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
         .new_authenticated_operation("VALID_KEY")
         .expect("Failed to create operation");
     let settings_store = op
-        .get_subtree::<KVStore>("_settings")
+        .get_subtree::<Dict>("_settings")
         .expect("Failed to get settings subtree");
 
     // Corrupt the auth settings by setting it to a string instead of a map
@@ -292,7 +292,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
         .new_authenticated_operation("VALID_KEY")
         .expect("Should still be able to create operation");
     let data_store = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get data subtree");
     data_store
         .set("after_corruption", "value")
@@ -348,7 +348,7 @@ fn test_validation_pipeline_with_missing_keys() {
     tree.clear_default_auth_key();
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op.commit();
@@ -359,7 +359,7 @@ fn test_validation_pipeline_with_missing_keys() {
         .new_authenticated_operation("MISSING_KEY")
         .expect("Operation creation should succeed");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op.commit();
@@ -429,7 +429,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .new_authenticated_operation("ACTIVE_KEY")
             .expect("Failed to create operation");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree");
         store
             .set("test", format!("value_{i}"))
@@ -443,7 +443,7 @@ fn test_validation_pipeline_entry_level_validation() {
     // Test validation of entries
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let current_settings = tree
-        .get_subtree_viewer::<KVStore>("_settings")
+        .get_subtree_viewer::<Dict>("_settings")
         .expect("Failed to get settings")
         .get_all()
         .expect("Failed to get settings data");
@@ -462,7 +462,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .new_authenticated_operation("REVOKED_KEY")
             .expect("Failed to create operation");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree");
         store
             .set("test", format!("revoked_value_{i}"))
