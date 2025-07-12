@@ -30,6 +30,14 @@
 - [Testing Architecture](internal/testing.md)
 - [Performance Considerations](internal/performance.md)
 - [Error Handling](internal/error_handling.md)
+- [Best Practices](internal/best_practices/index.md)
+  - [API Design Patterns](internal/best_practices/api_design.md)
+  - [Module Organization](internal/best_practices/module_organization.md)
+  - [Error Handling](internal/best_practices/error_handling.md)
+  - [Testing](internal/best_practices/testing.md)
+  - [Performance](internal/best_practices/performance.md)
+  - [Security](internal/best_practices/security.md)
+  - [Documentation](internal/best_practices/documentation.md)
 - [Future Development](internal/future_development.md)
 
 # Design Documents
