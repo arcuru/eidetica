@@ -408,7 +408,7 @@ impl Dict {
     /// * Potentially other errors from `AtomicOp::update_subtree`.
     pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
     where
-        S: AsRef<str>,
+        S: Into<String> + Clone,
         P: AsRef<[S]>,
     {
         let path_slice = path.as_ref();
@@ -437,7 +437,7 @@ impl Dict {
 
         // Traverse or create path segments up to the parent of the target key.
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
-            let key_segment_string = key_segment_s.as_ref().to_string();
+            let key_segment_string = key_segment_s.clone().into();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
             current_map_mut = match entry.or_insert_with(|| Value::Map(Map::default())) {
                 Value::Map(map) => map,
@@ -458,7 +458,7 @@ impl Dict {
             let map_value = value;
             current_map_mut
                 .as_hashmap_mut()
-                .insert(last_key_s.as_ref().to_string(), map_value);
+                .insert(last_key_s.clone().into(), map_value);
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
