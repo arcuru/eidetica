@@ -289,7 +289,7 @@ impl AtomicOp {
                         &main_parents,
                     )?
                 };
-                builder.set_subtree_data_mut(subtree_name.clone(), "".to_string());
+                builder.set_subtree_data_mut(subtree_name.clone(), String::new());
                 builder.set_subtree_parents_mut(&subtree_name, tips);
             }
         }
@@ -401,7 +401,7 @@ impl AtomicOp {
                     &main_parents,
                 )?
             };
-            builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
+            builder.set_subtree_data_mut(subtree_name.to_string(), String::new());
             builder.set_subtree_parents_mut(subtree_name, tips);
         }
 
@@ -743,7 +743,7 @@ impl AtomicOp {
                     permissions: crate::auth::types::Permission::Admin(0), // Highest priority
                     status: crate::auth::types::KeyStatus::Active,
                 };
-                auth_settings.add_key(key_id.clone(), super_user_auth_key)?;
+                auth_settings.add_key(key_id, super_user_auth_key)?;
 
                 // Update the settings subtree to include auth configuration
                 // We need to merge with existing settings and add the auth section
@@ -752,7 +752,7 @@ impl AtomicOp {
 
                 // Update the SETTINGS subtree data in the entry builder
                 let settings_json = serde_json::to_string(&updated_settings)?;
-                builder.set_subtree_data_mut(SETTINGS.to_string(), settings_json);
+                builder.set_subtree_data_mut(SETTINGS, settings_json);
 
                 // Make sure we track that this is now a settings update
                 // Note: we don't change has_settings_update here since it was calculated earlier

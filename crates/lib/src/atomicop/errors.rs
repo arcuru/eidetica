@@ -201,15 +201,15 @@ mod tests {
 
         // Test entry errors
         let entry_err = AtomicOpError::EntryConstructionFailed {
-            reason: "test".to_string(),
+            reason: "test".to_owned(),
         };
         assert!(entry_err.is_entry_error());
         assert!(!entry_err.is_authentication_error());
 
         // Test subtree errors
         let subtree_err = AtomicOpError::SubtreeSerializationFailed {
-            subtree: "test_subtree".to_string(),
-            reason: "test".to_string(),
+            subtree: "test_subtree".to_owned(),
+            reason: "test".to_owned(),
         };
         assert!(subtree_err.is_subtree_error());
         assert_eq!(subtree_err.subtree_name(), Some("test_subtree"));
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_key_id_extraction() {
         let err = AtomicOpError::SigningKeyNotFound {
-            key_id: "test_key".to_string(),
+            key_id: "test_key".to_owned(),
         };
         assert_eq!(err.key_id(), Some("test_key"));
 
