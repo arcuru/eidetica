@@ -1157,7 +1157,17 @@ impl Map {
         self.children.insert(key.into(), value.into())
     }
 
-    /// Removes a value by key, returns the old value if present
+    /// Removes a value by key, returns the old value if present.
+    ///
+    /// This method implements CRDT semantics by creating a tombstone (deletion marker)
+    /// to ensure the removal is preserved during merge operations.
+    ///
+    /// # Parameters
+    /// * `key` - The key to remove. Accepts any string type (`&str`, `String`, `&String`)
+    ///   for ergonomic usage.
+    ///
+    /// # Returns
+    /// The previous value if it existed, `None` if the key was not present or already deleted.
     pub fn remove(&mut self, key: impl Into<String>) -> Option<Value> {
         let key_string = key.into();
         let key_ref = &key_string;
@@ -1180,7 +1190,17 @@ impl Map {
         }
     }
 
-    /// Marks a key as deleted (sets to Value::Deleted)
+    /// Marks a key as deleted by setting it to `Value::Deleted` tombstone.
+    ///
+    /// Unlike `remove()`, this method doesn't return the previous value and only
+    /// sets the deletion marker if the key currently exists.
+    ///
+    /// # Parameters
+    /// * `key` - The key to mark as deleted. Accepts any string type (`&str`, `String`, `&String`)
+    ///   for ergonomic usage.
+    ///
+    /// # Returns
+    /// `true` if the key existed and was marked for deletion, `false` if the key didn't exist.
     pub fn delete(&mut self, key: impl Into<String>) -> bool {
         let key_string = key.into();
         let key_ref = &key_string;

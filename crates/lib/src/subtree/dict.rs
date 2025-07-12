@@ -5,7 +5,7 @@ use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 
-/// A simple key-value store SubTree
+/// A simple key-value store SubTree providing ergonomic access to Map CRDT data.
 ///
 /// It assumes that the SubTree data is a Map CRDT, which allows for nested map structures.
 /// This implementation supports string values, as well as deletions via tombstones.

@@ -150,8 +150,27 @@ impl Tree {
     /// When set, all operations created via `new_operation()` will automatically
     /// use this key for signing unless explicitly overridden.
     ///
-    /// # Arguments
-    /// * `key_id` - The identifier of the private key to use by default
+    /// # Parameters
+    /// * `key_id` - Authentication key identifier that will be stored.
+    ///   Accepts any string type (`&str`, `String`, `&String`) for maximum ergonomics.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::crdt::Map;
+    /// # fn example() -> Result<()> {
+    /// # let backend = Box::new(InMemory::new());
+    /// # let db = BaseDB::new(backend);
+    /// # db.add_private_key("test_key")?;
+    /// # let mut tree = db.new_tree(Map::new(), "test_key")?;
+    /// tree.set_default_auth_key("my_key");                    // &str
+    /// tree.set_default_auth_key(String::from("my_key"));      // String  
+    /// tree.set_default_auth_key(&String::from("my_key"));     // &String
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
         self.default_auth_key = Some(key_id.into());
     }
@@ -347,14 +366,15 @@ impl Tree {
 
     /// Get multiple entries by ID efficiently.
     ///
-    /// This method retrieves multiple entries in a single backend lock acquisition,
-    /// making it more efficient than multiple `get_entry()` calls.
+    /// This method retrieves multiple entries more efficiently than multiple `get_entry()` calls
+    /// by minimizing conversion overhead and pre-allocating the result vector.
     ///
     /// The method verifies that all entries belong to this tree by checking their root IDs.
     /// If any entry exists but belongs to a different tree, an error is returned.
     ///
-    /// # Arguments
-    /// * `entry_ids` - An iterable of entry IDs to retrieve (accepts anything that converts to ID/String)
+    /// # Parameters
+    /// * `entry_ids` - An iterable of entry IDs to retrieve. Accepts any string or ID types
+    ///   that can be converted to `ID` (`&str`, `String`, `&ID`, etc.)
     ///
     /// # Returns
     /// A `Result` containing a vector of `Entry` objects or an error if any entry is not found or not part of this tree
