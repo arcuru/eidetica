@@ -22,9 +22,7 @@ fn test_settings_tips_in_metadata() {
 
     // Create an operation to add some data
     let op1 = tree.new_operation().unwrap();
-    let kv = op1
-        .get_subtree::<eidetica::subtree::KVStore>("data")
-        .unwrap();
+    let kv = op1.get_subtree::<eidetica::subtree::Dict>("data").unwrap();
     kv.set("key1", "value1").unwrap();
     let entry1_id = op1.commit().unwrap();
 
@@ -45,16 +43,14 @@ fn test_settings_tips_in_metadata() {
     // Create another operation to modify settings
     let op2 = tree.new_operation().unwrap();
     let settings_store = op2
-        .get_subtree::<eidetica::subtree::KVStore>("_settings")
+        .get_subtree::<eidetica::subtree::Dict>("_settings")
         .unwrap();
     settings_store.set("description", "A test tree").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create a third operation that doesn't modify settings
     let op3 = tree.new_operation().unwrap();
-    let kv3 = op3
-        .get_subtree::<eidetica::subtree::KVStore>("data")
-        .unwrap();
+    let kv3 = op3.get_subtree::<eidetica::subtree::Dict>("data").unwrap();
     kv3.set("key2", "value2").unwrap();
     let entry3_id = op3.commit().unwrap();
 
@@ -154,25 +150,21 @@ fn test_settings_tips_propagation() {
 
     // Create a chain of entries
     let op1 = tree.new_operation().unwrap();
-    let kv = op1
-        .get_subtree::<eidetica::subtree::KVStore>("data")
-        .unwrap();
+    let kv = op1.get_subtree::<eidetica::subtree::Dict>("data").unwrap();
     kv.set("entry", "1").unwrap();
     let entry1_id = op1.commit().unwrap();
 
     // Modify settings
     let op2 = tree.new_operation().unwrap();
     let settings_store = op2
-        .get_subtree::<eidetica::subtree::KVStore>("_settings")
+        .get_subtree::<eidetica::subtree::Dict>("_settings")
         .unwrap();
     settings_store.set("updated", "true").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another entry after settings change
     let op3 = tree.new_operation().unwrap();
-    let kv = op3
-        .get_subtree::<eidetica::subtree::KVStore>("data")
-        .unwrap();
+    let kv = op3.get_subtree::<eidetica::subtree::Dict>("data").unwrap();
     kv.set("entry", "3").unwrap();
     let entry3_id = op3.commit().unwrap();
 

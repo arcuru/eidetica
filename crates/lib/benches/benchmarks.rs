@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Tree {
@@ -20,12 +20,9 @@ fn setup_tree_with_entries(entry_count: usize) -> eidetica::Tree {
 
     for i in 0..entry_count {
         let op = tree.new_operation().expect("Failed to start operation");
-        let kv_store = op
-            .get_subtree::<KVStore>("data")
-            .expect("Failed to get KVStore");
+        let dict = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
 
-        kv_store
-            .set(format!("key_{i}"), format!("value_{i}"))
+        dict.set(format!("key_{i}"), format!("value_{i}"))
             .expect("Failed to set value");
 
         op.commit().expect("Failed to commit operation");
@@ -49,16 +46,13 @@ fn bench_add_entries(c: &mut Criterion) {
                     || setup_tree_with_entries(tree_size),
                     |tree| {
                         let op = tree.new_operation().expect("Failed to start operation");
-                        let kv_store = op
-                            .get_subtree::<KVStore>("data")
-                            .expect("Failed to get KVStore");
+                        let dict = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
 
-                        kv_store
-                            .set(
-                                black_box(&format!("new_key_{tree_size}")),
-                                black_box(format!("new_value_{tree_size}").as_str()),
-                            )
-                            .expect("Failed to set value");
+                        dict.set(
+                            black_box(&format!("new_key_{tree_size}")),
+                            black_box(format!("new_value_{tree_size}").as_str()),
+                        )
+                        .expect("Failed to set value");
 
                         op.commit().expect("Failed to commit operation");
                     },
@@ -84,17 +78,14 @@ fn bench_batch_add_entries(c: &mut Criterion) {
             |b, &batch_size| {
                 b.iter_with_setup(setup_tree, |tree| {
                     let op = tree.new_operation().expect("Failed to start operation");
-                    let kv_store = op
-                        .get_subtree::<KVStore>("data")
-                        .expect("Failed to get KVStore");
+                    let dict = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
 
                     for i in 0..batch_size {
-                        kv_store
-                            .set(
-                                black_box(&format!("batch_key_{i}")),
-                                black_box(format!("batch_value_{i}").as_str()),
-                            )
-                            .expect("Failed to set value");
+                        dict.set(
+                            black_box(&format!("batch_key_{i}")),
+                            black_box(format!("batch_value_{i}").as_str()),
+                        )
+                        .expect("Failed to set value");
                     }
 
                     op.commit().expect("Failed to commit operation");
@@ -123,16 +114,13 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
 
                 b.iter(|| {
                     let op = tree.new_operation().expect("Failed to start operation");
-                    let kv_store = op
-                        .get_subtree::<KVStore>("data")
-                        .expect("Failed to get KVStore");
+                    let dict = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
 
-                    kv_store
-                        .set(
-                            black_box(&format!("inc_key_{counter}")),
-                            black_box(format!("inc_value_{counter}").as_str()),
-                        )
-                        .expect("Failed to set value");
+                    dict.set(
+                        black_box(&format!("inc_key_{counter}")),
+                        black_box(format!("inc_value_{counter}").as_str()),
+                    )
+                    .expect("Failed to set value");
 
                     op.commit().expect("Failed to commit operation");
                     counter += 1;
@@ -160,11 +148,9 @@ fn bench_access_entries(c: &mut Criterion) {
 
                 b.iter(|| {
                     let op = tree.new_operation().expect("Failed to start operation");
-                    let kv_store = op
-                        .get_subtree::<KVStore>("data")
-                        .expect("Failed to get KVStore");
+                    let dict = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
 
-                    let _value = kv_store
+                    let _value = dict
                         .get(black_box(&target_key))
                         .expect("Failed to get value");
                 });

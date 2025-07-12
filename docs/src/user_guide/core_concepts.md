@@ -135,8 +135,8 @@ Eidetica is designed with distributed systems in mind:
 
 - All data structures have CRDT properties for automatic conflict resolution
 - Different subtree types implement appropriate CRDT strategies:
-  - KVStore uses last-writer-wins (LWW) with implicit timestamps
-  - RowStore preserves all items, with LWW for updates to the same item
+  - Dict uses last-writer-wins (LWW) with implicit timestamps
+  - Table preserves all items, with LWW for updates to the same item
 
 These properties ensure that when Eidetica instances synchronize, they eventually reach a consistent state regardless of the order in which updates are received.
 
@@ -165,7 +165,7 @@ Eidetica is under active development, and some features mentioned in this docume
 
 - Core Entry and Tree structure
 - In-memory database with file persistence
-- KVStore and RowStore subtree implementations
+- Dict and Table subtree implementations
 - CRDT functionality:
   - Map (hierarchical nested key-value structure with recursive merging and tombstone support for deletions)
 - Atomic operations across subtrees

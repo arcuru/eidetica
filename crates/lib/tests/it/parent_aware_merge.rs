@@ -1,6 +1,6 @@
 use crate::helpers::*;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 #[test]
 fn test_simple_linear_chain() {
@@ -9,27 +9,27 @@ fn test_simple_linear_chain() {
 
     // Create entry A with initial data
     let op_a = tree.new_operation().unwrap();
-    let subtree_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let subtree_a = op_a.get_subtree::<Dict>("data").unwrap();
     subtree_a.set("counter", "1").unwrap();
     subtree_a.set("name", "alice").unwrap();
     op_a.commit().unwrap();
 
     // Create entry B as child of A
     let op_b = tree.new_operation().unwrap();
-    let subtree_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let subtree_b = op_b.get_subtree::<Dict>("data").unwrap();
     subtree_b.set("counter", "2").unwrap(); // Update counter
     subtree_b.set("age", "25").unwrap(); // Add new field
     op_b.commit().unwrap();
 
     // Create entry C as child of B
     let op_c = tree.new_operation().unwrap();
-    let subtree_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let subtree_c = op_c.get_subtree::<Dict>("data").unwrap();
     subtree_c.set("counter", "3").unwrap(); // Update counter again
     subtree_c.set("city", "nyc").unwrap(); // Add another field
     op_c.commit().unwrap();
 
     // Check the final accumulated state
-    let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let final_state = viewer.get_all().unwrap();
 
     // Final state should have all fields from the chain:
@@ -66,30 +66,30 @@ fn test_caching_consistency() {
 
     // Create a simple chain to have some data to cache
     let op_a = tree.new_operation().unwrap();
-    let subtree_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let subtree_a = op_a.get_subtree::<Dict>("data").unwrap();
     subtree_a.set("value", "1").unwrap();
     op_a.commit().unwrap();
 
     let op_b = tree.new_operation().unwrap();
-    let subtree_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let subtree_b = op_b.get_subtree::<Dict>("data").unwrap();
     subtree_b.set("value", "2").unwrap();
     op_b.commit().unwrap();
 
     let op_c = tree.new_operation().unwrap();
-    let subtree_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let subtree_c = op_c.get_subtree::<Dict>("data").unwrap();
     subtree_c.set("value", "3").unwrap();
     op_c.commit().unwrap();
 
     // First read - should compute and cache states
-    let viewer1 = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer1 = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let state1 = viewer1.get_all().unwrap();
 
     // Second read - should use cached states
-    let viewer2 = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer2 = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let state2 = viewer2.get_all().unwrap();
 
     // Third read - should also use cached states
-    let viewer3 = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer3 = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let state3 = viewer3.get_all().unwrap();
 
     // All results should be identical
@@ -110,20 +110,20 @@ fn test_parent_merge_semantics() {
 
     // Create base entry with shared data
     let op_base = tree.new_operation().unwrap();
-    let subtree_base = op_base.get_subtree::<KVStore>("data").unwrap();
+    let subtree_base = op_base.get_subtree::<Dict>("data").unwrap();
     subtree_base.set("base_field", "base_value").unwrap();
     subtree_base.set("shared_field", "original").unwrap();
     op_base.commit().unwrap();
 
     // Create child entry that updates shared field and adds new field
     let op_child = tree.new_operation().unwrap();
-    let subtree_child = op_child.get_subtree::<KVStore>("data").unwrap();
+    let subtree_child = op_child.get_subtree::<Dict>("data").unwrap();
     subtree_child.set("shared_field", "updated").unwrap();
     subtree_child.set("child_field", "child_value").unwrap();
     op_child.commit().unwrap();
 
     // Check the merged state
-    let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let final_state = viewer.get_all().unwrap();
 
     // Should have both base and child data, with child overriding shared field
@@ -153,7 +153,7 @@ fn test_deep_chain_performance() {
 
     for i in 1..=CHAIN_LENGTH {
         let op = tree.new_operation().unwrap();
-        let subtree = op.get_subtree::<KVStore>("data").unwrap();
+        let subtree = op.get_subtree::<Dict>("data").unwrap();
         subtree.set("step", i.to_string()).unwrap();
         subtree
             .set(format!("step_{i}"), format!("value_{i}"))
@@ -162,7 +162,7 @@ fn test_deep_chain_performance() {
     }
 
     // Read the final state - this should not stack overflow
-    let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let final_state = viewer.get_all().unwrap();
 
     // Check that we have the final step
@@ -189,13 +189,13 @@ fn test_multiple_reads_consistency() {
 
     // Create some test data
     let op1 = tree.new_operation().unwrap();
-    let subtree1 = op1.get_subtree::<KVStore>("data").unwrap();
+    let subtree1 = op1.get_subtree::<Dict>("data").unwrap();
     subtree1.set("key1", "value1").unwrap();
     subtree1.set("key2", "value2").unwrap();
     op1.commit().unwrap();
 
     let op2 = tree.new_operation().unwrap();
-    let subtree2 = op2.get_subtree::<KVStore>("data").unwrap();
+    let subtree2 = op2.get_subtree::<Dict>("data").unwrap();
     subtree2.set("key1", "updated1").unwrap();
     subtree2.set("key3", "value3").unwrap();
     op2.commit().unwrap();
@@ -203,7 +203,7 @@ fn test_multiple_reads_consistency() {
     // Read the data multiple times
     let mut results = Vec::new();
     for _ in 0..5 {
-        let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+        let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
         let state = viewer.get_all().unwrap();
         results.push(state);
     }
@@ -246,7 +246,7 @@ fn test_incorrect_parent_merging_would_fail() {
     // Create a sequence of operations that build up a complex state
     // Step 1: Initial state with multiple fields
     let op1 = tree.new_operation().unwrap();
-    let subtree1 = op1.get_subtree::<KVStore>("data").unwrap();
+    let subtree1 = op1.get_subtree::<Dict>("data").unwrap();
     subtree1.set("count", "1").unwrap();
     subtree1.set("name", "initial").unwrap();
     subtree1.set("status", "active").unwrap();
@@ -254,14 +254,14 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Step 2: Update some fields, add new ones
     let op2 = tree.new_operation().unwrap();
-    let subtree2 = op2.get_subtree::<KVStore>("data").unwrap();
+    let subtree2 = op2.get_subtree::<Dict>("data").unwrap();
     subtree2.set("count", "2").unwrap(); // Update existing
     subtree2.set("category", "type_a").unwrap(); // Add new
     op2.commit().unwrap();
 
     // Step 3: More updates with overlapping and new fields
     let op3 = tree.new_operation().unwrap();
-    let subtree3 = op3.get_subtree::<KVStore>("data").unwrap();
+    let subtree3 = op3.get_subtree::<Dict>("data").unwrap();
     subtree3.set("count", "3").unwrap(); // Update again
     subtree3.set("name", "updated").unwrap(); // Update existing
     subtree3.set("priority", "high").unwrap(); // Add new
@@ -269,7 +269,7 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Step 4: Final operation with more field changes
     let op4 = tree.new_operation().unwrap();
-    let subtree4 = op4.get_subtree::<KVStore>("data").unwrap();
+    let subtree4 = op4.get_subtree::<Dict>("data").unwrap();
     subtree4.set("count", "4").unwrap(); // Final count update
     subtree4.set("status", "completed").unwrap(); // Update status
     subtree4.set("result", "success").unwrap(); // Add final field
@@ -279,7 +279,7 @@ fn test_incorrect_parent_merging_would_fail() {
     tree.backend().clear_crdt_cache().unwrap();
 
     // Read the final state - this exercises the complex merge algorithm
-    let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let final_state = viewer.get_all().unwrap();
 
     println!("Final state after complex operations: {final_state:#?}");
@@ -348,7 +348,7 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Verify deterministic behavior by reading multiple times
     for i in 0..5 {
-        let viewer_check = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+        let viewer_check = tree.get_subtree_viewer::<Dict>("data").unwrap();
         let state_check = viewer_check.get_all().unwrap();
         assert_eq!(
             final_state, state_check,
@@ -377,7 +377,7 @@ fn test_true_diamond_pattern() {
 
     // Step 1: Create entry A (common ancestor)
     let op_a = tree.new_operation().unwrap();
-    let subtree_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let subtree_a = op_a.get_subtree::<Dict>("data").unwrap();
     subtree_a.set("base", "A").unwrap();
     subtree_a.set("shared", "original").unwrap();
     subtree_a.set("count", "1").unwrap();
@@ -395,7 +395,7 @@ fn test_true_diamond_pattern() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
-    let subtree_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let subtree_b = op_b.get_subtree::<Dict>("data").unwrap();
     subtree_b.set("shared", "from_B").unwrap(); // Override shared field
     subtree_b.set("b_specific", "B_data").unwrap(); // Add B-specific data
     subtree_b.set("count", "2").unwrap(); // Update count
@@ -404,7 +404,7 @@ fn test_true_diamond_pattern() {
     let op_c = tree
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
-    let subtree_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let subtree_c = op_c.get_subtree::<Dict>("data").unwrap();
     subtree_c.set("shared", "from_C").unwrap(); // Override shared field differently
     subtree_c.set("c_specific", "C_data").unwrap(); // Add C-specific data  
     subtree_c.set("count", "3").unwrap(); // Update count differently
@@ -452,7 +452,7 @@ fn test_true_diamond_pattern() {
 
     // Step 3: Create merge operation D that automatically gets both B and C as parents
     let op_d = tree.new_operation().unwrap(); // Uses current tips [B, C]
-    let subtree_d = op_d.get_subtree::<KVStore>("data").unwrap();
+    let subtree_d = op_d.get_subtree::<Dict>("data").unwrap();
     subtree_d.set("merge_marker", "D_created").unwrap();
     subtree_d.set("final_data", "merged").unwrap();
     let entry_d_id = op_d.commit().unwrap();
@@ -469,7 +469,7 @@ fn test_true_diamond_pattern() {
     }
 
     // Step 4: Read the final state - this exercises the LCA algorithm on a true diamond!
-    let viewer = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+    let viewer = tree.get_subtree_viewer::<Dict>("data").unwrap();
     let final_state = viewer.get_all().unwrap();
 
     println!("True diamond pattern final state: {final_state:#?}");
@@ -552,7 +552,7 @@ fn test_true_diamond_pattern() {
 
     // Verify deterministic behavior - the exact same read should always give same result
     for i in 0..3 {
-        let viewer_check = tree.get_subtree_viewer::<KVStore>("data").unwrap();
+        let viewer_check = tree.get_subtree_viewer::<Dict>("data").unwrap();
         let state_check = viewer_check.get_all().unwrap();
         assert_eq!(
             final_state, state_check,

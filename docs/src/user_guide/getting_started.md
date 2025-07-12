@@ -72,7 +72,7 @@ let db = BaseDB::new(Box::new(database));
 
 ## Working with Data
 
-Eidetica uses **Subtrees** to organize data within a tree. One common subtree type is `RowStore`, which maintains a collection of items with unique IDs.
+Eidetica uses **Subtrees** to organize data within a tree. One common subtree type is `Table`, which maintains a collection of items with unique IDs.
 
 ### Defining Your Data
 
@@ -98,8 +98,8 @@ All operations in Eidetica happen within an atomic **Operation**:
 // Start an authenticated operation
 let op = tree.new_operation()?;
 
-// Get or create a RowStore subtree
-let people = op.get_subtree::<eidetica::subtree::RowStore<Person>>("people")?;
+// Get or create a Table subtree
+let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
 // Insert a person and get their ID
 let person = Person { name: "Alice".to_string(), age: 30 };
@@ -113,7 +113,7 @@ op.commit()?;
 
 ```rust
 let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::RowStore<Person>>("people")?;
+let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
 // Get a single person by ID
 if let Ok(person) = people.get(&id) {
@@ -132,7 +132,7 @@ for result in people.iter()? {
 
 ```rust
 let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::RowStore<Person>>("people")?;
+let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
 // Get, modify, and update
 if let Ok(mut person) = people.get(&id) {
@@ -147,7 +147,7 @@ op.commit()?;
 
 ```rust
 let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::RowStore<Person>>("people")?;
+let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
 // Remove a person by ID
 people.remove(&id)?;

@@ -5,7 +5,7 @@ use eidetica::basedb::BaseDB;
 use eidetica::crdt::CRDT;
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 #[test]
 fn test_kvnested_basic() {
@@ -583,8 +583,8 @@ fn test_kvnested_merge_dual_tombstones() {
     }
 }
 
-fn setup_kvstore_for_editor_tests(_db: &BaseDB, op: &AtomicOp) -> eidetica::Result<KVStore> {
-    op.get_subtree::<KVStore>("my_editor_test_kv_store")
+fn setup_dict_for_editor_tests(_db: &BaseDB, op: &AtomicOp) -> eidetica::Result<Dict> {
+    op.get_subtree::<Dict>("my_editor_test_kv_store")
 }
 
 #[test]
@@ -593,7 +593,7 @@ fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     let editor = store.get_value_mut("user");
     editor.set(Value::Text("alice".to_string()))?;
@@ -613,7 +613,7 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     // Set user.profile.name = "bob"
     let user_editor = store.get_value_mut("user");
@@ -661,7 +661,7 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     // Set user = "string_value"
     store.set("user", "string_value")?;
@@ -713,7 +713,7 @@ fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     let editor = store.get_value_mut("nonexistent");
     let result = editor.get();
@@ -735,7 +735,7 @@ fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     let editor = store
         .get_value_mut("a")
@@ -770,7 +770,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     let user_editor = store.get_value_mut("user");
     // At this point, user_editor points to ["user"].
@@ -814,19 +814,19 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     Ok(())
 }
 
-// KVStore::get_at_path and KVStore::set_at_path tests
+// Dict::get_at_path and Dict::set_at_path tests
 
-fn setup_kvstore_for_path_tests(op: &AtomicOp) -> eidetica::Result<KVStore> {
-    op.get_subtree::<KVStore>("my_path_test_kv_store")
+fn setup_dict_for_path_tests(op: &AtomicOp) -> eidetica::Result<Dict> {
+    op.get_subtree::<Dict>("my_path_test_kv_store")
 }
 
 #[test]
-fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
+fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path = ["simple_key"];
     let value = Value::Text("simple_value".to_string());
@@ -845,7 +845,7 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
 
     // Verify after commit
     let viewer_op = tree.new_operation()?;
-    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    let viewer_store = setup_dict_for_path_tests(&viewer_op)?;
     assert_eq!(viewer_store.get_at_path(path)?, value);
     assert_eq!(
         viewer_store.get("simple_key")?,
@@ -856,12 +856,12 @@ fn test_kvstore_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
 }
 
 #[test]
-fn test_kvstore_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
+fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path = ["user", "profile", "email"];
     let value = Value::Text("test@example.com".to_string());
@@ -886,19 +886,19 @@ fn test_kvstore_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
 
     // Verify after commit
     let viewer_op = tree.new_operation()?;
-    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    let viewer_store = setup_dict_for_path_tests(&viewer_op)?;
     assert_eq!(viewer_store.get_at_path(path)?, value);
 
     Ok(())
 }
 
 #[test]
-fn test_kvstore_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
+fn test_dict_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path = ["a", "b", "c"];
     let value = Value::Text("deep_value".to_string());
@@ -917,12 +917,12 @@ fn test_kvstore_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> 
 }
 
 #[test]
-fn test_kvstore_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
+fn test_dict_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     // Set user.profile = "string_value"
     store.set_at_path(["user", "profile"], Value::Text("string_value".to_string()))?;
@@ -948,12 +948,12 @@ fn test_kvstore_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
 }
 
 #[test]
-fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
+fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path = ["non", "existent", "key"];
     match store.get_at_path(path) {
@@ -988,12 +988,12 @@ fn test_kvstore_get_at_path_not_found() -> eidetica::Result<()> {
 }
 
 #[test]
-fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> {
+fn test_dict_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     // Set a.b = "string" (not a map)
     store.set_at_path(["a", "b"], Value::Text("i_am_not_a_map".to_string()))?;
@@ -1009,12 +1009,12 @@ fn test_kvstore_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> 
 }
 
 #[test]
-fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
+fn test_dict_set_at_path_empty_path() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path: Vec<String> = vec![];
 
@@ -1036,16 +1036,16 @@ fn test_kvstore_set_at_path_empty_path() -> eidetica::Result<()> {
 }
 
 #[test]
-fn test_kvstore_get_at_path_empty_path() -> eidetica::Result<()> {
+fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
     let db = BaseDB::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     let path: Vec<String> = vec![];
 
-    // Getting the root should return a map (the entire KVStore contents)
+    // Getting the root should return a map (the entire Dict contents)
     match store.get_at_path(&path) {
         Ok(Value::Map(_)) => (),
         Ok(v) => panic!("Expected Map for root path, got {v:?}"),
@@ -1061,7 +1061,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     // Set some values at the top level
     store.set("key1", "value1")?;
@@ -1116,7 +1116,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
 
     // Verify after commit
     let viewer_op = tree.new_operation()?;
-    let viewer_store = setup_kvstore_for_path_tests(&viewer_op)?;
+    let viewer_store = setup_dict_for_path_tests(&viewer_op)?;
     match viewer_store.get("key1") {
         Err(ref e) if e.is_not_found() => (),
         Ok(v) => panic!("Expected NotFound after commit, got {v:?}"),
@@ -1134,7 +1134,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_editor_tests(&db, &op)?;
+    let store = setup_dict_for_editor_tests(&db, &op)?;
 
     // Set up a nested structure
     let mut user_profile = Map::new();
@@ -1189,7 +1189,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // Verify after commit
     let viewer_op = tree.new_operation()?;
-    let viewer_store = setup_kvstore_for_editor_tests(&db, &viewer_op)?;
+    let viewer_store = setup_dict_for_editor_tests(&db, &viewer_op)?;
 
     // User exists but has no role or profile
     match viewer_store.get("user")? {
@@ -1221,7 +1221,7 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     let op = tree.new_operation()?;
-    let store = setup_kvstore_for_path_tests(&op)?;
+    let store = setup_dict_for_path_tests(&op)?;
 
     // Get a root editor
     let root_editor = store.get_root_mut();

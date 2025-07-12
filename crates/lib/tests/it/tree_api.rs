@@ -1,7 +1,7 @@
 use crate::helpers::*;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission, SigKey};
 use eidetica::crdt::Map;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 /// Test basic entry retrieval functionality
 #[test]
@@ -11,7 +11,7 @@ fn test_get_entry_basic() {
     // Create an operation and commit it
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store
         .set("test_key", "test_value")
@@ -46,7 +46,7 @@ fn test_get_entries_multiple() {
     for i in 0..3 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))
@@ -72,7 +72,7 @@ fn test_get_entries_not_found() {
     // Create one valid entry
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("key", "value").expect("Failed to set value");
     let valid_entry_id = op.commit().expect("Failed to commit operation");
@@ -92,7 +92,7 @@ fn test_entry_existence_checking() {
     // Create an entry
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
@@ -129,7 +129,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree1");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree in tree1");
     store1
         .set("key", "value1")
@@ -141,7 +141,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -192,7 +192,7 @@ fn test_tree_validation_get_entries() {
             .new_operation()
             .expect("Failed to create operation in tree1");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree in tree1");
         store
             .set("key", format!("value1_{i}"))
@@ -206,7 +206,7 @@ fn test_tree_validation_get_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -259,7 +259,7 @@ fn test_auth_helpers_signed_entries() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
@@ -289,7 +289,7 @@ fn test_auth_helpers_default_authenticated_entries() {
     // Create entry using default authentication
     let op = tree.new_operation().expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
@@ -337,7 +337,7 @@ fn test_verify_entry_signature_auth_scenarios() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store1.set("key", "value1").expect("Failed to set value");
     let signed_entry_id = op1.commit().expect("Failed to commit operation");
@@ -351,7 +351,7 @@ fn test_verify_entry_signature_auth_scenarios() {
     // Test 2: Create unsigned entry
     let op2 = tree.new_operation().expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store2.set("key", "value2").expect("Failed to set value");
     let unsigned_entry_id = op2.commit().expect("Failed to commit operation");
@@ -401,7 +401,7 @@ fn test_verify_entry_signature_unauthorized_key() {
         .new_authenticated_operation(authorized_key_id)
         .expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store1.set("key", "value1").expect("Failed to set value");
     let authorized_entry_id = op1.commit().expect("Failed to commit operation");
@@ -416,7 +416,7 @@ fn test_verify_entry_signature_unauthorized_key() {
         .new_authenticated_operation(unauthorized_key_id)
         .expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store2.set("key", "value2").expect("Failed to set value");
     let commit_result = op2.commit();
@@ -461,7 +461,7 @@ fn test_verify_entry_signature_validates_tree_auth() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get subtree");
     store.set("key", "value").expect("Failed to set value");
     let entry_id = op.commit().expect("Failed to commit operation");
@@ -498,7 +498,7 @@ fn test_tree_queries() {
     for i in 0..3 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))
@@ -543,7 +543,7 @@ fn test_batch_vs_individual_retrieval() {
     for i in 0..5 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<KVStore>("data")
+            .get_subtree::<Dict>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))

@@ -1,7 +1,7 @@
 //! Y-CRDT integration for Eidetica
 //!
 //! This module provides seamless integration between Eidetica's atomic operation system
-//! and Y-CRDT (Yjs) for real-time collaborative editing. The main component is `YrsStore`,
+//! and Y-CRDT (Yjs) for real-time collaborative editing. The main component is `YDoc`,
 //! which implements differential saving to minimize storage overhead while maintaining
 //! full compatibility with Y-CRDT's conflict resolution algorithms.
 //!
@@ -33,7 +33,7 @@ use yrs::{Doc, ReadTxn, Transact, Update};
 
 /// Errors specific to Y-CRDT operations
 #[derive(Debug, Error)]
-pub enum YrsStoreError {
+pub enum YDocError {
     /// Y-CRDT operation failed
     #[error("Y-CRDT operation failed: {operation} - {reason}")]
     Operation { operation: String, reason: String },
@@ -47,10 +47,10 @@ pub enum YrsStoreError {
     Merge { reason: String },
 }
 
-impl From<YrsStoreError> for SubtreeError {
-    fn from(err: YrsStoreError) -> Self {
+impl From<YDocError> for SubtreeError {
+    fn from(err: YDocError) -> Self {
         SubtreeError::ImplementationError {
-            subtree: "YrsStore".to_string(),
+            subtree: "YDoc".to_string(),
             reason: err.to_string(),
         }
     }
@@ -89,13 +89,13 @@ impl CRDT for YrsBinary {
         // Apply self's update if not empty
         if !self.data.is_empty() {
             let update = Update::decode_v1(&self.data).map_err(|e| {
-                SubtreeError::from(YrsStoreError::InvalidData {
+                SubtreeError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update (self): {e}"),
                 })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YrsStoreError::Merge {
+                SubtreeError::from(YDocError::Merge {
                     reason: format!("Failed to apply Y-CRDT update (self): {e}"),
                 })
             })?;
@@ -104,13 +104,13 @@ impl CRDT for YrsBinary {
         // Apply other's update if not empty
         if !other.data.is_empty() {
             let other_update = Update::decode_v1(&other.data).map_err(|e| {
-                SubtreeError::from(YrsStoreError::InvalidData {
+                SubtreeError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update (other): {e}"),
                 })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(other_update).map_err(|e| {
-                SubtreeError::from(YrsStoreError::Merge {
+                SubtreeError::from(YDocError::Merge {
                     reason: format!("Failed to apply Y-CRDT update (other): {e}"),
                 })
             })?;
@@ -142,13 +142,13 @@ impl YrsBinary {
 
 /// A Y-CRDT based SubTree implementation with efficient differential saving.
 ///
-/// `YrsStore` provides a CRDT-based storage abstraction using the yrs library,
+/// `YDoc` provides a CRDT-based storage abstraction using the yrs library,
 /// which is a Rust port of Yjs. This allows for real-time collaborative editing
 /// and automatic conflict resolution through the Y-CRDT algorithms.
 ///
 /// ## Architecture
 ///
-/// The `YrsStore` integrates with Eidetica's atomic operation system to provide:
+/// The `YDoc` integrates with Eidetica's atomic operation system to provide:
 /// - **Differential Updates**: Only saves incremental changes, not full document state
 /// - **Efficient Caching**: Caches expensive backend data retrieval operations
 /// - **Operation/Viewer Model**: Compatible with Eidetica's transaction patterns
@@ -156,27 +156,27 @@ impl YrsBinary {
 ///
 /// ## Caching Strategy
 ///
-/// To optimize performance, `YrsStore` caches the expensive `get_full_state()` operation
+/// To optimize performance, `YDoc` caches the expensive `get_full_state()` operation
 /// from the backend and constructs documents and state vectors on-demand from this
 /// cached data. This approach minimizes I/O operations while keeping memory usage low.
 ///
 /// ## Differential Saving
 ///
-/// When saving documents, `YrsStore` calculates diffs relative to the current backend
+/// When saving documents, `YDoc` calculates diffs relative to the current backend
 /// state rather than saving full document snapshots. This significantly reduces storage
 /// overhead for large documents with incremental changes.
 ///
 /// ## Usage
 ///
-/// The `YrsStore` exposes the underlying Y-CRDT document directly, allowing users
+/// The `YDoc` exposes the underlying Y-CRDT document directly, allowing users
 /// to work with the full yrs API. Changes are automatically captured and stored
 /// when the atomic operation is committed.
 ///
 /// ```rust,no_run
-/// use eidetica::subtree::YrsStore;
+/// use eidetica::subtree::YDoc;
 /// use yrs::{Map, Text, Transact};
 /// # use eidetica::Result;
-/// # fn example(store: &YrsStore) -> Result<()> {
+/// # fn example(store: &YDoc) -> Result<()> {
 /// // Work directly with the yrs document
 /// store.with_doc_mut(|doc| {
 ///     let map = doc.get_or_insert_map("root");
@@ -191,7 +191,7 @@ impl YrsBinary {
 /// # Ok(())
 /// # }
 /// ```
-pub struct YrsStore {
+pub struct YDoc {
     /// The name identifier for this subtree within the atomic operation
     name: String,
     /// Reference to the atomic operation for backend data access
@@ -201,7 +201,7 @@ pub struct YrsStore {
     cached_backend_data: RefCell<Option<YrsBinary>>,
 }
 
-impl SubTree for YrsStore {
+impl SubTree for YDoc {
     fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.as_ref().to_string(),
@@ -215,7 +215,7 @@ impl SubTree for YrsStore {
     }
 }
 
-impl YrsStore {
+impl YDoc {
     /// Gets the current Y-CRDT document, merging all historical state.
     ///
     /// This method reconstructs the current state of the Y-CRDT document by:
@@ -244,14 +244,14 @@ impl YrsStore {
 
         if !local_data.is_empty() {
             let local_update = Update::decode_v1(local_data.as_bytes()).map_err(|e| {
-                SubtreeError::from(YrsStoreError::InvalidData {
+                SubtreeError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode local Y-CRDT update: {e}"),
                 })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(local_update).map_err(|e| {
-                SubtreeError::from(YrsStoreError::Operation {
+                SubtreeError::from(YDocError::Operation {
                     operation: "apply_local_update".to_string(),
                     reason: format!("Failed to apply local Y-CRDT update: {e}"),
                 })
@@ -276,7 +276,7 @@ impl YrsStore {
     /// ```rust,no_run
     /// # use eidetica::Result;
     /// # use yrs::{Transact, GetString};
-    /// # fn example(store: &eidetica::subtree::YrsStore) -> Result<()> {
+    /// # fn example(store: &eidetica::subtree::YDoc) -> Result<()> {
     /// let content = store.with_doc(|doc| {
     ///     let text = doc.get_or_insert_text("document");
     ///     let txn = doc.transact();
@@ -315,7 +315,7 @@ impl YrsStore {
     /// ```rust,no_run
     /// # use eidetica::Result;
     /// # use yrs::{Transact, Text};
-    /// # fn example(store: &eidetica::subtree::YrsStore) -> Result<()> {
+    /// # fn example(store: &eidetica::subtree::YDoc) -> Result<()> {
     /// store.with_doc_mut(|doc| {
     ///     let text = doc.get_or_insert_text("document");
     ///     let mut txn = doc.transact_mut();
@@ -357,7 +357,7 @@ impl YrsStore {
     pub fn apply_update(&self, update_data: &[u8]) -> Result<()> {
         let doc = self.doc()?;
         let update = Update::decode_v1(update_data).map_err(|e| {
-            SubtreeError::from(YrsStoreError::InvalidData {
+            SubtreeError::from(YDocError::InvalidData {
                 reason: format!("Failed to decode Y-CRDT update: {e}"),
             })
         })?;
@@ -365,7 +365,7 @@ impl YrsStore {
         {
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YrsStoreError::Operation {
+                SubtreeError::from(YDocError::Operation {
                     operation: "apply_update".to_string(),
                     reason: format!("Failed to apply Y-CRDT update: {e}"),
                 })
@@ -490,7 +490,7 @@ impl YrsStore {
     /// ## Caching
     ///
     /// This method leverages the cached backend data, so the expensive `get_full_state()`
-    /// operation is only performed once per `YrsStore` instance.
+    /// operation is only performed once per `YDoc` instance.
     ///
     /// ## Returns
     /// A `Result` containing the state vector representing the backend document state.
@@ -508,13 +508,13 @@ impl YrsStore {
         // Construct a temporary document to extract the state vector
         let temp_doc = Doc::new();
         let backend_update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-            SubtreeError::from(YrsStoreError::InvalidData {
+            SubtreeError::from(YDocError::InvalidData {
                 reason: format!("Failed to decode backend Y-CRDT update: {e}"),
             })
         })?;
         let mut temp_txn = temp_doc.transact_mut();
         temp_txn.apply_update(backend_update).map_err(|e| {
-            SubtreeError::from(YrsStoreError::Operation {
+            SubtreeError::from(YDocError::Operation {
                 operation: "get_initial_state_vector".to_string(),
                 reason: format!("Failed to apply backend Y-CRDT update: {e}"),
             })
@@ -549,14 +549,14 @@ impl YrsStore {
         let doc = Doc::new();
         if !backend_data.is_empty() {
             let update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-                SubtreeError::from(YrsStoreError::InvalidData {
+                SubtreeError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update: {e}"),
                 })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YrsStoreError::Operation {
+                SubtreeError::from(YDocError::Operation {
                     operation: "get_initial_doc".to_string(),
                     reason: format!("Failed to apply Y-CRDT update from backend: {e}"),
                 })
@@ -568,7 +568,7 @@ impl YrsStore {
 
     /// Retrieves backend data with caching to avoid expensive repeated `get_full_state()` calls.
     ///
-    /// This is the core caching mechanism for `YrsStore`. The first call performs the
+    /// This is the core caching mechanism for `YDoc`. The first call performs the
     /// expensive `atomic_op.get_full_state()` operation and caches the result. All
     /// subsequent calls return the cached data immediately.
     ///
@@ -581,7 +581,7 @@ impl YrsStore {
     ///
     /// ## Cache Lifetime
     ///
-    /// The cache is tied to the lifetime of the `YrsStore` instance, which typically
+    /// The cache is tied to the lifetime of the `YDoc` instance, which typically
     /// corresponds to a single atomic operation. This ensures that:
     /// - Data is cached for the duration of the operation
     /// - Fresh data is loaded for each new operation

@@ -12,9 +12,9 @@
 //! * **BaseDB (`basedb::BaseDB`)**: The main database struct that manages trees and interacts with a backend.
 //! * **CRDTs (`data::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
 //! * **SubTrees (`subtree::SubTree`)**: Named data structures within a tree that provide specialized data access patterns:
-//!     * **KVStore (`subtree::KVStore`)**: A key-value store within a tree.
-//!     * **RowStore (`subtree::RowStore`)**: A record-oriented store with automatic primary key generation, similar to a database table.
-//!     * **YrsStore (`subtree::YrsStore`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
+//!     * **Dict (`subtree::Dict`)**: A key-value store within a tree.
+//!     * **Table (`subtree::Table`)**: A record-oriented store with automatic primary key generation, similar to a database table.
+//!     * **YDoc (`subtree::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
 pub mod atomicop;
@@ -34,7 +34,7 @@ pub use tree::Tree;
 /// Y-CRDT types re-exported for convenience when the "y-crdt" feature is enabled.
 ///
 /// This module re-exports commonly used types from the `yrs` crate so that client code
-/// doesn't need to add `yrs` as a separate dependency when using `YrsStore`.
+/// doesn't need to add `yrs` as a separate dependency when using `YDoc`.
 #[cfg(feature = "y-crdt")]
 pub mod y_crdt {
     pub use yrs::*;

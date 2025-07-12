@@ -14,7 +14,7 @@ rm -f $DB_FILE
 echo
 
 # Test user information functionality first (before any todos)
-echo "=== Testing User Information (YrsStore) ==="
+echo "=== Testing User Information (YDoc) ==="
 echo
 
 # Test showing empty user info
@@ -41,7 +41,7 @@ $CMD show-user
 echo
 
 # Test user preferences functionality
-echo "=== Testing User Preferences (YrsStore) ==="
+echo "=== Testing User Preferences (YDoc) ==="
 echo
 
 # Test showing empty preferences
@@ -64,7 +64,7 @@ $CMD show-prefs
 echo
 
 # Test todo functionality
-echo "=== Testing Todo Functionality (RowStore) ==="
+echo "=== Testing Todo Functionality (Table) ==="
 echo
 
 # Add tasks
@@ -149,8 +149,8 @@ $CMD list
 echo
 
 echo "=== Test completed successfully ==="
-echo "✓ User information (YrsStore) functionality working"
-echo "✓ User preferences (YrsStore) functionality working"
-echo "✓ Todo management (RowStore) functionality working"
+echo "✓ User information (YDoc) functionality working"
+echo "✓ User preferences (YDoc) functionality working"
+echo "✓ Todo management (Table) functionality working"
 echo "✓ Data persistence working"
 echo "✓ All subtrees coexisting properly"

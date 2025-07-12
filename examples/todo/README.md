@@ -6,13 +6,13 @@ A simple command-line Todo application that demonstrates the usage of Eidetica w
 
 This Todo CLI application demonstrates how Eidetica can be used to build a simple database-backed application with multiple data structures. The app allows you to:
 
-### Todo Management (RowStore)
+### Todo Management (Table)
 
 - Add new tasks to your todo list
 - Mark tasks as complete
 - List all tasks with their completion status
 
-### User Information Management (YrsStore)
+### User Information Management (YDoc)
 
 - Set and update user information (name, email, bio)
 - View current user information
@@ -83,22 +83,22 @@ This app demonstrates several Eidetica features and subtree types:
 - **BaseDB**: The main database interface
 - **InMemory**: Memory storage with JSON file persistence
 - **Tree**: A hierarchical data structure containing multiple subtrees
-- **RowStore**: A subtree type for storing record-like data (used for todos)
-- **YrsStore**: A Y-CRDT based subtree for collaborative data structures (used for user info and preferences)
+- **Table**: A subtree type for storing record-like data (used for todos)
+- **YDoc**: A Y-CRDT based subtree for collaborative data structures (used for user info and preferences)
 
 ### Data Organization
 
 The application uses three separate subtrees within a single tree:
 
-1. **"todos"** (RowStore<Todo>): Stores todo items with automatic ID generation
-2. **"user_info"** (YrsStore): Stores user profile information using Y-CRDT Maps
-3. **"user_prefs"** (YrsStore): Stores user preferences using Y-CRDT Maps
+1. **"todos"** (Table<Todo>): Stores todo items with automatic ID generation
+2. **"user_info"** (YDoc): Stores user profile information using Y-CRDT Maps
+3. **"user_prefs"** (YDoc): Stores user preferences using Y-CRDT Maps
 
 This demonstrates how different subtree types can coexist within the same Eidetica tree, each optimized for their specific use case.
 
 ## Data Model
 
-### Todo Items (RowStore)
+### Todo Items (Table)
 
 Each todo item has:
 
@@ -107,11 +107,11 @@ Each todo item has:
 - Creation timestamp
 - Completion timestamp (when completed)
 
-The unique ID for each task is provided by the Eidetica RowStore, which automatically generates and manages primary keys.
+The unique ID for each task is provided by the Eidetica Table, which automatically generates and manages primary keys.
 
-### User Information (YrsStore)
+### User Information (YDoc)
 
-User information is stored in Y-CRDT Maps within the YrsStore subtree:
+User information is stored in Y-CRDT Maps within the YDoc subtree:
 
 - **user_info**: Contains name, email, bio fields
 - **preferences**: Contains user preference key-value pairs
@@ -149,4 +149,4 @@ chmod +x test.sh
 ./test.sh
 ```
 
-The test script provides a complete demonstration of both RowStore and YrsStore functionality, showing how different CRDT types can be used together in a single application.
+The test script provides a complete demonstration of both Table and YDoc functionality, showing how different CRDT types can be used together in a single application.

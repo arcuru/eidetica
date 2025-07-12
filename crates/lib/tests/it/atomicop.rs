@@ -2,31 +2,31 @@ use crate::helpers::*;
 use eidetica::constants::SETTINGS;
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::{KVStore, SubTree};
+use eidetica::subtree::{Dict, SubTree};
 
 #[test]
-fn test_atomicop_through_kvstore() {
+fn test_atomicop_through_dict() {
     // Create a backend and a tree
     let tree = setup_tree();
 
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Get a KVStore subtree, which will use AtomicOp internally
-    let kvstore = KVStore::new(&operation, "test").unwrap();
+    // Get a Dict subtree, which will use AtomicOp internally
+    let dict = Dict::new(&operation, "test").unwrap();
 
-    // Set a value in the KVStore, which will use AtomicOp::update_subtree internally
-    kvstore.set("key", "value").unwrap();
+    // Set a value in the Dict, which will use AtomicOp::update_subtree internally
+    dict.set("key", "value").unwrap();
 
     // Commit the operation
     operation.commit().unwrap();
 
     // Use a new operation to read the data
     let read_op = tree.new_operation().unwrap();
-    let read_store = KVStore::new(&read_op, "test").unwrap();
+    let read_store = Dict::new(&read_op, "test").unwrap();
 
     // Verify the value was set correctly
-    assert_kvstore_value(&read_store, "key", "value");
+    assert_dict_value(&read_store, "key", "value");
 
     // Also test the get_string convenience method
     assert_eq!(read_store.get_string("key").unwrap(), "value");
@@ -40,9 +40,9 @@ fn test_atomicop_multiple_subtrees() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Create two different KVStore subtrees
-    let store1 = KVStore::new(&operation, "store1").unwrap();
-    let store2 = KVStore::new(&operation, "store2").unwrap();
+    // Create two different Dict subtrees
+    let store1 = Dict::new(&operation, "store1").unwrap();
+    let store2 = Dict::new(&operation, "store2").unwrap();
 
     // Set values in each store
     store1.set("key1", "value1").unwrap();
@@ -56,12 +56,12 @@ fn test_atomicop_multiple_subtrees() {
 
     // Create a new operation to read the data
     let read_op = tree.new_operation().unwrap();
-    let store1_read = KVStore::new(&read_op, "store1").unwrap();
-    let store2_read = KVStore::new(&read_op, "store2").unwrap();
+    let store1_read = Dict::new(&read_op, "store1").unwrap();
+    let store2_read = Dict::new(&read_op, "store2").unwrap();
 
     // Verify values in both stores
-    assert_kvstore_value(&store1_read, "key1", "updated");
-    assert_kvstore_value(&store2_read, "key2", "value2");
+    assert_dict_value(&store1_read, "key1", "updated");
+    assert_dict_value(&store2_read, "key2", "value2");
 }
 
 #[test]
@@ -72,11 +72,11 @@ fn test_atomicop_empty_subtree_removal() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Create a KVStore subtree but don't add any data (will be empty)
-    let _empty_store = KVStore::new(&operation, "empty").unwrap();
+    // Create a Dict subtree but don't add any data (will be empty)
+    let _empty_store = Dict::new(&operation, "empty").unwrap();
 
-    // Create another KVStore and add data
-    let data_store = KVStore::new(&operation, "data").unwrap();
+    // Create another Dict and add data
+    let data_store = Dict::new(&operation, "data").unwrap();
     data_store.set("key", "value").unwrap();
 
     // Commit the operation - should remove the empty subtree
@@ -86,14 +86,14 @@ fn test_atomicop_empty_subtree_removal() {
     let read_op = tree.new_operation().unwrap();
 
     // Try to access both subtrees
-    let data_result = KVStore::new(&read_op, "data");
-    let empty_result = KVStore::new(&read_op, "empty");
+    let data_result = Dict::new(&read_op, "data");
+    let empty_result = Dict::new(&read_op, "empty");
 
     // The data subtree should be accessible
     assert!(data_result.is_ok());
 
     // The empty subtree should have been removed, but accessing it doesn't fail
-    // because KVStore creates it if it doesn't exist
+    // because Dict creates it if it doesn't exist
     assert!(empty_result.is_ok());
 
     // However, the empty subtree should not have any data
@@ -109,19 +109,19 @@ fn test_atomicop_parent_relationships() {
 
     // Create first operation and set data
     let op1 = tree.new_operation().unwrap();
-    let store1 = KVStore::new(&op1, "kvstore").unwrap();
+    let store1 = Dict::new(&op1, "data").unwrap();
     store1.set("first", "entry").unwrap();
     op1.commit().unwrap();
 
     // Create second operation that will use the first as parent
     let op2 = tree.new_operation().unwrap();
-    let store2 = KVStore::new(&op2, "kvstore").unwrap();
+    let store2 = Dict::new(&op2, "data").unwrap();
     store2.set("second", "entry").unwrap();
     op2.commit().unwrap();
 
     // Create a third operation to read all entries
     let op3 = tree.new_operation().unwrap();
-    let store3 = KVStore::new(&op3, "kvstore").unwrap();
+    let store3 = Dict::new(&op3, "data").unwrap();
 
     // Get all data - should include both entries due to CRDT merge
     let all_data = store3.get_all().unwrap();
@@ -146,8 +146,8 @@ fn test_atomicop_double_commit_error() {
     // Create an operation
     let operation = tree.new_operation().unwrap();
 
-    // Use a KVStore to add data
-    let store = KVStore::new(&operation, "test").unwrap();
+    // Use a Dict to add data
+    let store = Dict::new(&operation, "test").unwrap();
     store.set("key", "value").unwrap();
 
     // First commit should succeed
@@ -167,26 +167,26 @@ fn test_atomicop_with_delete() {
 
     // Create an operation and add some data
     let op1 = tree.new_operation().unwrap();
-    let store1 = KVStore::new(&op1, "data").unwrap();
+    let store1 = Dict::new(&op1, "data").unwrap();
     store1.set("key1", "value1").unwrap();
     store1.set("key2", "value2").unwrap();
     op1.commit().unwrap();
 
     // Create another operation to delete a key
     let op2 = tree.new_operation().unwrap();
-    let store2 = KVStore::new(&op2, "data").unwrap();
+    let store2 = Dict::new(&op2, "data").unwrap();
     store2.delete("key1").unwrap();
     op2.commit().unwrap();
 
     // Verify with a third operation
     let op3 = tree.new_operation().unwrap();
-    let store3 = KVStore::new(&op3, "data").unwrap();
+    let store3 = Dict::new(&op3, "data").unwrap();
 
     // key1 should be deleted
     assert_key_not_found(store3.get("key1"));
 
     // key2 should still exist
-    assert_kvstore_value(&store3, "key2", "value2");
+    assert_dict_value(&store3, "key2", "value2");
 
     // Check the full state with tombstone
     let all_data = store3.get_all().unwrap();
@@ -204,7 +204,7 @@ fn test_atomicop_nested_values() {
 
     // Create an operation
     let op1 = tree.new_operation().unwrap();
-    let store1 = KVStore::new(&op1, "data").unwrap();
+    let store1 = Dict::new(&op1, "data").unwrap();
 
     // Set a regular string value
     store1.set("string_key", "string_value").unwrap();
@@ -222,7 +222,7 @@ fn test_atomicop_nested_values() {
 
     // Verify with a new operation
     let op2 = tree.new_operation().unwrap();
-    let store2 = KVStore::new(&op2, "data").unwrap();
+    let store2 = Dict::new(&op2, "data").unwrap();
 
     // Check the string value
     match store2.get("string_key").unwrap() {
@@ -252,13 +252,13 @@ fn test_metadata_for_settings_entries() {
 
     // Create a settings update
     let settings_op = tree.new_operation().unwrap();
-    let settings_subtree = settings_op.get_subtree::<KVStore>(SETTINGS).unwrap();
+    let settings_subtree = settings_op.get_subtree::<Dict>(SETTINGS).unwrap();
     settings_subtree.set("version", "1.0").unwrap();
     let settings_id = settings_op.commit().unwrap();
 
     // Now create a data entry (not touching settings)
     let data_op = tree.new_operation().unwrap();
-    let data_subtree = data_op.get_subtree::<KVStore>("data").unwrap();
+    let data_subtree = data_op.get_subtree::<Dict>("data").unwrap();
     data_subtree.set("key1", "value1").unwrap();
     let data_id = data_op.commit().unwrap();
 
@@ -284,19 +284,19 @@ fn test_atomicop_with_custom_tips() {
 
     // Create a chain of operations: A -> B -> C
     let op_a = tree.new_operation().unwrap();
-    let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
     store_a.set("step", "A").unwrap();
     store_a.set("a_data", "value_a").unwrap();
     let entry_a_id = op_a.commit().unwrap();
 
     let op_b = tree.new_operation().unwrap();
-    let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
     store_b.set("step", "B").unwrap();
     store_b.set("b_data", "value_b").unwrap();
     let _entry_b_id = op_b.commit().unwrap();
 
     let op_c = tree.new_operation().unwrap();
-    let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
     store_c.set("step", "C").unwrap();
     store_c.set("c_data", "value_c").unwrap();
     let _entry_c_id = op_c.commit().unwrap();
@@ -305,7 +305,7 @@ fn test_atomicop_with_custom_tips() {
     let op_from_a = tree
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
-    let store_from_a = op_from_a.get_subtree::<KVStore>("data").unwrap();
+    let store_from_a = op_from_a.get_subtree::<Dict>("data").unwrap();
 
     // This operation should only see data from A
     let state_from_a = store_from_a.get_all().unwrap();
@@ -345,7 +345,7 @@ fn test_atomicop_diamond_pattern() {
 
     // Create base entry
     let op_base = tree.new_operation().unwrap();
-    let store_base = op_base.get_subtree::<KVStore>("data").unwrap();
+    let store_base = op_base.get_subtree::<Dict>("data").unwrap();
     store_base.set("base", "initial").unwrap();
     let base_id = op_base.commit().unwrap();
 
@@ -353,13 +353,13 @@ fn test_atomicop_diamond_pattern() {
     let op_left = tree
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
-    let store_left = op_left.get_subtree::<KVStore>("data").unwrap();
+    let store_left = op_left.get_subtree::<Dict>("data").unwrap();
     store_left.set("left", "left_value").unwrap();
     store_left.set("shared", "left_version").unwrap();
     let left_id = op_left.commit().unwrap();
 
     let op_right = tree.new_operation_with_tips([base_id]).unwrap();
-    let store_right = op_right.get_subtree::<KVStore>("data").unwrap();
+    let store_right = op_right.get_subtree::<Dict>("data").unwrap();
     store_right.set("right", "right_value").unwrap();
     store_right.set("shared", "right_version").unwrap();
     let right_id = op_right.commit().unwrap();
@@ -368,7 +368,7 @@ fn test_atomicop_diamond_pattern() {
     let op_merge = tree
         .new_operation_with_tips([left_id.clone(), right_id.clone()])
         .unwrap();
-    let store_merge = op_merge.get_subtree::<KVStore>("data").unwrap();
+    let store_merge = op_merge.get_subtree::<Dict>("data").unwrap();
 
     // Merge operation should see data from both branches
     let merge_state = store_merge.get_all().unwrap();
@@ -406,7 +406,7 @@ fn test_atomicop_staged_data_isolation() {
 
     // Create initial data
     let op1 = tree.new_operation().unwrap();
-    let store1 = op1.get_subtree::<KVStore>("data").unwrap();
+    let store1 = op1.get_subtree::<Dict>("data").unwrap();
     store1.set("key1", "committed_value").unwrap();
     let entry1_id = op1.commit().unwrap();
 
@@ -414,25 +414,25 @@ fn test_atomicop_staged_data_isolation() {
     let op2 = tree
         .new_operation_with_tips(std::slice::from_ref(&entry1_id))
         .unwrap();
-    let store2 = op2.get_subtree::<KVStore>("data").unwrap();
+    let store2 = op2.get_subtree::<Dict>("data").unwrap();
 
     // Initially should see committed data
-    assert_kvstore_value(&store2, "key1", "committed_value");
+    assert_dict_value(&store2, "key1", "committed_value");
 
     // Stage new data (not yet committed)
     store2.set("key1", "staged_value").unwrap();
     store2.set("key2", "new_staged").unwrap();
 
     // Should now see staged data
-    assert_kvstore_value(&store2, "key1", "staged_value");
-    assert_kvstore_value(&store2, "key2", "new_staged");
+    assert_dict_value(&store2, "key1", "staged_value");
+    assert_dict_value(&store2, "key2", "new_staged");
 
     // Create another operation from same tip - should not see staged data
     let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
-    let store3 = op3.get_subtree::<KVStore>("data").unwrap();
+    let store3 = op3.get_subtree::<Dict>("data").unwrap();
 
     // Should see original committed data, not staged data from op2
-    assert_kvstore_value(&store3, "key1", "committed_value");
+    assert_dict_value(&store3, "key1", "committed_value");
     assert_key_not_found(store3.get("key2"));
 
     // Commit op2
@@ -440,10 +440,10 @@ fn test_atomicop_staged_data_isolation() {
 
     // Create operation from entry2 - should see committed staged data
     let op4 = tree.new_operation_with_tips([entry2_id]).unwrap();
-    let store4 = op4.get_subtree::<KVStore>("data").unwrap();
+    let store4 = op4.get_subtree::<Dict>("data").unwrap();
 
-    assert_kvstore_value(&store4, "key1", "staged_value");
-    assert_kvstore_value(&store4, "key2", "new_staged");
+    assert_dict_value(&store4, "key1", "staged_value");
+    assert_dict_value(&store4, "key2", "new_staged");
 }
 
 #[test]
@@ -452,8 +452,8 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
 
     // Create base entry with multiple subtrees
     let op_base = tree.new_operation().unwrap();
-    let users_base = op_base.get_subtree::<KVStore>("users").unwrap();
-    let posts_base = op_base.get_subtree::<KVStore>("posts").unwrap();
+    let users_base = op_base.get_subtree::<Dict>("users").unwrap();
+    let posts_base = op_base.get_subtree::<Dict>("posts").unwrap();
 
     users_base.set("user1", "alice").unwrap();
     posts_base.set("post1", "hello").unwrap();
@@ -463,13 +463,13 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
     let op_users = tree
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
-    let users_branch = op_users.get_subtree::<KVStore>("users").unwrap();
+    let users_branch = op_users.get_subtree::<Dict>("users").unwrap();
     users_branch.set("user2", "bob").unwrap();
     let users_id = op_users.commit().unwrap();
 
     // Create branch that only modifies posts
     let op_posts = tree.new_operation_with_tips([base_id]).unwrap();
-    let posts_branch = op_posts.get_subtree::<KVStore>("posts").unwrap();
+    let posts_branch = op_posts.get_subtree::<Dict>("posts").unwrap();
     posts_branch.set("post2", "world").unwrap();
     let posts_id = op_posts.commit().unwrap();
 
@@ -477,8 +477,8 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
     let op_merge = tree
         .new_operation_with_tips([users_id.clone(), posts_id.clone()])
         .unwrap();
-    let users_merge = op_merge.get_subtree::<KVStore>("users").unwrap();
-    let posts_merge = op_merge.get_subtree::<KVStore>("posts").unwrap();
+    let users_merge = op_merge.get_subtree::<Dict>("users").unwrap();
+    let posts_merge = op_merge.get_subtree::<Dict>("posts").unwrap();
 
     // Should see data from both branches in both subtrees
     let users_state = users_merge.get_all().unwrap();
@@ -508,8 +508,8 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
 
     // Verify final state has all data
     let op_final = tree.new_operation_with_tips([merge_id]).unwrap();
-    let users_final = op_final.get_subtree::<KVStore>("users").unwrap();
-    let posts_final = op_final.get_subtree::<KVStore>("posts").unwrap();
+    let users_final = op_final.get_subtree::<Dict>("users").unwrap();
+    let posts_final = op_final.get_subtree::<Dict>("posts").unwrap();
 
     let final_users = users_final.get_all().unwrap();
     assert!(final_users.get("user1").is_some());
@@ -528,7 +528,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
 
     // Create base entry with subtree data
     let op1 = tree.new_operation().unwrap();
-    let store1 = op1.get_subtree::<KVStore>("data").unwrap();
+    let store1 = op1.get_subtree::<Dict>("data").unwrap();
     store1.set("key1", "value1").unwrap();
     let entry1_id = op1.commit().unwrap();
 
@@ -536,14 +536,14 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     let op2 = tree
         .new_operation_with_tips(std::slice::from_ref(&entry1_id))
         .unwrap();
-    let store2 = op2.get_subtree::<KVStore>("data").unwrap();
+    let store2 = op2.get_subtree::<Dict>("data").unwrap();
     store2.set("key2", "value2").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another branch that does NOT touch the "data" subtree at all
     let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
     // Only touch a different subtree
-    let settings3 = op3.get_subtree::<KVStore>("settings").unwrap();
+    let settings3 = op3.get_subtree::<Dict>("settings").unwrap();
     settings3.set("config", "value").unwrap();
     let entry3_id = op3.commit().unwrap();
 
@@ -552,7 +552,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     let op4 = tree
         .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
-    let store4 = op4.get_subtree::<KVStore>("data").unwrap();
+    let store4 = op4.get_subtree::<Dict>("data").unwrap();
 
     // Should be able to access all the data from both branches
     // This tests the case where one tip has the subtree (entry2) and one doesn't (entry3)
@@ -567,7 +567,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
     }
 
     // Should also be able to access settings from entry3
-    let settings4 = op4.get_subtree::<KVStore>("settings").unwrap();
+    let settings4 = op4.get_subtree::<Dict>("settings").unwrap();
     let settings_state = settings4.get_all().unwrap();
     match settings_state.get("config") {
         Some(Value::Text(value)) => assert_eq!(value, "value"),
@@ -581,20 +581,20 @@ fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
 
     // Create entry with subtree data
     let op1 = tree.new_operation().unwrap();
-    let store1 = op1.get_subtree::<KVStore>("data").unwrap();
+    let store1 = op1.get_subtree::<Dict>("data").unwrap();
     store1.set("original", "value").unwrap();
     let _entry1_id = op1.commit().unwrap();
 
     // Create entry that does NOT modify the "data" subtree
     // This simulates the case where we have tree evolution but no subtree changes
     let op2 = tree.new_operation().unwrap();
-    let settings2 = op2.get_subtree::<KVStore>("settings").unwrap();
+    let settings2 = op2.get_subtree::<Dict>("settings").unwrap();
     settings2.set("config1", "value1").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another entry that also doesn't modify "data" subtree
     let op3 = tree.new_operation().unwrap();
-    let metadata3 = op3.get_subtree::<KVStore>("metadata").unwrap();
+    let metadata3 = op3.get_subtree::<Dict>("metadata").unwrap();
     metadata3.set("info", "some info").unwrap();
     let entry3_id = op3.commit().unwrap();
 
@@ -603,7 +603,7 @@ fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
     let op4 = tree
         .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
-    let store4 = op4.get_subtree::<KVStore>("data").unwrap();
+    let store4 = op4.get_subtree::<Dict>("data").unwrap();
 
     // This should work: accessing subtree data that exists in ancestors
     // but not in the tip entries themselves
@@ -614,14 +614,14 @@ fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
     }
 
     // Verify we can also access the data from the tip entries
-    let settings4 = op4.get_subtree::<KVStore>("settings").unwrap();
+    let settings4 = op4.get_subtree::<Dict>("settings").unwrap();
     let settings_state = settings4.get_all().unwrap();
     assert!(
         settings_state.get("config1").is_some(),
         "Should have config1 from entry2"
     );
 
-    let metadata4 = op4.get_subtree::<KVStore>("metadata").unwrap();
+    let metadata4 = op4.get_subtree::<Dict>("metadata").unwrap();
     let metadata_state = metadata4.get_all().unwrap();
     assert!(
         metadata_state.get("info").is_some(),
@@ -636,7 +636,7 @@ fn test_get_path_from_to_diamond_pattern() {
     // Create a diamond pattern: A -> B,C -> D
     // A is the base
     let op_a = tree.new_operation().unwrap();
-    let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
     store_a.set("base", "A").unwrap();
     let entry_a_id = op_a.commit().unwrap();
 
@@ -644,13 +644,13 @@ fn test_get_path_from_to_diamond_pattern() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
     store_b.set("left", "B").unwrap();
     let entry_b_id = op_b.commit().unwrap();
 
     // C also branches from A (parallel to B)
     let op_c = tree.new_operation_with_tips([entry_a_id]).unwrap();
-    let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
     store_c.set("right", "C").unwrap();
     let entry_c_id = op_c.commit().unwrap();
 
@@ -658,7 +658,7 @@ fn test_get_path_from_to_diamond_pattern() {
     let op_d = tree
         .new_operation_with_tips([entry_b_id.clone(), entry_c_id.clone()])
         .unwrap();
-    let store_d = op_d.get_subtree::<KVStore>("data").unwrap();
+    let store_d = op_d.get_subtree::<Dict>("data").unwrap();
     store_d.set("merged", "D").unwrap();
     let entry_d_id = op_d.commit().unwrap();
 
@@ -669,7 +669,7 @@ fn test_get_path_from_to_diamond_pattern() {
     // Create an operation that uses D as tip and access the CRDT state
     // This will internally call get_path_from_to when computing merged state
     let op_final = tree.new_operation_with_tips([entry_d_id]).unwrap();
-    let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
+    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
 
     // Should be able to access all data from the diamond pattern
     let final_state = store_final.get_all().unwrap();
@@ -698,7 +698,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
 
     // Step 1: Create LCA
     let op_lca = tree.new_operation().unwrap();
-    let store_lca = op_lca.get_subtree::<KVStore>("data").unwrap();
+    let store_lca = op_lca.get_subtree::<Dict>("data").unwrap();
     store_lca.set("base", "LCA").unwrap();
     let lca_id = op_lca.commit().unwrap();
 
@@ -707,7 +707,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_a = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
     store_a.set("branch_a", "modification_A").unwrap();
     let a_id = op_a.commit().unwrap();
 
@@ -715,7 +715,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
     store_b.set("branch_b", "modification_B").unwrap(); // Critical: this modification will be missed!
     let b_id = op_b.commit().unwrap();
 
@@ -723,13 +723,13 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_c = tree
         .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
-    let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
     store_c.set("tip", "merged_C").unwrap();
     let c_id = op_c.commit().unwrap();
 
     // Step 4: Create another tip D independently
     let op_d = tree.new_operation_with_tips([lca_id]).unwrap();
-    let store_d = op_d.get_subtree::<KVStore>("data").unwrap();
+    let store_d = op_d.get_subtree::<Dict>("data").unwrap();
     store_d.set("independent", "tip_D").unwrap();
     let d_id = op_d.commit().unwrap();
 
@@ -741,7 +741,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_final = tree
         .new_operation_with_tips([c_id.clone(), d_id.clone()])
         .unwrap();
-    let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
+    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
 
     let final_state = store_final.get_all().unwrap();
 
@@ -780,7 +780,7 @@ fn test_correct_lca_and_path_sorting() {
 
     // Step 1: ROOT (will be the LCA)
     let op_root = tree.new_operation().unwrap();
-    let store_root = op_root.get_subtree::<KVStore>("data").unwrap();
+    let store_root = op_root.get_subtree::<Dict>("data").unwrap();
     store_root.set("step", "0").unwrap();
     store_root.set("root", "true").unwrap();
     let root_id = op_root.commit().unwrap();
@@ -790,7 +790,7 @@ fn test_correct_lca_and_path_sorting() {
     let op_a = tree
         .new_operation_with_tips(std::slice::from_ref(&root_id))
         .unwrap();
-    let store_a = op_a.get_subtree::<KVStore>("data").unwrap();
+    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
     store_a.set("step", "1").unwrap();
     store_a.set("branch", "A").unwrap();
     let a_id = op_a.commit().unwrap();
@@ -799,14 +799,14 @@ fn test_correct_lca_and_path_sorting() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&root_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<KVStore>("data").unwrap();
+    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
     store_b.set("step", "1").unwrap();
     store_b.set("branch", "B").unwrap();
     let b_id = op_b.commit().unwrap();
 
     // Branch C (height 1)
     let op_c = tree.new_operation_with_tips([root_id]).unwrap();
-    let store_c = op_c.get_subtree::<KVStore>("data").unwrap();
+    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
     store_c.set("step", "1").unwrap();
     store_c.set("branch", "C").unwrap();
     let c_id = op_c.commit().unwrap();
@@ -815,14 +815,14 @@ fn test_correct_lca_and_path_sorting() {
     let op_merge = tree
         .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
-    let store_merge = op_merge.get_subtree::<KVStore>("data").unwrap();
+    let store_merge = op_merge.get_subtree::<Dict>("data").unwrap();
     store_merge.set("step", "2").unwrap();
     store_merge.set("merged", "AB").unwrap();
     let merge_id = op_merge.commit().unwrap();
 
     // Step 4: Create another tip from C (height 2)
     let op_other = tree.new_operation_with_tips([c_id]).unwrap();
-    let store_other = op_other.get_subtree::<KVStore>("data").unwrap();
+    let store_other = op_other.get_subtree::<Dict>("data").unwrap();
     store_other.set("step", "2").unwrap();
     store_other.set("other", "C_extended").unwrap();
     let other_id = op_other.commit().unwrap();
@@ -834,7 +834,7 @@ fn test_correct_lca_and_path_sorting() {
     let op_final = tree
         .new_operation_with_tips([merge_id.clone(), other_id.clone()])
         .unwrap();
-    let store_final = op_final.get_subtree::<KVStore>("data").unwrap();
+    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
 
     let final_state = store_final.get_all().unwrap();
 
@@ -856,7 +856,7 @@ fn test_correct_lca_and_path_sorting() {
         let op_test = tree
             .new_operation_with_tips([merge_id.clone(), other_id.clone()])
             .unwrap();
-        let store_test = op_test.get_subtree::<KVStore>("data").unwrap();
+        let store_test = op_test.get_subtree::<Dict>("data").unwrap();
         let test_state = store_test.get_all().unwrap();
 
         // Results should be identical due to deterministic sorting

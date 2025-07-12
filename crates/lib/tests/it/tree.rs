@@ -1,7 +1,7 @@
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
 use eidetica::crdt::Map;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 #[test]
 fn test_insert_into_tree() {
@@ -53,11 +53,11 @@ fn test_subtree_operations() {
     let op1 = tree.new_operation().expect("Failed to create operation");
     {
         let users_store = op1
-            .get_subtree::<KVStore>("users")
+            .get_subtree::<Dict>("users")
             .expect("Failed to get users store");
 
         let posts_store = op1
-            .get_subtree::<KVStore>("posts")
+            .get_subtree::<Dict>("posts")
             .expect("Failed to get posts store");
 
         users_store
@@ -72,7 +72,7 @@ fn test_subtree_operations() {
 
     // --- Verify initial data with viewers ---
     let users_viewer1 = tree
-        .get_subtree_viewer::<KVStore>("users")
+        .get_subtree_viewer::<Dict>("users")
         .expect("Failed to get users viewer (1)");
     assert_eq!(
         users_viewer1
@@ -81,7 +81,7 @@ fn test_subtree_operations() {
         "Alice"
     );
     let posts_viewer1 = tree
-        .get_subtree_viewer::<KVStore>("posts")
+        .get_subtree_viewer::<Dict>("posts")
         .expect("Failed to get posts viewer (1)");
     assert_eq!(
         posts_viewer1
@@ -94,7 +94,7 @@ fn test_subtree_operations() {
     let op2 = tree.new_operation().expect("Failed to create operation 2");
     {
         let users_store2 = op2
-            .get_subtree::<KVStore>("users")
+            .get_subtree::<Dict>("users")
             .expect("Failed to get users store (2)");
         users_store2
             .set("user2.name", "Bob")
@@ -106,7 +106,7 @@ fn test_subtree_operations() {
 
     // --- Test SubTree viewers for reading final data ---
     let users_viewer2 = tree
-        .get_subtree_viewer::<KVStore>("users")
+        .get_subtree_viewer::<Dict>("users")
         .expect("Failed to get users viewer (2)");
     assert_eq!(
         users_viewer2
@@ -122,7 +122,7 @@ fn test_subtree_operations() {
     ); // New user should exist
 
     let posts_viewer2 = tree
-        .get_subtree_viewer::<KVStore>("posts")
+        .get_subtree_viewer::<Dict>("posts")
         .expect("Failed to get posts viewer (2)");
     assert_eq!(
         posts_viewer2
@@ -146,7 +146,7 @@ fn test_get_name_from_settings() {
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let settings_store = op
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings store in op");
         settings_store
             .set("name", "UpdatedTreeName")
@@ -167,14 +167,10 @@ fn test_atomic_op_scenarios() {
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     let initial_tip = tree.get_tips().unwrap()[0].clone();
     {
-        let store_a = op1
-            .get_subtree::<KVStore>("sub_a")
-            .expect("Op1: Failed get A");
+        let store_a = op1.get_subtree::<Dict>("sub_a").expect("Op1: Failed get A");
         store_a.set("key_a", "val_a1").expect("Op1: Failed set A");
 
-        let store_b = op1
-            .get_subtree::<KVStore>("sub_b")
-            .expect("Op1: Failed get B");
+        let store_b = op1.get_subtree::<Dict>("sub_b").expect("Op1: Failed get B");
         store_b.set("key_b", "val_b1").expect("Op1: Failed set B");
 
         // Read staged data within the op
@@ -199,16 +195,12 @@ fn test_atomic_op_scenarios() {
     assert_ne!(commit1_id, initial_tip, "Op1: Commit should create new tip");
 
     // Verify commit with viewers
-    let viewer_a1 = tree
-        .get_subtree_viewer::<KVStore>("sub_a")
-        .expect("Viewer A1");
+    let viewer_a1 = tree.get_subtree_viewer::<Dict>("sub_a").expect("Viewer A1");
     assert_eq!(
         viewer_a1.get_string("key_a").expect("Viewer A1 get"),
         "val_a1"
     );
-    let viewer_b1 = tree
-        .get_subtree_viewer::<KVStore>("sub_b")
-        .expect("Viewer B1");
+    let viewer_b1 = tree.get_subtree_viewer::<Dict>("sub_b").expect("Viewer B1");
     assert_eq!(
         viewer_b1.get_string("key_b").expect("Viewer B1 get"),
         "val_b1"
@@ -228,9 +220,7 @@ fn test_atomic_op_scenarios() {
     // --- 3. Attempt to commit the same op twice ---
     let op3 = tree.new_operation().expect("Op3: Failed to start");
     {
-        let store_a = op3
-            .get_subtree::<KVStore>("sub_a")
-            .expect("Op3: Failed get A");
+        let store_a = op3.get_subtree::<Dict>("sub_a").expect("Op3: Failed get A");
         store_a.set("key_a", "val_a3").expect("Op3: Failed set A");
     }
     let _commit3_id = op3.commit().expect("Op3: First commit failed");
@@ -246,16 +236,14 @@ fn test_get_subtree_viewer() {
     // --- Initial state ---
     let op1 = tree.new_operation().expect("Op1: Failed start");
     {
-        let store = op1
-            .get_subtree::<KVStore>("my_data")
-            .expect("Op1: Failed get");
+        let store = op1.get_subtree::<Dict>("my_data").expect("Op1: Failed get");
         store.set("key1", "value1").expect("Op1: Failed set");
     }
     op1.commit().expect("Op1: Failed commit");
 
     // --- Get viewer 1 (sees initial state) ---
     let viewer1 = tree
-        .get_subtree_viewer::<KVStore>("my_data")
+        .get_subtree_viewer::<Dict>("my_data")
         .expect("Viewer1: Failed get");
     assert_eq!(
         viewer1
@@ -271,9 +259,7 @@ fn test_get_subtree_viewer() {
     // --- Second operation ---
     let op2 = tree.new_operation().expect("Op2: Failed start");
     {
-        let store = op2
-            .get_subtree::<KVStore>("my_data")
-            .expect("Op2: Failed get");
+        let store = op2.get_subtree::<Dict>("my_data").expect("Op2: Failed get");
         store
             .set("key1", "value1_updated")
             .expect("Op2: Failed update key1"); // Update existing
@@ -283,7 +269,7 @@ fn test_get_subtree_viewer() {
 
     // --- Get viewer 2 (sees updated state) ---
     let viewer2 = tree
-        .get_subtree_viewer::<KVStore>("my_data")
+        .get_subtree_viewer::<Dict>("my_data")
         .expect("Viewer2: Failed get");
     assert_eq!(
         viewer2
@@ -311,7 +297,7 @@ fn test_get_subtree_viewer() {
     );
 
     // --- Test viewer for non-existent subtree ---
-    let non_existent_viewer_result = tree.get_subtree_viewer::<KVStore>("non_existent_subtree");
+    let non_existent_viewer_result = tree.get_subtree_viewer::<Dict>("non_existent_subtree");
     // Depending on implementation, this might create an empty viewer or return an error.
     // Let's assume it successfully returns an empty viewer for now.
     assert!(
@@ -327,7 +313,7 @@ fn test_get_subtree_viewer() {
 }
 
 #[test]
-fn test_setup_tree_with_multiple_kvstores() {
+fn test_setup_tree_with_multiple_dicts() {
     // Prepare test data
     let users = [("user1", "Alice"), ("user2", "Bob")];
     let posts = [("post1", "First Post")];
@@ -340,11 +326,11 @@ fn test_setup_tree_with_multiple_kvstores() {
     ];
 
     // Create the tree with the helper
-    let tree = setup_tree_with_multiple_kvstores(&subtrees);
+    let tree = setup_tree_with_multiple_dicts(&subtrees);
 
     // Verify the data was correctly set
     let users_viewer = tree
-        .get_subtree_viewer::<KVStore>("users")
+        .get_subtree_viewer::<Dict>("users")
         .expect("Failed to get users viewer");
     assert_eq!(
         users_viewer
@@ -360,7 +346,7 @@ fn test_setup_tree_with_multiple_kvstores() {
     );
 
     let posts_viewer = tree
-        .get_subtree_viewer::<KVStore>("posts")
+        .get_subtree_viewer::<Dict>("posts")
         .expect("Failed to get posts viewer");
     assert_eq!(
         posts_viewer
@@ -370,7 +356,7 @@ fn test_setup_tree_with_multiple_kvstores() {
     );
 
     let comments_viewer = tree
-        .get_subtree_viewer::<KVStore>("comments")
+        .get_subtree_viewer::<Dict>("comments")
         .expect("Failed to get comments viewer");
     assert_eq!(
         comments_viewer
@@ -395,7 +381,7 @@ fn test_get_tips() {
     // Create and commit first entry
     let op1 = tree.new_operation().expect("Failed to create operation 1");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store 1");
     store1.set("key1", "value1").expect("Failed to set key1");
     let entry1_id = op1.commit().expect("Failed to commit operation 1");
@@ -419,7 +405,7 @@ fn test_get_tips() {
     // Create and commit second entry
     let op2 = tree.new_operation().expect("Failed to create operation 2");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store 2");
     store2.set("key2", "value2").expect("Failed to set key2");
     let entry2_id = op2.commit().expect("Failed to commit operation 2");
@@ -448,7 +434,7 @@ fn test_new_operation_with_tips() {
     // Create first entry
     let op1 = tree.new_operation().expect("Failed to create operation 1");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store 1");
     store1.set("key1", "value1").expect("Failed to set key1");
     let entry1_id = op1.commit().expect("Failed to commit operation 1");
@@ -456,7 +442,7 @@ fn test_new_operation_with_tips() {
     // Create second entry
     let op2 = tree.new_operation().expect("Failed to create operation 2");
     let store2 = op2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store 2");
     store2.set("key2", "value2").expect("Failed to set key2");
     let entry2_id = op2.commit().expect("Failed to commit operation 2");
@@ -466,7 +452,7 @@ fn test_new_operation_with_tips() {
         .new_operation()
         .expect("Failed to create normal operation");
     let normal_store = normal_op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get normal store");
     let normal_state = normal_store.get_all().expect("Failed to get normal state");
     assert!(
@@ -483,7 +469,7 @@ fn test_new_operation_with_tips() {
         .new_operation_with_tips([entry1_id])
         .expect("Failed to create custom operation");
     let custom_store = custom_op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get custom store");
     let custom_state = custom_store.get_all().expect("Failed to get custom state");
     assert!(
@@ -524,7 +510,7 @@ fn test_new_operation_with_tips() {
         .new_operation()
         .expect("Failed to create merge operation");
     let merge_store = merge_op
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get merge store");
     let merge_state = merge_store.get_all().expect("Failed to get merge state");
 
@@ -544,7 +530,7 @@ fn test_new_operation_with_specific_tips() {
     // Create a chain of entries: A -> B -> C
     let op_a = tree.new_operation().expect("Failed to create operation A");
     let store_a = op_a
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store A");
     store_a
         .set("from_a", "value_a")
@@ -553,7 +539,7 @@ fn test_new_operation_with_specific_tips() {
 
     let op_b = tree.new_operation().expect("Failed to create operation B");
     let store_b = op_b
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store B");
     store_b
         .set("from_b", "value_b")
@@ -562,7 +548,7 @@ fn test_new_operation_with_specific_tips() {
 
     let op_c = tree.new_operation().expect("Failed to create operation C");
     let store_c = op_c
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store C");
     store_c
         .set("from_c", "value_c")
@@ -574,7 +560,7 @@ fn test_new_operation_with_specific_tips() {
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .expect("Failed to create op from A");
     let store_from_a = op_from_a
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store from A");
     let state_from_a = store_from_a.get_all().expect("Failed to get state from A");
 
@@ -596,7 +582,7 @@ fn test_new_operation_with_specific_tips() {
         .new_operation_with_tips([entry_b_id])
         .expect("Failed to create op from B");
     let store_from_b = op_from_b
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store from B");
     let state_from_b = store_from_b.get_all().expect("Failed to get state from B");
 
@@ -618,7 +604,7 @@ fn test_new_operation_with_specific_tips() {
         .new_operation_with_tips([entry_c_id])
         .expect("Failed to create op from C");
     let store_from_c = op_from_c
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store from C");
     let state_from_c = store_from_c.get_all().expect("Failed to get state from C");
 
@@ -640,7 +626,7 @@ fn test_new_operation_with_specific_tips() {
         .new_operation_with_tips([entry_a_id])
         .expect("Failed to create branch from A");
     let store_branch = op_branch
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store branch");
     store_branch
         .set("branch_data", "branch_value")
@@ -652,7 +638,7 @@ fn test_new_operation_with_specific_tips() {
         .new_operation_with_tips([branch_id])
         .expect("Failed to create verify op");
     let store_verify_branch = op_verify_branch
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get verify store");
     let state_verify_branch = store_verify_branch
         .get_all()
@@ -685,7 +671,7 @@ fn test_new_operation_with_multiple_tips() {
         .new_operation()
         .expect("Failed to create base operation");
     let store_base = op_base
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get base store");
     store_base.set("base", "value").expect("Failed to set base");
     let base_id = op_base.commit().expect("Failed to commit base operation");
@@ -695,7 +681,7 @@ fn test_new_operation_with_multiple_tips() {
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .expect("Failed to create branch1");
     let store_branch1 = op_branch1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get branch1 store");
     store_branch1
         .set("branch1", "value1")
@@ -706,7 +692,7 @@ fn test_new_operation_with_multiple_tips() {
         .new_operation_with_tips([base_id])
         .expect("Failed to create branch2");
     let store_branch2 = op_branch2
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get branch2 store");
     store_branch2
         .set("branch2", "value2")
@@ -719,7 +705,7 @@ fn test_new_operation_with_multiple_tips() {
         .new_operation_with_tips(&merge_tips)
         .expect("Failed to create merge operation");
     let store_merge = op_merge
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get merge store");
     let state_merge = store_merge.get_all().expect("Failed to get merge state");
 
@@ -798,7 +784,7 @@ fn test_new_operation_with_invalid_tree_tips() {
     // Create an entry in tree1
     let op1 = tree1.new_operation().expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<KVStore>("data")
+        .get_subtree::<Dict>("data")
         .expect("Failed to get store");
     store1.set("key1", "value1").expect("Failed to set key1");
     let entry1_id = op1.commit().expect("Failed to commit");

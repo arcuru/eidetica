@@ -151,8 +151,8 @@ if let Some(Value::Map(auth_map)) = settings.get("auth") {
 ### Modifying Settings
 
 ```rust
-// Get a KVStore handle for the _settings subtree
-let mut settings_store = op.get_subtree::<KVStore>("_settings")?;
+// Get a Dict handle for the _settings subtree
+let mut settings_store = op.get_subtree::<Dict>("_settings")?;
 
 // Update a setting
 settings_store.set("tree_config.name", "My Tree")?;

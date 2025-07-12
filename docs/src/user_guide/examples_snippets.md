@@ -61,10 +61,10 @@ let tree = match db.find_tree(tree_name) {
 println!("Using Tree with root ID: {}", tree.root_id());
 ```
 
-## 3. Writing Data (KVStore Example)
+## 3. Writing Data (Dict Example)
 
 ```rust
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -72,8 +72,8 @@ let tree: Tree = /* obtained from step 2 */;
 let op = tree.new_operation()?;
 
 {
-    // Get the KVStore subtree handle (scoped)
-    let config_store = op.get_subtree::<KVStore>("configuration")?;
+    // Get the Dict subtree handle (scoped)
+    let config_store = op.get_subtree::<Dict>("configuration")?;
 
     // Set some values
     config_store.set("api_key", "secret-key-123")?;
@@ -88,13 +88,13 @@ let op = tree.new_operation()?;
 
 // Commit the changes atomically
 let entry_id = op.commit()?;
-println!("KVStore changes committed in entry: {}", entry_id);
+println!("Dict changes committed in entry: {}", entry_id);
 ```
 
-## 4. Writing Data (RowStore Example)
+## 4. Writing Data (Table Example)
 
 ```rust
-use eidetica::subtree::RowStore;
+use eidetica::subtree::Table;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,8 +110,8 @@ let op = tree.new_operation()?;
 let inserted_id;
 
 {
-    // Get the RowStore handle
-    let tasks_store = op.get_subtree::<RowStore<Task>>("tasks")?;
+    // Get the Table handle
+    let tasks_store = op.get_subtree::<Table<Task>>("tasks")?;
 
     // Insert a new task
     let task1 = Task { description: "Buy milk".to_string(), completed: false };
@@ -137,18 +137,18 @@ let inserted_id;
 
 // Commit all inserts/updates/removes
 let entry_id = op.commit()?;
-println!("RowStore changes committed in entry: {}", entry_id);
+println!("Table changes committed in entry: {}", entry_id);
 ```
 
-## 5. Reading Data (KVStore Viewer)
+## 5. Reading Data (Dict Viewer)
 
 ```rust
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 let tree: Tree = /* obtained from step 2 */;
 
 // Get a read-only viewer for the latest state
-let config_viewer = tree.get_subtree_viewer::<KVStore>("configuration")?;
+let config_viewer = tree.get_subtree_viewer::<Dict>("configuration")?;
 
 match config_viewer.get("api_key") {
     Ok(api_key) => println!("Current API Key: {}", api_key),
@@ -158,7 +158,7 @@ match config_viewer.get("api_key") {
 
 match config_viewer.get("retry_count") {
     Ok(count_str) => {
-        // Note: KVStore values are strings
+        // Note: Dict values are strings
         let count: u32 = count_str.parse().unwrap_or(0);
         println!("Retry Count: {}", count);
     }
@@ -166,16 +166,16 @@ match config_viewer.get("retry_count") {
 }
 ```
 
-## 6. Reading Data (RowStore Viewer)
+## 6. Reading Data (Table Viewer)
 
 ```rust
-use eidetica::subtree::RowStore;
+use eidetica::subtree::Table;
 // Assume Task struct from example 4
 
 let tree: Tree = /* obtained from step 2 */;
 
 // Get a read-only viewer
-let tasks_viewer = tree.get_subtree_viewer::<RowStore<Task>>("tasks")?;
+let tasks_viewer = tree.get_subtree_viewer::<Table<Task>>("tasks")?;
 
 // Get a specific task by ID
 let id_to_find = /* obtained previously, e.g., inserted_id */;
@@ -203,7 +203,7 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust
-use eidetica::subtree::{KVStore, Value};
+use eidetica::subtree::{Dict, Value};
 use eidetica::crdt::Map;
 
 let tree: Tree = /* obtained from step 2 */;
@@ -211,8 +211,8 @@ let tree: Tree = /* obtained from step 2 */;
 // Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
-// Get the KVStore subtree handle
-let user_store = op.get_subtree::<KVStore>("users")?;
+// Get the Dict subtree handle
+let user_store = op.get_subtree::<Dict>("users")?;
 
 // Using ValueEditor to create and modify nested structures
 {
@@ -257,7 +257,7 @@ println!("ValueEditor changes committed in entry: {}", entry_id);
 
 // Read back the nested data
 let viewer_op = tree.new_operation()?;
-let viewer_store = viewer_op.get_subtree::<KVStore>("users")?;
+let viewer_store = viewer_op.get_subtree::<Dict>("users")?;
 
 // Get the user data and navigate through it
 if let Ok(user_data) = viewer_store.get("user123") {
@@ -317,12 +317,12 @@ if let Ok(user_data) = viewer_store.get("user123") {
 }
 ```
 
-## 8. Working with Y-CRDT Documents (YrsStore)
+## 8. Working with Y-CRDT Documents (YDoc)
 
-The `YrsStore` subtree provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
+The `YDoc` subtree provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
 
 ```rust
-use eidetica::subtree::YrsStore;
+use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
 
 let tree: Tree = /* obtained from step 2 */;
@@ -330,8 +330,8 @@ let tree: Tree = /* obtained from step 2 */;
 // Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
-// Get the YrsStore subtree handle
-let user_info_store = op.get_subtree::<YrsStore>("user_info")?;
+// Get the YDoc subtree handle
+let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
 // Writing to Y-CRDT document
 user_info_store.with_doc_mut(|doc| {
@@ -347,11 +347,11 @@ user_info_store.with_doc_mut(|doc| {
 
 // Commit the operation
 let entry_id = op.commit()?;
-println!("YrsStore changes committed in entry: {}", entry_id);
+println!("YDoc changes committed in entry: {}", entry_id);
 
 // Reading from Y-CRDT document
 let read_op = tree.new_operation()?;
-let reader_store = read_op.get_subtree::<YrsStore>("user_info")?;
+let reader_store = read_op.get_subtree::<YDoc>("user_info")?;
 
 reader_store.with_doc(|doc| {
     let user_info_map = doc.get_or_insert_map("user_info");
@@ -379,7 +379,7 @@ reader_store.with_doc(|doc| {
 
 // Working with nested Y-CRDT maps
 let prefs_op = tree.new_operation()?;
-let prefs_store = prefs_op.get_subtree::<YrsStore>("user_prefs")?;
+let prefs_store = prefs_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_store.with_doc_mut(|doc| {
     let prefs_map = doc.get_or_insert_map("preferences");
@@ -396,7 +396,7 @@ prefs_op.commit()?;
 
 // Reading preferences
 let prefs_read_op = tree.new_operation()?;
-let prefs_read_store = prefs_read_op.get_subtree::<YrsStore>("user_prefs")?;
+let prefs_read_store = prefs_read_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_read_store.with_doc(|doc| {
     let prefs_map = doc.get_or_insert_map("preferences");
@@ -414,14 +414,14 @@ prefs_read_store.with_doc(|doc| {
 })?;
 ```
 
-**YrsStore Features:**
+**YDoc Features:**
 
 - **Collaborative Editing**: Y-CRDT documents provide conflict-free merging for concurrent modifications
 - **Rich Data Types**: Support for Maps, Arrays, Text, and other Y-CRDT types
 - **Functional Interface**: Access via `with_doc()` for reads and `with_doc_mut()` for writes
 - **Atomic Integration**: Changes are staged within the Operation and committed atomically
 
-**Use Cases for YrsStore:**
+**Use Cases for YDoc:**
 
 - User profiles and preferences (as shown in the todo example)
 - Collaborative documents and shared state

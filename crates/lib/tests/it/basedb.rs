@@ -5,7 +5,7 @@ use eidetica::backend::database::InMemory;
 use eidetica::basedb::{BaseDB, BaseError};
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
-use eidetica::subtree::KVStore;
+use eidetica::subtree::Dict;
 
 const TEST_KEY: &str = "test_key";
 
@@ -66,7 +66,7 @@ fn test_all_trees() {
     let op = tree2.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings subtree");
         settings
             .set("name", "Tree2")
@@ -104,7 +104,7 @@ fn test_create_tree_with_initial_settings() {
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings subtree");
 
         settings
@@ -117,7 +117,7 @@ fn test_create_tree_with_initial_settings() {
     op.commit().expect("Failed to commit settings");
 
     let settings_viewer = tree
-        .get_subtree_viewer::<KVStore>(SETTINGS)
+        .get_subtree_viewer::<Dict>(SETTINGS)
         .expect("Failed to get settings viewer");
 
     assert_eq!(
@@ -146,7 +146,7 @@ fn test_basic_subtree_modification() {
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let data_store = op
-            .get_subtree::<KVStore>("user_data")
+            .get_subtree::<Dict>("user_data")
             .expect("Failed to get data subtree");
 
         data_store
@@ -171,7 +171,7 @@ fn test_basic_subtree_modification() {
     );
 
     let data_viewer = tree
-        .get_subtree_viewer::<KVStore>("user_data")
+        .get_subtree_viewer::<Dict>("user_data")
         .expect("Failed to get data viewer after commit");
 
     assert_eq!(
@@ -208,7 +208,7 @@ fn test_find_tree() {
     let op2 = tree2.new_operation().expect("Failed to start operation");
     {
         let settings = op2
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings subtree");
         settings
             .set("name", "Tree2")
@@ -223,7 +223,7 @@ fn test_find_tree() {
     let op3 = tree3.new_operation().expect("Failed to start operation");
     {
         let settings = op3
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings subtree");
         settings
             .set("name", "Tree3")
@@ -238,7 +238,7 @@ fn test_find_tree() {
     let op4 = tree4.new_operation().expect("Failed to start operation");
     {
         let settings = op4
-            .get_subtree::<KVStore>(SETTINGS)
+            .get_subtree::<Dict>(SETTINGS)
             .expect("Failed to get settings subtree");
         settings
             .set("name", "Tree3")
