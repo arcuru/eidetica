@@ -120,8 +120,8 @@ impl AtomicOp {
     ///
     /// # Returns
     /// Self for method chaining
-    pub fn with_auth(mut self, key_id: impl AsRef<str>) -> Self {
-        self.auth_key_id = Some(key_id.as_ref().to_string());
+    pub fn with_auth(mut self, key_id: impl Into<String>) -> Self {
+        self.auth_key_id = Some(key_id.into());
         self
     }
 
@@ -129,8 +129,8 @@ impl AtomicOp {
     ///
     /// # Arguments
     /// * `key_id` - The identifier of the private key to use for signing
-    pub fn set_auth_key(&mut self, key_id: impl AsRef<str>) {
-        self.auth_key_id = Some(key_id.as_ref().to_string());
+    pub fn set_auth_key(&mut self, key_id: impl Into<String>) {
+        self.auth_key_id = Some(key_id.into());
     }
 
     /// Get the current authentication key ID for this operation.
@@ -184,12 +184,12 @@ impl AtomicOp {
     ///
     /// # Arguments
     /// * `root` - The tree root ID to set (use empty string for top-level roots)
-    pub(crate) fn set_entry_root(&self, root: impl AsRef<str>) -> Result<()> {
+    pub(crate) fn set_entry_root(&self, root: impl Into<String>) -> Result<()> {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
             .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
-        builder.set_root_mut(root.as_ref().to_string());
+        builder.set_root_mut(root.into());
         Ok(())
     }
 
@@ -257,11 +257,11 @@ impl AtomicOp {
     ///
     /// # Returns
     /// A `Result<T>` containing the `SubTree` handle.
-    pub fn get_subtree<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
+    pub fn get_subtree<T>(&self, subtree_name: impl Into<String>) -> Result<T>
     where
         T: SubTree,
     {
-        let subtree_name = subtree_name.as_ref();
+        let subtree_name = subtree_name.into();
         {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref
@@ -271,7 +271,7 @@ impl AtomicOp {
             // If we haven't cached the tips for this subtree yet, get them now
             let subtrees = builder.subtrees();
 
-            if !subtrees.contains(&subtree_name.to_string()) {
+            if !subtrees.contains(&subtree_name) {
                 // Check if this operation was created with custom tips vs current tips
                 let main_parents = builder.parents().unwrap_or_default();
                 let current_tree_tips = self.tree.backend().get_tips(self.tree.root_id())?;
@@ -280,17 +280,17 @@ impl AtomicOp {
                     // This operation uses current tree tips - use old behavior
                     self.tree
                         .backend()
-                        .get_subtree_tips(self.tree.root_id(), subtree_name)?
+                        .get_subtree_tips(self.tree.root_id(), &subtree_name)?
                 } else {
                     // This operation uses custom tips - use new behavior
                     self.tree.backend().get_subtree_tips_up_to_entries(
                         self.tree.root_id(),
-                        subtree_name,
+                        &subtree_name,
                         &main_parents,
                     )?
                 };
-                builder.set_subtree_data_mut(subtree_name.to_string(), "".to_string());
-                builder.set_subtree_parents_mut(subtree_name, tips);
+                builder.set_subtree_data_mut(subtree_name.clone(), "".to_string());
+                builder.set_subtree_parents_mut(&subtree_name, tips);
             }
         }
 

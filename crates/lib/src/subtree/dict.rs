@@ -16,9 +16,9 @@ pub struct Dict {
 }
 
 impl SubTree for Dict {
-    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
+    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.as_ref().to_string(),
+            name: subtree_name.into(),
             atomic_op: op.clone(),
         })
     }
@@ -123,7 +123,7 @@ impl Dict {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn set(&self, key: impl AsRef<str>, value: impl Into<Value>) -> Result<()> {
+    pub fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -131,8 +131,7 @@ impl Dict {
             .unwrap_or_default();
 
         // Update the data
-        data.as_hashmap_mut()
-            .insert(key.as_ref().to_string(), value.into());
+        data.as_hashmap_mut().insert(key.into(), value.into());
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -140,8 +139,8 @@ impl Dict {
     }
 
     /// Convenience method to set a string value.
-    pub fn set_string(&self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
-        self.set(key, Value::Text(value.as_ref().to_string()))
+    pub fn set_string(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
+        self.set(key, Value::Text(value.into()))
     }
 
     /// Stages the setting of a nested value within the associated `AtomicOp`.
@@ -181,17 +180,17 @@ impl Dict {
     }
 
     /// Convenience method to set a list value.
-    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<List>) -> Result<()> {
+    pub fn set_list(&self, key: impl Into<String>, list: impl Into<List>) -> Result<()> {
         self.set(key, Value::List(list.into()))
     }
 
     /// Convenience method to set a node value.
-    pub fn set_node(&self, key: impl AsRef<str>, node: impl Into<Map>) -> Result<()> {
+    pub fn set_node(&self, key: impl Into<String>, node: impl Into<Map>) -> Result<()> {
         self.set(key, Value::Map(node.into()))
     }
 
     /// Legacy method for backward compatibility - now just an alias to set
-    pub fn set_value(&self, key: impl AsRef<str>, value: Value) -> Result<()> {
+    pub fn set_value(&self, key: impl Into<String>, value: Value) -> Result<()> {
         self.set(key, value)
     }
 
@@ -285,8 +284,8 @@ impl Dict {
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
     /// and must be committed via `AtomicOp::commit()` to be persisted to the `Dict`'s backend.
-    pub fn get_value_mut(&self, key: impl AsRef<str>) -> ValueEditor<'_> {
-        ValueEditor::new(self, vec![key.as_ref().to_string()])
+    pub fn get_value_mut(&self, key: impl Into<String>) -> ValueEditor<'_> {
+        ValueEditor::new(self, vec![key.into()])
     }
 
     /// Gets a mutable editor for the root of this Dict's subtree.
@@ -544,9 +543,9 @@ impl<'a> ValueEditor<'a> {
     /// Constructs a new `ValueEditor` for a path one level deeper.
     ///
     /// The new editor's path will be `self.keys` with `key` appended.
-    pub fn get_value_mut(&self, key: impl AsRef<str>) -> ValueEditor<'a> {
+    pub fn get_value_mut(&self, key: impl Into<String>) -> ValueEditor<'a> {
         let mut new_keys = self.keys.clone();
-        new_keys.push(key.as_ref().to_string());
+        new_keys.push(key.into());
         ValueEditor::new(self.kv_store, new_keys)
     }
 
@@ -562,9 +561,9 @@ impl<'a> ValueEditor<'a> {
     /// The change is staged in the `AtomicOp` and needs to be committed.
     ///
     /// If the editor points to the root (empty path), this will delete the top-level `key`.
-    pub fn delete_child(&self, key: impl AsRef<str>) -> Result<()> {
+    pub fn delete_child(&self, key: impl Into<String>) -> Result<()> {
         let mut path_to_delete = self.keys.clone();
-        path_to_delete.push(key.as_ref().to_string());
+        path_to_delete.push(key.into());
         self.kv_store.set_at_path(&path_to_delete, Value::Deleted)
     }
 }

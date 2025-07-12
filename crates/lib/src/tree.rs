@@ -152,8 +152,8 @@ impl Tree {
     ///
     /// # Arguments
     /// * `key_id` - The identifier of the private key to use by default
-    pub fn set_default_auth_key(&mut self, key_id: impl AsRef<str>) {
-        self.default_auth_key = Some(key_id.as_ref().to_string());
+    pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
+        self.default_auth_key = Some(key_id.into());
     }
 
     /// Clear the default authentication key for this tree.
@@ -267,7 +267,7 @@ impl Tree {
     ///
     /// The returned subtree should NOT be used to modify the tree, as it intentionally does not
     /// expose the AtomicOp.
-    pub fn get_subtree_viewer<T>(&self, name: impl AsRef<str>) -> Result<T>
+    pub fn get_subtree_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
         T: SubTree,
     {

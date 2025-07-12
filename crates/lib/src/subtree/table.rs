@@ -38,9 +38,9 @@ impl<T> SubTree for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
-    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self> {
+    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.as_ref().to_string(),
+            name: subtree_name.into(),
             atomic_op: op.clone(),
             phantom: PhantomData,
         })

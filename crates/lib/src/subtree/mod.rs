@@ -35,7 +35,7 @@ pub trait SubTree: Sized {
     /// # Arguments
     /// * `op` - The `AtomicOp` this `SubTree` instance will read from and potentially write to.
     /// * `subtree_name` - The name identifying this specific data partition within the `Tree`.
-    fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self>;
+    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self>;
 
     /// Returns the name of this subtree.
     fn name(&self) -> &str;
