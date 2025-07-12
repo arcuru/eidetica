@@ -1158,8 +1158,9 @@ impl Map {
     }
 
     /// Removes a value by key, returns the old value if present
-    pub fn remove(&mut self, key: impl AsRef<str>) -> Option<Value> {
-        let key_ref = key.as_ref();
+    pub fn remove(&mut self, key: impl Into<String>) -> Option<Value> {
+        let key_string = key.into();
+        let key_ref = &key_string;
         match self.children.get(key_ref) {
             Some(Value::Deleted) => {
                 // Already deleted, return None and don't modify anything
@@ -1168,22 +1169,23 @@ impl Map {
             Some(_) => {
                 // Key exists with real value, remove it and create tombstone
                 let existing = self.children.remove(key_ref);
-                self.children.insert(key_ref.to_string(), Value::Deleted);
+                self.children.insert(key_string.clone(), Value::Deleted);
                 existing
             }
             None => {
                 // Key doesn't exist, create tombstone and return None
-                self.children.insert(key_ref.to_string(), Value::Deleted);
+                self.children.insert(key_string, Value::Deleted);
                 None
             }
         }
     }
 
     /// Marks a key as deleted (sets to Value::Deleted)
-    pub fn delete(&mut self, key: impl AsRef<str>) -> bool {
-        let key_ref = key.as_ref();
+    pub fn delete(&mut self, key: impl Into<String>) -> bool {
+        let key_string = key.into();
+        let key_ref = &key_string;
         if self.children.contains_key(key_ref) {
-            self.children.insert(key_ref.to_string(), Value::Deleted);
+            self.children.insert(key_string, Value::Deleted);
             true
         } else {
             false
