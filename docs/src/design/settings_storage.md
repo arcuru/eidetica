@@ -26,7 +26,7 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 
 **Key Properties:**
 
-- **Data Type**: `Node` CRDT for deterministic merging
+- **Data Type**: `Map` CRDT for deterministic merging
 - **Location**: Exclusively in `_settings` subtree
 - **Access**: Through `AtomicOp::get_settings()` method
 
@@ -35,12 +35,12 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 `AtomicOp::get_settings()` provides unified access to settings:
 
 ```rust
-pub fn get_settings(&self) -> Result<Node> {
+pub fn get_settings(&self) -> Result<Map> {
     // Get historical settings from the tree
-    let mut historical_settings = self.get_full_state::<Node>(SETTINGS)?;
+    let mut historical_settings = self.get_full_state::<Map>(SETTINGS)?;
 
     // Get any staged changes to the _settings subtree in this operation
-    let staged_settings = self.get_local_data::<Node>(SETTINGS)?;
+    let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
 
     // Merge using CRDT semantics
     historical_settings = historical_settings.merge(&staged_settings)?;
@@ -116,7 +116,7 @@ Authentication configuration is stored in `_settings.auth`:
 
 ```rust
 pub struct AuthSettings {
-    inner: Node,  // Wraps Node data from _settings.auth
+    inner: Map,  // Wraps Map data from _settings.auth
 }
 ```
 
