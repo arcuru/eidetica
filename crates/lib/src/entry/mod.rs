@@ -595,7 +595,7 @@ impl EntryBuilder {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_string(), // Default data if creating subtree just for parents
+                data: "{}".to_owned(), // Default data if creating subtree just for parents
                 parents,
             });
         }
@@ -623,7 +623,7 @@ impl EntryBuilder {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_string(), // Default data if creating subtree just for parents
+                data: "{}".to_owned(), // Default data if creating subtree just for parents
                 parents,
             });
         }
@@ -650,7 +650,7 @@ impl EntryBuilder {
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_string(),
+                data: "{}".to_owned(),
                 parents: vec![parent_id.into()],
             });
         }
@@ -678,7 +678,7 @@ impl EntryBuilder {
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_string(),
+                data: "{}".to_owned(),
                 parents: vec![parent_id.into()],
             });
         }

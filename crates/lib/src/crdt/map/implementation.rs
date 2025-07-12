@@ -533,7 +533,27 @@ impl Value {
         }
     }
 
-    /// Converts to a JSON-like string representation
+    /// Converts to a JSON-like string representation for human-readable output.
+    ///
+    /// This method produces clean JSON output intended for display, debugging, and export.
+    /// It differs from serde serialization in important ways:
+    ///
+    /// - **Tombstones**: Deleted values appear as `null` instead of being preserved as tombstones
+    /// - **Purpose**: Human-readable output, not CRDT state preservation
+    /// - **Use cases**: Display, debugging, export to external systems
+    ///
+    /// For complete CRDT state preservation including tombstones, use serde serialization instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::map::Value;
+    /// let value = Value::Text("hello".to_string());
+    /// assert_eq!(value.to_json_string(), "\"hello\"");
+    ///
+    /// let deleted = Value::Deleted;
+    /// assert_eq!(deleted.to_json_string(), "null"); // Tombstones become null
+    /// ```
     pub fn to_json_string(&self) -> String {
         match self {
             Value::Null => "null".to_string(),
@@ -542,8 +562,16 @@ impl Value {
             Value::Text(s) => format!("\"{}\"", s.replace('\"', "\\\"")),
             Value::Map(node) => node.to_json_string(),
             Value::List(list) => {
-                let items: Vec<String> = list.iter().map(|v| v.to_json_string()).collect();
-                format!("[{}]", items.join(","))
+                let mut result = String::with_capacity(list.len() * 8); // Reasonable initial capacity
+                result.push('[');
+                for (i, item) in list.iter().enumerate() {
+                    if i > 0 {
+                        result.push(',');
+                    }
+                    result.push_str(&item.to_json_string());
+                }
+                result.push(']');
+                result
             }
             Value::Deleted => "null".to_string(), // Deleted values appear as null
         }
@@ -559,8 +587,14 @@ impl fmt::Display for Value {
             Value::Text(s) => write!(f, "{s}"),
             Value::Map(node) => write!(f, "{node}"),
             Value::List(list) => {
-                let items: Vec<String> = list.iter().map(|v| v.to_string()).collect();
-                write!(f, "[{}]", items.join(", "))
+                write!(f, "[")?;
+                for (i, item) in list.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, "]")
             }
             Value::Deleted => write!(f, "<deleted>"),
         }
@@ -1017,6 +1051,45 @@ impl Map {
         }
     }
 
+    /// Returns true if the given key contains a tombstone (deleted value).
+    ///
+    /// This method provides access to CRDT tombstone information for advanced use cases,
+    /// testing, and debugging. Tombstones are internal markers used to track deletions
+    /// in CRDT systems and are normally hidden from the public API.
+    ///
+    /// # Use Cases
+    ///
+    /// - **Testing**: Verify that deletions create proper tombstones
+    /// - **Debugging**: Inspect internal CRDT state
+    /// - **Advanced CRDT operations**: Check deletion history for merge operations
+    /// - **Serialization verification**: Ensure tombstones survive round-trip serialization
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::map::Map;
+    /// let mut map = Map::new();
+    /// map.set("key", "value");
+    ///
+    /// // Normal key - not a tombstone
+    /// assert!(!map.is_tombstone("key"));
+    /// assert!(!map.is_tombstone("nonexistent"));
+    ///
+    /// // Remove key - creates tombstone
+    /// map.remove("key");
+    /// assert!(map.is_tombstone("key"));
+    /// assert!(!map.contains_key("key")); // Hidden from normal API
+    /// assert!(map.get("key").is_none());  // Hidden from normal API
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// - `true` if the key exists and contains a tombstone (`Value::Deleted`)
+    /// - `false` if the key doesn't exist or contains a non-deleted value
+    pub fn is_tombstone(&self, key: impl AsRef<str>) -> bool {
+        matches!(self.children.get(key.as_ref()), Some(Value::Deleted))
+    }
+
     /// Gets a value by key (immutable reference)
     pub fn get(&self, key: impl AsRef<str>) -> Option<&Value> {
         match self.children.get(key.as_ref()) {
@@ -1329,11 +1402,38 @@ impl Map {
         self.children.clear();
     }
 
-    /// Converts to a JSON-like string representation
+    /// Converts to a JSON-like string representation for human-readable output.
+    ///
+    /// This method produces clean JSON output intended for display, debugging, and export.
+    /// It differs from serde serialization in important ways:
+    ///
+    /// - **Tombstones**: Deleted entries are completely excluded from JSON output
+    /// - **Purpose**: Human-readable output, not CRDT state preservation  
+    /// - **Use cases**: Display, debugging, export to external systems
+    ///
+    /// For complete CRDT state preservation including tombstones, use serde serialization instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::map::Map;
+    /// let mut map = Map::new();
+    /// map.set("name", "Alice");
+    /// map.set("age", 30);
+    /// map.delete("age"); // Creates a tombstone
+    ///
+    /// // JSON output excludes the deleted key
+    /// let json = map.to_json_string();
+    /// assert!(json.contains("name"));
+    /// assert!(!json.contains("age")); // Deleted keys are excluded
+    /// ```
     pub fn to_json_string(&self) -> String {
         let mut items = Vec::new();
         for (key, value) in &self.children {
-            items.push(format!("\"{}\":{}", key, value.to_json_string()));
+            // Skip tombstones (deleted values) - they should not appear in human-readable JSON output
+            if !matches!(value, Value::Deleted) {
+                items.push(format!("\"{}\":{}", key, value.to_json_string()));
+            }
         }
         format!("{{{}}}", items.join(","))
     }

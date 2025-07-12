@@ -33,11 +33,12 @@ pub(crate) fn calculate_heights(
             if let Some(tree_cache) = heights_cache.get(tree) {
                 // Try to serve from cache
                 let entries = backend.entries.read().unwrap();
-                let tree_entries: Vec<_> = entries
-                    .keys()
-                    .filter(|&id| entries.get(id).is_some_and(|entry| entry.in_tree(tree)))
-                    .cloned()
-                    .collect();
+                let mut tree_entries = Vec::new();
+                for (id, entry) in entries.iter() {
+                    if entry.in_tree(tree) {
+                        tree_entries.push(id.clone());
+                    }
+                }
                 drop(entries);
 
                 let mut result = HashMap::new();
@@ -81,15 +82,12 @@ pub(crate) fn calculate_heights(
             if let Some(tree_cache) = heights_cache.get(tree) {
                 // Try to serve from cache
                 let entries = backend.entries.read().unwrap();
-                let subtree_entries: Vec<_> = entries
-                    .keys()
-                    .filter(|&id| {
-                        entries.get(id).is_some_and(|entry| {
-                            entry.in_tree(tree) && entry.in_subtree(subtree_name)
-                        })
-                    })
-                    .cloned()
-                    .collect();
+                let mut subtree_entries = Vec::new();
+                for (id, entry) in entries.iter() {
+                    if entry.in_tree(tree) && entry.in_subtree(subtree_name) {
+                        subtree_entries.push(id.clone());
+                    }
+                }
                 drop(entries);
 
                 let mut result = HashMap::new();
@@ -334,7 +332,12 @@ pub(crate) fn sort_entries_by_subtree_height(
 
 /// Creates a cache key for CRDT state from entry ID and subtree.
 pub(crate) fn create_crdt_cache_key(entry_id: &ID, subtree: &str) -> String {
-    format!("crdt:{entry_id}:{subtree}")
+    let mut key = String::with_capacity(5 + entry_id.as_str().len() + 1 + subtree.len());
+    key.push_str("crdt:");
+    key.push_str(entry_id.as_str());
+    key.push(':');
+    key.push_str(subtree);
+    key
 }
 
 /// Get cached CRDT state for a subtree at a specific entry.

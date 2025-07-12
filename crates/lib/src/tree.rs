@@ -380,24 +380,26 @@ impl Tree {
         I: IntoIterator<Item = T>,
         T: Into<ID>,
     {
-        entry_ids
-            .into_iter()
-            .map(|entry_id| {
-                let id = entry_id.into();
-                let entry = self.backend.get(&id)?;
+        // Collect IDs first to minimize conversions and avoid repeat work in iterator chain
+        let ids: Vec<ID> = entry_ids.into_iter().map(Into::into).collect();
+        let mut entries = Vec::with_capacity(ids.len());
 
-                // Check if the entry belongs to this tree
-                if !entry.in_tree(&self.root) {
-                    return Err(BaseError::EntryNotInTree {
-                        entry_id: id,
-                        tree_id: self.root.clone(),
-                    }
-                    .into());
+        for id in ids {
+            let entry = self.backend.get(&id)?;
+
+            // Check if the entry belongs to this tree
+            if !entry.in_tree(&self.root) {
+                return Err(BaseError::EntryNotInTree {
+                    entry_id: id,
+                    tree_id: self.root.clone(),
                 }
+                .into());
+            }
 
-                Ok(entry)
-            })
-            .collect()
+            entries.push(entry);
+        }
+
+        Ok(entries)
     }
 
     // === AUTHENTICATION HELPERS ===
