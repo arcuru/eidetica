@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
-use crate::crdt::map::{Array, Value};
+use crate::crdt::map::{List, Value};
 use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
@@ -87,10 +87,10 @@ impl KVStore {
                 actual: "Map".to_string(),
             }
             .into()),
-            Value::Array(_) => Err(SubtreeError::TypeMismatch {
+            Value::List(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "List".to_string(),
+                actual: "list".to_string(),
             }
             .into()),
             Value::Deleted => Err(SubtreeError::KeyNotFound {
@@ -155,12 +155,12 @@ impl KVStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     /// Convenience method to get a List value.
-    pub fn get_list(&self, key: impl AsRef<str>) -> Result<Array> {
+    pub fn get_list(&self, key: impl AsRef<str>) -> Result<List> {
         match self.get(key)? {
-            Value::Array(list) => Ok(list),
+            Value::List(list) => Ok(list),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
-                expected: "List".to_string(),
+                expected: "list".to_string(),
                 actual: "Other".to_string(),
             }
             .into()),
@@ -181,8 +181,8 @@ impl KVStore {
     }
 
     /// Convenience method to set a list value.
-    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<Array>) -> Result<()> {
-        self.set(key, Value::Array(list.into()))
+    pub fn set_list(&self, key: impl AsRef<str>, list: impl Into<List>) -> Result<()> {
+        self.set(key, Value::List(list.into()))
     }
 
     /// Convenience method to set a node value.
@@ -456,10 +456,10 @@ impl KVStore {
 
         // Set the value at the final key in the path.
         if let Some(last_key_s) = path_slice.last() {
-            let node_value = value;
+            let map_value = value;
             current_map_mut
                 .as_hashmap_mut()
-                .insert(last_key_s.as_ref().to_string(), node_value);
+                .insert(last_key_s.as_ref().to_string(), map_value);
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.

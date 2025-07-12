@@ -242,7 +242,7 @@ fn test_kvstore_list_basic_operations() {
             .expect("Failed to get KVStore");
 
         // Create a list and add elements
-        let mut fruits = eidetica::crdt::map::Array::new();
+        let mut fruits = eidetica::crdt::map::List::new();
         fruits.push(Value::Text("apple".to_string()));
         fruits.push(Value::Text("banana".to_string()));
         fruits.push(Value::Text("orange".to_string()));
@@ -347,7 +347,7 @@ fn test_kvstore_list_nonexistent_key() {
         assert!(list_result.is_err());
 
         // Create a new list
-        let mut new_list = eidetica::crdt::map::Array::new();
+        let mut new_list = eidetica::crdt::map::List::new();
         new_list.push(Value::Text("first_item".to_string()));
 
         kv_store
@@ -377,7 +377,7 @@ fn test_kvstore_list_persistence() {
             .get_subtree::<KVStore>("my_kv")
             .expect("Failed to get KVStore");
 
-        let mut colors = eidetica::crdt::map::Array::new();
+        let mut colors = eidetica::crdt::map::List::new();
         colors.push(Value::Text("red".to_string()));
         colors.push(Value::Text("green".to_string()));
 

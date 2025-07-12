@@ -7,9 +7,9 @@
 //! # Core Types
 //!
 //! - [`Map`] - A recursive key-value structure supporting nested maps and lists
-//! - [`map::Array`] - An ordered collection with rational number positioning
+//! - [`map::List`] - An ordered collection with rational number positioning
 //! - [`map::Value`] - The value type for nested structures
-//! - [`map::array::Position`] - Rational number-based positions for stable list ordering
+//! - [`map::list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # Traits
 //!

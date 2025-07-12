@@ -61,7 +61,7 @@ pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, ei
     (db, tree)
 }
 
-/// Creates a tree with initial settings using Node with authentication
+/// Creates a tree with initial settings using Map with authentication
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let db = setup_db();
     let tree = db

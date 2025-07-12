@@ -1,14 +1,14 @@
-//! Array positioning system for CRDT arrays.
+//! List positioning system for CRDT lists.
 //!
-//! This module provides the position-based ordering system used by CRDT Arrays
+//! This module provides the position-based ordering system used by CRDT Lists
 //! to maintain stable ordering across concurrent insertions.
 
 use std::cmp::Ordering;
 use uuid::Uuid;
 
-/// Represents a position in a CRDT array using rational numbers.
+/// Represents a position in a CRDT list using rational numbers.
 ///
-/// This type provides a stable ordering mechanism for array elements that allows
+/// This type provides a stable ordering mechanism for list elements that allows
 /// insertion between any two existing elements without requiring renumbering.
 /// Each position consists of:
 /// - A rational number (numerator/denominator) for ordering
@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::map::array::Position;
+/// use eidetica::crdt::map::list::Position;
 ///
 /// let pos1 = Position::new(10, 1);
 /// let pos2 = Position::new(20, 1);
@@ -46,7 +46,7 @@ impl Position {
     /// # Examples
     ///
     /// ```
-    /// use eidetica::crdt::map::array::Position;
+    /// use eidetica::crdt::map::list::Position;
     ///
     /// let pos = Position::new(3, 2); // Represents 3/2 = 1.5
     /// ```
@@ -66,7 +66,7 @@ impl Position {
     /// # Examples
     ///
     /// ```
-    /// use eidetica::crdt::map::array::Position;
+    /// use eidetica::crdt::map::list::Position;
     ///
     /// let beginning = Position::beginning();
     /// let after = Position::new(1, 1);
@@ -81,7 +81,7 @@ impl Position {
     /// # Examples
     ///
     /// ```
-    /// use eidetica::crdt::map::array::Position;
+    /// use eidetica::crdt::map::list::Position;
     ///
     /// let end = Position::end();
     /// let before = Position::new(1000, 1);
@@ -103,7 +103,7 @@ impl Position {
     /// # Examples
     ///
     /// ```
-    /// use eidetica::crdt::map::array::Position;
+    /// use eidetica::crdt::map::list::Position;
     ///
     /// let pos1 = Position::new(1, 1);
     /// let pos2 = Position::new(3, 1);

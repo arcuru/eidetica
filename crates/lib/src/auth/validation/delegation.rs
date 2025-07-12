@@ -260,7 +260,7 @@ impl DelegationResolver {
             .get("auth")
             .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
-        // Extract the auth Nested from the Value
+        // Extract the auth Map from the Value
         let auth_nested = match auth_section {
             Value::Map(auth_map) => auth_map,
             _ => {

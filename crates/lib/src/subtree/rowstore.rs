@@ -78,8 +78,8 @@ where
 
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
-            && let Some(node_value) = data.get(key)
-            && let Some(value) = node_value.as_text()
+            && let Some(map_value) = data.get(key)
+            && let Some(value) = map_value.as_text()
         {
             return serde_json::from_str(value).map_err(|e| {
                 SubtreeError::DeserializationFailed {
@@ -225,9 +225,9 @@ where
         }
 
         // Iterate through all key-value pairs
-        for (key, node_value) in data.as_hashmap().iter() {
+        for (key, map_value) in data.as_hashmap().iter() {
             // Skip non-text values
-            if let Some(value) = node_value.as_text() {
+            if let Some(value) = map_value.as_text() {
                 // Deserialize the row
                 let row: T = serde_json::from_str(value).map_err(|e| {
                     SubtreeError::DeserializationFailed {

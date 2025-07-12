@@ -34,9 +34,9 @@ pub enum CRDTError {
     #[error("Invalid CRDT value: {reason}")]
     InvalidValue { reason: String },
 
-    /// Array operation failed
-    #[error("CRDT array operation failed: {operation} - {reason}")]
-    ArrayOperationFailed { operation: String, reason: String },
+    /// List operation failed
+    #[error("CRDT list operation failed: {operation} - {reason}")]
+    ListOperationFailed { operation: String, reason: String },
 
     /// Map operation failed
     #[error("CRDT map operation failed: {operation} - {reason}")]
@@ -46,7 +46,7 @@ pub enum CRDTError {
     #[error("CRDT nested operation failed: {path} - {reason}")]
     NestedOperationFailed { path: String, reason: String },
 
-    /// Invalid UUID format in array operations
+    /// Invalid UUID format in list operations
     #[error("Invalid UUID format: {uuid}")]
     InvalidUuid { uuid: String },
 
@@ -82,9 +82,9 @@ impl CRDTError {
         matches!(self, CRDTError::TypeMismatch { .. })
     }
 
-    /// Check if this error is related to array operations
-    pub fn is_array_error(&self) -> bool {
-        matches!(self, CRDTError::ArrayOperationFailed { .. })
+    /// Check if this error is related to list operations (operation-level)
+    pub fn is_list_operation_error(&self) -> bool {
+        matches!(self, CRDTError::ListOperationFailed { .. })
     }
 
     /// Check if this error is related to map operations
@@ -110,7 +110,7 @@ impl CRDTError {
     /// Get the operation type if this is an operation-specific error
     pub fn operation(&self) -> Option<&str> {
         match self {
-            CRDTError::ArrayOperationFailed { operation, .. }
+            CRDTError::ListOperationFailed { operation, .. }
             | CRDTError::MapOperationFailed { operation, .. } => Some(operation),
             _ => None,
         }
@@ -154,7 +154,7 @@ mod tests {
         assert!(!error.is_merge_error());
         assert!(!error.is_serialization_error());
         assert!(!error.is_type_error());
-        assert!(!error.is_array_error());
+        assert!(!error.is_list_operation_error());
         assert!(!error.is_map_error());
         assert!(!error.is_nested_error());
         assert!(!error.is_not_found_error());
@@ -187,12 +187,12 @@ mod tests {
         };
         assert!(type_error.is_type_error());
 
-        let array_error = CRDTError::ArrayOperationFailed {
+        let list_error = CRDTError::ListOperationFailed {
             operation: "insert".to_string(),
             reason: "test".to_string(),
         };
-        assert!(array_error.is_array_error());
-        assert_eq!(array_error.operation(), Some("insert"));
+        assert!(list_error.is_list_operation_error());
+        assert_eq!(list_error.operation(), Some("insert"));
 
         let map_error = CRDTError::MapOperationFailed {
             operation: "set".to_string(),
@@ -237,7 +237,7 @@ mod tests {
                 reason: "conflict".to_string(),
             },
             CRDTError::TypeMismatch {
-                expected: "Node".to_string(),
+                expected: "Map".to_string(),
                 actual: "Text".to_string(),
             },
             CRDTError::InvalidPath {
