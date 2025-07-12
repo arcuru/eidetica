@@ -25,6 +25,14 @@ Subtrees offer several advantages:
 
 ## Available Subtree Types
 
+Eidetica provides three main subtree types, each optimized for different data patterns:
+
+| Type          | Purpose               | Key Features                              | Best For                                     |
+| ------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
+| **Dict**      | Key-value storage     | Nested maps, tombstones, path operations  | Configuration, metadata, hierarchical data   |
+| **Table\<T>** | Record collections    | Auto-generated UUIDs, type safety, search | User lists, products, any structured records |
+| **YDoc**      | Collaborative editing | Y-CRDT integration, real-time sync        | Shared documents, collaborative text editing |
+
 ### Dict (Key-Value Store)
 
 The `Dict` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Map` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
@@ -166,7 +174,7 @@ struct User {
 let op = tree.new_operation()?;
 let users = op.get_subtree::<Table<User>>("users")?;
 
-// Insert items (returns a generated ID)
+// Insert items (returns a generated UUID)
 let user = User {
     name: "Alice".to_string(),
     email: "alice@example.com".to_string(),
@@ -185,14 +193,10 @@ if let Ok(mut user) = users.get(&id) {
     users.set(&id, user)?;
 }
 
-// Remove an item
-users.remove(&id)?;
-
-// Iterate over all items
-for result in users.iter()? {
-    if let Ok((id, user)) = result {
-        println!("ID: {}, Name: {}", id, user.name);
-    }
+// Search for items matching a condition
+let active_users = users.search(|user| user.active)?;
+for (id, user) in active_users {
+    println!("Active user: {} (ID: {})", user.name, id);
 }
 
 op.commit()?;
@@ -203,6 +207,55 @@ Use cases for `Table`:
 - Collections of structured objects
 - Record storage (users, products, todos, etc.)
 - Any data where individual items need unique IDs
+- When you need to search across records with custom predicates
+
+### YDoc (Y-CRDT Integration)
+
+The `YDoc` subtree provides integration with Y-CRDT (Yjs) for real-time collaborative editing. This requires the "y-crdt" feature:
+
+```rust
+// Enable in Cargo.toml: eidetica = { features = ["y-crdt"] }
+use eidetica::subtree::YDoc;
+use eidetica::y_crdt::{Map, Text, Transact};
+
+// Get a YDoc subtree
+let op = tree.new_operation()?;
+let doc_store = op.get_subtree::<YDoc>("document")?;
+
+// Work with Y-CRDT structures
+doc_store.with_doc_mut(|doc| {
+    let text = doc.get_or_insert_text("content");
+    let metadata = doc.get_or_insert_map("meta");
+
+    let mut txn = doc.transact_mut();
+
+    // Collaborative text editing
+    text.insert(&mut txn, 0, "Hello, collaborative world!");
+
+    // Set metadata
+    metadata.insert(&mut txn, "title", "My Document");
+    metadata.insert(&mut txn, "author", "Alice");
+
+    Ok(())
+})?;
+
+// Apply updates from other collaborators
+let external_update = receive_update_from_network();
+doc_store.apply_update(&external_update)?;
+
+// Get updates to send to others
+let update = doc_store.get_update()?;
+broadcast_update(update);
+
+op.commit()?;
+```
+
+Use cases for `YDoc`:
+
+- Real-time collaborative text editing
+- Shared documents with multiple editors
+- Conflict-free data synchronization
+- Applications requiring sophisticated merge algorithms
 
 ## Subtree Implementation Details
 

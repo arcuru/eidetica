@@ -12,7 +12,7 @@ Currently, the main specialized implementations are `Table<T>`, `Dict`, and `YDo
 
 Specific subtree types (like `Table`, `Dict`, `YDoc`, or custom CRDT implementations) are accessed through handles that implement the [`SubTree`](../../src/subtree/mod.rs) trait. This trait requires:
 
-- `fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self>`: An associated function used by `AtomicOp::get_subtree` to create a handle instance linked to the current operation.
+- `fn new(op: &AtomicOp, subtree_name: impl AsRef<str>) -> Result<Self>`: An associated function used by `AtomicOp::get_subtree` to create a handle instance linked to the current operation.
 - `fn name(&self) -> &str`: A method to retrieve the name of the subtree this handle manages.
 
 Handles typically store a clone of the `AtomicOp` and the `subtree_name`.
