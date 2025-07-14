@@ -7,9 +7,9 @@ classDiagram
     class BaseDB {
         -Arc<Mutex<Box<dyn Database>>> database
         +new(database: Box<dyn Database>) BaseDB
-        +add_private_key(key_id: &str) Result<()>
-        +new_tree(settings: Map, signing_key_id: &str) Result<Tree>
-        +new_tree_default(signing_key_id: &str) Result<Tree>
+        +add_private_key(key_name: &str) Result<()>
+        +new_tree(settings: Map, signing_key_name: &str) Result<Tree>
+        +new_tree_default(signing_key_name: &str) Result<Tree>
         +load_tree(root_id: &ID) Result<Tree>
         +all_trees() Result<Vec<Tree>>
         +database() &Arc<Mutex<Box<dyn Database>>>
@@ -19,7 +19,7 @@ classDiagram
         -ID root
         -Arc<Mutex<Box<dyn Database>>> database
         -Option<String> default_auth_key
-        +new(settings: Map, database: Arc<Mutex<Box<dyn Database>>>, signing_key_id: &str) Result<Tree>
+        +new(settings: Map, database: Arc<Mutex<Box<dyn Database>>>, signing_key_name: &str) Result<Tree>
         +root_id() &ID
         +get_root() Result<Entry>
         +get_name() Result<String>
@@ -42,9 +42,9 @@ classDiagram
     Operation --> Database : uses
 ```
 
-A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `Map` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings and requires a signing key ID for authentication. Alternatively, `new_tree_default()` creates a tree with empty default settings, also requiring authentication.
+A `Tree` is analogous to a table in a traditional database. Each `Tree` is identified by its root `Entry`'s ID. The `new_tree` method uses `Map` (a specific [CRDT implementation](crdt.md) for key-value data) for initial settings and requires a signing key name for authentication. Alternatively, `new_tree_default()` creates a tree with empty default settings, also requiring authentication.
 
-**Authentication**: All trees must be created with authentication. The `signing_key_id` parameter must reference a private key that has been added to the database via `add_private_key()`. This key becomes the tree's default authentication key for all operations.
+**Authentication**: All trees must be created with authentication. The `signing_key_name` parameter must reference a private key that has been added to the database via `add_private_key()`. This key becomes the tree's default authentication key for all operations.
 
 **Tree Operations:** Interactions with a `Tree` (reading and writing data, especially subtrees) are typically performed through an `Operation` object obtained via `Tree::new_operation()`. This pattern facilitates atomic updates (multiple subtree changes within one commit) and provides access to typed [Subtree Implementations](subtrees.md). All operations are automatically authenticated using the tree's default signing key.
 

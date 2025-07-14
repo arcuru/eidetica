@@ -629,7 +629,7 @@ graph TD
 The current validation process:
 
 1. **Extract Authentication Info**: Parse the `auth` field from the entry
-2. **Resolve Key Identity**: Lookup the direct key in `_settings.auth`
+2. **Resolve Key Name**: Lookup the direct key in `_settings.auth`
 3. **Check Key Status**: Verify the key is Active (not Revoked)
 4. **Validate Signature**: Verify the Ed25519 signature against the entry content hash
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation

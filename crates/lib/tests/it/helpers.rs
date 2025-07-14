@@ -3,13 +3,13 @@ use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
 
-const DEFAULT_TEST_KEY_ID: &str = "test_key";
+const DEFAULT_TEST_KEY_NAME: &str = "test_key";
 
 /// Creates a basic authenticated database with the default test key
 pub fn setup_db() -> eidetica::basedb::BaseDB {
     let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
-    db.add_private_key(DEFAULT_TEST_KEY_ID)
+    db.add_private_key(DEFAULT_TEST_KEY_NAME)
         .expect("Failed to add default test key");
     db
 }
@@ -21,19 +21,21 @@ pub fn setup_empty_db() -> eidetica::basedb::BaseDB {
 }
 
 /// Creates an authenticated database with a specific key
-pub fn setup_db_with_key(key_id: &str) -> eidetica::basedb::BaseDB {
+pub fn setup_db_with_key(key_name: &str) -> eidetica::basedb::BaseDB {
     let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
-    db.add_private_key(key_id).expect("Failed to add test key");
+    db.add_private_key(key_name)
+        .expect("Failed to add test key");
     db
 }
 
 /// Creates an authenticated database with multiple keys
-pub fn setup_db_with_keys(key_ids: &[&str]) -> eidetica::basedb::BaseDB {
+pub fn setup_db_with_keys(key_names: &[&str]) -> eidetica::basedb::BaseDB {
     let backend = Box::new(InMemory::new());
     let db = eidetica::basedb::BaseDB::new(backend);
-    for key_id in key_ids {
-        db.add_private_key(key_id).expect("Failed to add test key");
+    for key_name in key_names {
+        db.add_private_key(key_name)
+            .expect("Failed to add test key");
     }
     db
 }
@@ -41,22 +43,22 @@ pub fn setup_db_with_keys(key_ids: &[&str]) -> eidetica::basedb::BaseDB {
 /// Creates a basic tree using an InMemory database with authentication
 pub fn setup_tree() -> eidetica::Tree {
     let db = setup_db();
-    db.new_tree_default(DEFAULT_TEST_KEY_ID)
+    db.new_tree_default(DEFAULT_TEST_KEY_NAME)
         .expect("Failed to create tree for testing")
 }
 
 /// Creates a tree with a specific key
-pub fn setup_tree_with_key(key_id: &str) -> eidetica::Tree {
-    let db = setup_db_with_key(key_id);
-    db.new_tree_default(key_id)
+pub fn setup_tree_with_key(key_name: &str) -> eidetica::Tree {
+    let db = setup_db_with_key(key_name);
+    db.new_tree_default(key_name)
         .expect("Failed to create tree for testing")
 }
 
 /// Creates a tree and database with a specific key
-pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, eidetica::Tree) {
-    let db = setup_db_with_key(key_id);
+pub fn setup_db_and_tree_with_key(key_name: &str) -> (eidetica::basedb::BaseDB, eidetica::Tree) {
+    let db = setup_db_with_key(key_name);
     let tree = db
-        .new_tree_default(key_id)
+        .new_tree_default(key_name)
         .expect("Failed to create tree for testing");
     (db, tree)
 }
@@ -65,7 +67,7 @@ pub fn setup_db_and_tree_with_key(key_id: &str) -> (eidetica::basedb::BaseDB, ei
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let db = setup_db();
     let tree = db
-        .new_tree_default(DEFAULT_TEST_KEY_ID)
+        .new_tree_default(DEFAULT_TEST_KEY_NAME)
         .expect("Failed to create tree");
 
     // Add the user settings through an operation

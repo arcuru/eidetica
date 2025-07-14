@@ -72,7 +72,7 @@ impl KeyResolver {
         }
 
         match sig_key {
-            SigKey::Direct(key_id) => self.resolve_direct_key(key_id, settings),
+            SigKey::Direct(key_name) => self.resolve_direct_key(key_name, settings),
             SigKey::DelegationPath(steps) => {
                 let backend = backend.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
@@ -84,7 +84,7 @@ impl KeyResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    pub fn resolve_direct_key(&mut self, key_id: &str, settings: &Map) -> Result<ResolvedAuth> {
+    pub fn resolve_direct_key(&mut self, key_name: &str, settings: &Map) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
@@ -102,7 +102,7 @@ impl KeyResolver {
         };
 
         // Use get_json to parse AuthKey
-        let auth_key = auth_nested.get_json::<AuthKey>(key_id).map_err(|e| {
+        let auth_key = auth_nested.get_json::<AuthKey>(key_name).map_err(|e| {
             AuthError::InvalidAuthConfiguration {
                 reason: format!("Invalid auth key format: {e}"),
             }

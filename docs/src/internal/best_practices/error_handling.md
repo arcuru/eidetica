@@ -46,11 +46,11 @@ Each module defines its own structured error type with semantic helpers:
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AuthError {
-    #[error("Authentication key not found: {key_id}")]
-    KeyNotFound { key_id: String },
+    #[error("Authentication key not found: {key_name}")]
+    KeyNotFound { key_name: String },
 
-    #[error("Invalid signature for key: {key_id}")]
-    InvalidSignature { key_id: String },
+    #[error("Invalid signature for key: {key_name}")]
+    InvalidSignature { key_name: String },
 
     #[error("Permission denied: {operation} requires {required_permission:?}")]
     PermissionDenied {
@@ -186,15 +186,15 @@ pub enum CRDTError {
 Use the `?` operator for clean error propagation:
 
 ```rust
-pub fn create_authenticated_tree(&mut self, data: Map, key_id: &str) -> Result<Tree> {
+pub fn create_authenticated_tree(&mut self, data: Map, key_name: &str) -> Result<Tree> {
     // Validate key exists - early return if not
-    self.validate_key_exists(key_id)?;
+    self.validate_key_exists(key_name)?;
 
     // Create tree - early return on failure
     let tree = self.create_tree(data)?;
 
     // Set authentication - early return on failure
-    tree.set_default_auth_key(key_id)?;
+    tree.set_default_auth_key(key_name)?;
 
     Ok(tree)
 }
@@ -263,17 +263,17 @@ Structure authentication errors to be actionable:
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    #[error("Operation '{operation}' requires {required:?} permission, but key '{key_id}' has {actual:?}")]
+    #[error("Operation '{operation}' requires {required:?} permission, but key '{key_name}' has {actual:?}")]
     InsufficientPermission {
         operation: String,
-        key_id: String,
+        key_name: String,
         required: Permission,
         actual: Permission,
     },
 
-    #[error("Key '{key_id}' is not authorized for tree '{tree_name}'")]
+    #[error("Key '{key_name}' is not authorized for tree '{tree_name}'")]
     UnauthorizedForTree {
-        key_id: String,
+        key_name: String,
         tree_name: String,
         available_trees: Vec<String>,  // Help user understand options
     },
@@ -293,9 +293,9 @@ AuthenticationFailed,
 #[error("Private key '{private_key_content}' not found")]
 PrivateKeyNotFound { private_key_content: String },
 
-// ✅ GOOD: References key ID without exposing content
-#[error("Key '{key_id}' not found")]
-KeyNotFound { key_id: String },
+// ✅ GOOD: References key name without exposing content
+#[error("Key '{key_name}' not found")]
+KeyNotFound { key_name: String },
 ```
 
 ## Performance Considerations
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn test_authentication_error_classification() {
         let error = AuthError::KeyNotFound {
-            key_id: "test_key".to_string()
+            key_name: "test_key".to_string()
         };
 
         assert!(error.is_authentication_error());
@@ -392,8 +392,8 @@ Test semantic error classification helpers:
 #[test]
 fn test_error_classification_helpers() {
     let auth_errors = vec![
-        AuthError::KeyNotFound { key_id: "key1".to_string() },
-        AuthError::InvalidSignature { key_id: "key2".to_string() },
+        AuthError::KeyNotFound { key_name: "key1".to_string() },
+        AuthError::InvalidSignature { key_name: "key2".to_string() },
     ];
 
     for error in auth_errors {

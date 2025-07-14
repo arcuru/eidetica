@@ -330,7 +330,7 @@ pub trait Database: Send + Sync + Any {
     /// database. They are used for signing new entries but are never shared or synchronized.
     ///
     /// # Arguments
-    /// * `key_id` - A unique identifier for the private key (e.g., "KEY_LAPTOP")
+    /// * `key_name` - A unique identifier for the private key (e.g., "KEY_LAPTOP")
     /// * `private_key` - The Ed25519 private key to store
     ///
     /// # Returns
@@ -339,16 +339,16 @@ pub trait Database: Send + Sync + Any {
     /// # Security Note
     /// This is a basic implementation suitable for development and testing.
     /// Production systems should consider encryption at rest and hardware security modules.
-    fn store_private_key(&self, key_id: &str, private_key: SigningKey) -> Result<()>;
+    fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()>;
 
     /// Retrieve a private key from the backend's local key storage.
     ///
     /// # Arguments
-    /// * `key_id` - The unique identifier of the private key to retrieve
+    /// * `key_name` - The unique identifier of the private key to retrieve
     ///
     /// # Returns
     /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
-    fn get_private_key(&self, key_id: &str) -> Result<Option<SigningKey>>;
+    fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>>;
 
     /// List all private key identifiers stored in the backend.
     ///
@@ -359,11 +359,11 @@ pub trait Database: Send + Sync + Any {
     /// Remove a private key from the backend's local key storage.
     ///
     /// # Arguments
-    /// * `key_id` - The unique identifier of the private key to remove
+    /// * `key_name` - The unique identifier of the private key to remove
     ///
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    fn remove_private_key(&self, key_id: &str) -> Result<()>;
+    fn remove_private_key(&self, key_name: &str) -> Result<()>;
 
     // === CRDT State Cache Methods ===
     //
