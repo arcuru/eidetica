@@ -80,10 +80,10 @@ pub enum DatabaseError {
     },
 
     /// Private key not found.
-    #[error("Private key not found: {key_id}")]
+    #[error("Private key not found: {key_name}")]
     PrivateKeyNotFound {
-        /// The ID of the private key that was not found
-        key_id: String,
+        /// The name of the private key that was not found
+        key_name: String,
     },
 
     /// Serialization failed.

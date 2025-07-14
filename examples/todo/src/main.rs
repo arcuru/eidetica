@@ -10,8 +10,8 @@ use eidetica::{Result, Tree};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-// Default authentication key ID for the todo app
-const TODO_APP_KEY_ID: &str = "TODO_APP_USER";
+// Default authentication key name for the todo app
+const TODO_APP_KEY_NAME: &str = "TODO_APP_USER";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -155,9 +155,9 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     // First check if the key already exists
     let existing_keys = db.list_private_keys()?;
 
-    if !existing_keys.contains(&TODO_APP_KEY_ID.to_string()) {
+    if !existing_keys.contains(&TODO_APP_KEY_NAME.to_string()) {
         // Add the key if it doesn't exist
-        match db.add_private_key(TODO_APP_KEY_ID) {
+        match db.add_private_key(TODO_APP_KEY_NAME) {
             Ok(_) => {
                 println!("✓ New authentication key created");
             }
@@ -211,7 +211,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
             let mut settings = Map::new();
             settings.set_string("name", tree_name);
 
-            db.new_tree(settings, TODO_APP_KEY_ID)?
+            db.new_tree(settings, TODO_APP_KEY_NAME)?
         }
         Err(e) => {
             // Propagate other errors
@@ -221,7 +221,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
 
     // Set the default authentication key for this tree
     // This means all subsequent new_operation() calls will automatically use this key
-    tree.set_default_auth_key(TODO_APP_KEY_ID);
+    tree.set_default_auth_key(TODO_APP_KEY_NAME);
 
     Ok(tree)
 }

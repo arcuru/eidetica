@@ -144,8 +144,8 @@ Document all public functions with comprehensive details:
 /// # Related
 /// - [`clear_default_auth_key()`](Self::clear_default_auth_key) - Remove default key
 /// - [`new_operation()`](Self::new_operation) - Create authenticated operations
-pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
-    self.default_auth_key = Some(key_id.into());
+pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
+    self.default_auth_key = Some(key_name.into());
 }
 ````
 

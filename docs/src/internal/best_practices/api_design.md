@@ -19,8 +19,8 @@ Use `impl Into<String>` when the function will store the parameter as an owned `
 
 ```rust
 // ✅ GOOD: Parameter is stored as String
-pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
-    self.default_auth_key = Some(key_id.into());
+pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
+    self.default_auth_key = Some(key_name.into());
 }
 
 // ✅ GOOD: Parameter becomes part of stored data
@@ -68,16 +68,16 @@ pub fn in_subtree(&self, subtree_name: impl AsRef<str>) -> bool {
 
 ```rust
 // DON'T DO THIS
-pub fn set_key(&mut self, key_id: impl AsRef<str>) {
-    self.key = key_id.as_ref().to_string(); // Double conversion!
+pub fn set_key(&mut self, key_name: impl AsRef<str>) {
+    self.key = key_name.as_ref().to_string(); // Double conversion!
 }
 ```
 
 ✅ **GOOD: Use `Into<String>` instead**
 
 ```rust
-pub fn set_key(&mut self, key_id: impl Into<String>) {
-    self.key = key_id.into(); // Direct conversion
+pub fn set_key(&mut self, key_name: impl Into<String>) {
+    self.key = key_name.into(); // Direct conversion
 }
 ```
 
@@ -168,7 +168,7 @@ Always document the expected usage pattern for string parameters:
 /// Sets the default authentication key for this tree.
 ///
 /// # Parameters
-/// * `key_id` - Authentication key identifier that will be stored.
+/// * `key_name` - Authentication key identifier that will be stored.
 ///   Accepts any string type (`&str`, `String`, `&String`).
 ///
 /// # Example
@@ -177,8 +177,8 @@ Always document the expected usage pattern for string parameters:
 /// tree.set_default_auth_key(key_string);         // String
 /// tree.set_default_auth_key(&owned_string);      // &String
 /// ```
-pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
-    self.default_auth_key = Some(key_id.into());
+pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
+    self.default_auth_key = Some(key_name.into());
 }
 ````
 

@@ -18,10 +18,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum AuthError {
     /// A requested authentication key was not found in the configuration.
-    #[error("Key not found: {id}")]
+    #[error("Key not found: {key_name}")]
     KeyNotFound {
-        /// The ID of the key that was not found
-        id: String,
+        /// The name of the key that was not found
+        key_name: String,
     },
 
     /// Invalid key format or parsing error.
@@ -90,10 +90,10 @@ pub enum AuthError {
     },
 
     /// Attempted to revoke an entry that is not a key.
-    #[error("Cannot revoke non-key entry: {id}")]
+    #[error("Cannot revoke non-key entry: {key_name}")]
     CannotRevokeNonKey {
-        /// The ID of the entry that is not a key
-        id: String,
+        /// The name of the entry that is not a key
+        key_name: String,
     },
 
     /// Signature verification failed.
@@ -193,10 +193,10 @@ impl AuthError {
         )
     }
 
-    /// Get the key ID if this error is about a missing key.
-    pub fn key_id(&self) -> Option<&str> {
+    /// Get the key name if this error is about a missing key.
+    pub fn key_name(&self) -> Option<&str> {
         match self {
-            AuthError::KeyNotFound { id } => Some(id),
+            AuthError::KeyNotFound { key_name: id } => Some(id),
             _ => None,
         }
     }
@@ -217,10 +217,10 @@ mod tests {
     #[test]
     fn test_error_helpers() {
         let err = AuthError::KeyNotFound {
-            id: "test-key".to_string(),
+            key_name: "test-key".to_string(),
         };
         assert!(err.is_key_not_found());
-        assert_eq!(err.key_id(), Some("test-key"));
+        assert_eq!(err.key_name(), Some("test-key"));
 
         let err = AuthError::InvalidSignature;
         assert!(err.is_invalid_signature());
@@ -240,11 +240,11 @@ mod tests {
     #[test]
     fn test_error_conversion() {
         let auth_err = AuthError::KeyNotFound {
-            id: "test".to_string(),
+            key_name: "test".to_string(),
         };
         let err: crate::Error = auth_err.into();
         match err {
-            crate::Error::Auth(AuthError::KeyNotFound { id }) => assert_eq!(id, "test"),
+            crate::Error::Auth(AuthError::KeyNotFound { key_name: id }) => assert_eq!(id, "test"),
             _ => panic!("Unexpected error variant"),
         }
     }

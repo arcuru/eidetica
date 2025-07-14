@@ -29,7 +29,7 @@ use std::sync::Arc;
 pub struct Tree {
     root: ID,
     backend: Arc<dyn Database>,
-    /// Default authentication key ID for operations on this tree
+    /// Default authentication key name for operations on this tree
     default_auth_key: Option<String>,
 }
 
@@ -42,33 +42,33 @@ impl Tree {
     /// # Arguments
     /// * `settings` - A `Map` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
-    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
         initial_settings: Map,
         backend: Arc<dyn Database>,
-        signing_key_id: impl AsRef<str>,
+        signing_key_name: impl AsRef<str>,
     ) -> Result<Self> {
-        let signing_key_id = signing_key_id.as_ref();
+        let signing_key_name = signing_key_name.as_ref();
         // Check if auth is configured in the initial settings
         let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
 
-        let (super_user_key_id, final_tree_settings) = if auth_configured {
+        let (super_user_key_name, final_tree_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key
-            (signing_key_id.to_string(), initial_settings)
+            (signing_key_name.to_string(), initial_settings)
         } else {
             // No auth config provided - bootstrap auth configuration with the provided key
             // Verify the key exists first
-            let _private_key = backend.get_private_key(signing_key_id)?.ok_or_else(|| {
+            let _private_key = backend.get_private_key(signing_key_name)?.ok_or_else(|| {
                 BaseError::SigningKeyNotFound {
-                    key_id: signing_key_id.to_string(),
+                    key_name: signing_key_name.to_string(),
                 }
             })?;
 
             // Bootstrap auth configuration with the provided key
-            let private_key = backend.get_private_key(signing_key_id)?.unwrap();
+            let private_key = backend.get_private_key(signing_key_name)?.unwrap();
             let public_key = private_key.verifying_key();
 
             // Create auth settings with the provided key
@@ -78,13 +78,13 @@ impl Tree {
                 permissions: Permission::Admin(0), // Highest priority
                 status: KeyStatus::Active,
             };
-            auth_settings_handler.add_key(signing_key_id, super_user_auth_key)?;
+            auth_settings_handler.add_key(signing_key_name, super_user_auth_key)?;
 
             // Prepare final tree settings for the initial commit
             let mut final_tree_settings = initial_settings.clone();
             final_tree_settings.set_map("auth", auth_settings_handler.as_kvnested().clone());
 
-            (signing_key_id.to_string(), final_tree_settings)
+            (signing_key_name.to_string(), final_tree_settings)
         };
 
         // Create the initial root entry using a temporary Tree and AtomicOp
@@ -101,7 +101,7 @@ impl Tree {
         let temp_tree_for_bootstrap = Tree {
             root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
-            default_auth_key: Some(super_user_key_id.clone()),
+            default_auth_key: Some(super_user_key_name.clone()),
         };
 
         // Create the operation. If we have an auth key, it will be used automatically
@@ -122,7 +122,7 @@ impl Tree {
         Ok(Self {
             root: new_root_id,
             backend,
-            default_auth_key: Some(super_user_key_id),
+            default_auth_key: Some(super_user_key_name),
         })
     }
 
@@ -151,7 +151,7 @@ impl Tree {
     /// use this key for signing unless explicitly overridden.
     ///
     /// # Parameters
-    /// * `key_id` - Authentication key identifier that will be stored.
+    /// * `key_name` - Authentication key identifier that will be stored.
     ///   Accepts any string type (`&str`, `String`, `&String`) for maximum ergonomics.
     ///
     /// # Example
@@ -171,8 +171,8 @@ impl Tree {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn set_default_auth_key(&mut self, key_id: impl Into<String>) {
-        self.default_auth_key = Some(key_id.into());
+    pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
+        self.default_auth_key = Some(key_name.into());
     }
 
     /// Clear the default authentication key for this tree.
@@ -191,13 +191,13 @@ impl Tree {
     /// key in one call.
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key to use for signing
+    /// * `key_name` - The identifier of the private key to use for signing
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new authenticated operation
-    pub fn new_authenticated_operation(&self, key_id: impl AsRef<str>) -> Result<AtomicOp> {
+    pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<AtomicOp> {
         let op = self.new_operation()?;
-        Ok(op.with_auth(key_id.as_ref()))
+        Ok(op.with_auth(key_name.as_ref()))
     }
 
     /// Get the ID of the root entry
@@ -262,8 +262,8 @@ impl Tree {
         let mut op = AtomicOp::new_with_tips(self, tips.as_ref())?;
 
         // Set default authentication if configured
-        if let Some(ref key_id) = self.default_auth_key {
-            op.set_auth_key(key_id);
+        if let Some(ref key_name) = self.default_auth_key {
+            op.set_auth_key(key_name);
         }
 
         Ok(op)

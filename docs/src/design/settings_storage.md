@@ -14,7 +14,7 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 // Settings structure in _settings subtree
 {
     "auth": {
-        "key_id": {
+        "key_name": {
             "key": "...",           // Public key
             "permissions": "...",   // Permission level
             "status": "..."         // Active/Revoked
@@ -130,7 +130,7 @@ pub struct AuthSettings {
 ### Authentication Flow
 
 1. **Settings Access**: `AtomicOp::get_settings()` retrieves current auth configuration
-2. **Key Resolution**: `AuthValidator` resolves key IDs to full key information
+2. **Key Resolution**: `AuthValidator` resolves key names to full key information
 3. **Permission Check**: Validates operation against key permissions
 4. **Signature Verification**: Verifies entry signatures match configured keys
 

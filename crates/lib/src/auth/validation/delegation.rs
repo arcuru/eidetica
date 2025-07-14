@@ -163,7 +163,7 @@ impl DelegationResolver {
     /// Get delegated tree reference from auth settings
     fn get_delegated_tree_ref(
         &self,
-        tree_ref_id: &str,
+        tree_ref_name: &str,
         settings: &Map,
     ) -> Result<DelegatedTreeRef> {
         // Get the auth section
@@ -183,7 +183,7 @@ impl DelegationResolver {
 
         // Parse the delegated tree reference
         Ok(auth_nested
-            .get_json::<DelegatedTreeRef>(tree_ref_id)
+            .get_json::<DelegatedTreeRef>(tree_ref_name)
             .map_err(|e| AuthError::InvalidAuthConfiguration {
                 reason: format!("Invalid delegated tree reference format: {e}"),
             })?)
@@ -254,7 +254,7 @@ impl DelegationResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    fn resolve_direct_key(&self, key_id: &str, settings: &Map) -> Result<ResolvedAuth> {
+    fn resolve_direct_key(&self, key_name: &str, settings: &Map) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
@@ -272,7 +272,7 @@ impl DelegationResolver {
         };
 
         // Use get_json to parse AuthKey
-        let auth_key = auth_nested.get_json::<AuthKey>(key_id).map_err(|e| {
+        let auth_key = auth_nested.get_json::<AuthKey>(key_name).map_err(|e| {
             AuthError::InvalidAuthConfiguration {
                 reason: format!("Invalid auth key format: {e}"),
             }

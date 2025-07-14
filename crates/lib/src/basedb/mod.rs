@@ -52,23 +52,23 @@ impl BaseDB {
     ///
     /// # Arguments
     /// * `settings` - The initial settings for the tree, typically including metadata like a name.
-    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: Map, signing_key_id: impl AsRef<str>) -> Result<Tree> {
-        Tree::new(settings, Arc::clone(&self.backend), signing_key_id)
+    pub fn new_tree(&self, settings: Map, signing_key_name: impl AsRef<str>) -> Result<Tree> {
+        Tree::new(settings, Arc::clone(&self.backend), signing_key_name)
     }
 
     /// Create a new tree with default empty settings
     /// All trees must now be created with authentication.
     ///
     /// # Arguments
-    /// * `signing_key_id` - Authentication key ID to use for the initial commit. Required for all trees.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree_default(&self, signing_key_id: impl AsRef<str>) -> Result<Tree> {
+    pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Tree> {
         let mut settings = Map::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
@@ -84,7 +84,7 @@ impl BaseDB {
         );
         settings.set_string("tree_id", unique_id);
 
-        self.new_tree(settings, signing_key_id)
+        self.new_tree(settings, signing_key_name)
     }
 
     /// Load an existing tree from the database by its root ID.
@@ -176,7 +176,7 @@ impl BaseDB {
     /// and the public key is returned for use in authentication configuration.
     ///
     /// # Arguments
-    /// * `key_id` - A unique identifier for the key (e.g., "KEY_LAPTOP", "ADMIN_KEY")
+    /// * `key_name` - A unique identifier for the key (e.g., "KEY_LAPTOP", "ADMIN_KEY")
     ///
     /// # Returns
     /// A `Result` containing the generated public key or an error.
@@ -192,11 +192,11 @@ impl BaseDB {
     /// println!("Generated public key: {}", eidetica::auth::crypto::format_public_key(&public_key));
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn add_private_key(&self, key_id: impl AsRef<str>) -> Result<VerifyingKey> {
-        let key_id = key_id.as_ref();
+    pub fn add_private_key(&self, key_name: impl AsRef<str>) -> Result<VerifyingKey> {
+        let key_name = key_name.as_ref();
         let (signing_key, verifying_key) = generate_keypair();
 
-        self.backend.store_private_key(key_id, signing_key)?;
+        self.backend.store_private_key(key_name, signing_key)?;
 
         Ok(verifying_key)
     }
@@ -206,17 +206,18 @@ impl BaseDB {
     /// This allows importing keys generated elsewhere or backing up/restoring keys.
     ///
     /// # Arguments
-    /// * `key_id` - A unique identifier for the key
+    /// * `key_name` - A unique identifier for the key
     /// * `private_key` - The Ed25519 private key to import
     ///
     /// # Returns
     /// A `Result` indicating success or an error.
     pub fn import_private_key(
         &self,
-        key_id: impl AsRef<str>,
+        key_name: impl AsRef<str>,
         private_key: SigningKey,
     ) -> Result<()> {
-        self.backend.store_private_key(key_id.as_ref(), private_key)
+        self.backend
+            .store_private_key(key_name.as_ref(), private_key)
     }
 
     /// Get the public key corresponding to a stored private key.
@@ -225,12 +226,12 @@ impl BaseDB {
     /// to a locally stored private key identifier.
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key
+    /// * `key_name` - The identifier of the private key
     ///
     /// # Returns
     /// A `Result` containing `Some(VerifyingKey)` if the key exists, `None` if not found.
-    pub fn get_public_key(&self, key_id: impl AsRef<str>) -> Result<Option<VerifyingKey>> {
-        if let Some(signing_key) = self.backend.get_private_key(key_id.as_ref())? {
+    pub fn get_public_key(&self, key_name: impl AsRef<str>) -> Result<Option<VerifyingKey>> {
+        if let Some(signing_key) = self.backend.get_private_key(key_name.as_ref())? {
             Ok(Some(signing_key.verifying_key()))
         } else {
             Ok(None)
@@ -254,12 +255,12 @@ impl BaseDB {
     /// backups or alternative authentication methods before removing keys.
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key to remove
+    /// * `key_name` - The identifier of the private key to remove
     ///
     /// # Returns
     /// A `Result` indicating success. Succeeds even if the key doesn't exist.
-    pub fn remove_private_key(&self, key_id: impl AsRef<str>) -> Result<()> {
-        self.backend.remove_private_key(key_id.as_ref())
+    pub fn remove_private_key(&self, key_name: impl AsRef<str>) -> Result<()> {
+        self.backend.remove_private_key(key_name.as_ref())
     }
 
     /// Get a formatted public key string for a stored private key.
@@ -267,12 +268,12 @@ impl BaseDB {
     /// This is a convenience method that combines `get_public_key` and `format_public_key`.
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key
+    /// * `key_name` - The identifier of the private key
     ///
     /// # Returns
     /// A `Result` containing the formatted public key string if found.
-    pub fn get_formatted_public_key(&self, key_id: impl AsRef<str>) -> Result<Option<String>> {
-        if let Some(public_key) = self.get_public_key(key_id)? {
+    pub fn get_formatted_public_key(&self, key_name: impl AsRef<str>) -> Result<Option<String>> {
+        if let Some(public_key) = self.get_public_key(key_name)? {
             Ok(Some(format_public_key(&public_key)))
         } else {
             Ok(None)

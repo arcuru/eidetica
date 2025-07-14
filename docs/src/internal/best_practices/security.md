@@ -76,7 +76,7 @@ Use Ed25519 signatures for all entry authentication:
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey, SigningKey};
 
 pub struct EntrySignature {
-    key_id: String,
+    key_name: String,
     signature: Option<Signature>,
 }
 
@@ -97,7 +97,7 @@ impl EntrySignature {
         let canonical_bytes = entry.to_canonical_bytes()?;
         public_key.verify(&canonical_bytes, signature)
             .map_err(|_| AuthError::InvalidSignature {
-                key_id: entry.signature().key_id.clone()
+                key_name: entry.signature().key_name.clone()
             })?;
         Ok(())
     }
@@ -118,21 +118,21 @@ pub struct KeyManager {
 
 impl KeyManager {
     /// Generate new Ed25519 keypair
-    pub fn generate_keypair(&mut self, key_id: String) -> Result<VerifyingKey> {
+    pub fn generate_keypair(&mut self, key_name: String) -> Result<VerifyingKey> {
         let mut csprng = OsRng;  // Cryptographically secure random number generator
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key = signing_key.verifying_key();
 
         // Store keys securely
-        self.private_keys.insert(key_id.clone(), signing_key);
-        self.public_keys.insert(key_id, verifying_key);
+        self.private_keys.insert(key_name.clone(), signing_key);
+        self.public_keys.insert(key_name, verifying_key);
 
         Ok(verifying_key)
     }
 
     /// Securely clear private key from memory
-    pub fn remove_private_key(&mut self, key_id: &str) {
-        if let Some(mut key) = self.private_keys.remove(key_id) {
+    pub fn remove_private_key(&mut self, key_name: &str) {
+        if let Some(mut key) = self.private_keys.remove(key_name) {
             // Zero out key material (implementation dependent)
             secure_zero(&mut key);
         }
@@ -163,7 +163,7 @@ impl Entry {
         // Create entry copy without signature for signing
         let mut unsigned_entry = self.clone();
         unsigned_entry.signature = EntrySignature {
-            key_id: self.signature.key_id.clone(),
+            key_name: self.signature.key_name.clone(),
             signature: None,  // Remove signature for canonical form
         };
 
@@ -201,22 +201,22 @@ Implement fine-grained permissions per tree:
 
 ```rust
 pub struct TreePermissions {
-    permissions: HashMap<String, Permission>,  // key_id -> permission level
+    permissions: HashMap<String, Permission>,  // key_name -> permission level
     default_permission: Option<Permission>,
 }
 
 impl TreePermissions {
     /// Check if key has required permission for operation
-    pub fn check_permission(&self, key_id: &str, required: Permission) -> Result<()> {
-        let key_permission = self.permissions.get(key_id)
+    pub fn check_permission(&self, key_name: &str, required: Permission) -> Result<()> {
+        let key_permission = self.permissions.get(key_name)
             .or(self.default_permission.as_ref())
             .ok_or_else(|| AuthError::UnauthorizedKey {
-                key_id: key_id.to_string()
+                key_name: key_name.to_string()
             })?;
 
         if !key_permission.allows(&required) {
             return Err(AuthError::InsufficientPermission {
-                key_id: key_id.to_string(),
+                key_name: key_name.to_string(),
                 required,
                 actual: key_permission.clone(),
             });
@@ -271,11 +271,11 @@ impl OperationType {
 
 pub fn authorize_operation(
     tree_permissions: &TreePermissions,
-    key_id: &str,
+    key_name: &str,
     operation: OperationType
 ) -> Result<()> {
     let required = operation.required_permission();
-    tree_permissions.check_permission(key_id, required)
+    tree_permissions.check_permission(key_name, required)
 }
 ```
 
@@ -309,19 +309,19 @@ impl DataValidator {
         Ok(())
     }
 
-    /// Validate key ID format
-    pub fn validate_key_id(key_id: &str) -> Result<()> {
-        // Key IDs should be safe identifiers
-        if key_id.is_empty() || key_id.len() > 256 {
+    /// Validate key name format
+    pub fn validate_key_name(key_name: &str) -> Result<()> {
+        // Key names should be safe identifiers
+        if key_name.is_empty() || key_name.len() > 256 {
             return Err(AuthError::InvalidKeyFormat {
-                details: "Key ID length out of bounds".to_string(),
+                details: "Key name length out of bounds".to_string(),
             });
         }
 
         // Only allow safe characters
-        if !key_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if !key_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
             return Err(AuthError::InvalidKeyFormat {
-                details: "Key ID contains invalid characters".to_string(),
+                details: "Key name contains invalid characters".to_string(),
             });
         }
 
@@ -422,14 +422,14 @@ impl Default for ResourceLimits {
 }
 
 pub struct RateLimiter {
-    operations: HashMap<String, VecDeque<Instant>>,  // key_id -> operation times
+    operations: HashMap<String, VecDeque<Instant>>,  // key_name -> operation times
     limits: ResourceLimits,
 }
 
 impl RateLimiter {
-    pub fn check_rate_limit(&mut self, key_id: &str) -> Result<()> {
+    pub fn check_rate_limit(&mut self, key_name: &str) -> Result<()> {
         let now = Instant::now();
-        let operations = self.operations.entry(key_id.to_string()).or_default();
+        let operations = self.operations.entry(key_name.to_string()).or_default();
 
         // Remove operations older than 1 second
         while let Some(&front_time) = operations.front() {
@@ -443,7 +443,7 @@ impl RateLimiter {
         // Check if rate limit exceeded
         if operations.len() >= self.limits.max_operations_per_second as usize {
             return Err(AuthError::RateLimitExceeded {
-                key_id: key_id.to_string(),
+                key_name: key_name.to_string(),
                 limit: self.limits.max_operations_per_second,
             });
         }
@@ -529,7 +529,7 @@ pub struct SecurityAuditLog {
 pub struct SecurityEvent {
     timestamp: SystemTime,
     event_type: SecurityEventType,
-    key_id: Option<String>,
+    key_name: Option<String>,
     details: HashMap<String, String>,
 }
 
@@ -545,11 +545,11 @@ pub enum SecurityEventType {
 }
 
 impl SecurityAuditLog {
-    pub fn log_event(&mut self, event_type: SecurityEventType, key_id: Option<String>) {
+    pub fn log_event(&mut self, event_type: SecurityEventType, key_name: Option<String>) {
         let event = SecurityEvent {
             timestamp: SystemTime::now(),
             event_type,
-            key_id,
+            key_name,
             details: HashMap::new(),
         };
 
@@ -579,10 +579,10 @@ pub struct IntrusionDetector {
 }
 
 impl IntrusionDetector {
-    pub fn check_suspicious_activity(&mut self, key_id: &str, operation: &str) -> SecurityAlert {
+    pub fn check_suspicious_activity(&mut self, key_name: &str, operation: &str) -> SecurityAlert {
         // Track failed authentication attempts
         if operation == "authentication_failure" {
-            let attempts = self.failed_attempts.entry(key_id.to_string()).or_default();
+            let attempts = self.failed_attempts.entry(key_name.to_string()).or_default();
             attempts.push(Instant::now());
 
             // Remove old attempts (older than 1 hour)
@@ -591,20 +591,20 @@ impl IntrusionDetector {
 
             if attempts.len() > 10 {
                 return SecurityAlert::BruteForceAttempt {
-                    key_id: key_id.to_string(),
+                    key_name: key_name.to_string(),
                     attempt_count: attempts.len(),
                 };
             }
         }
 
         // Check for unusual patterns
-        let pattern_key = format!("{}:{}", key_id, operation);
+        let pattern_key = format!("{}:{}", key_name, operation);
         let count = self.suspicious_patterns.entry(pattern_key).or_insert(0);
         *count += 1;
 
         if *count > 100 {
             return SecurityAlert::UnusualActivity {
-                key_id: key_id.to_string(),
+                key_name: key_name.to_string(),
                 operation: operation.to_string(),
                 frequency: *count,
             };
@@ -617,9 +617,9 @@ impl IntrusionDetector {
 #[derive(Debug)]
 pub enum SecurityAlert {
     None,
-    BruteForceAttempt { key_id: String, attempt_count: usize },
-    UnusualActivity { key_id: String, operation: String, frequency: u32 },
-    RateLimitExceeded { key_id: String },
+    BruteForceAttempt { key_name: String, attempt_count: usize },
+    UnusualActivity { key_name: String, operation: String, frequency: u32 },
+    RateLimitExceeded { key_name: String },
 }
 ```
 

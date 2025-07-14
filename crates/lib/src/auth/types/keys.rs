@@ -36,7 +36,7 @@ pub struct DelegationStep {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum SigKey {
-    /// Direct reference to a key ID in the current tree's _settings.auth
+    /// Direct reference to a key name in the current tree's _settings.auth
     Direct(String),
     /// Flat delegation path as ordered list
     /// Each step except the last contains {"key": "tree_id", "tips": ["A", "B"]}
@@ -51,14 +51,14 @@ impl Default for SigKey {
 }
 
 impl SigKey {
-    /// Check if this SigKey ultimately resolves to a specific key ID
-    pub fn is_signed_by(&self, key_id: &str) -> bool {
+    /// Check if this SigKey ultimately resolves to a specific key name
+    pub fn is_signed_by(&self, key_name: &str) -> bool {
         match self {
-            SigKey::Direct(id) => id == key_id,
+            SigKey::Direct(id) => id == key_name,
             SigKey::DelegationPath(steps) => {
                 // Check the final step in the delegation path
                 if let Some(last_step) = steps.last() {
-                    last_step.key == key_id
+                    last_step.key == key_name
                 } else {
                     false
                 }
@@ -74,7 +74,7 @@ pub struct SigInfo {
     /// Optional to allow for entry creation before signing
     pub sig: Option<String>,
     /// Authentication key reference path
-    /// Either a direct key ID defined in this tree's _settings.auth,
+    /// Either a direct key name defined in this tree's _settings.auth,
     /// or a delegation path as an ordered list of {"key": "delegated_tree_1", "tips": ["A", "B"]}.
     /// The last element in the delegation path must contain only a "key" field.
     /// This represents the path that needs to be traversed to find the public key of the signing key.
@@ -82,12 +82,12 @@ pub struct SigInfo {
 }
 
 impl SigInfo {
-    /// Check if this SigInfo was signed by a specific key ID
+    /// Check if this SigInfo was signed by a specific key name
     ///
-    /// For direct keys, this checks if the key ID matches.
-    /// For delegated trees, this checks if the final key in the delegation path matches the given key ID.
-    pub fn is_signed_by(&self, key_id: &str) -> bool {
-        self.key.is_signed_by(key_id)
+    /// For direct keys, this checks if the key name matches.
+    /// For delegated trees, this checks if the final key in the delegation path matches the given key name.
+    pub fn is_signed_by(&self, key_name: &str) -> bool {
+        self.key.is_signed_by(key_name)
     }
 }
 

@@ -65,10 +65,10 @@ pub enum BaseError {
     },
 
     /// Signing key not found in backend storage.
-    #[error("Signing key '{key_id}' not found in backend")]
+    #[error("Signing key '{key_name}' not found in backend")]
     SigningKeyNotFound {
-        /// The ID of the signing key that was not found
-        key_id: String,
+        /// The name of the signing key that was not found
+        key_name: String,
     },
 
     /// Authentication is required but no key is configured.

@@ -49,44 +49,50 @@ impl AuthSettings {
     }
 
     /// Add or update an authentication key
-    pub fn add_key(&mut self, id: impl Into<String>, key: AuthKey) -> Result<()> {
-        self.inner.set_json(id, key)?;
+    pub fn add_key(&mut self, key_name: impl Into<String>, key: AuthKey) -> Result<()> {
+        self.inner.set_json(key_name, key)?;
         Ok(())
     }
 
     /// Add or update a delegated tree reference
     pub fn add_delegated_tree(
         &mut self,
-        id: impl Into<String>,
+        key_name: impl Into<String>,
         tree_ref: DelegatedTreeRef,
     ) -> Result<()> {
-        self.inner.set_json(id, tree_ref)?;
+        self.inner.set_json(key_name, tree_ref)?;
         Ok(())
     }
 
     /// Revoke a key by setting its status to Revoked
-    pub fn revoke_key(&mut self, id: impl AsRef<str>) -> Result<()> {
-        let id = id.as_ref();
-        if self.inner.get(id).is_some() {
-            match self.inner.get_json::<AuthKey>(id) {
+    pub fn revoke_key(&mut self, key_name: impl AsRef<str>) -> Result<()> {
+        let key_name = key_name.as_ref();
+        if self.inner.get(key_name).is_some() {
+            match self.inner.get_json::<AuthKey>(key_name) {
                 Ok(mut auth_key) => {
                     auth_key.status = KeyStatus::Revoked;
-                    self.inner.set_json(id, auth_key)?;
+                    self.inner.set_json(key_name, auth_key)?;
                     Ok(())
                 }
                 Err(_) => {
                     // Not an AuthKey, might be a DelegatedTreeRef - for now just error
-                    Err(AuthError::CannotRevokeNonKey { id: id.to_string() }.into())
+                    Err(AuthError::CannotRevokeNonKey {
+                        key_name: key_name.to_string(),
+                    }
+                    .into())
                 }
             }
         } else {
-            Err(AuthError::KeyNotFound { id: id.to_string() }.into())
+            Err(AuthError::KeyNotFound {
+                key_name: key_name.to_string(),
+            }
+            .into())
         }
     }
 
-    /// Get a specific key by ID
-    pub fn get_key(&self, id: impl AsRef<str>) -> Option<Result<AuthKey>> {
-        match self.inner.get_json::<AuthKey>(id.as_ref()) {
+    /// Get a specific key by key name
+    pub fn get_key(&self, key_name: impl AsRef<str>) -> Option<Result<AuthKey>> {
+        match self.inner.get_json::<AuthKey>(key_name.as_ref()) {
             Ok(key) => Some(Ok(key)),
             Err(e) if e.is_not_found() => None,
             Err(e) => Some(Err(AuthError::InvalidKeyFormat {
@@ -96,9 +102,12 @@ impl AuthSettings {
         }
     }
 
-    /// Get a specific delegated tree reference by ID
-    pub fn get_delegated_tree(&self, id: impl AsRef<str>) -> Option<Result<DelegatedTreeRef>> {
-        match self.inner.get_json::<DelegatedTreeRef>(id.as_ref()) {
+    /// Get a specific delegated tree reference by key name
+    pub fn get_delegated_tree(
+        &self,
+        key_name: impl AsRef<str>,
+    ) -> Option<Result<DelegatedTreeRef>> {
+        match self.inner.get_json::<DelegatedTreeRef>(key_name.as_ref()) {
             Ok(tree_ref) => Some(Ok(tree_ref)),
             Err(e) if e.is_not_found() => None,
             Err(e) => Some(Err(AuthError::InvalidAuthConfiguration {
@@ -111,10 +120,10 @@ impl AuthSettings {
     /// Get all authentication keys
     pub fn get_all_keys(&self) -> Result<HashMap<String, AuthKey>> {
         let mut keys = HashMap::new();
-        for (key_id, _) in self.inner.as_hashmap().iter() {
+        for (key_name, _) in self.inner.as_hashmap().iter() {
             // Try to parse as AuthKey, skip if it's not one
-            if let Ok(auth_key) = self.inner.get_json::<AuthKey>(key_id) {
-                keys.insert(key_id.clone(), auth_key);
+            if let Ok(auth_key) = self.inner.get_json::<AuthKey>(key_name) {
+                keys.insert(key_name.clone(), auth_key);
             }
         }
         Ok(keys)
@@ -132,7 +141,7 @@ impl AuthSettings {
         Ok(trees)
     }
 
-    /// Simple validation for entry creation - checks if auth ID is valid and active
+    /// Simple validation for entry creation - checks if auth key name is valid and active
     ///
     /// This is entry-time validation using current settings state only.
     /// No complex merge-time validation is performed.
@@ -142,8 +151,8 @@ impl AuthSettings {
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         match sig_key {
-            SigKey::Direct(key_id) => {
-                if let Some(key_result) = self.get_key(key_id) {
+            SigKey::Direct(key_name) => {
+                if let Some(key_result) = self.get_key(key_name) {
                     let auth_key = key_result?;
                     let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
                     Ok(ResolvedAuth {
@@ -153,7 +162,7 @@ impl AuthSettings {
                     })
                 } else {
                     Err(AuthError::KeyNotFound {
-                        id: key_id.to_string(),
+                        key_name: key_name.to_string(),
                     }
                     .into())
                 }
@@ -181,7 +190,7 @@ impl AuthSettings {
     pub fn can_modify_key(
         &self,
         signing_key: &ResolvedAuth,
-        target_key_id: impl AsRef<str>,
+        target_key_name: impl AsRef<str>,
     ) -> Result<bool> {
         // Must have admin permissions to modify keys
         if !signing_key.effective_permission.can_admin() {
@@ -189,7 +198,7 @@ impl AuthSettings {
         }
 
         // Get target key info
-        if let Some(target_result) = self.get_key(target_key_id.as_ref()) {
+        if let Some(target_result) = self.get_key(target_key_name.as_ref()) {
             let target_key = target_result?;
 
             // Use the built-in permission ordering: signing key must be >= target key
@@ -197,7 +206,7 @@ impl AuthSettings {
         } else {
             // Target key doesn't exist - this is an error for modification
             Err(AuthError::KeyNotFound {
-                id: target_key_id.as_ref().to_string(),
+                key_name: target_key_name.as_ref().to_string(),
             }
             .into())
         }

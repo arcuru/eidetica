@@ -45,9 +45,9 @@ impl AuthValidator {
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
-        // An entry is considered unsigned if it has an empty Direct key ID and no signature
-        if let SigKey::Direct(key_id) = &entry.sig.key
-            && key_id.is_empty()
+        // An entry is considered unsigned if it has an empty Direct key name and no signature
+        if let SigKey::Direct(key_name) = &entry.sig.key
+            && key_name.is_empty()
             && entry.sig.sig.is_none()
         {
             // This is an unsigned entry - allow it to pass without authentication

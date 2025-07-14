@@ -32,12 +32,12 @@ pub enum AtomicOpError {
     EntryConstructionFailed { reason: String },
 
     /// Entry signing failed during commit
-    #[error("Entry signing failed for key '{key_id}': {reason}")]
-    EntrySigningFailed { key_id: String, reason: String },
+    #[error("Entry signing failed for key '{key_name}': {reason}")]
+    EntrySigningFailed { key_name: String, reason: String },
 
     /// Required signing key not found
-    #[error("Signing key not found: {key_id}")]
-    SigningKeyNotFound { key_id: String },
+    #[error("Signing key not found: {key_name}")]
+    SigningKeyNotFound { key_name: String },
 
     /// Authentication is required but not configured
     #[error("Authentication required but not configured")]
@@ -171,11 +171,11 @@ impl AtomicOpError {
         }
     }
 
-    /// Get the key ID if this is an authentication-related error
-    pub fn key_id(&self) -> Option<&str> {
+    /// Get the key name if this is an authentication-related error
+    pub fn key_name(&self) -> Option<&str> {
         match self {
-            AtomicOpError::SigningKeyNotFound { key_id }
-            | AtomicOpError::EntrySigningFailed { key_id, .. } => Some(key_id),
+            AtomicOpError::SigningKeyNotFound { key_name }
+            | AtomicOpError::EntrySigningFailed { key_name, .. } => Some(key_name),
             _ => None,
         }
     }
@@ -227,14 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn test_key_id_extraction() {
+    fn test_key_name_extraction() {
         let err = AtomicOpError::SigningKeyNotFound {
-            key_id: "test_key".to_owned(),
+            key_name: "test_key".to_owned(),
         };
-        assert_eq!(err.key_id(), Some("test_key"));
+        assert_eq!(err.key_name(), Some("test_key"));
 
         let other_err = AtomicOpError::AuthenticationRequired;
-        assert_eq!(other_err.key_id(), None);
+        assert_eq!(other_err.key_name(), None);
     }
 
     #[test]

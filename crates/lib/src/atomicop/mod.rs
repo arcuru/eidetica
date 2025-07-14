@@ -51,7 +51,7 @@ pub struct AtomicOp {
     /// The tree this operation belongs to
     tree: Tree,
     /// Optional authentication key ID for signing entries
-    auth_key_id: Option<String>,
+    auth_key_name: Option<String>,
 }
 
 impl AtomicOp {
@@ -105,7 +105,7 @@ impl AtomicOp {
         Ok(Self {
             entry_builder: Rc::new(RefCell::new(Some(builder))),
             tree: tree.clone(),
-            auth_key_id: None,
+            auth_key_name: None,
         })
     }
 
@@ -116,26 +116,26 @@ impl AtomicOp {
     /// local key storage.
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key to use for signing
+    /// * `key_name` - The identifier of the private key to use for signing
     ///
     /// # Returns
     /// Self for method chaining
-    pub fn with_auth(mut self, key_id: impl Into<String>) -> Self {
-        self.auth_key_id = Some(key_id.into());
+    pub fn with_auth(mut self, key_name: impl Into<String>) -> Self {
+        self.auth_key_name = Some(key_name.into());
         self
     }
 
     /// Set the authentication key ID for this operation (mutable version).
     ///
     /// # Arguments
-    /// * `key_id` - The identifier of the private key to use for signing
-    pub fn set_auth_key(&mut self, key_id: impl Into<String>) {
-        self.auth_key_id = Some(key_id.into());
+    /// * `key_name` - The identifier of the private key to use for signing
+    pub fn set_auth_key(&mut self, key_name: impl Into<String>) {
+        self.auth_key_name = Some(key_name.into());
     }
 
     /// Get the current authentication key ID for this operation.
-    pub fn auth_key_id(&self) -> Option<&str> {
-        self.auth_key_id.as_deref()
+    pub fn auth_key_name(&self) -> Option<&str> {
+        self.auth_key_name.as_deref()
     }
 
     /// Get the current settings for this operation.
@@ -703,19 +703,19 @@ impl AtomicOp {
 
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
-        let signing_key = if let Some(key_id) = &self.auth_key_id {
+        let signing_key = if let Some(key_name) = &self.auth_key_name {
             // Set auth ID on the entry builder (without signature initially)
             builder.set_sig_mut(SigInfo {
-                key: SigKey::Direct(key_id.clone()),
+                key: SigKey::Direct(key_name.clone()),
                 sig: None,
             });
 
             // Get the private key from backend for signing
-            let signing_key = self.tree.backend().get_private_key(key_id)?;
+            let signing_key = self.tree.backend().get_private_key(key_name)?;
 
             if signing_key.is_none() {
                 return Err(AtomicOpError::SigningKeyNotFound {
-                    key_id: key_id.clone(),
+                    key_name: key_name.clone(),
                 }
                 .into());
             }
@@ -743,7 +743,7 @@ impl AtomicOp {
                     permissions: crate::auth::types::Permission::Admin(0), // Highest priority
                     status: crate::auth::types::KeyStatus::Active,
                 };
-                auth_settings.add_key(key_id, super_user_auth_key)?;
+                auth_settings.add_key(key_name, super_user_auth_key)?;
 
                 // Update the settings subtree to include auth configuration
                 // We need to merge with existing settings and add the auth section

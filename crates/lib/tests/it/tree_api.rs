@@ -368,13 +368,13 @@ fn test_verify_entry_signature_auth_scenarios() {
 fn test_verify_entry_signature_unauthorized_key() {
     let db = setup_db();
     // Add two keys to the backend
-    let authorized_key_id = "AUTHORIZED_KEY";
-    let unauthorized_key_id = "UNAUTHORIZED_KEY";
+    let authorized_key_name = "AUTHORIZED_KEY";
+    let unauthorized_key_name = "UNAUTHORIZED_KEY";
     let authorized_public_key = db
-        .add_private_key(authorized_key_id)
+        .add_private_key(authorized_key_name)
         .expect("Failed to add authorized key");
     let _unauthorized_public_key = db
-        .add_private_key(unauthorized_key_id)
+        .add_private_key(unauthorized_key_name)
         .expect("Failed to add unauthorized key");
 
     // Create auth settings with only the authorized key
@@ -382,7 +382,7 @@ fn test_verify_entry_signature_unauthorized_key() {
     let mut auth_settings = Map::new();
     auth_settings
         .set_json(
-            authorized_key_id.to_string(),
+            authorized_key_name.to_string(),
             AuthKey {
                 pubkey: eidetica::auth::crypto::format_public_key(&authorized_public_key),
                 permissions: Permission::Admin(0),
@@ -393,12 +393,12 @@ fn test_verify_entry_signature_unauthorized_key() {
     settings.set_map("auth", auth_settings);
 
     let tree = db
-        .new_tree(settings, authorized_key_id)
+        .new_tree(settings, authorized_key_name)
         .expect("Failed to create tree");
 
     // Test with authorized key (should succeed)
     let op1 = tree
-        .new_authenticated_operation(authorized_key_id)
+        .new_authenticated_operation(authorized_key_name)
         .expect("Failed to create operation");
     let store1 = op1
         .get_subtree::<Dict>("data")
@@ -413,7 +413,7 @@ fn test_verify_entry_signature_unauthorized_key() {
 
     // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
     let op2 = tree
-        .new_authenticated_operation(unauthorized_key_id)
+        .new_authenticated_operation(unauthorized_key_name)
         .expect("Failed to create operation");
     let store2 = op2
         .get_subtree::<Dict>("data")

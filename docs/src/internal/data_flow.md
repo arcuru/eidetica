@@ -26,7 +26,7 @@ sequenceDiagram
     Tree->>Database: Store root entry (Unverified)
     User->>Tree: Add Todo "Buy Milk"
     Tree->>Operation: new_operation()
-    Note over Operation: Optional: with_auth("key_id")
+    Note over Operation: Optional: with_auth("key_name")
     Operation->>Table_Todo_: get_subtree("todos")
     Table_Todo_->>Database: Load relevant entries
     Note over Database: Check CRDT cache (Entry_ID, Subtree)
@@ -74,7 +74,7 @@ sequenceDiagram
 
 When authentication is enabled, the commit process includes additional steps:
 
-1. **Entry Signing**: If a key ID is configured, the entry is cryptographically signed
+1. **Entry Signing**: If a key name is configured, the entry is cryptographically signed
 2. **Permission Validation**: The system validates that the signing key has appropriate permissions for the operation type
 3. **Bootstrap Handling**: First authenticated operation automatically configures the signing key as an admin
 4. **Verification Status**: Entries are stored with a verification status (Verified/Unverified) based on validation results

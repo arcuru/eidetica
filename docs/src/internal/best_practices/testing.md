@@ -57,10 +57,10 @@ pub fn setup_test_db() -> BaseDB {
 }
 
 /// Create a database with pre-configured authentication keys
-pub fn setup_db_with_keys(key_ids: &[&str]) -> BaseDB {
+pub fn setup_db_with_keys(key_names: &[&str]) -> BaseDB {
     let mut db = setup_test_db();
-    for key_id in key_ids {
-        db.add_private_key(key_id).expect("Failed to add test key");
+    for key_name in key_names {
+        db.add_private_key(key_name).expect("Failed to add test key");
     }
     db
 }
@@ -103,8 +103,8 @@ pub fn setup_tree_with_permissions(permissions: Vec<(String, Permission)>) -> (B
     let mut db = setup_test_db();
 
     // Add keys with specified permissions
-    for (key_id, permission) in permissions {
-        db.add_private_key(&key_id).expect("Failed to add key");
+    for (key_name, permission) in permissions {
+        db.add_private_key(&key_name).expect("Failed to add key");
         // Configure permissions in settings
     }
 

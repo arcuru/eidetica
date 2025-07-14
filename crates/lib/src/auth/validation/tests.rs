@@ -8,11 +8,11 @@ use crate::auth::types::{
 use crate::crdt::Map;
 use crate::entry::Entry;
 
-fn create_test_settings_with_key(key_id: &str, auth_key: &AuthKey) -> Map {
+fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Map {
     let mut settings = Map::new();
     let mut auth_section = Map::new();
     auth_section.as_hashmap_mut().insert(
-        key_id.to_string(),
+        key_name.to_string(),
         serde_json::to_string(&auth_key).unwrap().into(),
     );
     settings.set_map("auth", auth_section);

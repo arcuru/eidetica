@@ -24,8 +24,8 @@ pub fn setup_test_db_with_keys(
     let db = BaseDB::new(backend);
 
     let mut public_keys = Vec::new();
-    for (key_id, _permission, _status) in keys {
-        let public_key = db.add_private_key(key_id).expect("Failed to add key");
+    for (key_name, _permission, _status) in keys {
+        let public_key = db.add_private_key(key_name).expect("Failed to add key");
         public_keys.push(public_key);
     }
 
@@ -41,10 +41,10 @@ pub fn setup_authenticated_tree(
     let mut settings = Map::new();
     let mut auth_settings = Map::new();
 
-    for ((key_id, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
+    for ((key_name, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
         auth_settings
             .set_json(
-                key_id.to_string(),
+                key_name.to_string(),
                 auth_key(
                     &format_public_key(public_key),
                     permission.clone(),
@@ -60,7 +60,7 @@ pub fn setup_authenticated_tree(
     let admin_key = keys
         .iter()
         .find(|(_, permission, _)| matches!(permission, Permission::Admin(_)))
-        .map(|(key_id, _, _)| *key_id)
+        .map(|(key_name, _, _)| *key_name)
         .unwrap_or_else(|| {
             panic!("setup_authenticated_tree requires at least one key with Admin permissions for tree creation")
         });
@@ -72,12 +72,12 @@ pub fn setup_authenticated_tree(
 /// Test that an operation succeeds
 pub fn test_operation_succeeds(
     tree: &eidetica::tree::Tree,
-    key_id: &str,
+    key_name: &str,
     subtree_name: &str,
     test_name: &str,
 ) {
     let op = tree
-        .new_authenticated_operation(key_id)
+        .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
         .get_subtree::<Dict>(subtree_name)
@@ -91,12 +91,12 @@ pub fn test_operation_succeeds(
 /// Test that an operation fails
 pub fn test_operation_fails(
     tree: &eidetica::tree::Tree,
-    key_id: &str,
+    key_name: &str,
     subtree_name: &str,
     test_name: &str,
 ) {
     let op = tree
-        .new_authenticated_operation(key_id)
+        .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
         .get_subtree::<Dict>(subtree_name)
