@@ -28,17 +28,6 @@ pub fn setup_db_with_key(key_name: &str) -> eidetica::basedb::BaseDB {
     db
 }
 
-/// Creates an authenticated database with multiple keys
-pub fn setup_db_with_keys(key_names: &[&str]) -> eidetica::basedb::BaseDB {
-    let backend = Box::new(InMemory::new());
-    let db = eidetica::basedb::BaseDB::new(backend);
-    for key_name in key_names {
-        db.add_private_key(key_name)
-            .expect("Failed to add test key");
-    }
-    db
-}
-
 /// Creates a basic tree using an InMemory database with authentication
 pub fn setup_tree() -> eidetica::Tree {
     let db = setup_db();
@@ -104,26 +93,4 @@ pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
         Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),
     }
-}
-
-/// Creates a tree with multiple Dict subtrees and preset values
-pub fn setup_tree_with_multiple_dicts(
-    subtree_values: &[(&str, &[(&str, &str)])],
-) -> eidetica::Tree {
-    let tree = setup_tree();
-    let op = tree.new_operation().expect("Failed to start operation");
-
-    for (subtree_name, values) in subtree_values {
-        let dict = op
-            .get_subtree::<Dict>(*subtree_name)
-            .unwrap_or_else(|_| panic!("Failed to get Dict '{subtree_name}'"));
-
-        for (key, value) in *values {
-            dict.set(*key, *value)
-                .unwrap_or_else(|_| panic!("Failed to set value for '{subtree_name}.{key}'"));
-        }
-    }
-
-    op.commit().expect("Failed to commit operation");
-    tree
 }

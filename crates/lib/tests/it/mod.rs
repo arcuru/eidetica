@@ -5,6 +5,5 @@ pub mod basedb;
 pub mod crdt;
 pub mod data;
 pub mod entry;
-pub mod settings_metadata;
 pub mod subtree;
 pub mod tree;

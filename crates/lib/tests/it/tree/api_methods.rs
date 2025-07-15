@@ -1,5 +1,11 @@
+//! Tree API method tests
+//!
+//! This module contains tests for Tree API methods including entry retrieval,
+//! authentication, validation, and error handling.
+
+use super::helpers::*;
 use crate::helpers::*;
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission, SigKey};
+use eidetica::auth::types::SigKey;
 use eidetica::crdt::Map;
 use eidetica::subtree::Dict;
 
@@ -8,15 +14,8 @@ use eidetica::subtree::Dict;
 fn test_get_entry_basic() {
     let tree = setup_tree_with_key("test_key");
 
-    // Create an operation and commit it
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store
-        .set("test_key", "test_value")
-        .expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit operation");
+    // Create an entry using helper
+    let entry_id = add_data_to_subtree(&tree, "data", &[("test_key", "test_value")]);
 
     // Test get_entry
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
@@ -25,35 +24,13 @@ fn test_get_entry_basic() {
     assert!(entry.sig.sig.is_some());
 }
 
-/// Test get_entry with non-existent entry
-#[test]
-fn test_get_entry_not_found() {
-    let (_db, tree) = setup_db_and_tree_with_key("test_key");
-
-    // Try to get non-existent entry
-    let result = tree.get_entry("non_existent_entry");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_not_found());
-}
-
 /// Test get_entries with multiple entries
 #[test]
 fn test_get_entries_multiple() {
     let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
-    // Create multiple entries
-    let mut entry_ids = Vec::new();
-    for i in 0..3 {
-        let op = tree.new_operation().expect("Failed to create operation");
-        let store = op
-            .get_subtree::<Dict>("data")
-            .expect("Failed to get subtree");
-        store
-            .set("key", format!("value_{i}"))
-            .expect("Failed to set value");
-        let entry_id = op.commit().expect("Failed to commit operation");
-        entry_ids.push(entry_id);
-    }
+    // Create multiple entries using helper
+    let entry_ids = create_linear_chain(&tree, "data", 3);
 
     // Test get_entries
     let entries = tree.get_entries(&entry_ids).expect("Failed to get entries");
@@ -64,44 +41,30 @@ fn test_get_entries_multiple() {
     }
 }
 
-/// Test get_entries with non-existent entry
+/// Test comprehensive error handling for entry retrieval
 #[test]
-fn test_get_entries_not_found() {
+fn test_entry_retrieval_error_handling() {
     let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
-    // Create one valid entry
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("key", "value").expect("Failed to set value");
-    let valid_entry_id = op.commit().expect("Failed to commit operation");
-
-    // Try to get entries including non-existent one
-    let entry_ids = vec![valid_entry_id.as_str(), "non_existent_entry"];
-    let result = tree.get_entries(entry_ids);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_not_found());
-}
-
-/// Test entry existence checking via get_entry
-#[test]
-fn test_entry_existence_checking() {
-    let (_db, tree) = setup_db_and_tree_with_key("test_key");
-
-    // Create an entry
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("key", "value").expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit operation");
+    // Create one valid entry using helper
+    let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]);
 
     // Test get_entry with existing entry (should succeed)
     assert!(tree.get_entry(&entry_id).is_ok());
 
     // Test get_entry with non-existent entry (should fail with NotFound)
     let result = tree.get_entry("non_existent_entry");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_not_found());
+
+    // Test get_entries with mixed valid/invalid entries
+    let entry_ids = vec![entry_id.as_str(), "non_existent_entry"];
+    let result = tree.get_entries(entry_ids);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().is_not_found());
+
+    // Test auth verification with non-existent entry
+    let result = tree.verify_entry_signature("non_existent_entry");
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }
@@ -230,54 +193,21 @@ fn test_tree_validation_get_entries() {
 /// Test authentication helpers with signed entries
 #[test]
 fn test_auth_helpers_signed_entries() {
-    let db = setup_db();
-    // Add a private key
-    let key_id = "TEST_KEY";
-    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+    let (_db, tree) = setup_tree_with_auth_config("TEST_KEY");
 
-    // Create auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
-    auth_settings
-        .set_json(
-            key_id.to_string(),
-            AuthKey {
-                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    settings.set_map("auth", auth_settings);
+    // Create signed entry using helper
+    let entry_id = add_authenticated_data(&tree, "TEST_KEY", "data", &[("key", "value")]);
 
-    let tree = db
-        .new_tree(settings, key_id)
-        .expect("Failed to create tree");
+    // Test entry auth access using helper
+    assert_entry_authentication(&tree, &entry_id, "TEST_KEY");
 
-    // Create signed entry
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("key", "value").expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit operation");
+    // Test entry belongs to tree
+    assert_entry_belongs_to_tree(&tree, &entry_id);
 
-    // Test entry auth access
+    // Test manual auth checks
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert_eq!(sig_info.key, SigKey::Direct(key_id.to_string()));
-    assert!(sig_info.sig.is_some());
-
-    // Test verify_entry_signature
-    let is_valid = tree
-        .verify_entry_signature(&entry_id)
-        .expect("Failed to verify signature");
-    assert!(is_valid);
-
-    // Test is_signed_by helper
-    assert!(sig_info.is_signed_by(key_id));
+    assert!(sig_info.is_signed_by("TEST_KEY"));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
 
@@ -286,21 +216,15 @@ fn test_auth_helpers_signed_entries() {
 fn test_auth_helpers_default_authenticated_entries() {
     let (_db, tree) = setup_db_and_tree_with_key("test_key");
 
-    // Create entry using default authentication
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("key", "value").expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit operation");
+    // Create entry using default authentication helper
+    let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]);
 
-    // Test entry auth access - should be signed with default key
+    // Test entry auth access using helper
+    assert_entry_authentication(&tree, &entry_id, "test_key");
+
+    // Test manual auth checks
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert_eq!(sig_info.key, SigKey::Direct("test_key".to_string()));
-    assert!(sig_info.sig.is_some());
-
-    // Test is_signed_by helper
     assert!(sig_info.is_signed_by("test_key"));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
@@ -308,53 +232,16 @@ fn test_auth_helpers_default_authenticated_entries() {
 /// Test verify_entry_signature with different authentication scenarios
 #[test]
 fn test_verify_entry_signature_auth_scenarios() {
-    let db = setup_db();
-    // Add a key
-    let key_id = "TEST_KEY";
-    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+    let (_db, tree) = setup_tree_with_auth_config("TEST_KEY");
 
-    // Create auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
-    auth_settings
-        .set_json(
-            key_id.to_string(),
-            AuthKey {
-                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    settings.set_map("auth", auth_settings);
+    // Test 1: Create entry signed with valid key using helper
+    let signed_entry_id = add_authenticated_data(&tree, "TEST_KEY", "data", &[("key", "value1")]);
 
-    let tree = db
-        .new_tree(settings, key_id)
-        .expect("Failed to create tree");
+    // Should verify successfully using helper
+    assert_entry_authentication(&tree, &signed_entry_id, "TEST_KEY");
 
-    // Test 1: Create entry signed with valid key
-    let op1 = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store1.set("key", "value1").expect("Failed to set value");
-    let signed_entry_id = op1.commit().expect("Failed to commit operation");
-
-    // Should verify successfully
-    let is_valid = tree
-        .verify_entry_signature(&signed_entry_id)
-        .expect("Failed to verify signature");
-    assert!(is_valid);
-
-    // Test 2: Create unsigned entry
-    let op2 = tree.new_operation().expect("Failed to create operation");
-    let store2 = op2
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store2.set("key", "value2").expect("Failed to set value");
-    let unsigned_entry_id = op2.commit().expect("Failed to commit operation");
+    // Test 2: Create unsigned entry using helper
+    let unsigned_entry_id = add_data_to_subtree(&tree, "data", &[("key", "value2")]);
 
     // Should be valid (backward compatibility for unsigned entries)
     let is_valid_unsigned = tree
@@ -366,54 +253,22 @@ fn test_verify_entry_signature_auth_scenarios() {
 /// Test verify_entry_signature with unauthorized key
 #[test]
 fn test_verify_entry_signature_unauthorized_key() {
-    let db = setup_db();
-    // Add two keys to the backend
-    let authorized_key_name = "AUTHORIZED_KEY";
-    let unauthorized_key_name = "UNAUTHORIZED_KEY";
-    let authorized_public_key = db
-        .add_private_key(authorized_key_name)
-        .expect("Failed to add authorized key");
+    let (db, tree) = setup_tree_with_auth_config("AUTHORIZED_KEY");
+
+    // Add unauthorized key to backend (but not to tree's auth settings)
     let _unauthorized_public_key = db
-        .add_private_key(unauthorized_key_name)
+        .add_private_key("UNAUTHORIZED_KEY")
         .expect("Failed to add unauthorized key");
 
-    // Create auth settings with only the authorized key
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
-    auth_settings
-        .set_json(
-            authorized_key_name.to_string(),
-            AuthKey {
-                pubkey: eidetica::auth::crypto::format_public_key(&authorized_public_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    settings.set_map("auth", auth_settings);
+    // Test with authorized key (should succeed) using helper
+    let authorized_entry_id =
+        add_authenticated_data(&tree, "AUTHORIZED_KEY", "data", &[("key", "value1")]);
 
-    let tree = db
-        .new_tree(settings, authorized_key_name)
-        .expect("Failed to create tree");
-
-    // Test with authorized key (should succeed)
-    let op1 = tree
-        .new_authenticated_operation(authorized_key_name)
-        .expect("Failed to create operation");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store1.set("key", "value1").expect("Failed to set value");
-    let authorized_entry_id = op1.commit().expect("Failed to commit operation");
-
-    let is_valid = tree
-        .verify_entry_signature(&authorized_entry_id)
-        .expect("Failed to verify signature");
-    assert!(is_valid);
+    assert_entry_authentication(&tree, &authorized_entry_id, "AUTHORIZED_KEY");
 
     // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
     let op2 = tree
-        .new_authenticated_operation(unauthorized_key_name)
+        .new_authenticated_operation("UNAUTHORIZED_KEY")
         .expect("Failed to create operation");
     let store2 = op2
         .get_subtree::<Dict>("data")
@@ -432,48 +287,13 @@ fn test_verify_entry_signature_unauthorized_key() {
 /// Test that verify_entry_signature validates against tree auth configuration
 #[test]
 fn test_verify_entry_signature_validates_tree_auth() {
-    let db = setup_db();
-    // Add a key
-    let key_id = "VALID_KEY";
-    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+    let (_db, tree) = setup_tree_with_auth_config("VALID_KEY");
 
-    // Create auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
-    auth_settings
-        .set_json(
-            key_id.to_string(),
-            AuthKey {
-                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    settings.set_map("auth", auth_settings);
+    // Create a signed entry using helper
+    let entry_id = add_authenticated_data(&tree, "VALID_KEY", "data", &[("key", "value")]);
 
-    let tree = db
-        .new_tree(settings, key_id)
-        .expect("Failed to create tree");
-
-    // Create a signed entry
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("key", "value").expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit operation");
-
-    // Verify the entry - should validate against tree's auth settings
-    let is_valid = tree
-        .verify_entry_signature(&entry_id)
-        .expect("Failed to verify signature");
-    assert!(
-        is_valid,
-        "Entry should be valid when signed with authorized key"
-    );
+    // Verify the entry using helper - should validate against tree's auth settings
+    assert_entry_authentication(&tree, &entry_id, "VALID_KEY");
 
     // Note: In the future, this test should also verify that:
     // 1. Entries remain valid even if the key is later revoked (historical validation)
@@ -516,21 +336,6 @@ fn test_tree_queries() {
         let found = all_entries.iter().any(|entry| entry.id() == *entry_id);
         assert!(found, "Entry {entry_id} not found in all_entries");
     }
-}
-
-/// Test error handling for auth helpers
-#[test]
-fn test_auth_helpers_error_handling() {
-    let (_db, tree) = setup_db_and_tree_with_key("test_key");
-
-    // Test with non-existent entry
-    let result = tree.get_entry("non_existent_entry");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_not_found());
-
-    let result = tree.verify_entry_signature("non_existent_entry");
-    assert!(result.is_err());
-    assert!(result.unwrap_err().is_not_found());
 }
 
 /// Test performance: batch get_entries vs individual get_entry calls

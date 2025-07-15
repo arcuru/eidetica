@@ -1,3 +1,9 @@
+//! Parent-aware merge algorithm tests
+//!
+//! This module contains tests for complex merging scenarios including
+//! LCA computation, diamond patterns, and parent-aware state resolution.
+
+use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
@@ -564,4 +570,91 @@ fn test_true_diamond_pattern() {
     println!("  Created real diamond DAG: A->B, A->C, [B,C]->D");
     println!("  This test WOULD FAIL with incorrect parent-state merging approach");
     println!("  LCA algorithm correctly handles complex ancestry with proper field merging");
+}
+
+/// Test helper functions for complex merge scenarios
+#[test]
+fn test_merge_algorithm_helpers() {
+    let tree = setup_tree();
+
+    // Test diamond pattern creation helper
+    let base_data = &[("foundation", "solid"), ("version", "1.0")];
+    let (base_id, branch_b_id, branch_c_id, merge_id) = create_diamond_pattern(&tree, base_data);
+
+    // Verify diamond structure
+    assert_entry_parents(&tree, &branch_b_id, std::slice::from_ref(&base_id));
+    assert_entry_parents(&tree, &branch_c_id, std::slice::from_ref(&base_id));
+    assert_entry_parents(&tree, &merge_id, &[branch_b_id, branch_c_id]);
+
+    // Verify final state contains expected non-conflicting data
+    assert_subtree_data(
+        &tree,
+        "data",
+        &[
+            ("foundation", "solid"),
+            ("version", "1.0"),
+            ("b_specific", "B_data"),
+            ("c_specific", "C_data"),
+            ("merge", "D"),
+            ("final", "merged"),
+        ],
+    );
+
+    // Verify that conflicting field "branch" has one of the expected values
+    let viewer = tree
+        .get_subtree_viewer::<Dict>("data")
+        .expect("Failed to get viewer");
+    let branch_value = viewer
+        .get_string("branch")
+        .expect("Should have branch value");
+    assert!(
+        branch_value == "B" || branch_value == "C",
+        "Branch should be either B or C, got: {branch_value}"
+    );
+
+    // Test deterministic reads
+    assert_deterministic_reads(&tree, "data", 5);
+
+    // Test caching consistency
+    assert_caching_consistency(&tree, "data");
+}
+
+/// Test performance with deep chains
+#[test]
+fn test_merge_performance_with_deep_chains() {
+    let tree = setup_tree();
+
+    // Create deep chain and verify performance
+    assert_deep_operations_performance(&tree, 100);
+
+    // Test linear chain creation helper
+    let chain_ids = create_linear_chain(&tree, "performance", 20);
+    assert_eq!(chain_ids.len(), 20);
+
+    // Verify chain structure - each entry should have previous as parent (except first)
+    for i in 1..chain_ids.len() {
+        assert_entry_parents(&tree, &chain_ids[i], &[chain_ids[i - 1].clone()]);
+    }
+
+    // Verify final state has all accumulated data
+    let viewer = tree
+        .get_subtree_viewer::<Dict>("performance")
+        .expect("Failed to get viewer");
+    let final_state = viewer.get_all().expect("Failed to get final state");
+
+    // Should have final step value
+    assert_eq!(
+        final_state.get("step").unwrap(),
+        &Value::Text("19".to_string())
+    );
+
+    // Should have all step-specific values
+    for i in 0..20 {
+        let step_key = format!("step_{i}");
+        let expected_value = format!("value_{i}");
+        assert_eq!(
+            final_state.get(&step_key).unwrap(),
+            &Value::Text(expected_value)
+        );
+    }
 }
