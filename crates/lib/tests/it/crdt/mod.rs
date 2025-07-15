@@ -1,4 +1,12 @@
+//! CRDT integration tests
+//!
+//! This module tests the CRDT implementations including Map, List, and Value types.
+//! Tests are organized by CRDT type for better maintainability.
+
 mod helpers;
 mod integration;
-
-pub use helpers::*;
+mod list_tests;
+mod map_advanced_tests;
+mod map_tests;
+mod serialization_tests;
+mod value_tests;
