@@ -6,6 +6,13 @@ tasks:
   default:
     cmd: task --list
     silent: true
+  dev:
+    desc: Quick development feedback (build + test + clippy)
+    aliases: [d]
+    cmds:
+      - task: build
+      - task: test
+      - task: clippy
   ci:full:
     desc: Run CI locally in containers
     cmds:
@@ -43,11 +50,11 @@ tasks:
     desc: Run all tests
     aliases: [t]
     cmds:
-      - cargo nextest run --workspace --all-features --no-fail-fast
-      - cargo test --doc --workspace --all-features
+      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
+      - cargo test --doc --workspace --all-features --quiet
   doc:
     desc: Build the documentation
-    cmd: cargo doc --workspace --all-features
+    cmd: cargo doc --workspace --all-features --quiet
   audit:
     desc: Run cargo security/license audit
     cmds:
@@ -56,11 +63,11 @@ tasks:
   build:debug:
     desc: Build the project
     aliases: [b, build]
-    cmd: cargo build --workspace --all-targets --all-features
+    cmd: cargo build --workspace --all-targets --all-features --quiet
   build:release:
     desc: Build the project release
     aliases: [br, release]
-    cmd: cargo build --workspace --all-targets --all-features --release
+    cmd: cargo build --workspace --all-targets --all-features --release --quiet
   coverage:
     desc: Generate coverage data
     aliases: [cov]
@@ -68,10 +75,16 @@ tasks:
   examples:
     desc: Build/Check all examples
     cmds:
-      - cd examples/todo && cargo build --all-targets --all-features
-      - cd examples/todo && cargo clippy --all-targets --all-features -- -D warnings
+      - cd examples/todo && cargo build --all-targets --all-features --quiet
+      - cd examples/todo && cargo clippy --all-targets --all-features --quiet -- -D warnings
+  bench:
+    desc: Run benchmarks and open HTML report
+    aliases: [benchmark]
+    cmds:
+      - cargo bench --workspace
+      - xdg-open target/criterion/report/index.html 2>/dev/null
   min-versions:
     desc: Check the minimum versions of the dependencies
     cmds:
-      - cargo update -Z minimal-versions && cargo build --workspace --all-targets --all-features && cargo nextest run --workspace --all-features
+      - cargo update -Z minimal-versions && cargo build --workspace --all-targets --all-features --quiet && cargo nextest run --workspace --all-features --status-level fail
       # We do _not_ want to run the clippy check here, because it will fail
