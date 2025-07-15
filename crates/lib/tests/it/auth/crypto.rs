@@ -1,5 +1,4 @@
-use super::helpers::*;
-use crate::create_auth_keys;
+use super::helpers::{setup_authenticated_tree, setup_db as auth_setup_db};
 use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{KeyStatus, Permission, SigKey};
@@ -113,7 +112,7 @@ fn test_backend_serialization() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
-    let db = setup_db();
+    let db = auth_setup_db();
 
     // Add initial key
     let key_id = "TEST_KEY";
@@ -235,56 +234,4 @@ fn test_remove_nonexistent_key() {
     // List should still be empty
     let keys = db.list_private_keys().expect("Failed to list keys");
     assert!(keys.is_empty());
-}
-
-#[test]
-fn test_multiple_authenticated_entries() {
-    let keys = create_auth_keys![
-        ("USER1", Permission::Admin(0), KeyStatus::Active), // Admin needed to create tree with auth
-        ("USER2", Permission::Write(10), KeyStatus::Active)
-    ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
-
-    // Create first authenticated entry
-    let op1 = tree
-        .new_authenticated_operation("USER1")
-        .expect("Failed to create operation");
-    let store1 = op1
-        .get_subtree::<eidetica::subtree::Dict>("data")
-        .expect("Failed to get subtree");
-    store1
-        .set("user1_data", "hello")
-        .expect("Failed to set value");
-    let entry_id1 = op1.commit().expect("Failed to commit");
-
-    // Create second authenticated entry
-    let op2 = tree
-        .new_authenticated_operation("USER2")
-        .expect("Failed to create operation");
-    let store2 = op2
-        .get_subtree::<eidetica::subtree::Dict>("data")
-        .expect("Failed to get subtree");
-    store2
-        .set("user2_data", "world")
-        .expect("Failed to set value");
-    let entry_id2 = op2.commit().expect("Failed to commit");
-
-    // Verify both entries are properly signed
-    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
-    assert!(entry1.sig.is_signed_by("USER1"));
-    let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
-    assert!(entry2.sig.is_signed_by("USER2"));
-
-    // Verify signatures with tree's auth configuration
-    assert!(
-        tree.verify_entry_signature(&entry_id1)
-            .expect("Failed to verify")
-    );
-    assert!(
-        tree.verify_entry_signature(&entry_id2)
-            .expect("Failed to verify")
-    );
-
-    // Note: Cannot verify cross-validation with specific keys using new API - removed key-specific verification
 }

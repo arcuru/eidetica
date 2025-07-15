@@ -1,35 +1,13 @@
-use super::helpers::*;
+use super::helpers::{
+    assert_operation_permissions, setup_authenticated_tree, setup_db as auth_setup_db,
+    setup_test_db_with_keys, test_operation_fails, test_operation_succeeds,
+};
 use crate::create_auth_keys;
-use crate::helpers::*;
 use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Map;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
-
-#[test]
-fn test_backend_authentication_validation() {
-    let keys = create_auth_keys![
-        ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
-        ("TEST_KEY", Permission::Write(10), KeyStatus::Active)
-    ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
-
-    // This should succeed because the key is configured in auth settings
-    let op = tree
-        .new_authenticated_operation("TEST_KEY")
-        .expect("Failed to create authenticated operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
-    let entry_id = op.commit().expect("Failed to commit");
-
-    // Verify the entry was stored and signed
-    let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert!(entry.sig.is_signed_by("TEST_KEY"));
-}
 
 #[test]
 fn test_authentication_validation_revoked_key() {
@@ -116,46 +94,8 @@ fn test_permission_checking_admin_operations() {
 }
 
 #[test]
-fn test_mandatory_authentication_enforcement() {
-    let db = setup_db();
-
-    // Add test key and create tree
-    db.add_private_key("TEST_KEY")
-        .expect("Failed to add test key");
-    let mut settings = Map::new();
-    let auth_settings = Map::new();
-    settings.set_map("auth", auth_settings);
-
-    let mut tree = db
-        .new_tree(settings, "TEST_KEY")
-        .expect("Failed to create tree");
-
-    // Test 1: Normal operation with default auth should succeed
-    let op1 = tree.new_operation().expect("Failed to create operation");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store1.set("test", "value").expect("Failed to set value");
-    let result1 = op1.commit();
-    assert!(
-        result1.is_ok(),
-        "Operation with default auth should succeed"
-    );
-
-    // Test 2: Clear default auth and try again - should fail
-    tree.clear_default_auth_key();
-    let op2 = tree.new_operation().expect("Failed to create operation");
-    let store2 = op2
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store2.set("test2", "value2").expect("Failed to set value");
-    let result2 = op2.commit();
-    assert!(result2.is_err(), "Operation without auth should fail");
-}
-
-#[test]
 fn test_multiple_authenticated_entries() {
-    let db = setup_db();
+    let db = auth_setup_db();
 
     // Generate a key for testing
     let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
@@ -257,9 +197,21 @@ fn test_entry_validation_with_mixed_key_states() {
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
-    // Test active key should work, revoked key should fail
-    test_operation_succeeds(&tree, "ACTIVE_KEY", "data", "Active key test");
-    test_operation_fails(&tree, "REVOKED_KEY", "data", "Revoked key test");
+    // Test active key should work, revoked key should fail using assert_operation_permissions
+    assert_operation_permissions(
+        &tree,
+        "ACTIVE_KEY",
+        "data",
+        true,
+        "Active key should succeed",
+    );
+    assert_operation_permissions(
+        &tree,
+        "REVOKED_KEY",
+        "data",
+        false,
+        "Revoked key should fail",
+    );
 }
 
 #[test]

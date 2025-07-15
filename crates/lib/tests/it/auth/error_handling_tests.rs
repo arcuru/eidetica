@@ -3,6 +3,7 @@
 //! These tests cover error propagation, validation failures, backend issues,
 //! and security edge cases in the delegation system.
 
+use super::helpers::*;
 use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{
@@ -18,86 +19,69 @@ use eidetica::entry::ID;
 /// Test delegation resolution with missing backend
 #[test]
 fn test_delegation_without_backend() {
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "some_tree".to_string(),
-            tips: Some(vec![ID::from("tip1")]),
-        },
-        DelegationStep {
-            key: "final_key".to_string(),
-            tips: None,
-        },
+    let delegation_path = create_delegation_path(&[
+        ("some_tree", Some(vec![ID::from("tip1")])),
+        ("final_key", None),
     ]);
 
     let mut validator = AuthValidator::new();
     let settings = Map::new();
 
     // Should fail when database is required but not provided
-    let result = validator.resolve_sig_key(&delegation_path, &settings, None);
-    assert!(result.is_err());
-
-    let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("Database required") || error_msg.contains("database"));
+    assert_permission_resolution_fails(
+        &mut validator,
+        &delegation_path,
+        &settings,
+        None,
+        "database",
+    );
 }
 
 /// Test delegation with non-existent delegated tree
 #[test]
 fn test_delegation_nonexistent_tree() -> Result<()> {
-    let db = BaseDB::new(Box::new(InMemory::new()));
+    let (db, tree, _) =
+        setup_complete_auth_environment(&[("admin", Permission::Admin(0), KeyStatus::Active)]);
 
-    // Add private key to storage
-    let admin_key = db.add_private_key("admin")?;
+    // Add delegation to non-existent tree using operations
+    let op = tree.new_authenticated_operation("admin")?;
+    let settings_store = op.get_subtree::<eidetica::subtree::Dict>("_settings")?;
 
-    // Create main tree with delegation reference to non-existent tree
-    let mut auth = Map::new();
-    auth.set_json(
-        "admin",
-        AuthKey {
-            pubkey: format_public_key(&admin_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
+    let nonexistent_delegation = DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            min: None,
+            max: Permission::Write(10),
         },
-    )
-    .unwrap();
-
-    // Add delegation to non-existent tree
-    auth.set_json(
-        "nonexistent_delegate",
-        DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                min: None,
-                max: Permission::Write(10),
-            },
-            tree: TreeReference {
-                root: ID::from("nonexistent_root"),
-                tips: vec![ID::from("nonexistent_tip")],
-            },
+        tree: TreeReference {
+            root: ID::from("nonexistent_root"),
+            tips: vec![ID::from("nonexistent_tip")],
         },
-    )
-    .unwrap();
+    };
 
-    let mut settings = Map::new();
-    settings.set_map("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let mut new_auth_settings = tree.get_settings()?.get_all()?;
+    new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
+    settings_store.set_value("auth", new_auth_settings.into())?;
+    op.commit()?;
 
     // Try to resolve delegation to non-existent tree
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "nonexistent_delegate".to_string(),
-            tips: Some(vec![ID::from("nonexistent_tip")]),
-        },
-        DelegationStep {
-            key: "some_key".to_string(),
-            tips: None,
-        },
+    let delegation_path = create_delegation_path(&[
+        (
+            "nonexistent_delegate",
+            Some(vec![ID::from("nonexistent_tip")]),
+        ),
+        ("some_key", None),
     ]);
 
     let mut validator = AuthValidator::new();
     let tree_settings = tree.get_settings()?.get_all()?;
-    let result = validator.resolve_sig_key(&delegation_path, &tree_settings, Some(db.backend()));
 
-    // Should fail gracefully
-    assert!(result.is_err());
+    assert_permission_resolution_fails(
+        &mut validator,
+        &delegation_path,
+        &tree_settings,
+        Some(db.backend()),
+        "auth",
+    );
 
     Ok(())
 }

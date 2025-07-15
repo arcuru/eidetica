@@ -4,139 +4,78 @@
 //! authentication, including tree creation, key delegation, permission
 //! clamping, and various authorization scenarios.
 
+use super::helpers::*;
 use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds, SigKey,
     TreeReference,
 };
+use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Map;
 use eidetica::entry::ID;
+use eidetica::subtree::Dict;
 
 /// Test simple tree creation with auth
 #[test]
 fn test_simple_tree_creation_with_auth() -> Result<()> {
-    // Create database and keys
-    let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let (_db, tree, _) =
+        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
 
-    let main_admin_key = db.add_private_key("main_admin")?;
-
-    // Create main tree with explicit auth configuration
-    let mut main_settings = Map::new();
-    main_settings.set_string("name", "main_project_tree");
-
-    let mut main_auth = Map::new();
-    main_auth
-        .set_json(
-            "main_admin", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    main_settings.set_map("auth", main_auth);
-
-    // This should work without error
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
-    assert!(!main_tree.root_id().to_string().is_empty());
-
+    assert!(!tree.root_id().to_string().is_empty());
     Ok(())
 }
 
 /// Test basic delegated tree validation
 #[test]
 fn test_delegated_tree_basic_validation() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
+    let db = setup_db();
 
-    // Create database and keys
-    let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
-
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
-
-    // Create delegated tree first
-    let mut delegated_settings = Map::new();
-    delegated_settings.set_string("name", "user_personal_tree");
-
-    let mut delegated_auth = Map::new();
-    delegated_auth
-        .set_json(
-            "delegated_user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Admin(5), // Admin needed to create tree with auth
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
-
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
+    // Create delegated tree
+    let delegated_tree = create_delegated_tree(
+        &db,
+        &[("delegated_user", Permission::Admin(5), KeyStatus::Active)],
+        "delegated_user",
+    )?;
 
     // Create main tree with delegation
-    let mut main_settings = Map::new();
-    main_settings.set_string("name", "main_project_tree");
+    let (_, main_tree, _) =
+        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
 
-    let mut main_auth = Map::new();
-    main_auth
-        .set_json(
-            "main_admin", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
+    // Add delegation to main tree auth settings
+    let op = main_tree.new_authenticated_operation("main_admin")?;
+    let settings_store = op.get_subtree::<Dict>("_settings")?;
 
-    // Add delegation to the user's tree
-    let delegated_tips = delegated_tree.get_tips()?;
-    main_auth
-        .set_json(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_map("auth", main_auth);
+    let delegation_ref = create_delegation_ref(
+        &delegated_tree,
+        Permission::Write(10),
+        Some(Permission::Read),
+    )?;
+    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
+    new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
+    settings_store.set_value("auth", new_auth_settings.into())?;
+    op.commit()?;
 
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
-
-    // Test delegated tree validation directly
+    // Test delegated tree validation
     let mut validator = AuthValidator::new();
     let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let delegated_tips = delegated_tree.get_tips()?;
 
-    let delegated_auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_to_user".to_string(),
-            tips: Some(delegated_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(),
-            tips: None,
-        },
+    let delegated_auth_id = create_delegation_path(&[
+        ("delegate_to_user", Some(delegated_tips)),
+        ("delegated_user", None),
     ]);
 
-    // This should resolve successfully and return Write permissions (clamped from delegated tree)
-    let resolved_auth =
-        validator.resolve_sig_key(&delegated_auth_id, &main_tree_settings, Some(db.backend()))?;
-
-    assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
-    assert_eq!(resolved_auth.key_status, KeyStatus::Active);
+    assert_permission_resolution(
+        &mut validator,
+        &delegated_auth_id,
+        &main_tree_settings,
+        Some(db.backend()),
+        Permission::Write(10),
+        KeyStatus::Active,
+    );
 
     Ok(())
 }
@@ -144,87 +83,48 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
 /// Test permission clamping in delegated trees
 #[test]
 fn test_delegated_tree_permission_clamping() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
-    let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
-
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
+    let db = setup_db();
 
     // Create delegated tree with Admin permissions
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
-    delegated_auth
-        .set_json(
-            "delegated_user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Admin(0), // Admin in delegated tree
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
-
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
+    let delegated_tree = create_delegated_tree(
+        &db,
+        &[("delegated_user", Permission::Admin(0), KeyStatus::Active)],
+        "delegated_user",
+    )?;
 
     // Create main tree with Read-only delegation
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
-    main_auth
-        .set_json(
-            "main_admin", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
-        )
-        .unwrap();
+    let (_, main_tree, _) =
+        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
 
-    // Delegate with Read-only permissions
-    let delegated_tips = delegated_tree.get_tips()?;
-    main_auth
-        .set_json(
-            "delegate_readonly",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Read, // Clamp to Read-only
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_map("auth", main_auth);
+    // Add read-only delegation
+    let op = main_tree.new_authenticated_operation("main_admin")?;
+    let settings_store = op.get_subtree::<Dict>("_settings")?;
 
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
+    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
+    new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
+    settings_store.set_value("auth", new_auth_settings.into())?;
+    op.commit()?;
 
-    // Test permission clamping through validation
+    // Test permission clamping
     let mut validator = AuthValidator::new();
     let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let delegated_tips = delegated_tree.get_tips()?;
 
-    let delegated_auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_readonly".to_string(),
-            tips: Some(delegated_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(),
-            tips: None,
-        },
+    let delegated_auth_id = create_delegation_path(&[
+        ("delegate_readonly", Some(delegated_tips)),
+        ("delegated_user", None),
     ]);
 
     // Permissions should be clamped from Admin to Read
-    let resolved_auth =
-        validator.resolve_sig_key(&delegated_auth_id, &main_tree_settings, Some(db.backend()))?;
-
-    assert_eq!(resolved_auth.effective_permission, Permission::Read);
-    assert_eq!(resolved_auth.key_status, KeyStatus::Active);
+    assert_permission_resolution(
+        &mut validator,
+        &delegated_auth_id,
+        &main_tree_settings,
+        Some(db.backend()),
+        Permission::Read,
+        KeyStatus::Active,
+    );
 
     Ok(())
 }
@@ -902,6 +802,53 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
 
     let result = validator.resolve_sig_key(&auth_id, &main_tree_settings, Some(db.backend()));
     assert!(result.is_err());
+
+    Ok(())
+}
+
+/// Test complex nested delegation using DelegationChain helper
+#[test]
+fn test_complex_nested_delegation_chain() -> Result<()> {
+    // Create a 3-level delegation chain
+    let chain = DelegationChain::new(3)?;
+
+    // Verify the chain was created correctly
+    assert_eq!(chain.trees.len(), 3);
+    assert_eq!(chain.keys.len(), 3);
+
+    // Verify each tree is accessible and has the expected root
+    for (i, tree) in chain.trees.iter().enumerate() {
+        assert!(
+            !tree.root_id().to_string().is_empty(),
+            "Tree {i} should have a root ID"
+        );
+    }
+
+    // Verify each tree has its expected key
+    for (i, key) in chain.keys.iter().enumerate() {
+        assert_eq!(key, &format!("level_{i}_admin"));
+    }
+
+    // Create a delegation chain to a final user
+    let delegation_path = chain.create_chain_delegation("final_user");
+
+    // Test that complex delegation paths can be created correctly
+    match delegation_path {
+        SigKey::DelegationPath(steps) => {
+            assert_eq!(steps.len(), 4); // 3 levels + final user
+
+            // Verify each step has the expected key
+            for (i, step) in steps.iter().take(3).enumerate() {
+                assert_eq!(step.key, format!("delegate_level_{i}"));
+                assert!(step.tips.is_some()); // Intermediate steps have tips
+            }
+
+            // Final step should be the target user
+            assert_eq!(steps[3].key, "final_user");
+            assert!(steps[3].tips.is_none()); // Final step has no tips
+        }
+        _ => panic!("Expected delegation path"),
+    }
 
     Ok(())
 }
