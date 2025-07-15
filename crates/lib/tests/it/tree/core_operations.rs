@@ -1,6 +1,11 @@
+//! Core tree operation tests
+//!
+//! This module contains tests for fundamental Tree operations including
+//! entry creation, subtree operations, atomic operations, and tip management.
+
+use super::helpers::*;
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
-use eidetica::crdt::Map;
 use eidetica::subtree::Dict;
 
 #[test]
@@ -313,60 +318,6 @@ fn test_get_subtree_viewer() {
 }
 
 #[test]
-fn test_setup_tree_with_multiple_dicts() {
-    // Prepare test data
-    let users = [("user1", "Alice"), ("user2", "Bob")];
-    let posts = [("post1", "First Post")];
-    let comments = [("comment1", "Great post!")];
-
-    let subtrees = [
-        ("users", &users[..]),
-        ("posts", &posts[..]),
-        ("comments", &comments[..]),
-    ];
-
-    // Create the tree with the helper
-    let tree = setup_tree_with_multiple_dicts(&subtrees);
-
-    // Verify the data was correctly set
-    let users_viewer = tree
-        .get_subtree_viewer::<Dict>("users")
-        .expect("Failed to get users viewer");
-    assert_eq!(
-        users_viewer
-            .get_string("user1")
-            .expect("Failed to get user1"),
-        "Alice"
-    );
-    assert_eq!(
-        users_viewer
-            .get_string("user2")
-            .expect("Failed to get user2"),
-        "Bob"
-    );
-
-    let posts_viewer = tree
-        .get_subtree_viewer::<Dict>("posts")
-        .expect("Failed to get posts viewer");
-    assert_eq!(
-        posts_viewer
-            .get_string("post1")
-            .expect("Failed to get post1"),
-        "First Post"
-    );
-
-    let comments_viewer = tree
-        .get_subtree_viewer::<Dict>("comments")
-        .expect("Failed to get comments viewer");
-    assert_eq!(
-        comments_viewer
-            .get_string("comment1")
-            .expect("Failed to get comment1"),
-        "Great post!"
-    );
-}
-
-#[test]
 fn test_get_tips() {
     let tree = setup_tree();
 
@@ -378,13 +329,8 @@ fn test_get_tips() {
         "Tree should have exactly one initial tip"
     );
 
-    // Create and commit first entry
-    let op1 = tree.new_operation().expect("Failed to create operation 1");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store 1");
-    store1.set("key1", "value1").expect("Failed to set key1");
-    let entry1_id = op1.commit().expect("Failed to commit operation 1");
+    // Create and commit first entry using helper
+    let entry1_id = add_data_to_subtree(&tree, "data", &[("key1", "value1")]);
 
     // Tips should now include entry1_id
     let tips_after_op1 = tree.get_tips().expect("Failed to get tips after op1");
@@ -402,13 +348,8 @@ fn test_get_tips() {
         "Initial tip should no longer be a tip"
     );
 
-    // Create and commit second entry
-    let op2 = tree.new_operation().expect("Failed to create operation 2");
-    let store2 = op2
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store 2");
-    store2.set("key2", "value2").expect("Failed to set key2");
-    let entry2_id = op2.commit().expect("Failed to commit operation 2");
+    // Create and commit second entry using helper
+    let entry2_id = add_data_to_subtree(&tree, "data", &[("key2", "value2")]);
 
     // Tips should now include entry2_id
     let tips_after_op2 = tree.get_tips().expect("Failed to get tips after op2");
@@ -431,21 +372,11 @@ fn test_get_tips() {
 fn test_new_operation_with_tips() {
     let tree = setup_tree();
 
-    // Create first entry
-    let op1 = tree.new_operation().expect("Failed to create operation 1");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store 1");
-    store1.set("key1", "value1").expect("Failed to set key1");
-    let entry1_id = op1.commit().expect("Failed to commit operation 1");
+    // Create first entry using helper
+    let entry1_id = add_data_to_subtree(&tree, "data", &[("key1", "value1")]);
 
-    // Create second entry
-    let op2 = tree.new_operation().expect("Failed to create operation 2");
-    let store2 = op2
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store 2");
-    store2.set("key2", "value2").expect("Failed to set key2");
-    let entry2_id = op2.commit().expect("Failed to commit operation 2");
+    // Create second entry using helper
+    let entry2_id = add_data_to_subtree(&tree, "data", &[("key2", "value2")]);
 
     // Verify that normal operations use current tips (should see both keys)
     let normal_op = tree
@@ -466,7 +397,7 @@ fn test_new_operation_with_tips() {
 
     // Create operation with custom tips (using entry1 instead of current tip)
     let custom_op = tree
-        .new_operation_with_tips([entry1_id])
+        .new_operation_with_tips([entry1_id.clone()])
         .expect("Failed to create custom operation");
     let custom_store = custom_op
         .get_subtree::<Dict>("data")
@@ -481,13 +412,9 @@ fn test_new_operation_with_tips() {
         "Custom operation should not see key2"
     );
 
-    // Commit the custom operation to create a branch
-    custom_store
-        .set("custom_key", "custom_value")
-        .expect("Failed to set custom_key");
-    let custom_entry_id = custom_op
-        .commit()
-        .expect("Failed to commit custom operation");
+    // Commit the custom operation to create a branch using helper
+    let custom_entry_id =
+        create_branch_from_entry(&tree, &entry1_id, "data", &[("custom_key", "custom_value")]);
 
     // Now we should have two tips: entry2_id and custom_entry_id
     let tips_after_branch = tree.get_tips().expect("Failed to get tips after branch");
@@ -527,33 +454,10 @@ fn test_new_operation_with_tips() {
 fn test_new_operation_with_specific_tips() {
     let tree = setup_tree();
 
-    // Create a chain of entries: A -> B -> C
-    let op_a = tree.new_operation().expect("Failed to create operation A");
-    let store_a = op_a
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store A");
-    store_a
-        .set("from_a", "value_a")
-        .expect("Failed to set from_a");
-    let entry_a_id = op_a.commit().expect("Failed to commit operation A");
-
-    let op_b = tree.new_operation().expect("Failed to create operation B");
-    let store_b = op_b
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store B");
-    store_b
-        .set("from_b", "value_b")
-        .expect("Failed to set from_b");
-    let entry_b_id = op_b.commit().expect("Failed to commit operation B");
-
-    let op_c = tree.new_operation().expect("Failed to create operation C");
-    let store_c = op_c
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store C");
-    store_c
-        .set("from_c", "value_c")
-        .expect("Failed to set from_c");
-    let entry_c_id = op_c.commit().expect("Failed to commit operation C");
+    // Create a chain of entries: A -> B -> C using helpers
+    let entry_a_id = add_data_to_subtree(&tree, "data", &[("from_a", "value_a")]);
+    let entry_b_id = add_data_to_subtree(&tree, "data", &[("from_b", "value_b")]);
+    let entry_c_id = add_data_to_subtree(&tree, "data", &[("from_c", "value_c")]);
 
     // Create operation starting from entry A (should see only A)
     let op_from_a = tree
@@ -621,17 +525,13 @@ fn test_new_operation_with_specific_tips() {
         "Should see data from C"
     );
 
-    // Test branching from an earlier point
-    let op_branch = tree
-        .new_operation_with_tips([entry_a_id])
-        .expect("Failed to create branch from A");
-    let store_branch = op_branch
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store branch");
-    store_branch
-        .set("branch_data", "branch_value")
-        .expect("Failed to set branch_data");
-    let branch_id = op_branch.commit().expect("Failed to commit branch");
+    // Test branching from an earlier point using helper
+    let branch_id = create_branch_from_entry(
+        &tree,
+        &entry_a_id,
+        "data",
+        &[("branch_data", "branch_value")],
+    );
 
     // Verify the branch only sees data from A
     let op_verify_branch = tree
@@ -666,38 +566,13 @@ fn test_new_operation_with_specific_tips() {
 fn test_new_operation_with_multiple_tips() {
     let tree = setup_tree();
 
-    // Create initial entry
-    let op_base = tree
-        .new_operation()
-        .expect("Failed to create base operation");
-    let store_base = op_base
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get base store");
-    store_base.set("base", "value").expect("Failed to set base");
-    let base_id = op_base.commit().expect("Failed to commit base operation");
+    // Create initial entry using helper
+    let base_id = add_data_to_subtree(&tree, "data", &[("base", "value")]);
 
-    // Create two parallel branches from base
-    let op_branch1 = tree
-        .new_operation_with_tips(std::slice::from_ref(&base_id))
-        .expect("Failed to create branch1");
-    let store_branch1 = op_branch1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get branch1 store");
-    store_branch1
-        .set("branch1", "value1")
-        .expect("Failed to set branch1");
-    let branch1_id = op_branch1.commit().expect("Failed to commit branch1");
+    // Create two parallel branches from base using helpers
+    let branch1_id = create_branch_from_entry(&tree, &base_id, "data", &[("branch1", "value1")]);
 
-    let op_branch2 = tree
-        .new_operation_with_tips([base_id])
-        .expect("Failed to create branch2");
-    let store_branch2 = op_branch2
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get branch2 store");
-    store_branch2
-        .set("branch2", "value2")
-        .expect("Failed to set branch2");
-    let branch2_id = op_branch2.commit().expect("Failed to commit branch2");
+    let branch2_id = create_branch_from_entry(&tree, &base_id, "data", &[("branch2", "value2")]);
 
     // Create operation with multiple tips (merge operation)
     let merge_tips = vec![branch1_id.clone(), branch2_id.clone()];
@@ -746,53 +621,5 @@ fn test_new_operation_with_multiple_tips() {
     assert!(
         merge_parents.contains(&branch2_id),
         "Merge should have branch2 as parent"
-    );
-}
-
-#[test]
-fn test_new_operation_with_empty_tips_validation() {
-    let tree = setup_tree();
-
-    // Attempting to create operation with empty tips should return an error
-    let result = tree.new_operation_with_tips(&[]);
-    assert!(
-        result.is_err(),
-        "Creating operation with empty tips should be an error"
-    );
-}
-
-#[test]
-fn test_new_operation_with_invalid_tree_tips() {
-    const TEST_KEY1: &str = "test_key1";
-    const TEST_KEY2: &str = "test_key2";
-    let db = setup_db_with_keys(&[TEST_KEY1, TEST_KEY2]);
-
-    // Create tree1
-    let mut tree1_settings = Map::new();
-    tree1_settings.set_string("name", "tree1");
-    let tree1 = db
-        .new_tree(tree1_settings, TEST_KEY1)
-        .expect("Failed to create tree1");
-
-    // Create tree2 with same backend but different root
-    let mut tree2_settings = Map::new();
-    tree2_settings.set_string("name", "tree2");
-    let tree2 = db
-        .new_tree(tree2_settings, TEST_KEY2)
-        .expect("Failed to create tree2");
-
-    // Create an entry in tree1
-    let op1 = tree1.new_operation().expect("Failed to create operation");
-    let store1 = op1
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get store");
-    store1.set("key1", "value1").expect("Failed to set key1");
-    let entry1_id = op1.commit().expect("Failed to commit");
-
-    // Try to use entry from tree1 as tip for operation in tree2 - should fail
-    let result = tree2.new_operation_with_tips([entry1_id]);
-    assert!(
-        result.is_err(),
-        "Using tip from different tree should be an error"
     );
 }
