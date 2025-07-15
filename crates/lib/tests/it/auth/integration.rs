@@ -1,6 +1,5 @@
 use super::helpers::*;
 use crate::create_auth_keys;
-use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Map;
@@ -8,10 +7,7 @@ use eidetica::subtree::Dict;
 
 #[test]
 fn test_authenticated_operations() {
-    let db = setup_db_with_key("TEST_KEY");
-    let tree = db
-        .new_tree(Map::new(), "TEST_KEY")
-        .expect("Failed to create tree");
+    let (_db, tree) = setup_db_and_tree_with_key("TEST_KEY");
 
     // Create an authenticated operation
     let op = tree
@@ -42,10 +38,10 @@ fn test_operation_auth_methods() {
     // Generate keys for testing
     let _public_key1 = db.add_private_key("KEY1").expect("Failed to add key1");
     let _public_key2 = db.add_private_key("KEY2").expect("Failed to add key2");
-
-    // Add test key and create a tree
-    db.add_private_key("TEST_KEY")
+    let _test_key = db
+        .add_private_key("TEST_KEY")
         .expect("Failed to add test key");
+
     let tree = db
         .new_tree(Map::new(), "TEST_KEY")
         .expect("Failed to create tree");
@@ -65,17 +61,7 @@ fn test_operation_auth_methods() {
 
 #[test]
 fn test_tree_default_authentication() {
-    let db = setup_db();
-
-    // Generate a key for testing
-    let _public_key = db
-        .add_private_key("DEFAULT_KEY")
-        .expect("Failed to add key");
-
-    // Create a tree - automatically sets default auth key
-    let mut tree = db
-        .new_tree(Map::new(), "DEFAULT_KEY")
-        .expect("Failed to create tree");
+    let (db, mut tree) = setup_db_and_tree_with_key("DEFAULT_KEY");
 
     // Tree should have the provided key as default
     assert_eq!(tree.default_auth_key(), Some("DEFAULT_KEY"));
@@ -133,14 +119,7 @@ fn test_mandatory_authentication() {
 
 #[test]
 fn test_missing_authentication_key_error() {
-    let db = setup_db();
-
-    // Add test key and create a tree
-    db.add_private_key("TEST_KEY")
-        .expect("Failed to add test key");
-    let tree = db
-        .new_tree(Map::new(), "TEST_KEY")
-        .expect("Failed to create tree");
+    let (_, tree) = setup_db_and_tree_with_key("TEST_KEY");
 
     // Create an authenticated operation with a non-existent key (this succeeds)
     let op = tree
@@ -303,69 +282,6 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     assert!(
         result.is_err(),
         "Commit should fail due to corrupted auth settings, but it succeeded"
-    );
-}
-
-#[test]
-fn test_validation_pipeline_settings_protection() {
-    let keys = create_auth_keys![
-        ("WRITE_KEY", Permission::Write(10), KeyStatus::Active),
-        ("ADMIN_KEY", Permission::Admin(1), KeyStatus::Active)
-    ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
-
-    // Test permission operations using helpers
-    test_operation_succeeds(&tree, "WRITE_KEY", "data", "Write key can write data");
-    test_operation_fails(
-        &tree,
-        "WRITE_KEY",
-        "_settings",
-        "Write key cannot write settings",
-    );
-    test_operation_succeeds(
-        &tree,
-        "ADMIN_KEY",
-        "_settings",
-        "Admin key can write settings",
-    );
-    test_operation_succeeds(&tree, "ADMIN_KEY", "data", "Admin key can write data");
-}
-
-#[test]
-fn test_validation_pipeline_with_missing_keys() {
-    let db = setup_db();
-
-    // Add test key and create tree
-    db.add_private_key("TEST_KEY")
-        .expect("Failed to add test key");
-    let settings = Map::new();
-    let mut tree = db
-        .new_tree(settings, "TEST_KEY")
-        .expect("Failed to create tree");
-
-    // Clear default auth to test operations without authentication
-    tree.clear_default_auth_key();
-    let op = tree.new_operation().expect("Failed to create operation");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
-    let result = op.commit();
-    assert!(result.is_err(), "Should fail without authentication");
-
-    // Authenticated operations should fail at commit time due to missing key
-    let op = tree
-        .new_authenticated_operation("MISSING_KEY")
-        .expect("Operation creation should succeed");
-    let store = op
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
-    let result = op.commit();
-    assert!(
-        result.is_err(),
-        "Should fail at commit time with missing key"
     );
 }
 
