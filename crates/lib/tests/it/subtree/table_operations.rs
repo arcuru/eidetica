@@ -17,7 +17,7 @@ fn test_table_basic_crud_operations() {
         age: 30,
         email: "john@example.com".to_string(),
     };
-    let keys = create_table_operation(&tree, "test_records", &[initial_record.clone()]);
+    let keys = create_table_operation(&tree, "test_records", std::slice::from_ref(&initial_record));
     let primary_key = &keys[0];
 
     // Test CRUD operations within an operation
