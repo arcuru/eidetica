@@ -82,7 +82,7 @@ impl Tree {
 
             // Prepare final tree settings for the initial commit
             let mut final_tree_settings = initial_settings.clone();
-            final_tree_settings.set_map("auth", auth_settings_handler.as_kvnested().clone());
+            final_tree_settings.set_map("auth", auth_settings_handler.as_map().clone());
 
             (signing_key_name.to_string(), final_tree_settings)
         };

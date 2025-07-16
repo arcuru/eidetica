@@ -748,7 +748,7 @@ impl AtomicOp {
                 // Update the settings subtree to include auth configuration
                 // We need to merge with existing settings and add the auth section
                 let mut updated_settings = effective_settings_for_validation.clone();
-                updated_settings.set_map("auth", auth_settings.as_kvnested().clone());
+                updated_settings.set_map("auth", auth_settings.as_map().clone());
 
                 // Update the SETTINGS subtree data in the entry builder
                 let settings_json = serde_json::to_string(&updated_settings)?;
