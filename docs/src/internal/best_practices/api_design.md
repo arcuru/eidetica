@@ -15,103 +15,25 @@ The fundamental rule for string parameters in Eidetica:
 
 ### When to Use `Into<String>`
 
-Use `impl Into<String>` when the function will store the parameter as an owned `String`:
-
-```rust
-// ✅ GOOD: Parameter is stored as String
-pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
-    self.default_auth_key = Some(key_name.into());
-}
-
-// ✅ GOOD: Parameter becomes part of stored data
-impl SubTree for Dict {
-    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
-        Ok(Self {
-            name: subtree_name.into(), // Stored as String
-            atomic_op: op.clone(),
-        })
-    }
-}
-```
-
-**Benefits:**
-
-- Avoids double conversion (`AsRef<str>` → `&str` → `String`)
-- Still accepts `&str`, `String`, and `&String` transparently
-- More efficient for storage operations
+Use `impl Into<String>` when the function will store the parameter as an owned `String`. This avoids double conversion and is more efficient for storage operations while still accepting `&str`, `String`, and `&String` transparently.
 
 ### When to Use `AsRef<str>`
 
-Use `impl AsRef<str>` when the function only needs to read the string temporarily:
-
-```rust
-// ✅ GOOD: Parameter is only used for lookup/comparison
-pub fn get(&self, key: impl AsRef<str>) -> Option<&Value> {
-    self.children.get(key.as_ref()) // Only accessed, not stored
-}
-
-// ✅ GOOD: Parameter used for validation/checking
-pub fn in_subtree(&self, subtree_name: impl AsRef<str>) -> bool {
-    self.subtrees.iter().any(|node| node.name == subtree_name.as_ref())
-}
-```
-
-**Benefits:**
-
-- Maximum flexibility for callers
-- No unnecessary allocations
-- Clear intent that parameter is not stored
+Use `impl AsRef<str>` when the function only needs to read the string temporarily for lookups, comparisons, or validation. This provides maximum flexibility with no unnecessary allocations and clearly indicates the parameter is not stored.
 
 ### Anti-Patterns to Avoid
 
-❌ **BAD: `AsRef<str>` followed by immediate `.to_string()`**
-
-```rust
-// DON'T DO THIS
-pub fn set_key(&mut self, key_name: impl AsRef<str>) {
-    self.key = key_name.as_ref().to_string(); // Double conversion!
-}
-```
-
-✅ **GOOD: Use `Into<String>` instead**
-
-```rust
-pub fn set_key(&mut self, key_name: impl Into<String>) {
-    self.key = key_name.into(); // Direct conversion
-}
-```
+Never use `AsRef<str>` followed by immediate `.to_string()` - this causes double conversion. Instead, use `Into<String>` for direct conversion when storing the value.
 
 ## Common Conversion Patterns
 
 ### ID Types
 
-For ID parameters, prefer `Into<ID>` when working with ID-typed fields:
-
-```rust
-// ✅ GOOD: Clear intent and type safety
-pub fn get_entry(&self, entry_id: impl Into<ID>) -> Result<Entry> {
-    let id = entry_id.into();
-    self.backend.get(&id)
-}
-```
+For ID parameters, prefer `Into<ID>` when working with ID-typed fields for clear intent and type safety.
 
 ### Path Segments
 
-For path operations, use `Into<String>` with `Clone` bounds when segments will be stored:
-
-```rust
-// ✅ GOOD: Path segments that will be stored as keys
-pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
-where
-    S: Into<String> + Clone,
-    P: AsRef<[S]>,
-{
-    for segment in path.as_ref() {
-        let key = segment.clone().into(); // Stored as String key
-        // ... use key
-    }
-}
-```
+For path operations, use `Into<String>` with `Clone` bounds when segments will be stored as keys.
 
 ## Performance Guidelines
 
@@ -120,101 +42,19 @@ where
 For performance-critical operations:
 
 1. **Bulk Operations**: Convert all parameters upfront to avoid per-iteration conversions
-
-```rust
-// ✅ GOOD: Convert once, use many times
-pub fn get_entries<I, T>(&self, entry_ids: I) -> Result<Vec<Entry>>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<ID>,
-{
-    let ids: Vec<ID> = entry_ids.into_iter().map(Into::into).collect();
-    let mut entries = Vec::with_capacity(ids.len());
-
-    for id in ids { // No conversion overhead in loop
-        entries.push(self.backend.get(&id)?);
-    }
-
-    Ok(entries)
-}
-```
-
 2. **Iterator Chains**: Prefer direct loops over complex iterator chains in hot paths
-
-```rust
-// ✅ GOOD: Direct loop for hot path
-let mut result = Vec::new();
-for (id, entry) in entries.iter() {
-    if entry.in_tree(tree) {
-        result.push(id.clone());
-    }
-}
-
-// ❌ LESS EFFICIENT: Complex iterator chain
-let result: Vec<_> = entries
-    .keys()
-    .filter(|&id| entries.get(id).is_some_and(|entry| entry.in_tree(tree)))
-    .cloned()
-    .collect();
-```
 
 ## API Documentation Standards
 
-### Parameter Documentation
-
-Always document the expected usage pattern for string parameters:
-
-````rust
-/// Sets the default authentication key for this tree.
-///
-/// # Parameters
-/// * `key_name` - Authentication key identifier that will be stored.
-///   Accepts any string type (`&str`, `String`, `&String`).
-///
-/// # Example
-/// ```rust
-/// tree.set_default_auth_key("my_key");           // &str
-/// tree.set_default_auth_key(key_string);         // String
-/// tree.set_default_auth_key(&owned_string);      // &String
-/// ```
-pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
-    self.default_auth_key = Some(key_name.into());
-}
-````
+Always document the expected usage pattern for string parameters, indicating whether the parameter will be stored or just accessed, and which string types are accepted.
 
 ## Testing Patterns
 
-### Conversion Compatibility Tests
-
-Test that APIs work with all string types:
-
-```rust
-#[test]
-fn test_string_parameter_compatibility() {
-    let mut dict = create_test_dict();
-
-    // Test all string types work
-    dict.set("key1", value1);                    // &str
-    dict.set(String::from("key2"), value2);      // String
-    dict.set(&String::from("key3"), value3);     // &String
-
-    // All should work identically
-    assert!(dict.contains_key("key1"));
-    assert!(dict.contains_key("key2"));
-    assert!(dict.contains_key("key3"));
-}
-```
+Ensure APIs work with all string types (`&str`, `String`, `&String`) by testing conversion compatibility.
 
 ## API Evolution Guidelines
 
-During development, APIs can be freely changed to follow best practices:
-
-1. **Update existing methods** directly with improved parameter types
-2. **Add comprehensive tests** to cover new parameter types
-3. **Update documentation** to reflect the changes
-4. **Consider performance impact** of the changes
-
-Note: Backward compatibility is not required during the development phase. Breaking changes are acceptable when they improve performance, ergonomics, or consistency.
+During development, APIs can be freely changed to follow best practices. Update methods directly with improved parameter types, add comprehensive tests, update documentation, and consider performance impact. Breaking changes are acceptable when they improve performance, ergonomics, or consistency.
 
 ## Summary
 

@@ -17,7 +17,7 @@ All tests for the Eidetica crate are located in the `crates/lib/tests/it/` direc
 
 This unified suite is organized as a single integration test binary, following the pattern described by [matklad](https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html).
 
-The module structure within `crates/lib/tests/it/` mirrors the main library structure from `crates/lib/src/`; `crates/lib/tests/it/subtree.rs` contains tests for `crates/lib/src/subtree.rs`, etc.
+The module structure within `crates/lib/tests/it/` mirrors the main library structure from `crates/lib/src/`. Each major component has its own test module directory.
 
 ### Example Applications as Tests
 
@@ -50,65 +50,15 @@ We exclusively test through public interfaces. This approach ensures API stabili
 
 ### Test Helpers
 
-Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/it/helpers.rs` module to simplify test setup and common assertions:
-
-- **Tree Setup Helpers**:
-
-  - `setup_tree()`: Creates a basic tree with an InMemoryDatabase
-  - `setup_tree_with_settings()`: Creates a tree with initial settings
-  - `setup_tree_with_multiple_dicts()`: Creates a tree with multiple Dict subtrees and preset values
-
-- **Data Structure Helpers**:
-
-  - `create_map()`: Creates a Map with specified key-value pairs
-  - `create_nested_map()`: Creates a nested Map structure
-  - `create_kvoverwrite()`: Creates a Map with initial data
-
-- **Assertion Helpers**:
-  - `assert_dict_value()`: Verifies a Dict contains an expected string value
-  - `assert_key_not_found()`: Verifies a key doesn't exist in a store
-  - `assert_nested_value()`: Checks deep nested values inside a Map structure
-  - `assert_path_deleted()`: Validates that a path is deleted (has tombstone or is missing)
-
-Using these helpers improves test readability, reduces code duplication, and ensures consistent test setup across the codebase.
+Eidetica provides test helpers organized into main helpers (`crates/lib/tests/it/helpers.rs`) for common database and tree setup, and module-specific helpers for specialized testing scenarios. Each test module has its own `helpers.rs` file with utilities specific to that component's testing needs.
 
 ### Standard Test Structure
 
-Most tests follow this pattern:
-
-```rust
-#[test]
-fn test_component_functionality() {
-    // Setup - prepare the test environment
-    let tree = setup_tree(); // Using a test helper
-
-    // Action - perform the operation being tested
-    let operation = tree.new_operation().expect("Failed to create operation");
-    let store = Dict::new(&operation, "data").expect("Failed to create store");
-    store.set("key", "value").expect("Failed to set value");
-
-    // Assertion - verify the expected outcome using a helper
-    assert_dict_value(&store, "key", "value");
-}
-```
+Tests follow a consistent setup-action-assertion pattern, utilizing test helpers for environment preparation and result verification.
 
 ### Error Case Testing
 
-We ensure tests cover error conditions, not just the happy path:
-
-```rust
-#[test]
-fn test_error_handling() {
-    // Setup
-    // ...
-
-    // Verify error behavior
-    match operation_that_should_fail() {
-        Err(Error::ExpectedErrorType) => (), // Expected
-        other => panic!("Expected specific error, got {:?}", other),
-    }
-}
-```
+Tests cover both successful operations and error conditions to ensure robust error handling throughout the system.
 
 ## CRDT-Specific Testing
 
@@ -148,17 +98,7 @@ cargo test --test it
 cargo nextest run tests::it::subtree
 ```
 
-To run tests for specific modules or parts of the codebase, you can target the integration test binary and specify the test path:
-
-```bash
-# Run all tests within the integration test binary
-cargo test --test it
-
-# Run specific tests within a module in the integration test suite (e.g., entry tests)
-cargo nextest run tests::it::entry
-# or, if you have test functions directly in tests/it/subtree.rs:
-cargo nextest run tests::it::subtree
-```
+Run tests using `cargo test --test it` for all integration tests, or target specific modules with patterns like `cargo test --test it auth::`. The project also supports `cargo nextest` for improved test output and performance.
 
 ### Coverage Analysis
 
@@ -171,6 +111,10 @@ task coverage
 cargo tarpaulin --workspace --skip-clean --include-tests --all-features --output-dir coverage --out lcov
 ```
 
+## Module Test Organization
+
+Each test module follows a consistent structure with `mod.rs` for declarations, `helpers.rs` for module-specific utilities, and separate files for different features or aspects being tested.
+
 ## Contributing New Tests
 
 When adding features or fixing bugs:
@@ -180,7 +124,8 @@ When adding features or fixing bugs:
    - Interactions between the component and other parts of the system.
 2. Consider adding example code in the `examples/` directory for significant new features to demonstrate usage and provide further validation.
 3. Test both normal operation ("happy path") and error cases.
-4. Use the test helpers in `crates/lib/tests/it/helpers.rs` to simplify test setup and assertions. Consider adding new helpers for common patterns.
+4. Use the test helpers in `crates/lib/tests/it/helpers.rs` for general setup, and module-specific helpers for specialized scenarios.
+5. If you need common test utilities for a new pattern, add them to the appropriate helpers.rs file.
 
 ## Best Practices
 
