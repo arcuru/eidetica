@@ -1,9 +1,14 @@
 # Core Components
 
-Details about the main building blocks of Eidetica.
+Main building blocks of Eidetica's architecture.
 
 ## Components
 
-- **[Entry](entry.md)**: The fundamental unit of data with authentication integration
-- **[Authentication](authentication.md)**: Cryptographic authentication and authorization system
-- **[CRDT](crdt.md)**: Conflict-free Replicated Data Types for merging data
+- **[Entry](entry.md)**: Immutable content-addressable data units
+- **[Authentication](authentication.md)**: Ed25519-based cryptographic authentication
+- **[CRDT](crdt.md)**: Conflict-free data structures for distributed merging
+- **[BaseDB](basedb.md)**: Primary database implementation
+- **[Tree](tree.md)**: Database table analogue for entry collections
+- **[AtomicOp](atomicop.md)**: Atomic transaction mechanism
+- **[Backend](backend.md)**: Pluggable storage abstraction layer
+- **[Subtrees](subtrees.md)**: Typed data access patterns within trees
