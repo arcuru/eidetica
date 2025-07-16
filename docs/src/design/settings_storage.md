@@ -96,7 +96,7 @@ struct TreeNode {
 }
 ```
 
-**Note**: `TreeNode` no longer contains a `data` field - all data is stored in named subtrees.
+**Note**: `TreeNode` no longer contains a data field - all data is stored in named subtrees.
 
 ### SubTreeNode Structure
 

@@ -323,7 +323,7 @@ impl AtomicOp {
     /// Returns an error if the subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
-        T: crate::data::Data + Default,
+        T: crate::crdt::Data + Default,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.borrow();
