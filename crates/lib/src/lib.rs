@@ -10,7 +10,7 @@
 //! * **Trees (`basedb::Tree`)**: Analogous to tables or branches, representing a history of related entries identified by a root entry ID.
 //! * **Backends (`backend::Backend`)**: A pluggable storage layer for persisting entries.
 //! * **BaseDB (`basedb::BaseDB`)**: The main database struct that manages trees and interacts with a backend.
-//! * **CRDTs (`data::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
+//! * **CRDTs (`crdt::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
 //! * **SubTrees (`subtree::SubTree`)**: Named data structures within a tree that provide specialized data access patterns:
 //!     * **Dict (`subtree::Dict`)**: A key-value store within a tree.
 //!     * **Table (`subtree::Table`)**: A record-oriented store with automatic primary key generation, similar to a database table.
@@ -23,7 +23,6 @@ pub mod backend;
 pub mod basedb;
 pub mod constants;
 pub mod crdt;
-pub mod data;
 pub mod entry;
 pub mod subtree;
 pub mod tree;
