@@ -60,8 +60,8 @@ Eidetica provides a comprehensive set of test helpers in the `crates/lib/tests/i
 
 - **Data Structure Helpers**:
 
-  - `create_kvnested()`: Creates a Map with specified key-value pairs
-  - `create_nested_kvnested()`: Creates a nested Map structure
+  - `create_map()`: Creates a Map with specified key-value pairs
+  - `create_nested_map()`: Creates a nested Map structure
   - `create_kvoverwrite()`: Creates a Map with initial data
 
 - **Assertion Helpers**:

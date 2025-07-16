@@ -34,17 +34,17 @@ impl AuthSettings {
     }
 
     /// Create from existing Map (e.g., from _settings.auth)
-    pub fn from_kvnested(kvnested: Map) -> Self {
-        Self { inner: kvnested }
+    pub fn from_map(map: Map) -> Self {
+        Self { inner: map }
     }
 
     /// Get the underlying Map for direct access
-    pub fn as_kvnested(&self) -> &Map {
+    pub fn as_map(&self) -> &Map {
         &self.inner
     }
 
     /// Get mutable access to the underlying Map
-    pub fn as_kvnested_mut(&mut self) -> &mut Map {
+    pub fn as_map_mut(&mut self) -> &mut Map {
         &mut self.inner
     }
 
@@ -304,12 +304,12 @@ mod tests {
         settings2.add_key("KEY_2", key2).unwrap();
 
         // Test that we can access the underlying Map for merging at higher level
-        let kvnested1 = settings1.as_kvnested().clone();
-        let kvnested2 = settings2.as_kvnested().clone();
+        let map1 = settings1.as_map().clone();
+        let map2 = settings2.as_map().clone();
 
         // This would be done at the higher settings level, not here
-        let merged_kvnested = kvnested1.merge(&kvnested2).unwrap();
-        let merged_settings = AuthSettings::from_kvnested(merged_kvnested);
+        let merged_map = map1.merge(&map2).unwrap();
+        let merged_settings = AuthSettings::from_map(merged_map);
 
         // Both keys should be present in the merged view
         assert!(merged_settings.get_key("KEY_1").is_some());
