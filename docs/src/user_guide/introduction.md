@@ -38,6 +38,6 @@ This User Guide is organized to help you learn and use Eidetica effectively:
   - [Entries & Trees](concepts/entries_trees.md)
   - [Backends](concepts/backends.md)
   - [Subtrees](concepts/subtrees.md)
-- [Examples](examples.md): Real-world usage examples
+- [Examples](examples_snippets.md): Real-world usage examples
 
 We recommend starting with the [Getting Started](getting_started.md) guide to set up your first Eidetica instance, then exploring the [Core Concepts](core_concepts.md) to better understand the unique capabilities of this database system.
