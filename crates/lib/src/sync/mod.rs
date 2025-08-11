@@ -14,7 +14,7 @@ pub mod transports;
 pub use error::SyncError;
 
 use protocol::{SyncRequest, SyncResponse};
-use transports::{SyncTransport, http::HttpTransport};
+use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Private constant for the sync settings subtree name
 const SETTINGS_SUBTREE: &str = "settings_map";
@@ -216,6 +216,16 @@ impl Sync {
     /// to communicate over HTTP/REST APIs.
     pub fn enable_http_transport(&mut self) -> Result<()> {
         let transport = HttpTransport::new()?;
+        self.transport = Some(Box::new(transport));
+        Ok(())
+    }
+
+    /// Enable Iroh transport for peer-to-peer network communication.
+    ///
+    /// This initializes the Iroh transport layer, allowing the sync module
+    /// to communicate over QUIC-based peer-to-peer networking with hole punching.
+    pub fn enable_iroh_transport(&mut self) -> Result<()> {
+        let transport = IrohTransport::new()?;
         self.transport = Some(Box::new(transport));
         Ok(())
     }
