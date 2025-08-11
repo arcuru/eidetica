@@ -1,0 +1,67 @@
+//! Helper functions for Sync testing
+//!
+//! This module provides utilities for testing Sync functionality including
+//! setup operations, common test patterns, and assertion helpers.
+
+use eidetica::{basedb::BaseDB, sync::Sync};
+use std::sync::Arc;
+
+const TEST_KEY_NAME: &str = "test_key";
+
+// ===== SETUP HELPERS =====
+
+/// Create a BaseDB Arc with authentication key
+pub fn setup_db() -> Arc<BaseDB> {
+    Arc::new(crate::helpers::setup_db())
+}
+
+/// Create a new Sync instance with standard setup
+pub fn setup() -> (Arc<BaseDB>, Sync) {
+    let base_db = setup_db();
+    let sync = Sync::new(Arc::clone(&base_db), TEST_KEY_NAME).expect("Failed to create Sync");
+    (base_db, sync)
+}
+
+/// Create BaseDB with initialized sync module
+pub fn setup_basedb_with_initialized() -> BaseDB {
+    let base_db = crate::helpers::setup_db();
+    base_db
+        .with_sync(TEST_KEY_NAME)
+        .expect("Failed to initialize sync")
+}
+
+// ===== ASSERTION HELPERS =====
+
+/// Assert that a setting has the expected value
+pub fn assert_setting(sync: &Sync, key: &str, expected_value: &str) {
+    let actual_value = sync.get_setting(key).expect("Failed to get setting");
+    assert_eq!(actual_value, Some(expected_value.to_string()));
+}
+
+/// Assert that a setting does not exist
+pub fn assert_setting_not_found(sync: &Sync, key: &str) {
+    let actual_value = sync.get_setting(key).expect("Failed to get setting");
+    assert_eq!(actual_value, None);
+}
+
+/// Assert that two sync instances refer to the same tree
+pub fn assert_trees_equal(sync1: &Sync, sync2: &Sync) {
+    assert_eq!(sync1.sync_tree_root_id(), sync2.sync_tree_root_id());
+}
+
+// ===== OPERATION HELPERS =====
+
+/// Set multiple settings on a sync instance
+pub fn set_multiple_settings(sync: &mut Sync, settings: &[(&str, &str)]) {
+    for (key, value) in settings {
+        sync.set_setting(key, value, TEST_KEY_NAME)
+            .unwrap_or_else(|_| panic!("Failed to set setting: {key} = {value}"));
+    }
+}
+
+/// Assert multiple settings have expected values
+pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
+    for (key, expected_value) in expected {
+        assert_setting(sync, key, expected_value);
+    }
+}

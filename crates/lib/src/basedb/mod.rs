@@ -9,6 +9,7 @@ use crate::auth::crypto::{format_public_key, generate_keypair};
 use crate::backend::Database;
 use crate::crdt::Map;
 use crate::entry::ID;
+use crate::sync::Sync;
 use crate::tree::Tree;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
@@ -25,9 +26,12 @@ pub use errors::BaseError;
 /// It manages collections of related entries, called `Tree`s, and interacts with a
 /// pluggable `Database` for storage and retrieval.
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
+#[derive(Clone)]
 pub struct BaseDB {
     /// The database storage used by the database.
     backend: Arc<dyn Database>,
+    /// Synchronization module for this database instance.
+    sync: Option<Sync>,
     // Blob storage will be separate, maybe even just an extension
     // storage: IPFS;
 }
@@ -36,6 +40,7 @@ impl BaseDB {
     pub fn new(backend: Box<dyn Database>) -> Self {
         Self {
             backend: Arc::from(backend),
+            sync: None,
         }
     }
 
@@ -278,5 +283,47 @@ impl BaseDB {
         } else {
             Ok(None)
         }
+    }
+
+    // === Synchronization Management ===
+    //
+    // These methods provide access to the Sync module for managing synchronization
+    // settings and state for this database instance.
+
+    /// Initialize the Sync module for this database.
+    ///
+    /// Creates a new sync settings tree and initializes the sync module.
+    /// This method should be called once per database instance to enable sync functionality.
+    ///
+    /// # Arguments
+    /// * `signing_key_name` - The key name to use for authenticating sync operations
+    ///
+    /// # Returns
+    /// A `Result` containing a new BaseDB with the sync module initialized.
+    pub fn with_sync(mut self, signing_key_name: impl AsRef<str>) -> Result<Self> {
+        let sync = Sync::new(Arc::new(self.clone()), signing_key_name)?;
+        self.sync = Some(sync);
+        Ok(self)
+    }
+
+    /// Get a reference to the Sync module for this database.
+    ///
+    /// # Returns
+    /// An `Option` containing a reference to the `Sync` module if initialized.
+    pub fn sync(&self) -> Option<&Sync> {
+        self.sync.as_ref()
+    }
+
+    /// Load an existing Sync module from a sync tree root ID.
+    ///
+    /// # Arguments
+    /// * `sync_tree_root_id` - The root ID of an existing sync tree
+    ///
+    /// # Returns
+    /// A `Result` containing a new BaseDB with the sync module loaded.
+    pub fn with_sync_from_tree(mut self, sync_tree_root_id: &ID) -> Result<Self> {
+        let sync = Sync::load(Arc::new(self.clone()), sync_tree_root_id)?;
+        self.sync = Some(sync);
+        Ok(self)
     }
 }

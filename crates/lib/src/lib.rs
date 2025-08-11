@@ -25,6 +25,7 @@ pub mod constants;
 pub mod crdt;
 pub mod entry;
 pub mod subtree;
+pub mod sync;
 pub mod tree;
 
 /// Re-export the `Tree` struct for easier access.

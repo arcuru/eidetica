@@ -24,4 +24,5 @@ mod data;
 mod entry;
 mod helpers;
 mod subtree;
+mod sync;
 mod tree;
