@@ -18,7 +18,8 @@ pub fn setup_db() -> Arc<BaseDB> {
 /// Create a new Sync instance with standard setup
 pub fn setup() -> (Arc<BaseDB>, Sync) {
     let base_db = setup_db();
-    let sync = Sync::new(Arc::clone(&base_db), TEST_KEY_NAME).expect("Failed to create Sync");
+    let sync =
+        Sync::new(Arc::clone(base_db.backend()), TEST_KEY_NAME).expect("Failed to create Sync");
     (base_db, sync)
 }
 

@@ -26,7 +26,6 @@ pub use errors::BaseError;
 /// It manages collections of related entries, called `Tree`s, and interacts with a
 /// pluggable `Database` for storage and retrieval.
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
-#[derive(Clone)]
 pub struct BaseDB {
     /// The database storage used by the database.
     backend: Arc<dyn Database>,
@@ -301,7 +300,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a new BaseDB with the sync module initialized.
     pub fn with_sync(mut self, signing_key_name: impl AsRef<str>) -> Result<Self> {
-        let sync = Sync::new(Arc::new(self.clone()), signing_key_name)?;
+        let sync = Sync::new(Arc::clone(&self.backend), signing_key_name)?;
         self.sync = Some(sync);
         Ok(self)
     }
@@ -322,7 +321,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a new BaseDB with the sync module loaded.
     pub fn with_sync_from_tree(mut self, sync_tree_root_id: &ID) -> Result<Self> {
-        let sync = Sync::load(Arc::new(self.clone()), sync_tree_root_id)?;
+        let sync = Sync::load(Arc::clone(&self.backend), sync_tree_root_id)?;
         self.sync = Some(sync);
         Ok(self)
     }

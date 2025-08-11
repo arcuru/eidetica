@@ -75,6 +75,16 @@ pub enum Error {
     /// Structured atomic operation errors from the atomicop module
     #[error(transparent)]
     AtomicOp(atomicop::AtomicOpError),
+
+    /// Structured synchronization errors from the sync module
+    #[error(transparent)]
+    Sync(sync::SyncError),
+}
+
+impl From<sync::SyncError> for Error {
+    fn from(err: sync::SyncError) -> Self {
+        Error::Sync(err)
+    }
 }
 
 impl Error {
@@ -87,6 +97,7 @@ impl Error {
             Error::CRDT(_) => "crdt",
             Error::Subtree(_) => "subtree",
             Error::AtomicOp(_) => "atomicop",
+            Error::Sync(_) => "sync",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
         }

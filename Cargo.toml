@@ -31,6 +31,13 @@ yrs = "0.23"
 signal-hook = "0.3"
 tempfile = "3.0"
 criterion = "0.5"
+# Networking dependencies
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+async-trait = "0.1"
+iroh = "0.91"
 
 # Profile configuration for optimizing builds
 [profile.dev]

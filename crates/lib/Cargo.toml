@@ -25,6 +25,12 @@ thiserror = { workspace = true }
 typetag = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
 yrs = { version = "0.23", optional = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+iroh = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

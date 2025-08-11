@@ -21,7 +21,7 @@ fn test_sync_load() {
     let sync_root_id = sync.sync_tree_root_id().clone();
 
     // Load the sync instance from the root ID
-    let loaded_sync = Sync::load(Arc::clone(&base_db), &sync_root_id).unwrap();
+    let loaded_sync = Sync::load(Arc::clone(base_db.backend()), &sync_root_id).unwrap();
 
     // Verify it's the same sync tree
     assert_trees_equal(&sync, &loaded_sync);
@@ -59,7 +59,7 @@ fn test_sync_settings_persistence() {
     let sync_root_id = sync.sync_tree_root_id().clone();
 
     // Load a new Sync instance from the same root ID
-    let loaded_sync = Sync::load(Arc::clone(&base_db), &sync_root_id).unwrap();
+    let loaded_sync = Sync::load(Arc::clone(base_db.backend()), &sync_root_id).unwrap();
 
     // Verify the setting was persisted
     assert_setting(&loaded_sync, "persistent_setting", "persistent_value");

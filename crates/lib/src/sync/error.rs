@@ -1,0 +1,77 @@
+//! Error types for the synchronization module.
+
+use thiserror::Error;
+
+/// Errors that can occur during synchronization operations.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum SyncError {
+    /// No transport has been enabled for network operations.
+    #[error("No transport enabled. Call enable_http_transport() first")]
+    NoTransportEnabled,
+
+    /// Attempted to start a server when one is already running.
+    #[error("Server already running on {address}")]
+    ServerAlreadyRunning { address: String },
+
+    /// Attempted to stop a server when none is running.
+    #[error("Server not running")]
+    ServerNotRunning,
+
+    /// Unexpected response type received from peer.
+    #[error("Unexpected response type: expected {expected}, got {actual}")]
+    UnexpectedResponse {
+        expected: &'static str,
+        actual: String,
+    },
+
+    /// Network communication error.
+    #[error("Network error: {0}")]
+    Network(String),
+
+    /// Transport initialization error.
+    #[error("Failed to initialize transport: {0}")]
+    TransportInit(String),
+
+    /// Runtime creation error for async operations.
+    #[error("Failed to create async runtime: {0}")]
+    RuntimeCreation(String),
+
+    /// Server bind error.
+    #[error("Failed to bind server to {address}: {reason}")]
+    ServerBind { address: String, reason: String },
+
+    /// Client connection error.
+    #[error("Failed to connect to {address}: {reason}")]
+    ConnectionFailed { address: String, reason: String },
+}
+
+impl SyncError {
+    /// Check if this is a configuration error (no transport enabled).
+    pub fn is_configuration_error(&self) -> bool {
+        matches!(self, SyncError::NoTransportEnabled)
+    }
+
+    /// Check if this is a server lifecycle error.
+    pub fn is_server_error(&self) -> bool {
+        matches!(
+            self,
+            SyncError::ServerAlreadyRunning { .. }
+                | SyncError::ServerNotRunning
+                | SyncError::ServerBind { .. }
+        )
+    }
+
+    /// Check if this is a network/connection error.
+    pub fn is_network_error(&self) -> bool {
+        matches!(
+            self,
+            SyncError::Network(_) | SyncError::ConnectionFailed { .. }
+        )
+    }
+
+    /// Check if this is a protocol error (unexpected response).
+    pub fn is_protocol_error(&self) -> bool {
+        matches!(self, SyncError::UnexpectedResponse { .. })
+    }
+}
