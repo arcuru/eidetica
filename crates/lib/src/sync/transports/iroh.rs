@@ -3,7 +3,7 @@
 //! This module provides peer-to-peer sync communication using
 //! Iroh's QUIC-based networking with hole punching and relay servers.
 
-use super::SyncTransport;
+use super::{SyncTransport, shared::*};
 use crate::Result;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
@@ -11,10 +11,9 @@ use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr};
-use std::sync::Arc;
 #[allow(unused_imports)] // Used by write_all method on streams
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::oneshot;
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
 
@@ -22,12 +21,8 @@ const SYNC_ALPN: &[u8] = b"eidetica/v0";
 pub struct IrohTransport {
     /// The Iroh endpoint for P2P communication.
     endpoint: Option<Endpoint>,
-    /// Whether the server is running.
-    server_running: Arc<RwLock<bool>>,
-    /// Shutdown signal for the server loop.
-    server_shutdown: Arc<RwLock<Option<oneshot::Sender<()>>>>,
-    /// The endpoint's node address for client connections.
-    node_addr: Arc<RwLock<Option<String>>>,
+    /// Shared server state management.
+    server_state: ServerState,
 }
 
 impl IrohTransport {
@@ -35,9 +30,7 @@ impl IrohTransport {
     pub fn new() -> Result<Self> {
         Ok(Self {
             endpoint: None,
-            server_running: Arc::new(RwLock::new(false)),
-            server_shutdown: Arc::new(RwLock::new(None)),
-            node_addr: Arc::new(RwLock::new(None)),
+            server_state: ServerState::new(),
         })
     }
 
@@ -64,24 +57,9 @@ impl IrohTransport {
         &self,
         endpoint: Endpoint,
         ready_tx: oneshot::Sender<()>,
+        shutdown_rx: oneshot::Receiver<()>,
     ) -> Result<()> {
-        let server_running = Arc::clone(&self.server_running);
-        let server_shutdown = Arc::clone(&self.server_shutdown);
-
-        // Create shutdown channel
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-
-        // Store shutdown sender
-        {
-            let mut shutdown = server_shutdown.write().await;
-            *shutdown = Some(shutdown_tx);
-        }
-
-        // Mark server as running
-        {
-            let mut running = server_running.write().await;
-            *running = true;
-        }
+        let mut shutdown_rx = shutdown_rx;
 
         // Signal that we're ready
         let _ = ready_tx.send(());
@@ -109,10 +87,8 @@ impl IrohTransport {
                     }
                 }
             }
-
-            // Mark server as no longer running
-            let mut running = server_running.write().await;
-            *running = false;
+            // Server loop has exited - the shutdown was triggered by stop_server()
+            // which already marked the server as stopped, so no additional cleanup needed here
         });
 
         Ok(())
@@ -137,8 +113,8 @@ impl IrohTransport {
             }
         };
 
-        // Deserialize the request
-        let request: SyncRequest = match serde_json::from_slice(&buffer) {
+        // Deserialize the request using JsonHandler
+        let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to deserialize request: {e}");
@@ -149,8 +125,8 @@ impl IrohTransport {
         // Handle the request
         let response = handle_request(request).await;
 
-        // Serialize and send response
-        match serde_json::to_vec(&response) {
+        // Serialize and send response using JsonHandler
+        match JsonHandler::serialize_response(&response) {
             Ok(response_bytes) => {
                 if let Err(e) = send_stream.write_all(&response_bytes).await {
                     eprintln!("Failed to write response: {e}");
@@ -171,7 +147,7 @@ impl IrohTransport {
 impl SyncTransport for IrohTransport {
     async fn start_server(&mut self, _addr: &str) -> Result<()> {
         // Check if server is already running
-        if self.is_server_running() {
+        if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
                 address: "iroh-endpoint".to_string(),
             }
@@ -183,47 +159,30 @@ impl SyncTransport for IrohTransport {
         let node_id = endpoint.node_id().to_string();
         let endpoint_clone = endpoint.clone();
 
-        // Store the endpoint address as node ID string
-        {
-            let mut addr_lock = self.node_addr.write().await;
-            *addr_lock = Some(node_id);
-        }
-
-        // Create ready channel
-        let (ready_tx, ready_rx) = oneshot::channel::<()>();
+        // Create server coordination channels
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         // Start server loop
-        self.start_server_loop(endpoint_clone, ready_tx).await?;
+        self.start_server_loop(endpoint_clone, ready_tx, shutdown_rx)
+            .await?;
 
-        // Wait for server to be ready
-        ready_rx.await.map_err(|_| SyncError::ServerBind {
-            address: "iroh-endpoint".to_string(),
-            reason: "Server startup failed".to_string(),
-        })?;
+        // Wait for server to be ready using shared utility
+        wait_for_ready(ready_rx, "iroh-endpoint").await?;
+
+        // Start server state with node ID and shutdown sender
+        self.server_state.server_started(node_id, shutdown_tx);
 
         Ok(())
     }
 
     async fn stop_server(&mut self) -> Result<()> {
-        if !self.is_server_running() {
+        if !self.server_state.is_running() {
             return Err(SyncError::ServerNotRunning.into());
         }
 
-        // Send shutdown signal
-        let mut shutdown = self.server_shutdown.write().await;
-        if let Some(tx) = shutdown.take() {
-            let _ = tx.send(());
-        }
-
-        // Mark server as stopped immediately
-        {
-            let mut running = self.server_running.write().await;
-            *running = false;
-        }
-
-        // Clear node address
-        let mut addr_lock = self.node_addr.write().await;
-        *addr_lock = None;
+        // Stop server using combined method
+        self.server_state.stop_server();
 
         Ok(())
     }
@@ -259,9 +218,8 @@ impl SyncTransport for IrohTransport {
             .await
             .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
 
-        // Serialize and send the request
-        let request_bytes = serde_json::to_vec(&request)
-            .map_err(|e| SyncError::Network(format!("Failed to serialize request: {e}")))?;
+        // Serialize and send the request using JsonHandler
+        let request_bytes = JsonHandler::serialize_request(&request)?;
 
         send_stream
             .write_all(&request_bytes)
@@ -278,32 +236,17 @@ impl SyncTransport for IrohTransport {
             .await
             .map_err(|e| SyncError::Network(format!("Failed to read response: {e}")))?;
 
-        // Deserialize the response
-        let response: SyncResponse = serde_json::from_slice(&response_bytes)
-            .map_err(|e| SyncError::Network(format!("Failed to deserialize response: {e}")))?;
+        // Deserialize the response using JsonHandler
+        let response: SyncResponse = JsonHandler::deserialize_response(&response_bytes)?;
 
         Ok(response)
     }
 
     fn is_server_running(&self) -> bool {
-        // Use try_read to avoid needing async context
-        if let Ok(running) = self.server_running.try_read() {
-            *running
-        } else {
-            // If we can't get the lock, assume it's being modified (likely running)
-            true
-        }
+        self.server_state.is_running()
     }
 
     fn get_server_address(&self) -> Result<String> {
-        if let Ok(addr_lock) = self.node_addr.try_read() {
-            if let Some(addr) = addr_lock.as_ref() {
-                Ok(addr.clone())
-            } else {
-                Err(SyncError::ServerNotRunning.into())
-            }
-        } else {
-            Err(SyncError::ServerNotRunning.into())
-        }
+        self.server_state.get_address().map_err(|e| e.into())
     }
 }

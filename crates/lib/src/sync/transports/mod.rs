@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 pub mod http;
 pub mod iroh;
+pub mod shared;
 
 /// Trait for implementing sync communication over different transports.
 ///

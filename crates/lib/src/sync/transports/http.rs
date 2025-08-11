@@ -3,7 +3,7 @@
 //! This module provides HTTP-based sync communication using a single
 //! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
 
-use super::SyncTransport;
+use super::{SyncTransport, shared::*};
 use crate::Result;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
@@ -11,28 +11,19 @@ use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
 use axum::{Router, extract::Json as ExtractJson, response::Json, routing::post};
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::oneshot;
 
 /// HTTP transport implementation using axum and reqwest.
 pub struct HttpTransport {
-    /// Handle to the running server, if any.
-    server_handle: Arc<RwLock<Option<ServerHandle>>>,
-}
-
-/// Handle to a running HTTP server.
-struct ServerHandle {
-    /// Address the server is listening on.
-    _addr: SocketAddr,
-    /// Shutdown signal sender.
-    shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    /// Shared server state management.
+    server_state: ServerState,
 }
 
 impl HttpTransport {
     /// Create a new HTTP transport instance.
     pub fn new() -> Result<Self> {
         Ok(Self {
-            server_handle: Arc::new(RwLock::new(None)),
+            server_state: ServerState::new(),
         })
     }
 
@@ -46,41 +37,38 @@ impl HttpTransport {
 impl SyncTransport for HttpTransport {
     async fn start_server(&mut self, addr: &str) -> Result<()> {
         // Check if server is already running
-        if self.is_server_running() {
+        if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
                 address: addr.to_string(),
             }
             .into());
         }
 
-        let addr: SocketAddr = addr.parse().map_err(|e| SyncError::ServerBind {
+        let socket_addr: SocketAddr = addr.parse().map_err(|e| SyncError::ServerBind {
             address: addr.to_string(),
             reason: format!("Invalid address: {e}"),
         })?;
 
         let router = Self::create_router();
-        let server_handle_clone = Arc::clone(&self.server_handle);
 
-        // Create shutdown and ready channels
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        // Create server coordination channels
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Create a channel to get the actual bound address back
+        let (addr_tx, addr_rx) = oneshot::channel::<SocketAddr>();
 
         // Spawn server task
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(addr)
+            let listener = tokio::net::TcpListener::bind(socket_addr)
                 .await
                 .expect("Failed to bind address");
 
+            // Get the actual bound address (important for port 0)
             let actual_addr = listener.local_addr().expect("Failed to get local address");
 
-            // Store server handle
-            {
-                let mut handle = server_handle_clone.write().await;
-                *handle = Some(ServerHandle {
-                    _addr: actual_addr,
-                    shutdown_tx,
-                });
-            }
+            // Send the actual address back
+            let _ = addr_tx.send(actual_addr);
 
             // Signal that server is ready
             let _ = ready_tx.send(());
@@ -94,24 +82,31 @@ impl SyncTransport for HttpTransport {
                 .expect("Server failed");
         });
 
-        // Wait for server to be ready
-        ready_rx.await.map_err(|_| SyncError::ServerBind {
+        // Get the actual bound address
+        let actual_addr = addr_rx.await.map_err(|_| SyncError::ServerBind {
             address: addr.to_string(),
-            reason: "Server startup failed".to_string(),
+            reason: "Failed to get actual server address".to_string(),
         })?;
+
+        // Wait for server to be ready
+        wait_for_ready(ready_rx, addr).await?;
+
+        // Start server state with address and shutdown sender
+        self.server_state
+            .server_started(actual_addr.to_string(), shutdown_tx);
 
         Ok(())
     }
 
     async fn stop_server(&mut self) -> Result<()> {
-        let mut handle = self.server_handle.write().await;
-        if let Some(server) = handle.take() {
-            // Send shutdown signal
-            let _ = server.shutdown_tx.send(());
-            Ok(())
-        } else {
-            Err(SyncError::ServerNotRunning.into())
+        if !self.server_state.is_running() {
+            return Err(SyncError::ServerNotRunning.into());
         }
+
+        // Stop server using combined method
+        self.server_state.stop_server();
+
+        Ok(())
     }
 
     async fn send_request(&self, addr: &str, request: SyncRequest) -> Result<SyncResponse> {
@@ -145,25 +140,11 @@ impl SyncTransport for HttpTransport {
     }
 
     fn is_server_running(&self) -> bool {
-        // Use try_read to avoid needing async context
-        if let Ok(handle) = self.server_handle.try_read() {
-            handle.is_some()
-        } else {
-            // If we can't get the lock, assume it's being modified (likely running)
-            true
-        }
+        self.server_state.is_running()
     }
 
     fn get_server_address(&self) -> Result<String> {
-        if let Ok(handle) = self.server_handle.try_read() {
-            if let Some(server) = handle.as_ref() {
-                Ok(server._addr.to_string())
-            } else {
-                Err(SyncError::ServerNotRunning.into())
-            }
-        } else {
-            Err(SyncError::ServerNotRunning.into())
-        }
+        self.server_state.get_address().map_err(|e| e.into())
     }
 }
 
