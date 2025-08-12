@@ -48,6 +48,22 @@ pub enum SyncError {
     /// Device key not found in backend storage.
     #[error("Device key '{key_name}' not found in backend storage")]
     DeviceKeyNotFound { key_name: String },
+
+    /// Transport type not supported by this transport implementation.
+    #[error("Transport type '{transport_type}' not supported")]
+    UnsupportedTransport { transport_type: String },
+
+    /// Peer not found.
+    #[error("Peer not found: {0}")]
+    PeerNotFound(String),
+
+    /// Peer already exists.
+    #[error("Peer already exists: {0}")]
+    PeerAlreadyExists(String),
+
+    /// Serialization error.
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
 impl SyncError {
@@ -77,5 +93,10 @@ impl SyncError {
     /// Check if this is a protocol error (unexpected response).
     pub fn is_protocol_error(&self) -> bool {
         matches!(self, SyncError::UnexpectedResponse { .. })
+    }
+
+    /// Check if this is a not found error.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, SyncError::PeerNotFound(_))
     }
 }

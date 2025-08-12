@@ -32,8 +32,7 @@ fn test_sync_settings_operations() {
     let (_base_db, mut sync) = setup();
 
     // Store a dummy setting
-    sync.set_setting("test_setting", "test_value", "test_key")
-        .unwrap();
+    sync.set_setting("test_setting", "test_value").unwrap();
 
     // Retrieve the setting
     assert_setting(&sync, "test_setting", "test_value");
@@ -42,8 +41,7 @@ fn test_sync_settings_operations() {
     assert_setting_not_found(&sync, "non_existent");
 
     // Update the setting
-    sync.set_setting("test_setting", "updated_value", "test_key")
-        .unwrap();
+    sync.set_setting("test_setting", "updated_value").unwrap();
     assert_setting(&sync, "test_setting", "updated_value");
 }
 
@@ -54,7 +52,7 @@ fn test_sync_settings_persistence() {
     let (base_db, mut sync) = setup();
 
     // Store a persistent setting
-    sync.set_setting("persistent_setting", "persistent_value", "test_key")
+    sync.set_setting("persistent_setting", "persistent_value")
         .unwrap();
     let sync_root_id = sync.sync_tree_root_id().clone();
 

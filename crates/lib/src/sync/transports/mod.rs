@@ -6,6 +6,7 @@
 
 use crate::Result;
 use crate::entry::Entry;
+use crate::sync::peer_types::Address;
 use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 
@@ -19,6 +20,15 @@ pub mod shared;
 /// implement this trait to provide server and client functionality.
 #[async_trait]
 pub trait SyncTransport: Send + Sync {
+    /// Check if this transport can handle the given address
+    ///
+    /// # Arguments
+    /// * `address` - The address to check
+    ///
+    /// # Returns
+    /// True if this transport can handle the address, false otherwise.
+    fn can_handle_address(&self, address: &Address) -> bool;
+
     /// Start a server listening on the specified address.
     ///
     /// # Arguments
@@ -37,25 +47,25 @@ pub trait SyncTransport: Send + Sync {
     /// Send a request to a sync peer and receive a response.
     ///
     /// # Arguments
-    /// * `addr` - The address of the peer to connect to
+    /// * `address` - The address of the peer to connect to
     /// * `request` - The sync request to send (list of entries)
     ///
     /// # Returns
     /// The response from the peer, or an error if the request failed.
-    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse>;
+    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse>;
 
     /// Send entries to a sync peer and ensure they are acknowledged.
     ///
     /// This is a convenience method that wraps send_request and validates the response.
     ///
     /// # Arguments
-    /// * `addr` - The address of the peer to connect to
+    /// * `address` - The address of the peer to connect to
     /// * `entries` - The entries to send
     ///
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
-    async fn send_entries(&self, addr: &str, entries: &[Entry]) -> Result<()> {
-        let response = self.send_request(addr, entries).await?;
+    async fn send_entries(&self, address: &Address, entries: &[Entry]) -> Result<()> {
+        let response = self.send_request(address, entries).await?;
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
         }

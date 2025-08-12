@@ -3,20 +3,27 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
-use crate::{Result, crdt::Doc as CrdtDoc, entry::Entry, subtree::DocStore, tree::Tree};
+use crate::{Result, crdt::Doc, entry::Entry, subtree::DocStore, tree::Tree};
 use std::sync::Arc;
 
 pub mod error;
 pub mod handler;
+mod peer_manager;
+pub mod peer_types;
 pub mod protocol;
 pub mod transports;
 
 pub use error::SyncError;
+pub use peer_types::{Address, PeerInfo, PeerStatus};
 
+use peer_manager::PeerManager;
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Private constant for the sync settings subtree name
 const SETTINGS_SUBTREE: &str = "settings_map";
+
+/// Private constant for the device identity key name
+const DEVICE_KEY_NAME: &str = "_device_key";
 
 /// Synchronization manager for the database.
 ///
@@ -41,20 +48,18 @@ impl Sync {
     ///
     /// # Arguments
     /// * `backend` - The database backend for tree operations
-    /// * `signing_key_name` - The key name to use for authenticating sync tree operations
     ///
     /// # Returns
     /// A new Sync instance with its own settings tree.
-    pub fn new(
-        backend: Arc<dyn crate::backend::Database>,
-        signing_key_name: impl AsRef<str>,
-    ) -> Result<Self> {
-        let mut sync_settings = CrdtDoc::new();
+    pub fn new(backend: Arc<dyn crate::backend::Database>) -> Result<Self> {
+        let mut sync_settings = Doc::new();
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
-        let sync_tree =
-            crate::tree::Tree::new(sync_settings, Arc::clone(&backend), signing_key_name)?;
+        let mut sync_tree = Tree::new(sync_settings, Arc::clone(&backend), DEVICE_KEY_NAME)?;
+
+        // Set the default authentication key so all operations use the device key
+        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
 
         Ok(Self {
             backend,
@@ -75,8 +80,10 @@ impl Sync {
         backend: Arc<dyn crate::backend::Database>,
         sync_tree_root_id: &crate::entry::ID,
     ) -> Result<Self> {
-        let sync_tree =
-            crate::tree::Tree::new_from_id(sync_tree_root_id.clone(), Arc::clone(&backend))?;
+        let mut sync_tree = Tree::new_from_id(sync_tree_root_id.clone(), Arc::clone(&backend))?;
+
+        // Set the default authentication key so all operations use the device key
+        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
 
         Ok(Self {
             backend,
@@ -95,16 +102,8 @@ impl Sync {
     /// # Arguments
     /// * `key` - The setting key
     /// * `value` - The setting value
-    /// * `signing_key_name` - The key name to use for authentication
-    pub fn set_setting(
-        &mut self,
-        key: impl AsRef<str>,
-        value: impl AsRef<str>,
-        signing_key_name: impl AsRef<str>,
-    ) -> Result<()> {
-        let op = self
-            .sync_tree
-            .new_authenticated_operation(signing_key_name)?;
+    pub fn set_setting(&mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
         let sync_settings = op.get_subtree::<DocStore>(SETTINGS_SUBTREE)?;
         sync_settings.set_string(key.as_ref(), value.as_ref())?;
         op.commit()?;
@@ -137,6 +136,199 @@ impl Sync {
     /// Get a reference to the sync settings tree.
     pub fn sync_tree(&self) -> &Tree {
         &self.sync_tree
+    }
+
+    // === Peer Management Methods ===
+
+    /// Register a new remote peer in the sync network.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key (formatted as ed25519:base64)
+    /// * `display_name` - Optional human-readable name for the peer
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn register_peer(&mut self, pubkey: &str, display_name: Option<&str>) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).register_peer(pubkey, display_name)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Update the status of a registered peer.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key
+    /// * `status` - The new status for the peer
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn update_peer_status(&mut self, pubkey: &str, status: PeerStatus) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).update_peer_status(pubkey, status)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Get information about a registered peer.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key
+    ///
+    /// # Returns
+    /// The peer information if found, None otherwise.
+    pub fn get_peer_info(&self, pubkey: &str) -> Result<Option<PeerInfo>> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).get_peer_info(pubkey)
+        // No commit - just reading
+    }
+
+    /// List all registered peers.
+    ///
+    /// # Returns
+    /// A vector of all registered peer information.
+    pub fn list_peers(&self) -> Result<Vec<PeerInfo>> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).list_peers()
+        // No commit - just reading
+    }
+
+    /// Remove a peer from the sync network.
+    ///
+    /// This removes the peer entry and all associated sync relationships and transport info.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn remove_peer(&mut self, pubkey: &str) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).remove_peer(pubkey)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    // === Tree Sync Relationship Methods ===
+
+    /// Add a tree to the sync relationship with a peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `tree_root_id` - The root ID of the tree to sync
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn add_tree_sync(&mut self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).add_tree_sync(peer_pubkey, tree_root_id)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Remove a tree from the sync relationship with a peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `tree_root_id` - The root ID of the tree to stop syncing
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn remove_tree_sync(&mut self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).remove_tree_sync(peer_pubkey, tree_root_id)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Get the list of trees synced with a peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    ///
+    /// # Returns
+    /// A vector of tree root IDs synced with this peer.
+    pub fn get_peer_trees(&self, peer_pubkey: &str) -> Result<Vec<String>> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).get_peer_trees(peer_pubkey)
+        // No commit - just reading
+    }
+
+    /// Get all peers that sync a specific tree.
+    ///
+    /// # Arguments
+    /// * `tree_root_id` - The root ID of the tree
+    ///
+    /// # Returns
+    /// A vector of peer public keys that sync this tree.
+    pub fn get_tree_peers(&self, tree_root_id: &str) -> Result<Vec<String>> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).get_tree_peers(tree_root_id)
+        // No commit - just reading
+    }
+
+    /// Check if a tree is synced with a specific peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `tree_root_id` - The root ID of the tree
+    ///
+    /// # Returns
+    /// True if the tree is synced with the peer, false otherwise.
+    pub fn is_tree_synced_with_peer(&self, peer_pubkey: &str, tree_root_id: &str) -> Result<bool> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey, tree_root_id)
+        // No commit - just reading
+    }
+
+    // === Address Management Methods ===
+
+    /// Add an address to a peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `address` - The address to add
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn add_peer_address(&mut self, peer_pubkey: &str, address: Address) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).add_address(peer_pubkey, address)?;
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Remove a specific address from a peer.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `address` - The address to remove
+    ///
+    /// # Returns
+    /// A Result indicating success or an error (true if removed, false if not found).
+    pub fn remove_peer_address(&mut self, peer_pubkey: &str, address: &Address) -> Result<bool> {
+        let op = self.sync_tree.new_operation()?;
+        let result = PeerManager::new(&op).remove_address(peer_pubkey, address)?;
+        op.commit()?;
+        Ok(result)
+    }
+
+    /// Get addresses for a peer, optionally filtered by transport type.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `transport_type` - Optional transport type filter
+    ///
+    /// # Returns
+    /// A vector of addresses matching the criteria.
+    pub fn get_peer_addresses(
+        &self,
+        peer_pubkey: &str,
+        transport_type: Option<&str>,
+    ) -> Result<Vec<Address>> {
+        let op = self.sync_tree.new_operation()?;
+        PeerManager::new(&op).get_addresses(peer_pubkey, transport_type)
+        // No commit - just reading
     }
 
     // === Network Transport Methods ===
@@ -239,13 +431,23 @@ impl Sync {
     ///
     /// # Arguments
     /// * `entries` - The entries to send
-    /// * `addr` - The address of the peer to send to
+    /// * `address` - The address of the peer to send to
     ///
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
-    pub async fn send_entries_async(&self, entries: impl AsRef<[Entry]>, addr: &str) -> Result<()> {
+    pub async fn send_entries_async(
+        &self,
+        entries: impl AsRef<[Entry]>,
+        address: &Address,
+    ) -> Result<()> {
         if let Some(transport) = &self.transport {
-            transport.send_entries(addr, entries.as_ref()).await
+            if !transport.can_handle_address(address) {
+                return Err(SyncError::UnsupportedTransport {
+                    transport_type: address.transport_type.clone(),
+                }
+                .into());
+            }
+            transport.send_entries(address, entries.as_ref()).await
         } else {
             Err(SyncError::NoTransportEnabled.into())
         }
@@ -255,20 +457,20 @@ impl Sync {
     ///
     /// # Arguments
     /// * `entries` - The entries to send
-    /// * `addr` - The address of the peer to send to
+    /// * `address` - The address of the peer to send to
     ///
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
-    pub fn send_entries(&self, entries: impl AsRef<[Entry]>, addr: &str) -> Result<()> {
+    pub fn send_entries(&self, entries: impl AsRef<[Entry]>, address: &Address) -> Result<()> {
         // Try to use existing async context, or create runtime if needed
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.send_entries_async(entries, addr))
+            handle.block_on(self.send_entries_async(entries, address))
         } else {
             let entries_ref = entries.as_ref();
             let runtime = tokio::runtime::Runtime::new()
                 .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
 
-            runtime.block_on(self.send_entries_async(entries_ref, addr))
+            runtime.block_on(self.send_entries_async(entries_ref, address))
         }
     }
 }

@@ -1,4 +1,5 @@
 use eidetica::sync::{
+    Address,
     protocol::SyncResponse,
     transports::{SyncTransport, http::HttpTransport},
 };
@@ -55,6 +56,7 @@ async fn test_http_transport_client_server_communication() {
 
     // Get the actual bound address
     let addr = server_transport.get_server_address().unwrap();
+    let http_address = Address::http(&addr);
 
     // Send a single entry - should get Ack response
     let single_entry = Entry::builder("test_root")
@@ -62,7 +64,7 @@ async fn test_http_transport_client_server_communication() {
         .build();
 
     let single_response = client_transport
-        .send_request(&addr, &[single_entry])
+        .send_request(&http_address, &[single_entry])
         .await
         .unwrap();
 
@@ -82,7 +84,7 @@ async fn test_http_transport_client_server_communication() {
         .build();
 
     let multi_response = client_transport
-        .send_request(&addr, &[entry1, entry2])
+        .send_request(&http_address, &[entry1, entry2])
         .await
         .unwrap();
 
@@ -106,7 +108,8 @@ async fn test_http_transport_connection_refused() {
     // Try to connect to a server that's not running on a high port
     // Using a high port that's unlikely to be in use
     let entry = Entry::builder("test").build();
-    let result = transport.send_request("127.0.0.1:59999", &[entry]).await;
+    let unreachable_address = Address::http("127.0.0.1:59999");
+    let result = transport.send_request(&unreachable_address, &[entry]).await;
 
     assert!(result.is_err());
 }

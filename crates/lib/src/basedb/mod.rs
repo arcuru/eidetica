@@ -360,16 +360,13 @@ impl BaseDB {
     /// This method should be called once per database instance to enable sync functionality.
     /// The sync module will have access to this database's device identity through the backend.
     ///
-    /// # Arguments
-    /// * `signing_key_name` - The key name to use for authenticating sync operations
-    ///
     /// # Returns
     /// A `Result` containing a new BaseDB with the sync module initialized.
-    pub fn with_sync(mut self, signing_key_name: impl AsRef<str>) -> Result<Self> {
+    pub fn with_sync(mut self) -> Result<Self> {
         // Ensure device key exists before creating sync
         self.device_id()?;
 
-        let sync = Sync::new(Arc::clone(&self.backend), signing_key_name)?;
+        let sync = Sync::new(Arc::clone(&self.backend))?;
         self.sync = Some(sync);
         Ok(self)
     }

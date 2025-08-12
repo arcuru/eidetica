@@ -111,6 +111,7 @@ impl Error {
             Error::Base(base_err) => base_err.is_not_found(),
             Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
             Error::Subtree(subtree_err) => subtree_err.is_not_found(),
+            Error::Sync(sync_err) => sync_err.is_not_found(),
             _ => false,
         }
     }

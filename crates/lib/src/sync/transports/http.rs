@@ -8,6 +8,7 @@ use crate::Result;
 use crate::entry::Entry;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
+use crate::sync::peer_types::Address;
 use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 use axum::{Router, extract::Json as ExtractJson, response::Json, routing::post};
@@ -21,6 +22,9 @@ pub struct HttpTransport {
 }
 
 impl HttpTransport {
+    /// Transport type identifier for HTTP
+    pub const TRANSPORT_TYPE: &'static str = "http";
+
     /// Create a new HTTP transport instance.
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -36,6 +40,10 @@ impl HttpTransport {
 
 #[async_trait]
 impl SyncTransport for HttpTransport {
+    fn can_handle_address(&self, address: &Address) -> bool {
+        address.transport_type == Self::TRANSPORT_TYPE
+    }
+
     async fn start_server(&mut self, addr: &str) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
@@ -110,9 +118,16 @@ impl SyncTransport for HttpTransport {
         Ok(())
     }
 
-    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse> {
+    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
         let client = reqwest::Client::new();
-        let url = format!("http://{addr}/api/v0");
+        let url = format!("http://{}/api/v0", address.address);
 
         let response = client
             .post(&url)
@@ -120,7 +135,7 @@ impl SyncTransport for HttpTransport {
             .send()
             .await
             .map_err(|e| SyncError::ConnectionFailed {
-                address: addr.to_string(),
+                address: address.address.clone(),
                 reason: e.to_string(),
             })?;
 

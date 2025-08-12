@@ -8,6 +8,7 @@ use crate::Result;
 use crate::entry::Entry;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
+use crate::sync::peer_types::Address;
 use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -27,6 +28,9 @@ pub struct IrohTransport {
 }
 
 impl IrohTransport {
+    /// Transport type identifier for Iroh
+    pub const TRANSPORT_TYPE: &'static str = "iroh";
+
     /// Create a new Iroh transport instance.
     pub fn new() -> Result<Self> {
         Ok(Self {
@@ -146,6 +150,10 @@ impl IrohTransport {
 
 #[async_trait]
 impl SyncTransport for IrohTransport {
+    fn can_handle_address(&self, address: &Address) -> bool {
+        address.transport_type == Self::TRANSPORT_TYPE
+    }
+
     async fn start_server(&mut self, _addr: &str) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
@@ -188,7 +196,14 @@ impl SyncTransport for IrohTransport {
         Ok(())
     }
 
-    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse> {
+    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+
         // Ensure we have an endpoint
         let endpoint = match &self.endpoint {
             Some(endpoint) => endpoint,
@@ -200,15 +215,21 @@ impl SyncTransport for IrohTransport {
         };
 
         // Parse the target node address - for now, just treat as node ID
-        let node_addr = NodeAddr::new(addr.parse().map_err(|e| SyncError::ConnectionFailed {
-            address: addr.to_string(),
-            reason: format!("Invalid NodeId: {e}"),
-        })?);
+        let node_addr =
+            NodeAddr::new(
+                address
+                    .address
+                    .parse()
+                    .map_err(|e| SyncError::ConnectionFailed {
+                        address: address.address.clone(),
+                        reason: format!("Invalid NodeId: {e}"),
+                    })?,
+            );
 
         // Connect to the peer
         let conn = endpoint.connect(node_addr, SYNC_ALPN).await.map_err(|e| {
             SyncError::ConnectionFailed {
-                address: addr.to_string(),
+                address: address.address.clone(),
                 reason: e.to_string(),
             }
         })?;

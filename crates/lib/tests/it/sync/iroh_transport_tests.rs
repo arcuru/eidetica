@@ -1,4 +1,7 @@
-use eidetica::sync::transports::{SyncTransport, iroh::IrohTransport};
+use eidetica::sync::{
+    Address,
+    transports::{SyncTransport, iroh::IrohTransport},
+};
 
 #[tokio::test]
 async fn test_iroh_transport_server_lifecycle() {
@@ -73,7 +76,9 @@ async fn test_iroh_transport_send_request_no_endpoint() {
 
     // Try to send request without initializing endpoint
     let entry = Entry::builder("test").build();
-    let result = transport.send_request("invalid_node_id", &[entry]).await;
+    let result = transport
+        .send_request(&Address::iroh("invalid_node_id"), &[entry])
+        .await;
 
     assert!(result.is_err());
 }

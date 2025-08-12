@@ -1,5 +1,5 @@
 use crate::sync::helpers;
-use eidetica::sync::Sync;
+use eidetica::sync::{Address, Sync};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -70,9 +70,8 @@ fn test_sync_iroh_settings_persistence() {
         let backend = Arc::clone(base_db.backend());
 
         // Store some sync settings
-        sync.set_setting("transport_type", "iroh", "test_key")
-            .unwrap();
-        sync.set_setting("node_description", "Test Iroh Node", "test_key")
+        sync.set_setting("transport_type", "iroh").unwrap();
+        sync.set_setting("node_description", "Test Iroh Node")
             .unwrap();
 
         // Verify settings can be retrieved
@@ -129,7 +128,9 @@ async fn test_send_entries_iroh() {
     // Note: Iroh transport requires actual network connectivity between nodes
     // For this test, we'll verify the send_entries method exists and is callable
     // The actual network test would require more complex setup with real Iroh nodes
-    let result = sync_client.send_entries_async(entries, &server_addr).await;
+    let result = sync_client
+        .send_entries_async(entries, &Address::iroh(&server_addr))
+        .await;
 
     // This will likely fail with connection error since we're using fake addresses,
     // but that's expected - we're just testing the API exists

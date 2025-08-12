@@ -6,8 +6,6 @@
 use eidetica::{basedb::BaseDB, sync::Sync};
 use std::sync::Arc;
 
-const TEST_KEY_NAME: &str = "test_key";
-
 // ===== SETUP HELPERS =====
 
 /// Create a BaseDB Arc with authentication key
@@ -18,17 +16,14 @@ pub fn setup_db() -> Arc<BaseDB> {
 /// Create a new Sync instance with standard setup
 pub fn setup() -> (Arc<BaseDB>, Sync) {
     let base_db = setup_db();
-    let sync =
-        Sync::new(Arc::clone(base_db.backend()), TEST_KEY_NAME).expect("Failed to create Sync");
+    let sync = Sync::new(Arc::clone(base_db.backend())).expect("Failed to create Sync");
     (base_db, sync)
 }
 
 /// Create BaseDB with initialized sync module
 pub fn setup_basedb_with_initialized() -> BaseDB {
     let base_db = crate::helpers::setup_db();
-    base_db
-        .with_sync(TEST_KEY_NAME)
-        .expect("Failed to initialize sync")
+    base_db.with_sync().expect("Failed to initialize sync")
 }
 
 // ===== ASSERTION HELPERS =====
@@ -55,7 +50,7 @@ pub fn assert_trees_equal(sync1: &Sync, sync2: &Sync) {
 /// Set multiple settings on a sync instance
 pub fn set_multiple_settings(sync: &mut Sync, settings: &[(&str, &str)]) {
     for (key, value) in settings {
-        sync.set_setting(key, value, TEST_KEY_NAME)
+        sync.set_setting(key, value)
             .unwrap_or_else(|_| panic!("Failed to set setting: {key} = {value}"));
     }
 }

@@ -1,4 +1,5 @@
 use super::helpers::*;
+use eidetica::sync::Address;
 
 #[tokio::test]
 async fn test_sync_with_http_transport() {
@@ -14,13 +15,14 @@ async fn test_sync_with_http_transport() {
 
     // Get the actual bound address
     let server_addr = sync.get_server_address().unwrap();
+    let http_address = Address::http(&server_addr);
 
     // Test the new protocol by sending entries
     let entry = Entry::builder("test_root")
         .set_subtree_data("data", r#"{"test": "value"}"#)
         .build();
 
-    sync.send_entries_async(vec![entry], &server_addr)
+    sync.send_entries_async(vec![entry], &http_address)
         .await
         .unwrap();
 
@@ -51,8 +53,9 @@ async fn test_multiple_sync_instances_communication() {
         .set_subtree_data("data", r#"{"message": "hello from client"}"#)
         .build();
 
+    let http_address = Address::http(&server_addr);
     sync_client
-        .send_entries_async(vec![entry], &server_addr)
+        .send_entries_async(vec![entry], &http_address)
         .await
         .unwrap();
 
@@ -88,8 +91,9 @@ async fn test_send_entries_http() {
     let entries = vec![entry1, entry2];
 
     // Send entries from client to server
+    let http_address = Address::http(&server_addr);
     sync_client
-        .send_entries_async(entries, &server_addr)
+        .send_entries_async(entries, &http_address)
         .await
         .unwrap();
 
@@ -105,7 +109,7 @@ fn test_sync_without_transport_enabled() {
 
     // Attempting to send entries without enabling transport should fail
     let entry = Entry::builder("test").build();
-    let result = sync.send_entries(vec![entry], "127.0.0.1:8084");
+    let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:8084"));
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
@@ -141,6 +145,6 @@ fn test_sync_connect_to_invalid_address() {
 
     // Try to send entries to a non-existent server
     let entry = Entry::builder("test").build();
-    let result = sync.send_entries(vec![entry], "127.0.0.1:19998");
+    let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:19998"));
     assert!(result.is_err());
 }

@@ -1,4 +1,5 @@
 use eidetica::sync::{
+    Address,
     protocol::SyncResponse,
     transports::{SyncTransport, http::HttpTransport},
 };
@@ -43,9 +44,10 @@ async fn test_unified_message_handling() {
     let mut http_transport = HttpTransport::new().unwrap();
     http_transport.start_server("127.0.0.1:0").await.unwrap();
     let http_addr = http_transport.get_server_address().unwrap();
+    let http_address = Address::http(&http_addr);
 
     let http_single = http_transport
-        .send_request(&http_addr, &[single_entry])
+        .send_request(&http_address, &[single_entry])
         .await
         .unwrap();
 
@@ -53,7 +55,7 @@ async fn test_unified_message_handling() {
     assert_eq!(http_single, SyncResponse::Ack);
 
     let http_multi = http_transport
-        .send_request(&http_addr, &[entry1, entry2])
+        .send_request(&http_address, &[entry1, entry2])
         .await
         .unwrap();
 
