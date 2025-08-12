@@ -44,6 +44,10 @@ pub enum SyncError {
     /// Client connection error.
     #[error("Failed to connect to {address}: {reason}")]
     ConnectionFailed { address: String, reason: String },
+
+    /// Device key not found in backend storage.
+    #[error("Device key '{key_name}' not found in backend storage")]
+    DeviceKeyNotFound { key_name: String },
 }
 
 impl SyncError {

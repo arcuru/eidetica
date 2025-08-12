@@ -4,6 +4,7 @@
 //! and settings management.
 
 mod basic_operations;
+mod device_id_tests;
 pub mod helpers;
 mod http_transport_tests;
 mod integration_tests;

@@ -20,12 +20,18 @@ pub mod errors;
 // Re-export main types for easier access
 pub use errors::BaseError;
 
+/// Private constants for device identity management
+const DEVICE_KEY_NAME: &str = "_device_key";
+
 /// Database implementation on top of the storage backend.
 ///
 /// This database is the base DB, other 'overlays' or 'plugins' should be implemented on top of this.
 /// It manages collections of related entries, called `Tree`s, and interacts with a
 /// pluggable `Database` for storage and retrieval.
 /// Each `Tree` represents an independent history of data, identified by a root `Entry`.
+///
+/// Each BaseDB instance has a unique device identity represented by an Ed25519 keypair.
+/// The public key serves as the device ID for sync operations.
 pub struct BaseDB {
     /// The database storage used by the database.
     backend: Arc<dyn Database>,
@@ -37,15 +43,69 @@ pub struct BaseDB {
 
 impl BaseDB {
     pub fn new(backend: Box<dyn Database>) -> Self {
-        Self {
+        let db = Self {
             backend: Arc::from(backend),
             sync: None,
-        }
+        };
+
+        // Ensure device ID is generated during construction
+        db.device_id()
+            .expect("Failed to generate device ID during BaseDB construction");
+
+        db
     }
 
     /// Get a reference to the backend
     pub fn backend(&self) -> &Arc<dyn Database> {
         &self.backend
+    }
+
+    // === Device Identity Management ===
+    //
+    // Each BaseDB instance has a unique device identity represented by an Ed25519 keypair.
+    // The device key is automatically generated on first access and stored persistently.
+    // The public key serves as the device ID for identification in sync operations.
+
+    /// Ensure device key exists and return the device ID (public key).
+    ///
+    /// This method automatically generates and stores a device keypair if one doesn't exist.
+    /// The device key is stored with the reserved name "_device_key" and should not be
+    /// modified or removed manually.
+    ///
+    /// # Returns
+    /// A `Result` containing the device's public key (device ID).
+    pub fn device_id(&self) -> Result<VerifyingKey> {
+        // Check if device key already exists
+        if let Some(device_key) = self.backend.get_private_key(DEVICE_KEY_NAME)? {
+            return Ok(device_key.verifying_key());
+        }
+
+        // Generate new device key
+        let (signing_key, verifying_key) = generate_keypair();
+        self.backend
+            .store_private_key(DEVICE_KEY_NAME, signing_key)?;
+
+        Ok(verifying_key)
+    }
+
+    /// Get the device ID as a formatted string.
+    ///
+    /// This is a convenience method that returns the device ID (public key)
+    /// in a standard formatted string representation.
+    ///
+    /// # Returns
+    /// A `Result` containing the formatted device ID string.
+    pub fn device_id_string(&self) -> Result<String> {
+        let device_key = self.device_id()?;
+        Ok(format_public_key(&device_key))
+    }
+
+    /// Check if this database has a device key configured.
+    ///
+    /// # Returns
+    /// A `Result` containing `true` if a device key exists, `false` otherwise.
+    pub fn has_device_key(&self) -> Result<bool> {
+        Ok(self.backend.get_private_key(DEVICE_KEY_NAME)?.is_some())
     }
 
     /// Create a new tree in the database.
@@ -250,7 +310,12 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a vector of key identifiers.
     pub fn list_private_keys(&self) -> Result<Vec<String>> {
-        self.backend.list_private_keys()
+        let all_keys = self.backend.list_private_keys()?;
+        // Filter out the device key as it's for internal use only
+        Ok(all_keys
+            .into_iter()
+            .filter(|key| key != DEVICE_KEY_NAME)
+            .collect())
     }
 
     /// Remove a private key from local storage.
@@ -293,6 +358,7 @@ impl BaseDB {
     ///
     /// Creates a new sync settings tree and initializes the sync module.
     /// This method should be called once per database instance to enable sync functionality.
+    /// The sync module will have access to this database's device identity through the backend.
     ///
     /// # Arguments
     /// * `signing_key_name` - The key name to use for authenticating sync operations
@@ -300,6 +366,9 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a new BaseDB with the sync module initialized.
     pub fn with_sync(mut self, signing_key_name: impl AsRef<str>) -> Result<Self> {
+        // Ensure device key exists before creating sync
+        self.device_id()?;
+
         let sync = Sync::new(Arc::clone(&self.backend), signing_key_name)?;
         self.sync = Some(sync);
         Ok(self)
@@ -321,6 +390,9 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing a new BaseDB with the sync module loaded.
     pub fn with_sync_from_tree(mut self, sync_tree_root_id: &ID) -> Result<Self> {
+        // Ensure device key exists before loading sync
+        self.device_id()?;
+
         let sync = Sync::load(Arc::clone(&self.backend), sync_tree_root_id)?;
         self.sync = Some(sync);
         Ok(self)
