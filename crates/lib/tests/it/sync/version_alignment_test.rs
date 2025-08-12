@@ -38,10 +38,16 @@ async fn test_http_v0_endpoint_format() {
     let addr = transport.get_server_address().unwrap();
 
     // Test that the v0 endpoint is accessible
+    use eidetica::entry::Entry;
+
     let client = reqwest::Client::new();
+    let entry = Entry::builder("test_root")
+        .set_subtree_data("data", r#"{"test": "v0_endpoint"}"#)
+        .build();
+
     let response = client
         .post(format!("http://{addr}/api/v0"))
-        .json(&serde_json::json!({"Hello": null}))
+        .json(&vec![entry])
         .send()
         .await
         .unwrap();
@@ -49,7 +55,7 @@ async fn test_http_v0_endpoint_format() {
     assert!(response.status().is_success());
 
     let json: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(json["Hello"], "Hello from Eidetica Sync!");
+    assert_eq!(json, "Ack");
 
     transport.stop_server().await.unwrap();
 }

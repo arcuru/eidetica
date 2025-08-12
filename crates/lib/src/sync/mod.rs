@@ -3,7 +3,7 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
-use crate::{Result, crdt::Map, subtree::Dict, tree::Tree};
+use crate::{Result, crdt::Map, entry::Entry, subtree::Dict, tree::Tree};
 use std::sync::Arc;
 
 pub mod error;
@@ -13,7 +13,6 @@ pub mod transports;
 
 pub use error::SyncError;
 
-use protocol::{SyncRequest, SyncResponse};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Private constant for the sync settings subtree name
@@ -169,47 +168,6 @@ impl Sync {
         }
     }
 
-    /// Connect to a sync peer and retrieve hello and status messages (async version).
-    ///
-    /// # Arguments
-    /// * `addr` - The address of the peer to connect to
-    ///
-    /// # Returns
-    /// A tuple containing (hello_message, status_message) from the peer.
-    pub async fn connect_async(&self, addr: &str) -> Result<(String, String)> {
-        if let Some(transport) = &self.transport {
-            // Send hello request
-            let hello_response = transport.send_request(addr, SyncRequest::Hello).await?;
-            let hello_msg = match hello_response {
-                SyncResponse::Hello(msg) => msg,
-                _ => {
-                    return Err(SyncError::UnexpectedResponse {
-                        expected: "Hello",
-                        actual: format!("{hello_response:?}"),
-                    }
-                    .into());
-                }
-            };
-
-            // Send status request
-            let status_response = transport.send_request(addr, SyncRequest::Status).await?;
-            let status_msg = match status_response {
-                SyncResponse::Status(msg) => msg,
-                _ => {
-                    return Err(SyncError::UnexpectedResponse {
-                        expected: "Status",
-                        actual: format!("{status_response:?}"),
-                    }
-                    .into());
-                }
-            };
-
-            Ok((hello_msg, status_msg))
-        } else {
-            Err(SyncError::NoTransportEnabled.into())
-        }
-    }
-
     /// Enable HTTP transport for network communication.
     ///
     /// This initializes the HTTP transport layer, allowing the sync module
@@ -277,22 +235,40 @@ impl Sync {
         }
     }
 
-    /// Connect to a sync peer and retrieve hello and status messages.
+    /// Send a batch of entries to a sync peer (async version).
     ///
     /// # Arguments
-    /// * `addr` - The address of the peer to connect to
+    /// * `entries` - The entries to send
+    /// * `addr` - The address of the peer to send to
     ///
     /// # Returns
-    /// A tuple containing (hello_message, status_message) from the peer.
-    pub fn connect(&self, addr: &str) -> Result<(String, String)> {
+    /// A Result indicating whether the entries were successfully acknowledged.
+    pub async fn send_entries_async(&self, entries: impl AsRef<[Entry]>, addr: &str) -> Result<()> {
+        if let Some(transport) = &self.transport {
+            transport.send_entries(addr, entries.as_ref()).await
+        } else {
+            Err(SyncError::NoTransportEnabled.into())
+        }
+    }
+
+    /// Send a batch of entries to a sync peer.
+    ///
+    /// # Arguments
+    /// * `entries` - The entries to send
+    /// * `addr` - The address of the peer to send to
+    ///
+    /// # Returns
+    /// A Result indicating whether the entries were successfully acknowledged.
+    pub fn send_entries(&self, entries: impl AsRef<[Entry]>, addr: &str) -> Result<()> {
         // Try to use existing async context, or create runtime if needed
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.connect_async(addr))
+            handle.block_on(self.send_entries_async(entries, addr))
         } else {
+            let entries_ref = entries.as_ref();
             let runtime = tokio::runtime::Runtime::new()
                 .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
 
-            runtime.block_on(self.connect_async(addr))
+            runtime.block_on(self.send_entries_async(entries_ref, addr))
         }
     }
 }

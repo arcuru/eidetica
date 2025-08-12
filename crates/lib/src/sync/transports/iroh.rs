@@ -5,9 +5,10 @@
 
 use super::{SyncTransport, shared::*};
 use crate::Result;
+use crate::entry::Entry;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
+use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr};
@@ -114,7 +115,7 @@ impl IrohTransport {
         };
 
         // Deserialize the request using JsonHandler
-        let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
+        let request: Vec<Entry> = match JsonHandler::deserialize_request(&buffer) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to deserialize request: {e}");
@@ -123,7 +124,7 @@ impl IrohTransport {
         };
 
         // Handle the request
-        let response = handle_request(request).await;
+        let response = handle_request(&request).await;
 
         // Serialize and send response using JsonHandler
         match JsonHandler::serialize_response(&response) {
@@ -187,7 +188,7 @@ impl SyncTransport for IrohTransport {
         Ok(())
     }
 
-    async fn send_request(&self, addr: &str, request: SyncRequest) -> Result<SyncResponse> {
+    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse> {
         // Ensure we have an endpoint
         let endpoint = match &self.endpoint {
             Some(endpoint) => endpoint,
@@ -219,7 +220,7 @@ impl SyncTransport for IrohTransport {
             .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
 
         // Serialize and send the request using JsonHandler
-        let request_bytes = JsonHandler::serialize_request(&request)?;
+        let request_bytes = JsonHandler::serialize_request(request)?;
 
         send_stream
             .write_all(&request_bytes)

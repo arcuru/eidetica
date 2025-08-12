@@ -1,5 +1,5 @@
 use eidetica::sync::{
-    protocol::{SyncRequest, SyncResponse},
+    protocol::SyncResponse,
     transports::{SyncTransport, http::HttpTransport},
 };
 
@@ -45,6 +45,8 @@ async fn test_http_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_http_transport_client_server_communication() {
+    use eidetica::entry::Entry;
+
     let mut server_transport = HttpTransport::new().unwrap();
     let client_transport = HttpTransport::new().unwrap();
 
@@ -54,30 +56,41 @@ async fn test_http_transport_client_server_communication() {
     // Get the actual bound address
     let addr = server_transport.get_server_address().unwrap();
 
-    // Send Hello request
-    let hello_response = client_transport
-        .send_request(&addr, SyncRequest::Hello)
+    // Send a single entry - should get Ack response
+    let single_entry = Entry::builder("test_root")
+        .set_subtree_data("data", r#"{"single": "entry"}"#)
+        .build();
+
+    let single_response = client_transport
+        .send_request(&addr, &[single_entry])
         .await
         .unwrap();
 
-    match hello_response {
-        SyncResponse::Hello(msg) => {
-            assert_eq!(msg, "Hello from Eidetica Sync!");
+    match single_response {
+        SyncResponse::Ack => {
+            // Expected for single entry
         }
-        _ => panic!("Expected Hello response"),
+        _ => panic!("Expected Ack response for single entry"),
     }
 
-    // Send Status request
-    let status_response = client_transport
-        .send_request(&addr, SyncRequest::Status)
+    // Send multiple entries - should get Count response
+    let entry1 = Entry::builder("test_root_1")
+        .set_subtree_data("data", r#"{"entry": "1"}"#)
+        .build();
+    let entry2 = Entry::builder("test_root_2")
+        .set_subtree_data("data", r#"{"entry": "2"}"#)
+        .build();
+
+    let multi_response = client_transport
+        .send_request(&addr, &[entry1, entry2])
         .await
         .unwrap();
 
-    match status_response {
-        SyncResponse::Status(msg) => {
-            assert_eq!(msg, "Sync Status: Active");
+    match multi_response {
+        SyncResponse::Count(count) => {
+            assert_eq!(count, 2);
         }
-        _ => panic!("Expected Status response"),
+        _ => panic!("Expected Count response for multiple entries"),
     }
 
     // Clean up
@@ -86,13 +99,14 @@ async fn test_http_transport_client_server_communication() {
 
 #[tokio::test]
 async fn test_http_transport_connection_refused() {
+    use eidetica::entry::Entry;
+
     let transport = HttpTransport::new().unwrap();
 
     // Try to connect to a server that's not running on a high port
     // Using a high port that's unlikely to be in use
-    let result = transport
-        .send_request("127.0.0.1:59999", SyncRequest::Hello)
-        .await;
+    let entry = Entry::builder("test").build();
+    let result = transport.send_request("127.0.0.1:59999", &[entry]).await;
 
     assert!(result.is_err());
 }

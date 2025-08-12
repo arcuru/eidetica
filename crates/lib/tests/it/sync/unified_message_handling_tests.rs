@@ -1,5 +1,5 @@
 use eidetica::sync::{
-    protocol::{SyncRequest, SyncResponse},
+    protocol::SyncResponse,
     transports::{SyncTransport, http::HttpTransport},
 };
 
@@ -7,24 +7,36 @@ use eidetica::sync::{
 /// by directly testing the shared handler function.
 #[tokio::test]
 async fn test_unified_message_handling() {
+    use eidetica::entry::Entry;
     use eidetica::sync::handler::handle_request;
 
-    // Test Hello request directly through shared handler
-    let hello_response = handle_request(SyncRequest::Hello).await;
-    match hello_response {
-        SyncResponse::Hello(msg) => {
-            assert_eq!(msg, "Hello from Eidetica Sync!");
+    // Create test entries
+    let single_entry = Entry::builder("test_root")
+        .set_subtree_data("data", r#"{"test": "single"}"#)
+        .build();
+    let entry1 = Entry::builder("test_root_1")
+        .set_subtree_data("data", r#"{"test": "multi1"}"#)
+        .build();
+    let entry2 = Entry::builder("test_root_2")
+        .set_subtree_data("data", r#"{"test": "multi2"}"#)
+        .build();
+
+    // Test single entry request directly through shared handler
+    let single_response = handle_request(std::slice::from_ref(&single_entry)).await;
+    match single_response {
+        SyncResponse::Ack => {
+            // Expected for single entry
         }
-        _ => panic!("Expected Hello response"),
+        _ => panic!("Expected Ack response for single entry"),
     }
 
-    // Test Status request directly through shared handler
-    let status_response = handle_request(SyncRequest::Status).await;
-    match status_response {
-        SyncResponse::Status(msg) => {
-            assert_eq!(msg, "Sync Status: Active");
+    // Test multiple entries request directly through shared handler
+    let multi_response = handle_request(&[entry1.clone(), entry2.clone()]).await;
+    match multi_response {
+        SyncResponse::Count(count) => {
+            assert_eq!(count, 2);
         }
-        _ => panic!("Expected Status response"),
+        _ => panic!("Expected Count response for multiple entries"),
     }
 
     // Test HTTP transport uses same logic
@@ -32,21 +44,21 @@ async fn test_unified_message_handling() {
     http_transport.start_server("127.0.0.1:0").await.unwrap();
     let http_addr = http_transport.get_server_address().unwrap();
 
-    let http_hello = http_transport
-        .send_request(&http_addr, SyncRequest::Hello)
+    let http_single = http_transport
+        .send_request(&http_addr, &[single_entry])
         .await
         .unwrap();
 
     // HTTP transport should return same response as direct handler call
-    assert_eq!(http_hello, handle_request(SyncRequest::Hello).await);
+    assert_eq!(http_single, SyncResponse::Ack);
 
-    let http_status = http_transport
-        .send_request(&http_addr, SyncRequest::Status)
+    let http_multi = http_transport
+        .send_request(&http_addr, &[entry1, entry2])
         .await
         .unwrap();
 
     // HTTP transport should return same response as direct handler call
-    assert_eq!(http_status, handle_request(SyncRequest::Status).await);
+    assert_eq!(http_multi, SyncResponse::Count(2));
 
     // Clean up
     http_transport.stop_server().await.unwrap();
@@ -55,6 +67,8 @@ async fn test_unified_message_handling() {
 /// Test that the new HTTP v0 endpoint format works with JSON requests
 #[tokio::test]
 async fn test_http_v0_json_endpoint() {
+    use eidetica::entry::Entry;
+
     let mut transport = HttpTransport::new().unwrap();
 
     // Start server
@@ -65,28 +79,34 @@ async fn test_http_v0_json_endpoint() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v0");
 
-    // Send Hello as JSON POST (same as transport does internally)
-    let response = client
-        .post(&url)
-        .json(&SyncRequest::Hello)
-        .send()
-        .await
-        .unwrap();
+    // Send single entry as JSON POST (same as transport does internally)
+    let entry = Entry::builder("test_root")
+        .set_subtree_data("data", r#"{"test": "direct_http"}"#)
+        .build();
+
+    let response = client.post(&url).json(&vec![entry]).send().await.unwrap();
 
     assert!(response.status().is_success());
 
     let sync_response: SyncResponse = response.json().await.unwrap();
     match sync_response {
-        SyncResponse::Hello(msg) => {
-            assert_eq!(msg, "Hello from Eidetica Sync!");
+        SyncResponse::Ack => {
+            // Expected for single entry
         }
-        _ => panic!("Expected Hello response"),
+        _ => panic!("Expected Ack response"),
     }
 
-    // Send Status as JSON POST
+    // Send multiple entries as JSON POST
+    let entry1 = Entry::builder("test_root_1")
+        .set_subtree_data("data", r#"{"test": "direct_http_1"}"#)
+        .build();
+    let entry2 = Entry::builder("test_root_2")
+        .set_subtree_data("data", r#"{"test": "direct_http_2"}"#)
+        .build();
+
     let response = client
         .post(&url)
-        .json(&SyncRequest::Status)
+        .json(&vec![entry1, entry2])
         .send()
         .await
         .unwrap();
@@ -95,10 +115,10 @@ async fn test_http_v0_json_endpoint() {
 
     let sync_response: SyncResponse = response.json().await.unwrap();
     match sync_response {
-        SyncResponse::Status(msg) => {
-            assert_eq!(msg, "Sync Status: Active");
+        SyncResponse::Count(count) => {
+            assert_eq!(count, 2);
         }
-        _ => panic!("Expected Status response"),
+        _ => panic!("Expected Count response"),
     }
 
     // Clean up

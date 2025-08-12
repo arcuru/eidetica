@@ -5,9 +5,10 @@
 
 use super::{SyncTransport, shared::*};
 use crate::Result;
+use crate::entry::Entry;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
+use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 use axum::{Router, extract::Json as ExtractJson, response::Json, routing::post};
 use std::net::SocketAddr;
@@ -109,13 +110,13 @@ impl SyncTransport for HttpTransport {
         Ok(())
     }
 
-    async fn send_request(&self, addr: &str, request: SyncRequest) -> Result<SyncResponse> {
+    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse> {
         let client = reqwest::Client::new();
         let url = format!("http://{addr}/api/v0");
 
         let response = client
             .post(&url)
-            .json(&request) // Send request as JSON body
+            .json(&request) // Send Vec<Entry> as JSON body
             .send()
             .await
             .map_err(|e| SyncError::ConnectionFailed {
@@ -148,8 +149,8 @@ impl SyncTransport for HttpTransport {
     }
 }
 
-/// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
-async fn handle_sync_request(ExtractJson(request): ExtractJson<SyncRequest>) -> Json<SyncResponse> {
-    let response = handle_request(request).await;
+/// Handler for the /api/v0 endpoint - accepts JSON Vec<Entry> and returns JSON SyncResponse.
+async fn handle_sync_request(ExtractJson(request): ExtractJson<Vec<Entry>>) -> Json<SyncResponse> {
+    let response = handle_request(&request).await;
     Json(response)
 }

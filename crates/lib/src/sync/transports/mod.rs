@@ -5,7 +5,8 @@
 //! work over various protocols (HTTP, Iroh, Bluetooth, etc.).
 
 use crate::Result;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
+use crate::entry::Entry;
+use crate::sync::protocol::SyncResponse;
 use async_trait::async_trait;
 
 pub mod http;
@@ -37,11 +38,28 @@ pub trait SyncTransport: Send + Sync {
     ///
     /// # Arguments
     /// * `addr` - The address of the peer to connect to
-    /// * `request` - The sync request to send
+    /// * `request` - The sync request to send (list of entries)
     ///
     /// # Returns
     /// The response from the peer, or an error if the request failed.
-    async fn send_request(&self, addr: &str, request: SyncRequest) -> Result<SyncResponse>;
+    async fn send_request(&self, addr: &str, request: &[Entry]) -> Result<SyncResponse>;
+
+    /// Send entries to a sync peer and ensure they are acknowledged.
+    ///
+    /// This is a convenience method that wraps send_request and validates the response.
+    ///
+    /// # Arguments
+    /// * `addr` - The address of the peer to connect to
+    /// * `entries` - The entries to send
+    ///
+    /// # Returns
+    /// A Result indicating whether the entries were successfully acknowledged.
+    async fn send_entries(&self, addr: &str, entries: &[Entry]) -> Result<()> {
+        let response = self.send_request(addr, entries).await?;
+        match response {
+            SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+        }
+    }
 
     /// Check if the server is currently running.
     ///

@@ -1,7 +1,4 @@
-use eidetica::sync::{
-    protocol::SyncRequest,
-    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
-};
+use eidetica::sync::transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Test that both HTTP and Iroh transports follow the same interface
 #[tokio::test]
@@ -59,15 +56,18 @@ async fn test_transport_interface_consistency() {
 /// Test error handling consistency across transports
 #[tokio::test]
 async fn test_transport_error_handling_consistency() {
+    use eidetica::entry::Entry;
+
     let http_transport = HttpTransport::new().unwrap();
     let iroh_transport = IrohTransport::new().unwrap();
 
     // Both should fail to send requests when no server is running
+    let entry = Entry::builder("test").build();
     let http_result = http_transport
-        .send_request("127.0.0.1:59999", SyncRequest::Hello)
+        .send_request("127.0.0.1:59999", std::slice::from_ref(&entry))
         .await;
     let iroh_result = iroh_transport
-        .send_request("invalid_node_id", SyncRequest::Hello)
+        .send_request("invalid_node_id", &[entry])
         .await;
 
     assert!(http_result.is_err());
