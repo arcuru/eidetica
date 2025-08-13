@@ -68,12 +68,12 @@ pub fn assert_text_value(value: &Value, expected: &str) {
 
 /// Assert that a nested value matches expected string
 pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
-    let mut current = map;
+    let mut current = map.as_node();
 
     // Navigate to the parent of the final key
     for &key in &path[..path.len() - 1] {
         match current.get(key) {
-            Some(Value::Map(inner)) => current = inner,
+            Some(Value::Node(inner)) => current = inner,
             _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
         }
     }
@@ -98,10 +98,10 @@ pub fn assert_path_deleted(map: &Map, path: &[&str]) {
         }
     } else {
         // Navigate to parent and check final key
-        let mut current = map;
+        let mut current = map.as_node();
         for &key in &path[..path.len() - 1] {
             match current.get(key) {
-                Some(Value::Map(inner)) => current = inner,
+                Some(Value::Node(inner)) => current = inner,
                 _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
             }
         }
@@ -204,7 +204,7 @@ pub fn create_complex_map() -> Map {
     let mut metadata = Map::new();
     metadata.set_string("author".to_string(), "Alice".to_string());
     metadata.set_string("version".to_string(), "1.0".to_string());
-    map.set("metadata".to_string(), Value::Map(metadata));
+    map.set("metadata".to_string(), metadata);
 
     // Add list
     let mut tags = List::new();
@@ -222,7 +222,7 @@ pub fn create_mixed_value_map() -> Map {
     map.set("bool_val".to_string(), Value::Bool(true));
     map.set("int_val".to_string(), Value::Int(123));
     map.set("text_val".to_string(), Value::Text("hello".to_string()));
-    map.set("map_val".to_string(), Value::Map(Map::new()));
+    map.set("map_val".to_string(), Map::new());
     map.set("list_val".to_string(), Value::List(List::new()));
     map.set("deleted_val".to_string(), Value::Deleted);
     map
@@ -249,7 +249,7 @@ pub fn create_mixed_list() -> List {
 
     let mut nested_map = Map::new();
     nested_map.set_string("nested".to_string(), "value".to_string());
-    list.push(Value::Map(nested_map));
+    list.push(nested_map);
 
     list
 }
@@ -284,7 +284,7 @@ pub fn create_all_value_types() -> Vec<Value> {
         Value::Int(-123),
         Value::Text("test".to_string()),
         Value::Text("".to_string()),
-        Value::Map(Map::new()),
+        Value::Node(Map::new().into()),
         Value::List(List::new()),
         Value::Deleted,
     ]
@@ -417,7 +417,7 @@ pub fn create_large_map(size: usize) -> Map {
     map
 }
 
-/// Create a large List for performance testing  
+/// Create a large List for performance testing
 pub fn create_large_list(size: usize) -> List {
     let mut list = List::new();
     for i in 0..size {

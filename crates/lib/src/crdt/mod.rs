@@ -6,9 +6,9 @@
 //!
 //! # Core Types
 //!
-//! - [`Map`] - A recursive key-value structure supporting nested maps and lists
-//! - [`map::List`] - An ordered collection with rational number positioning
-//! - [`map::Value`] - The value type for nested structures
+//! - [`Doc`] - The main CRDT document type for user interactions
+//! - [`Value`] - The value type for nested structures  
+//! - [`List`] - An ordered collection with rational number positioning
 //! - [`map::list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # Traits
@@ -17,11 +17,16 @@
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
 // Core modules
+pub mod doc;
 pub mod errors;
 pub mod map;
 pub mod traits;
 
 // Re-export core types
+pub use doc::Doc;
 pub use errors::CRDTError;
-pub use map::Map;
+pub use map::{List, Value}; // Export Value and List from map module
 pub use traits::{CRDT, Data};
+
+// Backwards compatibility alias - Map now refers to the new Doc type
+pub type Map = Doc;

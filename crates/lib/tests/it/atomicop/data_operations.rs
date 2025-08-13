@@ -63,7 +63,7 @@ fn test_atomicop_nested_values() {
     nested.set_string("inner2".to_string(), "value2".to_string());
 
     // Use the new set_value method to store a map
-    store1.set_value("map_key", Value::Map(nested)).unwrap();
+    store1.set_value("map_key", nested).unwrap();
 
     // Commit the operation
     op1.commit().unwrap();
@@ -80,7 +80,7 @@ fn test_atomicop_nested_values() {
 
     // Check the nested map
     match store2.get("map_key").unwrap() {
-        Value::Map(map) => {
+        Value::Node(map) => {
             match map.get("inner1") {
                 Some(Value::Text(value)) => assert_eq!(value, "value1"),
                 _ => panic!("Expected string value for inner1"),
@@ -208,7 +208,7 @@ fn test_nested_map_operations() {
     let nested_value = create_nested_map(&[("key1", "val1"), ("key2", "val2")]);
 
     match nested_value {
-        Value::Map(map) => {
+        Value::Node(map) => {
             assert_eq!(map.get_text("key1"), Some("val1"));
             assert_eq!(map.get_text("key2"), Some("val2"));
         }

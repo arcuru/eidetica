@@ -3,6 +3,7 @@ use crate::create_auth_keys;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Map;
+use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
 
 #[test]
@@ -197,7 +198,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .unwrap();
 
     settings_store
-        .set_value("auth", new_auth_settings.into())
+        .set_value("auth", Value::Node(new_auth_settings.into()))
         .expect("Failed to update auth settings");
 
     let entry_id1 = op1.commit().expect("Failed to commit settings change");

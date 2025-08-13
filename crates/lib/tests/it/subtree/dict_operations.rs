@@ -251,7 +251,7 @@ fn test_dict_update_nested_value() {
         // Create level1 -> level2_str structure
         let mut l1_map = Map::new();
         l1_map.set_string("level2_str", "initial_value");
-        dict.set_value("level1", Value::Map(l1_map))
+        dict.set_value("level1", l1_map)
             .expect("Op1: Failed to set level1");
     }
     op1.commit().expect("Op1: Failed to commit");
@@ -271,15 +271,15 @@ fn test_dict_update_nested_value() {
         new_l1_map.set_map("level2_map", l2_map);
 
         // Completely replace the previous value at level1
-        dict.set_value("level1", Value::Map(new_l1_map.clone()))
+        dict.set_value("level1", new_l1_map.clone())
             .expect("Op2: Failed to overwrite level1");
 
         // Verify the update within the same operation
         match dict.get("level1").expect("Failed to get level1") {
-            Value::Map(retrieved_l1_map) => {
+            Value::Node(retrieved_l1_map) => {
                 // Check if level2_map exists with the expected content
                 match retrieved_l1_map.get("level2_map") {
-                    Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                    Some(Value::Node(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
                         Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
                         _ => panic!("Expected string 'deep_value' at deep_key"),
                     },
@@ -298,10 +298,10 @@ fn test_dict_update_nested_value() {
 
     // Verify the structure after commit
     match viewer.get("level1").expect("Viewer: Failed to get level1") {
-        Value::Map(retrieved_l1_map) => {
+        Value::Node(retrieved_l1_map) => {
             // Check if level2_map exists with expected content
             match retrieved_l1_map.get("level2_map") {
-                Some(Value::Map(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                Some(Value::Node(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
                     Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
                     _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
                 },
@@ -330,7 +330,7 @@ fn test_dict_comprehensive_operations() {
         let mut nested = Map::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
-        dict.set_value("nested", Value::Map(nested.clone()))
+        dict.set_value("nested", Value::Node(nested.clone().into()))
             .expect("Failed to set nested map");
     }
 

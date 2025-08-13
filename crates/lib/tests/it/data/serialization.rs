@@ -34,7 +34,7 @@ fn test_map_serialization() {
 
     // Verify nested map survived
     match deserialized.get("map_key").unwrap() {
-        Value::Map(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
+        Value::Node(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
         _ => panic!("Expected map value"),
     }
 
@@ -81,7 +81,7 @@ fn test_serialization_mixed_map() {
 
     // Check nested map
     match deserialized.get("map_val").unwrap() {
-        Value::Map(nested) => assert_text_value(nested.get("nested_key").unwrap(), "nested_value"),
+        Value::Node(nested) => assert_text_value(nested.get("nested_key").unwrap(), "nested_value"),
         _ => panic!("Expected nested map"),
     }
 

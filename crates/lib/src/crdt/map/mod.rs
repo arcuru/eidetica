@@ -99,4 +99,4 @@ mod implementation;
 pub mod list;
 mod tests;
 
-pub use implementation::*;
+pub use implementation::{List, Map, Node, Value}; // Map is a compatibility alias for Node

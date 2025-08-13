@@ -4,8 +4,8 @@
 //! tombstone handling, recursive merging, and complex conflict resolution.
 
 use super::helpers::*;
-use eidetica::crdt::CRDT;
 use eidetica::crdt::map::Value;
+use eidetica::crdt::{CRDT, Doc};
 
 #[test]
 fn test_map_basic_operations() {
@@ -119,7 +119,7 @@ fn test_map_recursive_merge() {
 
     // Level 2 - should contain keys from both sources
     match merged.get("level2").unwrap() {
-        Value::Map(level2_merged) => {
+        Value::Node(level2_merged) => {
             // Both unique keys should be present
             assert_text_value(level2_merged.get("level2_key1").unwrap(), "level2_value1");
             assert_text_value(level2_merged.get("level2_key2").unwrap(), "level2_value2");
@@ -129,7 +129,7 @@ fn test_map_recursive_merge() {
 
             // Level 3 - should contain keys from both sources
             match level2_merged.get("level3").unwrap() {
-                Value::Map(level3_merged) => {
+                Value::Node(level3_merged) => {
                     assert_text_value(level3_merged.get("level3_key1").unwrap(), "level3_value1");
                     assert_text_value(level3_merged.get("level3_key2").unwrap(), "level3_value2");
                 }
@@ -159,7 +159,7 @@ fn test_map_type_conflicts() {
     // Direction 1: map1 -> map2 (map should win)
     let merged1 = map1.merge(&map2).expect("Merge 1 failed");
     match merged1.get("conflict_key").unwrap() {
-        Value::Map(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
+        Value::Node(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
         _ => panic!("Expected map to win in merge 1"),
     }
 
@@ -182,7 +182,7 @@ fn test_map_complex_merge_with_tombstones() {
 
     // Verify level1
     match merged.get("level1").unwrap() {
-        Value::Map(level1_merged) => {
+        Value::Node(level1_merged) => {
             // Verify level1.key1 (only in map1, should be preserved)
             assert_text_value(level1_merged.get("key1").unwrap(), "value1");
 
@@ -192,7 +192,7 @@ fn test_map_complex_merge_with_tombstones() {
             // Verify level1.to_delete (deleted in map2, should be gone)
             assert_eq!(level1_merged.get("to_delete"), None);
             // Verify it's a tombstone
-            assert_path_deleted(level1_merged, &["to_delete"]);
+            assert_path_deleted(&Doc::from_node(level1_merged.clone()), &["to_delete"]);
 
             // Verify level1.to_update (updated in map2, should have new value)
             assert_text_value(level1_merged.get("to_update").unwrap(), "updated_value");
@@ -244,7 +244,7 @@ fn test_map_multi_generation_updates() {
 
     // Verify gen4
     match gen4.get("key").unwrap() {
-        Value::Map(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
+        Value::Node(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
         _ => panic!("Expected map in gen4"),
     }
 }

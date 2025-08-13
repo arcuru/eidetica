@@ -60,7 +60,7 @@ pub fn create_dict_with_nested_map(
     // Set nested map
     let mut nested = Map::new();
     nested.set_string("inner", "nested_value");
-    dict.set_value("key2", Value::Map(nested)).unwrap();
+    dict.set_value("key2", Value::Node(nested.into())).unwrap();
 
     op.commit().unwrap()
 }
@@ -151,10 +151,10 @@ pub fn assert_dict_list_data(
 /// Verify nested Map structure in Dict
 pub fn assert_dict_nested_map(dict: &Dict, map_key: &str, nested_data: &[(&str, &str)]) {
     match dict.get(map_key).unwrap() {
-        Value::Map(map) => {
+        Value::Node(map) => {
             for (key, expected_value) in nested_data {
                 match map.get(key) {
-                    Some(Value::Text(value)) => assert_eq!(value, expected_value),
+                    Some(Value::Text(value)) => assert_eq!(value, *expected_value),
                     _ => panic!("Expected string value for nested key '{key}'"),
                 }
             }

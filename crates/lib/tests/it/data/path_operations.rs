@@ -41,7 +41,7 @@ fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
     // Verify intermediate map structure
     let profile_path = ["user", "profile"];
     match dict.get_at_path(profile_path)? {
-        Value::Map(profile_map) => {
+        Value::Node(profile_map) => {
             assert_text_value(profile_map.get("email").unwrap(), "test@example.com");
         }
         _ => panic!("Expected user.profile to be a map"),
@@ -68,12 +68,12 @@ fn test_dict_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
 
     // Verify intermediate maps were created
     match dict.get_at_path(["a", "b"])? {
-        Value::Map(_) => (),
-        _ => panic!("Expected a.b to be a map"),
+        Value::Node(_) => (),
+        other => panic!("Expected a.b to be a map, got {other:?}"),
     }
     match dict.get_at_path(["a"])? {
-        Value::Map(_) => (),
-        _ => panic!("Expected a to be a map"),
+        Value::Node(_) => (),
+        other => panic!("Expected a to be a map, got {other:?}"),
     }
 
     Ok(())
@@ -95,7 +95,7 @@ fn test_dict_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
 
     // Verify that 'user.profile' is now a map
     match dict.get_at_path(["user", "profile"])? {
-        Value::Map(profile_map) => {
+        Value::Node(profile_map) => {
             assert_text_value(profile_map.get("name").unwrap(), "charlie");
         }
         _ => panic!("Expected user.profile to be a map after overwrite"),
@@ -114,7 +114,7 @@ fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
     // Test path where an intermediate key segment does not exist within a valid map.
     // Set up: existing_root -> some_child_map (empty map)
     let child_map = eidetica::crdt::Map::new();
-    dict.set_at_path(["existing_root_map"], Value::Map(child_map))?;
+    dict.set_at_path(["existing_root_map"], child_map.into())?;
 
     let path_intermediate_missing = ["existing_root_map", "non_existent_child_in_map", "key"];
     assert_not_found_error(dict.get_at_path(path_intermediate_missing));
@@ -153,7 +153,7 @@ fn test_dict_set_at_path_empty_path() -> eidetica::Result<()> {
 
     // Setting a map value at the root should succeed
     let nested_map = eidetica::crdt::Map::new();
-    assert!(dict.set_at_path(&path, Value::Map(nested_map)).is_ok());
+    assert!(dict.set_at_path(&path, nested_map.into()).is_ok());
 
     Ok(())
 }
@@ -166,7 +166,7 @@ fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
 
     // Getting the root should return a map (the entire Dict contents)
     match dict.get_at_path(&path)? {
-        Value::Map(_) => (),
+        Value::Node(_) => (),
         other => panic!("Expected Map for root path, got {other:?}"),
     }
 
@@ -241,7 +241,7 @@ fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
 
     // Verify intermediate structures
     match dict.get_at_path(["user"])? {
-        Value::Map(user_map) => {
+        Value::Node(user_map) => {
             assert!(user_map.as_hashmap().contains_key("profile"));
             assert!(user_map.as_hashmap().contains_key("settings"));
         }
@@ -249,8 +249,9 @@ fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
     }
 
     match dict.get_at_path(["user", "profile"])? {
-        Value::Map(profile_map) => {
-            assert_map_contains(&Value::Map(profile_map.clone()), &["name", "email"]);
+        Value::Node(_) => {
+            let profile_map = dict.get_at_path(["user", "profile"])?;
+            assert_map_contains(&profile_map, &["name", "email"]);
         }
         _ => panic!("Expected user.profile to be a map"),
     }

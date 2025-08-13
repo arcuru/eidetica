@@ -126,8 +126,8 @@ fn test_complex_nested_structure_to_json() {
     tags2.push("designer");
     user2.set("tags", tags2);
 
-    users_list.push(Value::Map(user1));
-    users_list.push(Value::Map(user2));
+    users_list.push(user1);
+    users_list.push(user2);
 
     // Create root structure
     let mut root = Map::new();
@@ -357,8 +357,8 @@ fn test_serde_json_round_trip_complex_structure() {
     user2.set("name", "Bob");
     user2.set("admin", false);
 
-    users.push(Value::Map(user1));
-    users.push(Value::Map(user2));
+    users.push(user1);
+    users.push(user2);
     root.set("users", Value::List(users));
 
     // Serialize to JSON

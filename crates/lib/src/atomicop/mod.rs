@@ -650,10 +650,10 @@ impl AtomicOp {
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial tree creation with auth)
         let effective_settings_for_validation = if has_settings_update {
-            let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
             if !historical_has_auth {
                 let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
-                let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+                let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
                 if staged_has_auth {
                     staged_settings
                 } else {
@@ -722,13 +722,13 @@ impl AtomicOp {
 
             // Check if we need to bootstrap auth configuration
             // First check if auth is configured in the historical settings
-            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
 
             // If not configured historically, check if this entry is setting up auth for the first time
             let auth_configured = if !auth_configured_historical && has_settings_update {
                 // Check if the staged settings contain auth configuration
                 let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
-                matches!(staged_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+                matches!(staged_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
             } else {
                 auth_configured_historical
             };
@@ -793,7 +793,7 @@ impl AtomicOp {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
                 match settings_for_validation.get("auth") {
-                    Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty() => {
+                    Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty() => {
                         // We have auth configuration, so check permissions
                         let operation_type = if has_settings_update
                             || entry.subtrees().contains(&SETTINGS.to_string())
@@ -826,7 +826,7 @@ impl AtomicOp {
                             if let Ok(settings_data) = entry.data(SETTINGS) {
                                 if let Ok(new_settings) = serde_json::from_str::<Map>(settings_data)
                                 {
-                                    if matches!(new_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty())
+                                    if matches!(new_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
                                     {
                                         // This is a bootstrap operation - adding auth config for the first time
                                         // Allow it since it's setting up authentication

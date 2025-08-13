@@ -14,6 +14,7 @@ use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Map;
+use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
 
 /// Test delegation resolution with missing backend
@@ -60,7 +61,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 
     let mut new_auth_settings = tree.get_settings()?.get_all()?;
     new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
-    settings_store.set_value("auth", new_auth_settings.into())?;
+    settings_store.set_value("auth", Value::Node(new_auth_settings.into()))?;
     op.commit()?;
 
     // Try to resolve delegation to non-existent tree
@@ -110,7 +111,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
     let mut corrupted_delegate = Map::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
-    auth.set("corrupted_delegate", corrupted_delegate);
+    auth.set("corrupted_delegate", Value::Node(corrupted_delegate.into()));
 
     let mut settings = Map::new();
     settings.set_map("auth", auth);

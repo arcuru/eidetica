@@ -115,10 +115,10 @@ fn test_complex_crdt_scenario() {
     doc.set("priority".to_string(), Value::Int(100));
 
     // In the branch, modify nested data
-    if let Some(Value::Map(metadata)) = branch.get("metadata") {
+    if let Some(Value::Node(metadata)) = branch.get("metadata") {
         let mut metadata_clone = metadata.clone();
         metadata_clone.set_string("editor".to_string(), "Bob".to_string());
-        branch.set("metadata".to_string(), Value::Map(metadata_clone));
+        branch.set("metadata".to_string(), metadata_clone);
     }
 
     // Merge the branches
@@ -138,7 +138,7 @@ fn test_complex_crdt_scenario() {
     );
 
     // Check nested metadata
-    if let Some(Value::Map(metadata)) = merged.get("metadata") {
+    if let Some(Value::Node(metadata)) = merged.get("metadata") {
         assert_eq!(
             metadata.get_text("author"),
             Some("Alice"),

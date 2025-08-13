@@ -42,8 +42,8 @@ fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
     // Get the whole user object
     let user_data = dict.get("user")?;
     match user_data {
-        Value::Map(user_map) => match user_map.get("profile") {
-            Some(Value::Map(profile_map)) => {
+        Value::Node(user_map) => match user_map.get("profile") {
+            Some(Value::Node(profile_map)) => {
                 assert_text_value(profile_map.get("name").unwrap(), "bob");
             }
             _ => panic!("Expected user.profile (nested) to be a map"),
@@ -77,8 +77,8 @@ fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
     // Verify that 'user' is now a map
     let user_data = dict.get("user")?;
     match user_data {
-        Value::Map(user_map) => match user_map.get("profile") {
-            Some(Value::Map(profile_map)) => {
+        Value::Node(user_map) => match user_map.get("profile") {
+            Some(Value::Node(profile_map)) => {
                 assert_text_value(profile_map.get("name").unwrap(), "charlie");
             }
             _ => panic!("Expected user.profile to be a map after overwrite"),
@@ -118,8 +118,8 @@ fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
     // Verify the entire nested structure was created
     let a_val = dict.get("a")?;
     match a_val {
-        Value::Map(a_map) => match a_map.get("b") {
-            Some(Value::Map(b_map)) => {
+        Value::Node(a_map) => match a_map.get("b") {
+            Some(Value::Node(b_map)) => {
                 assert_text_value(b_map.get("c").unwrap(), "deep_value");
             }
             _ => panic!("Expected a.b to be a map"),
@@ -143,7 +143,7 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
     let user_data = dict.get("user")?;
     assert_map_contains(&user_data, &["name"]);
     match user_data {
-        Value::Map(user_map) => {
+        Value::Node(user_map) => {
             assert_text_value(user_map.get("name").unwrap(), "dave");
         }
         _ => panic!("Expected user to be a map with name field"),
@@ -158,9 +158,9 @@ fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
 
     let user_data_updated = dict.get("user")?;
     match user_data_updated {
-        Value::Map(user_map_updated) => {
+        Value::Node(user_map_updated) => {
             match user_map_updated.get("profile") {
-                Some(Value::Map(profile_map_updated)) => {
+                Some(Value::Node(profile_map_updated)) => {
                     assert_text_value(
                         profile_map_updated.get("email").unwrap(),
                         "dave@example.com",
@@ -190,7 +190,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
 
     // We should be able to get values via the root editor
     match root_editor.get()? {
-        Value::Map(map) => {
+        Value::Node(map) => {
             let entries = map.as_hashmap();
             assert!(entries.contains_key("key1"));
             assert!(entries.contains_key("key2"));
@@ -204,9 +204,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     // Create a new nested map at root level
     let mut nested = eidetica::crdt::Map::new();
     nested.set_string("nested_key", "nested_value");
-    root_editor
-        .get_value_mut("nested")
-        .set(Value::Map(nested))?;
+    root_editor.get_value_mut("nested").set(nested.into())?;
 
     // Verify the nested structure
     assert_map_contains(&root_editor.get_value("nested")?, &["nested_key"]);
@@ -238,10 +236,10 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     user_profile.set_string("email", "alice@example.com");
 
     let mut user_data = eidetica::crdt::Map::new();
-    user_data.set("profile", Value::Map(user_profile));
+    user_data.set("profile", user_profile);
     user_data.set_string("role", "admin");
 
-    dict.set_value("user", Value::Map(user_data))?;
+    dict.set_value("user", user_data)?;
 
     // Get an editor for the user object
     let user_editor = dict.get_value_mut("user");
@@ -266,8 +264,8 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // But the parent object (user) should still exist
     match dict.get("user")? {
-        Value::Map(_) => (),
-        _ => panic!("Expected user map to still exist"),
+        Value::Node(_) => (),
+        other => panic!("Expected user map to still exist, got {other:?}"),
     }
 
     op.commit()?;
@@ -278,12 +276,13 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // User exists but has no role or profile
     match viewer_dict.get("user")? {
-        Value::Map(map) => {
+        Value::Node(map) => {
             let _entries = map.as_hashmap();
 
             // Check that the entries are properly marked as deleted (tombstones)
-            assert_path_deleted(&map, &["role"]);
-            assert_path_deleted(&map, &["profile"]);
+            let map_as_doc = eidetica::crdt::Doc::from_node(map.clone());
+            assert_path_deleted(&map_as_doc, &["role"]);
+            assert_path_deleted(&map_as_doc, &["profile"]);
         }
         _ => panic!("Expected user to be a map after commit"),
     }
@@ -304,7 +303,7 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     // Setting a map value should succeed
     let mut map = eidetica::crdt::Map::new();
     map.set_string("key", "value");
-    assert!(root_editor.set(Value::Map(map)).is_ok());
+    assert!(root_editor.set(map.into()).is_ok());
 
     Ok(())
 }

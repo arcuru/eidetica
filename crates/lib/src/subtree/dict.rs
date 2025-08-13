@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
-use crate::crdt::map::{List, Value};
+use crate::crdt::map::{List, Node, Value};
 use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
@@ -81,7 +81,7 @@ impl Dict {
         let key_ref = key.as_ref();
         match self.get(key_ref)? {
             Value::Text(value) => Ok(value),
-            Value::Map(_) => Err(SubtreeError::TypeMismatch {
+            Value::Node(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Map".to_string(),
@@ -169,7 +169,7 @@ impl Dict {
     /// Convenience method to get a Map value.
     pub fn get_node(&self, key: impl AsRef<str>) -> Result<Map> {
         match self.get(key)? {
-            Value::Map(node) => Ok(node),
+            Value::Node(node) => Ok(node.into()),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "Map".to_string(),
@@ -186,12 +186,12 @@ impl Dict {
 
     /// Convenience method to set a node value.
     pub fn set_node(&self, key: impl Into<String>, node: impl Into<Map>) -> Result<()> {
-        self.set(key, Value::Map(node.into()))
+        self.set(key, Value::Node(node.into().into()))
     }
 
     /// Legacy method for backward compatibility - now just an alias to set
-    pub fn set_value(&self, key: impl Into<String>, value: Value) -> Result<()> {
-        self.set(key, value)
+    pub fn set_value(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        self.set(key, value.into())
     }
 
     /// Legacy method for backward compatibility - now just an alias to get
@@ -324,14 +324,14 @@ impl Dict {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
             // Requesting the root of this Dict's named subtree
-            return Ok(Value::Map(self.get_all()?));
+            return Ok(Value::Node(self.get_all()?.into()));
         }
 
-        let mut current_value_view = Value::Map(self.get_all()?);
+        let mut current_value_view = Value::Node(self.get_all()?.into());
 
         for key_segment_s in path_slice.iter() {
             match current_value_view {
-                Value::Map(map_data) => match map_data.get(key_segment_s.as_ref()) {
+                Value::Node(map_data) => match map_data.get(key_segment_s.as_ref()) {
                     Some(next_value) => {
                         current_value_view = next_value.clone();
                     }
@@ -415,7 +415,7 @@ impl Dict {
         if path_slice.is_empty() {
             // Setting the root of this Dict's named subtree.
             // The value must be a map.
-            if let Value::Map(map_data) = value {
+            if let Value::Node(map_data) = value {
                 let serialized_data = serde_json::to_string(&map_data)?;
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
@@ -433,20 +433,20 @@ impl Dict {
             .get_local_data::<Map>(&self.name)
             .unwrap_or_default();
 
-        let mut current_map_mut = &mut subtree_data;
+        let mut current_map_mut = subtree_data.as_map_mut();
 
         // Traverse or create path segments up to the parent of the target key.
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.clone().into();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Map(Map::default())) {
-                Value::Map(map) => map,
+            current_map_mut = match entry.or_insert_with(|| Value::Node(Node::default())) {
+                Value::Node(map) => map,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = Value::Map(Map::default());
+                    *non_map_val = Value::Node(Node::default());
                     match non_map_val {
-                        Value::Map(map) => map,
+                        Value::Node(map) => map,
                         _ => unreachable!("Just assigned a map"),
                     }
                 }

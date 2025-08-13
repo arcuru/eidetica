@@ -102,7 +102,11 @@ use super::list::Position;
 use uuid::Uuid;
 
 use crate::crdt::CRDTError;
+use crate::crdt::Doc;
 use crate::crdt::traits::{CRDT, Data};
+
+// Type alias for backwards compatibility within the map module
+pub type Map = Node;
 
 /// Position identifier for list elements that enables stable ordering in distributed systems.
 ///
@@ -224,7 +228,7 @@ pub enum Value {
 
     // Branch values (can contain other nodes)
     /// Sub-tree containing other nodes
-    Map(Map),
+    Node(Node),
     /// Ordered collection of values
     List(List),
 
@@ -287,81 +291,26 @@ pub struct List {
     items: BTreeMap<Position, Value>,
 }
 
-/// The root tree structure containing child nodes.
+/// Internal node structure for CRDT trees.
 ///
-/// `Map` represents a tree-like structure where each node can contain
-/// multiple named children, aligned with Eidetica's forest metaphor.
-/// Each child is identified by a string key and can contain any [`Value`].
+/// `Node` represents the internal tree-like structure where each node can contain
+/// multiple named children. This type is now internal to the CRDT implementation,
+/// with the public API provided through the [`Doc`] type.
 ///
 /// # CRDT Behavior
 ///
 /// Nodes implement CRDT semantics for distributed collaboration:
 /// - **Structural merging**: Child nodes are merged recursively
 /// - **Tombstone deletion**: Deleted keys are marked with tombstones for proper merge behavior
-/// - **API hiding**: Tombstones are hidden from public API methods
 /// - **Last-write-wins**: Conflicting scalar values use last-write-wins resolution
 ///
-/// # API Levels
+/// # Internal Use Only
 ///
-/// The Map API provides multiple levels of ergonomics:
-///
-/// ## Basic Access
-/// ```
-/// # use eidetica::crdt::map::Map;
-/// let mut map = Map::new();
-/// map.set("name", "Alice");
-///
-/// // Traditional verbose approach
-/// let name = map.get("name").and_then(|v| v.as_text());
-/// assert_eq!(name, Some("Alice"));
-/// ```
-///
-/// ## Typed Getters
-/// ```
-/// # use eidetica::crdt::map::Map;
-/// # let mut map = Map::new();
-/// # map.set("name", "Alice");
-/// # map.set("age", 30);
-/// // Direct typed access
-/// let name = map.get_text("name");     // Option<&str>
-/// let age = map.get_int("age");        // Option<i64>
-/// assert_eq!(name, Some("Alice"));
-/// assert_eq!(age, Some(30));
-/// ```
-///
-/// ## Direct Comparisons
-/// ```
-/// # use eidetica::crdt::map::Map;
-/// # let mut map = Map::new();
-/// # map.set("name", "Alice");
-/// # map.set("age", 30);
-/// // Direct comparison with PartialEq
-/// assert!(*map.get("name").unwrap() == "Alice");
-/// assert!(*map.get("age").unwrap() == 30);
-/// ```
-///
-/// ## Path-based Access
-/// ```
-/// # use eidetica::crdt::map::Map;
-/// let mut map = Map::new();
-/// map.set_path("user.profile.name", "Alice").unwrap();
-///
-/// // Access nested values with dot notation
-/// let name = map.get_text_at_path("user.profile.name");
-/// assert_eq!(name, Some("Alice"));
-/// ```
-///
-/// # Builder Pattern
-/// ```
-/// # use eidetica::crdt::map::{Map, List};
-/// let map = Map::new()
-///     .with_text("name", "Alice")
-///     .with_int("age", 30)
-///     .with_bool("active", true)
-///     .with_list("tags", List::new());
-/// ```
+/// This type is primarily for internal use within the CRDT system. External users
+/// should interact with the [`Doc`] type instead, which provides a cleaner API
+/// and proper separation of concerns.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Map {
+pub struct Node {
     /// Child nodes indexed by string keys
     children: HashMap<String, Value>,
 }
@@ -377,7 +326,7 @@ impl Value {
 
     /// Returns true if this is a branch value (can contain other nodes)
     pub fn is_branch(&self) -> bool {
-        matches!(self, Value::Map(_) | Value::List(_))
+        matches!(self, Value::Node(_) | Value::List(_))
     }
 
     /// Returns true if this value represents a deletion
@@ -397,7 +346,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Text(_) => "text",
-            Value::Map(_) => "node",
+            Value::Node(_) => "node",
             Value::List(_) => "list",
             Value::Deleted => "deleted",
         }
@@ -453,17 +402,17 @@ impl Value {
     }
 
     /// Attempts to convert to a node (returns immutable reference)
-    pub fn as_node(&self) -> Option<&Map> {
+    pub fn as_node(&self) -> Option<&Node> {
         match self {
-            Value::Map(node) => Some(node),
+            Value::Node(node) => Some(node),
             _ => None,
         }
     }
 
     /// Attempts to convert to a mutable node reference
-    pub fn as_node_mut(&mut self) -> Option<&mut Map> {
+    pub fn as_node_mut(&mut self) -> Option<&mut Node> {
         match self {
-            Value::Map(node) => Some(node),
+            Value::Node(node) => Some(node),
             _ => None,
         }
     }
@@ -500,8 +449,8 @@ impl Value {
 
         // Handle specific cases without moving self
         match other {
-            Value::Map(other_node) => {
-                if let Value::Map(self_node) = self {
+            Value::Node(other_node) => {
+                if let Value::Node(self_node) = self {
                     // For in-place merge, manually merge the children
                     for (key, other_value) in &other_node.children {
                         match self_node.children.get_mut(key) {
@@ -560,7 +509,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
             Value::Text(s) => format!("\"{}\"", s.replace('\"', "\\\"")),
-            Value::Map(node) => node.to_json_string(),
+            Value::Node(node) => node.to_json_string(),
             Value::List(list) => {
                 let mut result = String::with_capacity(list.len() * 8); // Reasonable initial capacity
                 result.push('[');
@@ -585,7 +534,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
             Value::Text(s) => write!(f, "{s}"),
-            Value::Map(node) => write!(f, "{node}"),
+            Value::Node(node) => write!(f, "{node}"),
             Value::List(list) => {
                 write!(f, "[")?;
                 for (i, item) in list.iter().enumerate() {
@@ -658,9 +607,15 @@ impl From<&str> for Value {
     }
 }
 
-impl From<Map> for Value {
-    fn from(value: Map) -> Self {
-        Value::Map(value)
+impl From<Node> for Value {
+    fn from(value: Node) -> Self {
+        Value::Node(value)
+    }
+}
+
+impl From<Doc> for Value {
+    fn from(value: Doc) -> Self {
+        Value::Node(value.into())
     }
 }
 
@@ -778,7 +733,7 @@ impl PartialEq<Value> for bool {
 impl Data for Position {}
 impl Data for Value {}
 impl Data for List {}
-impl Data for Map {}
+impl Data for Node {}
 
 impl List {
     /// Creates a new empty list
@@ -1021,7 +976,7 @@ impl FromIterator<Value> for List {
     }
 }
 
-impl Map {
+impl Node {
     /// Creates a new empty node
     pub fn new() -> Self {
         Self {
@@ -1139,7 +1094,7 @@ impl Map {
     }
 
     /// Gets a node value by key
-    pub fn get_node(&self, key: impl AsRef<str>) -> Option<&Map> {
+    pub fn get_node(&self, key: impl AsRef<str>) -> Option<&Node> {
         self.get(key).and_then(|v| v.as_node())
     }
 
@@ -1253,7 +1208,7 @@ impl Map {
 
         for part in parts.iter().skip(1) {
             match current_value {
-                Value::Map(node) => {
+                Value::Node(node) => {
                     current_value = node.get(part)?;
                 }
                 Value::List(list) => {
@@ -1287,7 +1242,7 @@ impl Map {
     }
 
     /// Gets a node value by path
-    pub fn get_node_at_path(&self, path: impl AsRef<str>) -> Option<&Map> {
+    pub fn get_node_at_path(&self, path: impl AsRef<str>) -> Option<&Node> {
         self.get_path(path).and_then(|v| v.as_node())
     }
 
@@ -1308,7 +1263,7 @@ impl Map {
 
         for part in parts.iter().skip(1) {
             match current_value {
-                Value::Map(node) => {
+                Value::Node(node) => {
                     current_value = node.get_mut(part)?;
                 }
                 Value::List(list) => {
@@ -1353,7 +1308,7 @@ impl Map {
 
             // Check if we need to create a new node
             let needs_new_node = match current_map.children.get(*part) {
-                Some(Value::Map(_)) => false,
+                Some(Value::Node(_)) => false,
                 Some(_) => {
                     // Existing non-node value, can't navigate further
                     return Err(CRDTError::InvalidPath {
@@ -1366,12 +1321,12 @@ impl Map {
             if needs_new_node {
                 current_map
                     .children
-                    .insert(part_owned.clone(), Value::Map(Map::new()));
+                    .insert(part_owned.clone(), Value::Node(Node::new()));
             }
 
             // Navigate to the node
             match current_map.children.get_mut(&part_owned) {
-                Some(Value::Map(node)) => {
+                Some(Value::Node(node)) => {
                     current_map = node;
                 }
                 _ => unreachable!(), // We just ensured this is a Map
@@ -1430,7 +1385,7 @@ impl Map {
     /// It differs from serde serialization in important ways:
     ///
     /// - **Tombstones**: Deleted entries are completely excluded from JSON output
-    /// - **Purpose**: Human-readable output, not CRDT state preservation  
+    /// - **Purpose**: Human-readable output, not CRDT state preservation
     /// - **Use cases**: Display, debugging, export to external systems
     ///
     /// For complete CRDT state preservation including tombstones, use serde serialization instead.
@@ -1466,7 +1421,7 @@ impl Map {
     }
 }
 
-impl CRDT for Map {
+impl CRDT for Node {
     /// Merges another Map into this one using CRDT semantics.
     ///
     /// This method implements the core CRDT merge operation for Map structures.
@@ -1520,21 +1475,21 @@ impl CRDT for Map {
     }
 }
 
-impl Default for Map {
+impl Default for Node {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Display for Map {
+impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_json_string())
     }
 }
 
-impl FromIterator<(String, Value)> for Map {
+impl FromIterator<(String, Value)> for Node {
     fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
-        let mut map = Map::new();
+        let mut map = Node::new();
         for (key, value) in iter {
             map.set(key, value);
         }
@@ -1543,7 +1498,7 @@ impl FromIterator<(String, Value)> for Map {
 }
 
 // Convenient builder pattern methods
-impl Map {
+impl Node {
     /// Builder method to set a value and return self
     pub fn with(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.set(key, value);
@@ -1566,8 +1521,12 @@ impl Map {
     }
 
     /// Builder method to set a child node
-    pub fn with_node(self, key: impl Into<String>, value: impl Into<Map>) -> Self {
-        self.with(key, Value::Map(value.into()))
+    pub fn with_node<K, V>(self, key: K, value: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<Node>,
+    {
+        self.with(key, Value::Node(value.into()))
     }
 
     /// Builder method to set a list value
@@ -1577,7 +1536,7 @@ impl Map {
 }
 
 // JSON serialization methods
-impl Map {
+impl Node {
     /// Set a key-value pair with a raw Value (for advanced use).
     pub fn set_raw<K>(&mut self, key: K, value: Value) -> &mut Self
     where
@@ -1633,26 +1592,26 @@ impl Map {
     }
 
     /// Set a key-value pair where the value is a nested map.
-    pub fn set_map<K>(&mut self, key: K, value: Map) -> &mut Self
+    pub fn set_map<K>(&mut self, key: K, value: impl Into<Node>) -> &mut Self
     where
         K: Into<String>,
     {
-        self.set(key.into(), Value::Map(value));
+        self.set(key.into(), Value::Node(value.into()));
         self
     }
 
     /// Get a nested map by key.
-    pub fn get_map(&self, key: &str) -> Option<&Map> {
+    pub fn get_map(&self, key: &str) -> Option<&Node> {
         match self.get(key) {
-            Some(Value::Map(node)) => Some(node),
+            Some(Value::Node(node)) => Some(node),
             _ => None,
         }
     }
 
     /// Get a mutable reference to a nested map by key.
-    pub fn get_map_mut(&mut self, key: &str) -> Option<&mut Map> {
+    pub fn get_map_mut(&mut self, key: &str) -> Option<&mut Node> {
         match self.get_mut(key) {
-            Some(Value::Map(node)) => Some(node),
+            Some(Value::Node(node)) => Some(node),
             _ => None,
         }
     }

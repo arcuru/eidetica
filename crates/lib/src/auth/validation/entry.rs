@@ -56,7 +56,7 @@ impl AuthValidator {
 
         // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
         match settings_state.get("auth") {
-            Some(Value::Map(auth_map)) => {
+            Some(Value::Node(auth_map)) => {
                 // If 'auth' section exists and is a map, check if it's empty
                 if auth_map.as_hashmap().is_empty() {
                     return Ok(true);

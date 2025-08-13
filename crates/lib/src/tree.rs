@@ -53,7 +53,7 @@ impl Tree {
     ) -> Result<Self> {
         let signing_key_name = signing_key_name.as_ref();
         // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Map(auth_map)) if !auth_map.as_hashmap().is_empty());
+        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
 
         let (super_user_key_name, final_tree_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key
@@ -166,7 +166,7 @@ impl Tree {
     /// # db.add_private_key("test_key")?;
     /// # let mut tree = db.new_tree(Map::new(), "test_key")?;
     /// tree.set_default_auth_key("my_key");                    // &str
-    /// tree.set_default_auth_key(String::from("my_key"));      // String  
+    /// tree.set_default_auth_key(String::from("my_key"));      // String
     /// tree.set_default_auth_key(&String::from("my_key"));     // &String
     /// # Ok(())
     /// # }

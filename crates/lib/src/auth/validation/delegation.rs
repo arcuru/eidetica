@@ -172,7 +172,7 @@ impl DelegationResolver {
             .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
         let auth_nested = match auth_section {
-            Value::Map(auth_map) => auth_map,
+            Value::Node(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),
@@ -262,7 +262,7 @@ impl DelegationResolver {
 
         // Extract the auth Map from the Value
         let auth_nested = match auth_section {
-            Value::Map(auth_map) => auth_map,
+            Value::Node(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),
