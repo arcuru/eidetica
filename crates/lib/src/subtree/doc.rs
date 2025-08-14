@@ -5,17 +5,17 @@ use crate::crdt::{CRDT, Map};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 
-/// A simple key-value store SubTree providing ergonomic access to Map CRDT data.
+/// A document-oriented SubTree providing ergonomic access to Map CRDT data.
 ///
 /// It assumes that the SubTree data is a Map CRDT, which allows for nested map structures.
 /// This implementation supports string values, as well as deletions via tombstones.
 /// For more complex data structures, consider using the nested capabilities of Map directly.
-pub struct Dict {
+pub struct DocStore {
     name: String,
     atomic_op: AtomicOp,
 }
 
-impl SubTree for Dict {
+impl SubTree for DocStore {
     fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.into(),
@@ -28,7 +28,7 @@ impl SubTree for Dict {
     }
 }
 
-impl Dict {
+impl DocStore {
     /// Gets a value associated with a key from the SubTree.
     ///
     /// This method prioritizes returning data staged within the current `AtomicOp`.
@@ -110,10 +110,10 @@ impl Dict {
     /// Stages the setting of a key-value pair within the associated `AtomicOp`.
     ///
     /// This method updates the `Map` data held within the `AtomicOp` for this
-    /// `Dict` instance's subtree name. The change is **not** persisted to the backend
+    /// `DocStore` instance's subtree name. The change is **not** persisted to the backend
     /// until the `AtomicOp::commit()` method is called.
     ///
-    /// Calling this method on a `Dict` obtained via `Tree::get_subtree_viewer` is possible
+    /// Calling this method on a `DocStore` obtained via `Tree::get_subtree_viewer` is possible
     /// but the changes will be ephemeral and discarded, as the viewer's underlying `AtomicOp`
     /// is not intended to be committed.
     ///
@@ -202,7 +202,7 @@ impl Dict {
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
     /// This method removes the key-value pair from the `Map` data held within
-    /// the `AtomicOp` for this `Dict` instance's subtree name. A tombstone is created,
+    /// the `AtomicOp` for this `DocStore` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `AtomicOp::commit()` method is called.
     ///
@@ -213,10 +213,10 @@ impl Dict {
     /// # Examples
     /// ```rust,no_run
     /// # use eidetica::Tree;
-    /// # use eidetica::subtree::Dict;
+    /// # use eidetica::subtree::DocStore;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation().unwrap();
-    /// let store = op.get_subtree::<Dict>("my_data").unwrap();
+    /// let store = op.get_subtree::<DocStore>("my_data").unwrap();
     ///
     /// // First set a value
     /// store.set("user1", "Alice").unwrap();
@@ -256,7 +256,7 @@ impl Dict {
     ///
     /// This method combines the data staged within the current `AtomicOp` with the
     /// fully merged historical state from the backend, providing a complete view
-    /// of the key-value store as it would appear if the operation were committed.
+    /// of the document as it would appear if the operation were committed.
     /// The staged data takes precedence in case of conflicts (overwrites).
     ///
     /// # Returns
@@ -283,26 +283,26 @@ impl Dict {
     /// later using `ValueEditor::set()`.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Dict`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `DocStore`'s backend.
     pub fn get_value_mut(&self, key: impl Into<String>) -> ValueEditor<'_> {
         ValueEditor::new(self, vec![key.into()])
     }
 
-    /// Gets a mutable editor for the root of this Dict's subtree.
+    /// Gets a mutable editor for the root of this DocStore's subtree.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Dict`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `DocStore`'s backend.
     pub fn get_root_mut(&self) -> ValueEditor<'_> {
         ValueEditor::new(self, Vec::new())
     }
 
-    /// Retrieves a `Value` from the Dict using a specified path.
+    /// Retrieves a `Value` from the DocStore using a specified path.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure. If the path is empty, it retrieves the entire
-    /// content of this Dict's named subtree as a `Value::Map`.
+    /// content of this DocStore's named subtree as a `Value::Map`.
     ///
-    /// This method operates on the fully merged view of the Dict's data,
+    /// This method operates on the fully merged view of the DocStore's data,
     /// including any local changes from the current `AtomicOp` layered on top
     /// of the backend state.
     ///
@@ -323,7 +323,7 @@ impl Dict {
     {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
-            // Requesting the root of this Dict's named subtree
+            // Requesting the root of this Doc's named subtree
             return Ok(Value::Node(self.get_all()?.into()));
         }
 
@@ -386,7 +386,7 @@ impl Dict {
         }
     }
 
-    /// Sets a `Value` at a specified path within the `Dict`'s `AtomicOp`.
+    /// Sets a `Value` at a specified path within the `DocStore`'s `AtomicOp`.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure.
@@ -413,7 +413,7 @@ impl Dict {
     {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
-            // Setting the root of this Dict's named subtree.
+            // Setting the root of this Doc's named subtree.
             // The value must be a map.
             if let Value::Node(map_data) = value {
                 let serialized_data = serde_json::to_string(&map_data)?;
@@ -475,17 +475,17 @@ impl Dict {
     }
 }
 
-/// An editor for a `Value` obtained from a `Dict`.
+/// An editor for a `Value` obtained from a `DocStore`.
 ///
 /// This provides a mutable lens into a value, allowing modifications
-/// to be staged and then saved back to the Dict.
+/// to be staged and then saved back to the DocStore.
 pub struct ValueEditor<'a> {
-    kv_store: &'a Dict,
+    kv_store: &'a DocStore,
     keys: Vec<String>,
 }
 
 impl<'a> ValueEditor<'a> {
-    pub fn new<K>(kv_store: &'a Dict, keys: K) -> Self
+    pub fn new<K>(kv_store: &'a DocStore, keys: K) -> Self
     where
         K: Into<Vec<String>>,
     {
@@ -497,10 +497,10 @@ impl<'a> ValueEditor<'a> {
 
     /// Uses the stored keys to traverse the nested data structure and retrieve the value.
     ///
-    /// This method starts from the fully merged view of the Dict's subtree (local
+    /// This method starts from the fully merged view of the DocStore's subtree (local
     /// AtomicOp changes layered on top of backend state) and navigates using the path
     /// specified by `self.keys`. If `self.keys` is empty, it retrieves the root
-    /// of the Dict's subtree.
+    /// of the DocStore's subtree.
     ///
     /// Returns `Error::NotFound` if any part of the path does not exist, or if the
     /// final value is a tombstone (`Value::Deleted`).
@@ -510,7 +510,7 @@ impl<'a> ValueEditor<'a> {
         self.kv_store.get_at_path(&self.keys)
     }
 
-    /// Sets a `Value` at the path specified by `self.keys` within the `Dict`'s `AtomicOp`.
+    /// Sets a `Value` at the path specified by `self.keys` within the `DocStore`'s `AtomicOp`.
     ///
     /// This method modifies the local data associated with the `AtomicOp`. The changes
     /// are not persisted to the backend until `AtomicOp::commit()` is called.
@@ -567,3 +567,6 @@ impl<'a> ValueEditor<'a> {
         self.kv_store.set_at_path(&path_to_delete, Value::Deleted)
     }
 }
+
+// Backwards compatibility type alias
+pub type Dict = DocStore;
