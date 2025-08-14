@@ -3,7 +3,7 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
-use crate::{Result, crdt::Map, entry::Entry, subtree::Dict, tree::Tree};
+use crate::{Result, crdt::Doc as CrdtDoc, entry::Entry, subtree::DocStore, tree::Tree};
 use std::sync::Arc;
 
 pub mod error;
@@ -49,7 +49,7 @@ impl Sync {
         backend: Arc<dyn crate::backend::Database>,
         signing_key_name: impl AsRef<str>,
     ) -> Result<Self> {
-        let mut sync_settings = Map::new();
+        let mut sync_settings = CrdtDoc::new();
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
@@ -105,7 +105,7 @@ impl Sync {
         let op = self
             .sync_tree
             .new_authenticated_operation(signing_key_name)?;
-        let sync_settings = op.get_subtree::<Dict>(SETTINGS_SUBTREE)?;
+        let sync_settings = op.get_subtree::<DocStore>(SETTINGS_SUBTREE)?;
         sync_settings.set_string(key.as_ref(), value.as_ref())?;
         op.commit()?;
         Ok(())
@@ -121,7 +121,7 @@ impl Sync {
     pub fn get_setting(&self, key: impl AsRef<str>) -> Result<Option<String>> {
         let sync_settings = self
             .sync_tree
-            .get_subtree_viewer::<Dict>(SETTINGS_SUBTREE)?;
+            .get_subtree_viewer::<DocStore>(SETTINGS_SUBTREE)?;
         match sync_settings.get_string(key) {
             Ok(value) => Ok(Some(value)),
             Err(e) if e.is_not_found() => Ok(None),

@@ -9,7 +9,7 @@ use super::errors::AuthError;
 use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::backend::Database;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,27 +24,27 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
     /// Map data from _settings.auth - this is a view, not the authoritative copy
-    inner: Map,
+    inner: Doc,
 }
 
 impl AuthSettings {
     /// Create a new empty auth settings view
     pub fn new() -> Self {
-        Self { inner: Map::new() }
+        Self { inner: Doc::new() }
     }
 
     /// Create from existing Map (e.g., from _settings.auth)
-    pub fn from_map(map: Map) -> Self {
+    pub fn from_map(map: Doc) -> Self {
         Self { inner: map }
     }
 
     /// Get the underlying Map for direct access
-    pub fn as_map(&self) -> &Map {
+    pub fn as_map(&self) -> &Doc {
         &self.inner
     }
 
     /// Get mutable access to the underlying Map
-    pub fn as_map_mut(&mut self) -> &mut Map {
+    pub fn as_map_mut(&mut self) -> &mut Doc {
         &mut self.inner
     }
 

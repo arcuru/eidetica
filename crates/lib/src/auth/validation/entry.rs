@@ -7,7 +7,7 @@ use crate::Result;
 use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
 use crate::backend::Database;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use crate::entry::Entry;
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ impl AuthValidator {
     pub fn validate_entry(
         &mut self,
         entry: &Entry,
-        settings_state: &Map,
+        settings_state: &Doc,
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
@@ -94,7 +94,7 @@ impl AuthValidator {
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
-        settings: &Map,
+        settings: &Doc,
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver

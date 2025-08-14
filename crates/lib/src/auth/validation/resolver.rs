@@ -8,7 +8,7 @@ use crate::auth::crypto::parse_public_key;
 use crate::auth::errors::AuthError;
 use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
 use crate::backend::Database;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ impl KeyResolver {
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
-        settings: &Map,
+        settings: &Doc,
         backend: Option<&Arc<dyn Database>>,
     ) -> Result<ResolvedAuth> {
         // Note: We don't cache results here because auth settings can change
@@ -58,7 +58,7 @@ impl KeyResolver {
     pub fn resolve_sig_key_with_depth(
         &mut self,
         sig_key: &SigKey,
-        settings: &Map,
+        settings: &Doc,
         backend: Option<&Arc<dyn Database>>,
         depth: usize,
     ) -> Result<ResolvedAuth> {
@@ -84,7 +84,7 @@ impl KeyResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    pub fn resolve_direct_key(&mut self, key_name: &str, settings: &Map) -> Result<ResolvedAuth> {
+    pub fn resolve_direct_key(&mut self, key_name: &str, settings: &Doc) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")

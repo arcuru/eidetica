@@ -5,12 +5,12 @@ use crate::auth::crypto::{format_public_key, generate_keypair, sign_entry};
 use crate::auth::types::{
     AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey,
 };
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::entry::Entry;
 
-fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Map {
-    let mut settings = Map::new();
-    let mut auth_section = Map::new();
+fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
+    let mut settings = Doc::new();
+    let mut auth_section = Doc::new();
     auth_section.as_hashmap_mut().insert(
         key_name.to_string(),
         serde_json::to_string(&auth_key).unwrap().into(),
@@ -153,7 +153,7 @@ fn test_entry_validation_success() {
 #[test]
 fn test_missing_key() {
     let mut validator = AuthValidator::new();
-    let settings = Map::new(); // Empty settings
+    let settings = Doc::new(); // Empty settings
 
     let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
     let result = validator.resolve_sig_key(&sig_key, &settings, None);
@@ -168,7 +168,7 @@ fn test_missing_key() {
 #[test]
 fn test_delegated_tree_requires_backend() {
     let mut validator = AuthValidator::new();
-    let settings = Map::new();
+    let settings = Doc::new();
 
     let sig_key = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -208,7 +208,7 @@ fn test_validate_entry_with_auth_info_against_empty_settings() {
     entry.sig.sig = Some(signature);
 
     // Validate against empty settings (no auth configuration)
-    let empty_settings = Map::new();
+    let empty_settings = Doc::new();
     let result = validator.validate_entry(&entry, &empty_settings, None);
 
     // Should succeed because there's no auth configuration to validate against
@@ -328,8 +328,8 @@ fn test_complete_delegation_workflow() {
     let delegated_key = db.add_private_key("delegated_user").unwrap();
 
     // Create the delegated tree with its own auth configuration
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the key used for tree creation
@@ -345,8 +345,8 @@ fn test_complete_delegation_workflow() {
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user").unwrap();
 
     // Create the main tree with delegation configuration
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
 
     // Add direct key to main tree
     main_auth
@@ -425,12 +425,12 @@ fn test_delegated_tree_requires_tips() {
     let main_key = db.add_private_key("main_admin").unwrap();
 
     // Create a simple delegated tree
-    let delegated_settings = Map::new();
+    let delegated_settings = Doc::new();
     let delegated_tree = db.new_tree(delegated_settings, "main_admin").unwrap();
 
     // Create the main tree with delegation configuration
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
 
     // Add direct key to main tree
     main_auth
@@ -506,8 +506,8 @@ fn test_nested_delegation_with_permission_clamping() {
     let user_key = db.add_private_key("final_user").unwrap();
 
     // 1. Create the final user tree (deepest level)
-    let mut user_settings = Map::new();
-    let mut user_auth = Map::new();
+    let mut user_settings = Doc::new();
+    let mut user_auth = Doc::new();
     user_auth
         .set_json(
             "final_user",
@@ -523,8 +523,8 @@ fn test_nested_delegation_with_permission_clamping() {
     let user_tips = user_tree.get_tips().unwrap();
 
     // 2. Create intermediate delegated tree that delegates to user tree
-    let mut intermediate_settings = Map::new();
-    let mut intermediate_auth = Map::new();
+    let mut intermediate_settings = Doc::new();
+    let mut intermediate_auth = Doc::new();
 
     // Add direct key to intermediate tree
     intermediate_auth
@@ -562,8 +562,8 @@ fn test_nested_delegation_with_permission_clamping() {
     let intermediate_tips = intermediate_tree.get_tips().unwrap();
 
     // 3. Create main tree that delegates to intermediate tree
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
 
     // Add direct key to main tree
     main_auth
@@ -648,7 +648,7 @@ fn test_delegation_depth_limit() {
     let mut validator = AuthValidator::new();
 
     // Create an empty settings (doesn't matter for depth test)
-    let settings = Map::new();
+    let settings = Doc::new();
 
     // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
     let simple_sig_key = SigKey::Direct("base_key".to_string());

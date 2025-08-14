@@ -1,7 +1,7 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::crdt::Map;
+use crate::crdt::{Doc, Map};
 use crate::entry::ID;
 
 #[test]
@@ -91,7 +91,7 @@ fn test_auth_key_to_nested_value() {
         status: KeyStatus::Active,
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("test_key", &key).unwrap();
 
     // Test that we can retrieve it back
@@ -104,7 +104,7 @@ fn test_auth_key_to_nested_value() {
 #[test]
 fn test_permission_nested_value_roundtrip() {
     let original = Permission::Write(42);
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("perm", &original).unwrap();
     let parsed: Permission = nested.get_json("perm").unwrap();
     assert_eq!(original, parsed);
@@ -113,7 +113,7 @@ fn test_permission_nested_value_roundtrip() {
 #[test]
 fn test_key_status_nested_value_roundtrip() {
     let original = KeyStatus::Revoked;
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("status", &original).unwrap();
     let parsed: KeyStatus = nested.get_json("status").unwrap();
     assert_eq!(original, parsed);
@@ -122,7 +122,7 @@ fn test_key_status_nested_value_roundtrip() {
 #[test]
 fn test_vec_string_nested_value_roundtrip() {
     let original = vec!["tip1".to_string(), "tip2".to_string(), "tip3".to_string()];
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("vec", &original).unwrap();
     let parsed: Vec<String> = nested.get_json("vec").unwrap();
     assert_eq!(original, parsed);
@@ -131,7 +131,7 @@ fn test_vec_string_nested_value_roundtrip() {
 #[test]
 fn test_sig_key_nested_value_roundtrip() {
     let original = SigKey::Direct("KEY_LAPTOP".to_string());
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("sig_key", &original).unwrap();
     let parsed: SigKey = nested.get_json("sig_key").unwrap();
     assert_eq!(original, parsed);
@@ -140,7 +140,7 @@ fn test_sig_key_nested_value_roundtrip() {
 #[test]
 fn test_sig_key_direct_format() {
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("sig_key", &sig_key).unwrap();
 
     // Test that we can retrieve it back correctly
@@ -161,7 +161,7 @@ fn test_sig_key_delegation_path_format() {
         },
     ]);
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("sig_key", &sig_key).unwrap();
 
     // Test that we can retrieve it back correctly
@@ -182,7 +182,7 @@ fn test_sig_key_delegation_path_roundtrip() {
         },
     ]);
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("sig_key", &original).unwrap();
     let parsed: SigKey = nested.get_json("sig_key").unwrap();
     assert_eq!(original, parsed);
@@ -194,7 +194,7 @@ fn test_sig_info_nested_value_roundtrip() {
         key: SigKey::Direct("KEY_LAPTOP".to_string()),
         sig: Some("signature_here".to_string()),
     };
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("sig_info", &original).unwrap();
     let parsed: SigInfo = nested.get_json("sig_info").unwrap();
     assert_eq!(original.key, parsed.key);
@@ -208,7 +208,7 @@ fn test_tree_reference_nested_value_content() {
         tips: vec![ID::new("tip1"), ID::new("tip2")],
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("tree_ref", &tree_ref).unwrap();
 
     // Test that we can retrieve it back correctly
@@ -258,7 +258,7 @@ fn test_delegated_tree_ref_serialization() {
         },
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("tree_ref", &tree_ref).unwrap();
     let parsed: DelegatedTreeRef = nested.get_json("tree_ref").unwrap();
 
@@ -271,7 +271,7 @@ fn test_delegated_tree_ref_serialization() {
 fn test_option_permission_nested_value_roundtrip() {
     // Test Some(permission)
     let some_perm = Some(Permission::Write(42));
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("perm", &some_perm).unwrap();
     let parsed: Option<Permission> = nested.get_json("perm").unwrap();
     assert_eq!(some_perm, parsed);
@@ -288,7 +288,7 @@ fn test_option_permission_nested_value_roundtrip() {
 fn test_option_u32_nested_value_roundtrip() {
     // Test Some(u32)
     let some_num = Some(42u32);
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("num", some_num).unwrap();
     let parsed: Option<u32> = nested.get_json("num").unwrap();
     assert_eq!(some_num, parsed);
@@ -309,7 +309,7 @@ fn test_permission_bounds_nested_value_roundtrip() {
         min: Some(Permission::Read),
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("bounds", &bounds).unwrap();
     let parsed: PermissionBounds = nested.get_json("bounds").unwrap();
     assert_eq!(bounds.max, parsed.max);
@@ -341,7 +341,7 @@ fn test_delegated_tree_ref_complete_roundtrip() {
         },
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("tree_ref", &tree_ref).unwrap();
     let parsed: DelegatedTreeRef = nested.get_json("tree_ref").unwrap();
 
@@ -359,7 +359,7 @@ fn test_auth_key_nested_value_roundtrip() {
         status: KeyStatus::Revoked,
     };
 
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_json("auth_key", &original).unwrap();
     let parsed: AuthKey = nested.get_json("auth_key").unwrap();
 

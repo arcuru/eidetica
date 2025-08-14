@@ -6,7 +6,7 @@ use crate::auth::types::{Operation, SigInfo, SigKey};
 use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::crdt::CRDT;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
 use crate::subtree::SubTree;
@@ -163,12 +163,12 @@ impl AtomicOp {
     /// - Unable to compute historical settings state
     /// - Unable to deserialize settings data
     /// - CRDT merge operation fails
-    pub fn get_settings(&self) -> Result<Map> {
+    pub fn get_settings(&self) -> Result<Doc> {
         // Get historical settings from the tree
-        let mut historical_settings = self.get_full_state::<Map>(SETTINGS)?;
+        let mut historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
 
         // Get any staged changes to the _settings subtree in this operation
-        let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
+        let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
 
         // Always merge - get_local_data returns Default::default() if no staged data,
         // which is an empty Map that won't affect the merge
@@ -645,14 +645,14 @@ impl AtomicOp {
         };
 
         // Get settings using full CRDT state computation
-        let historical_settings = self.get_full_state::<Map>(SETTINGS)?;
+        let historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
 
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial tree creation with auth)
         let effective_settings_for_validation = if has_settings_update {
             let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
             if !historical_has_auth {
-                let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
+                let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
                 let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
                 if staged_has_auth {
                     staged_settings
@@ -727,7 +727,7 @@ impl AtomicOp {
             // If not configured historically, check if this entry is setting up auth for the first time
             let auth_configured = if !auth_configured_historical && has_settings_update {
                 // Check if the staged settings contain auth configuration
-                let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
+                let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
                 matches!(staged_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
             } else {
                 auth_configured_historical
@@ -824,7 +824,7 @@ impl AtomicOp {
                         if has_settings_update || entry.subtrees().contains(&SETTINGS.to_string()) {
                             // This operation is updating settings - check if it's adding auth configuration
                             if let Ok(settings_data) = entry.data(SETTINGS) {
-                                if let Ok(new_settings) = serde_json::from_str::<Map>(settings_data)
+                                if let Ok(new_settings) = serde_json::from_str::<Doc>(settings_data)
                                 {
                                     if matches!(new_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty())
                                     {

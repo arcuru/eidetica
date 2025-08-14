@@ -11,7 +11,7 @@ use crate::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
 };
 use crate::backend::Database;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use crate::entry::ID;
 use crate::tree::Tree;
@@ -33,7 +33,7 @@ impl DelegationResolver {
     pub fn resolve_delegation_path_with_depth(
         &mut self,
         steps: &[DelegationStep],
-        settings: &Map,
+        settings: &Doc,
         backend: &Arc<dyn Database>,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
@@ -164,7 +164,7 @@ impl DelegationResolver {
     fn get_delegated_tree_ref(
         &self,
         tree_ref_name: &str,
-        settings: &Map,
+        settings: &Doc,
     ) -> Result<DelegatedTreeRef> {
         // Get the auth section
         let auth_section = settings
@@ -254,7 +254,7 @@ impl DelegationResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    fn resolve_direct_key(&self, key_name: &str, settings: &Map) -> Result<ResolvedAuth> {
+    fn resolve_direct_key(&self, key_name: &str, settings: &Doc) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")

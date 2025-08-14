@@ -7,7 +7,7 @@
 use crate::Result;
 use crate::auth::crypto::{format_public_key, generate_keypair};
 use crate::backend::Database;
-use crate::crdt::Map;
+use crate::crdt::Doc;
 use crate::entry::ID;
 use crate::sync::Sync;
 use crate::tree::Tree;
@@ -120,7 +120,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: Map, signing_key_name: impl AsRef<str>) -> Result<Tree> {
+    pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Tree> {
         Tree::new(settings, Arc::clone(&self.backend), signing_key_name)
     }
 
@@ -133,7 +133,7 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
     pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Tree> {
-        let mut settings = Map::new();
+        let mut settings = Doc::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
         // This prevents content-addressable collision when creating multiple trees
