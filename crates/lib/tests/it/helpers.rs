@@ -1,6 +1,6 @@
 use eidetica::backend::database::InMemory;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 const DEFAULT_TEST_KEY_NAME: &str = "test_key";
 
@@ -62,7 +62,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let settings_store = op
-            .get_subtree::<Dict>("_settings")
+            .get_subtree::<DocStore>("_settings")
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings {
@@ -76,8 +76,8 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     tree
 }
 
-/// Helper for common assertions around Doc value retrieval
-pub fn assert_dict_value(store: &Dict, key: &str, expected: &str) {
+/// Helper for common assertions around DocStore value retrieval
+pub fn assert_dict_value(store: &DocStore, key: &str, expected: &str) {
     match store
         .get(key)
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))

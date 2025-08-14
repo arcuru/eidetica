@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 #[test]
 fn test_atomicop_diamond_pattern() {
@@ -13,7 +13,7 @@ fn test_atomicop_diamond_pattern() {
 
     // Create base entry
     let op_base = tree.new_operation().unwrap();
-    let store_base = op_base.get_subtree::<Dict>("data").unwrap();
+    let store_base = op_base.get_subtree::<DocStore>("data").unwrap();
     store_base.set("base", "initial").unwrap();
     let base_id = op_base.commit().unwrap();
 
@@ -21,13 +21,13 @@ fn test_atomicop_diamond_pattern() {
     let op_left = tree
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
-    let store_left = op_left.get_subtree::<Dict>("data").unwrap();
+    let store_left = op_left.get_subtree::<DocStore>("data").unwrap();
     store_left.set("left", "left_value").unwrap();
     store_left.set("shared", "left_version").unwrap();
     let left_id = op_left.commit().unwrap();
 
     let op_right = tree.new_operation_with_tips([base_id]).unwrap();
-    let store_right = op_right.get_subtree::<Dict>("data").unwrap();
+    let store_right = op_right.get_subtree::<DocStore>("data").unwrap();
     store_right.set("right", "right_value").unwrap();
     store_right.set("shared", "right_version").unwrap();
     let right_id = op_right.commit().unwrap();
@@ -36,7 +36,7 @@ fn test_atomicop_diamond_pattern() {
     let op_merge = tree
         .new_operation_with_tips([left_id.clone(), right_id.clone()])
         .unwrap();
-    let store_merge = op_merge.get_subtree::<Dict>("data").unwrap();
+    let store_merge = op_merge.get_subtree::<DocStore>("data").unwrap();
 
     // Merge operation should see data from both branches
     let merge_state = store_merge.get_all().unwrap();
@@ -75,7 +75,7 @@ fn test_get_path_from_to_diamond_pattern() {
     // Create a diamond pattern: A -> B,C -> D
     // A is the base
     let op_a = tree.new_operation().unwrap();
-    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
+    let store_a = op_a.get_subtree::<DocStore>("data").unwrap();
     store_a.set("base", "A").unwrap();
     let entry_a_id = op_a.commit().unwrap();
 
@@ -83,13 +83,13 @@ fn test_get_path_from_to_diamond_pattern() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
+    let store_b = op_b.get_subtree::<DocStore>("data").unwrap();
     store_b.set("left", "B").unwrap();
     let entry_b_id = op_b.commit().unwrap();
 
     // C also branches from A (parallel to B)
     let op_c = tree.new_operation_with_tips([entry_a_id]).unwrap();
-    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
+    let store_c = op_c.get_subtree::<DocStore>("data").unwrap();
     store_c.set("right", "C").unwrap();
     let entry_c_id = op_c.commit().unwrap();
 
@@ -97,7 +97,7 @@ fn test_get_path_from_to_diamond_pattern() {
     let op_d = tree
         .new_operation_with_tips([entry_b_id.clone(), entry_c_id.clone()])
         .unwrap();
-    let store_d = op_d.get_subtree::<Dict>("data").unwrap();
+    let store_d = op_d.get_subtree::<DocStore>("data").unwrap();
     store_d.set("merged", "D").unwrap();
     let entry_d_id = op_d.commit().unwrap();
 
@@ -108,7 +108,7 @@ fn test_get_path_from_to_diamond_pattern() {
     // Create an operation that uses D as tip and access the CRDT state
     // This will internally call get_path_from_to when computing merged state
     let op_final = tree.new_operation_with_tips([entry_d_id]).unwrap();
-    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
+    let store_final = op_final.get_subtree::<DocStore>("data").unwrap();
 
     // Should be able to access all data from the diamond pattern
     let final_state = store_final.get_all().unwrap();
@@ -137,7 +137,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
 
     // Step 1: Create LCA
     let op_lca = tree.new_operation().unwrap();
-    let store_lca = op_lca.get_subtree::<Dict>("data").unwrap();
+    let store_lca = op_lca.get_subtree::<DocStore>("data").unwrap();
     store_lca.set("base", "LCA").unwrap();
     let lca_id = op_lca.commit().unwrap();
 
@@ -146,7 +146,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_a = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
+    let store_a = op_a.get_subtree::<DocStore>("data").unwrap();
     store_a.set("branch_a", "modification_A").unwrap();
     let a_id = op_a.commit().unwrap();
 
@@ -154,7 +154,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
+    let store_b = op_b.get_subtree::<DocStore>("data").unwrap();
     store_b.set("branch_b", "modification_B").unwrap(); // Critical: this modification will be missed!
     let b_id = op_b.commit().unwrap();
 
@@ -162,13 +162,13 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_c = tree
         .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
-    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
+    let store_c = op_c.get_subtree::<DocStore>("data").unwrap();
     store_c.set("tip", "merged_C").unwrap();
     let c_id = op_c.commit().unwrap();
 
     // Step 4: Create another tip D independently
     let op_d = tree.new_operation_with_tips([lca_id]).unwrap();
-    let store_d = op_d.get_subtree::<Dict>("data").unwrap();
+    let store_d = op_d.get_subtree::<DocStore>("data").unwrap();
     store_d.set("independent", "tip_D").unwrap();
     let d_id = op_d.commit().unwrap();
 
@@ -180,7 +180,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
     let op_final = tree
         .new_operation_with_tips([c_id.clone(), d_id.clone()])
         .unwrap();
-    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
+    let store_final = op_final.get_subtree::<DocStore>("data").unwrap();
 
     let final_state = store_final.get_all().unwrap();
 
@@ -219,7 +219,7 @@ fn test_correct_lca_and_path_sorting() {
 
     // Step 1: ROOT (will be the LCA)
     let op_root = tree.new_operation().unwrap();
-    let store_root = op_root.get_subtree::<Dict>("data").unwrap();
+    let store_root = op_root.get_subtree::<DocStore>("data").unwrap();
     store_root.set("step", "0").unwrap();
     store_root.set("root", "true").unwrap();
     let root_id = op_root.commit().unwrap();
@@ -229,7 +229,7 @@ fn test_correct_lca_and_path_sorting() {
     let op_a = tree
         .new_operation_with_tips(std::slice::from_ref(&root_id))
         .unwrap();
-    let store_a = op_a.get_subtree::<Dict>("data").unwrap();
+    let store_a = op_a.get_subtree::<DocStore>("data").unwrap();
     store_a.set("step", "1").unwrap();
     store_a.set("branch", "A").unwrap();
     let a_id = op_a.commit().unwrap();
@@ -238,14 +238,14 @@ fn test_correct_lca_and_path_sorting() {
     let op_b = tree
         .new_operation_with_tips(std::slice::from_ref(&root_id))
         .unwrap();
-    let store_b = op_b.get_subtree::<Dict>("data").unwrap();
+    let store_b = op_b.get_subtree::<DocStore>("data").unwrap();
     store_b.set("step", "1").unwrap();
     store_b.set("branch", "B").unwrap();
     let b_id = op_b.commit().unwrap();
 
     // Branch C (height 1)
     let op_c = tree.new_operation_with_tips([root_id]).unwrap();
-    let store_c = op_c.get_subtree::<Dict>("data").unwrap();
+    let store_c = op_c.get_subtree::<DocStore>("data").unwrap();
     store_c.set("step", "1").unwrap();
     store_c.set("branch", "C").unwrap();
     let c_id = op_c.commit().unwrap();
@@ -254,14 +254,14 @@ fn test_correct_lca_and_path_sorting() {
     let op_merge = tree
         .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
-    let store_merge = op_merge.get_subtree::<Dict>("data").unwrap();
+    let store_merge = op_merge.get_subtree::<DocStore>("data").unwrap();
     store_merge.set("step", "2").unwrap();
     store_merge.set("merged", "AB").unwrap();
     let merge_id = op_merge.commit().unwrap();
 
     // Step 4: Create another tip from C (height 2)
     let op_other = tree.new_operation_with_tips([c_id]).unwrap();
-    let store_other = op_other.get_subtree::<Dict>("data").unwrap();
+    let store_other = op_other.get_subtree::<DocStore>("data").unwrap();
     store_other.set("step", "2").unwrap();
     store_other.set("other", "C_extended").unwrap();
     let other_id = op_other.commit().unwrap();
@@ -273,7 +273,7 @@ fn test_correct_lca_and_path_sorting() {
     let op_final = tree
         .new_operation_with_tips([merge_id.clone(), other_id.clone()])
         .unwrap();
-    let store_final = op_final.get_subtree::<Dict>("data").unwrap();
+    let store_final = op_final.get_subtree::<DocStore>("data").unwrap();
 
     let final_state = store_final.get_all().unwrap();
 
@@ -295,7 +295,7 @@ fn test_correct_lca_and_path_sorting() {
         let op_test = tree
             .new_operation_with_tips([merge_id.clone(), other_id.clone()])
             .unwrap();
-        let store_test = op_test.get_subtree::<Dict>("data").unwrap();
+        let store_test = op_test.get_subtree::<DocStore>("data").unwrap();
         let test_state = store_test.get_all().unwrap();
 
         // Results should be identical due to deterministic sorting
@@ -332,7 +332,7 @@ fn test_deterministic_operations_with_helper() {
     let other_op = tree
         .new_operation_with_tips([diamond.base.clone()])
         .unwrap();
-    let other_store = other_op.get_subtree::<Dict>("data").unwrap();
+    let other_store = other_op.get_subtree::<DocStore>("data").unwrap();
     other_store.set("other", "data").unwrap();
     let other_id = other_op.commit().unwrap();
 
@@ -365,7 +365,7 @@ fn test_complex_path_finding_scenario() {
     let mut branch_ids = Vec::new();
     for (step, data) in branches {
         let op = tree.new_operation_with_tips([root_id.clone()]).unwrap();
-        let store = op.get_subtree::<Dict>("data").unwrap();
+        let store = op.get_subtree::<DocStore>("data").unwrap();
         store.set("branch", *step).unwrap();
         store.set("unique", *data).unwrap();
         branch_ids.push(op.commit().unwrap());
@@ -375,7 +375,7 @@ fn test_complex_path_finding_scenario() {
     let mut extended_ids = Vec::new();
     for (i, branch_id) in branch_ids.iter().enumerate() {
         let op = tree.new_operation_with_tips([branch_id.clone()]).unwrap();
-        let store = op.get_subtree::<Dict>("data").unwrap();
+        let store = op.get_subtree::<DocStore>("data").unwrap();
         store.set("extended", format!("ext_{i}")).unwrap();
         extended_ids.push(op.commit().unwrap());
     }
@@ -384,14 +384,14 @@ fn test_complex_path_finding_scenario() {
     let merge1_op = tree
         .new_operation_with_tips([extended_ids[0].clone(), extended_ids[1].clone()])
         .unwrap();
-    let merge1_store = merge1_op.get_subtree::<Dict>("data").unwrap();
+    let merge1_store = merge1_op.get_subtree::<DocStore>("data").unwrap();
     merge1_store.set("merge", "merge1").unwrap();
     let merge1_id = merge1_op.commit().unwrap();
 
     let merge2_op = tree
         .new_operation_with_tips([extended_ids[2].clone(), extended_ids[3].clone()])
         .unwrap();
-    let merge2_store = merge2_op.get_subtree::<Dict>("data").unwrap();
+    let merge2_store = merge2_op.get_subtree::<DocStore>("data").unwrap();
     merge2_store.set("merge", "merge2").unwrap();
     let merge2_id = merge2_op.commit().unwrap();
 

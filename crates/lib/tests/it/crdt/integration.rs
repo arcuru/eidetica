@@ -64,7 +64,7 @@ fn test_crdt_commutativity() {
     let merge_2_1 = map2.merge(&map1).expect("Merge 2->1 should succeed");
 
     // Results should be identical for non-conflicting merges
-    assert_maps_equivalent(&merge_1_2, &merge_2_1);
+    assert_maps_equivalent(merge_1_2.as_node(), merge_2_1.as_node());
 }
 
 #[test]

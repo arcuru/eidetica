@@ -4,8 +4,8 @@ use crate::atomicop::AtomicOp;
 mod errors;
 pub use errors::SubtreeError;
 
-mod doc;
-pub use doc::{Dict, DocStore};
+mod docstore;
+pub use docstore::DocStore;
 
 mod table;
 pub use table::Table;

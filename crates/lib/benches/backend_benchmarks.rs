@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use eidetica::backend::{Database, database::InMemory};
 use eidetica::basedb::BaseDB;
 use eidetica::entry::ID;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Tree {
@@ -20,7 +20,9 @@ fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<ID> {
 
     for i in 0..length {
         let op = tree.new_operation().expect("Failed to create op");
-        let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+        let kv = op
+            .get_subtree::<DocStore>("data")
+            .expect("Failed to get DocStore");
         kv.set(format!("key{i}"), format!("value{i}"))
             .expect("Failed to set value");
         let entry_id = op.commit().expect("Failed to commit");
@@ -30,13 +32,13 @@ fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<ID> {
     entry_ids
 }
 
-/// Create a diamond pattern for testing merge scenarios  
+/// Create a diamond pattern for testing merge scenarios
 fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
     // Create root A
     let op_a = tree.new_operation().expect("Failed to create op");
     let kv_a = op_a
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get Dict");
+        .get_subtree::<DocStore>("data")
+        .expect("Failed to get DocStore");
     kv_a.set("key_a", "value_a").expect("Failed to set value");
     let entry_a = op_a.commit().expect("Failed to commit");
 
@@ -45,8 +47,8 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
         .new_operation_with_tips(std::slice::from_ref(&entry_a))
         .expect("Failed to create op");
     let kv_b = op_b
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get Dict");
+        .get_subtree::<DocStore>("data")
+        .expect("Failed to get DocStore");
     kv_b.set("key_b", "value_b").expect("Failed to set value");
     let entry_b = op_b.commit().expect("Failed to commit");
 
@@ -54,8 +56,8 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
         .new_operation_with_tips(std::slice::from_ref(&entry_a))
         .expect("Failed to create op");
     let kv_c = op_c
-        .get_subtree::<Dict>("data")
-        .expect("Failed to get Dict");
+        .get_subtree::<DocStore>("data")
+        .expect("Failed to get DocStore");
     kv_c.set("key_c", "value_c").expect("Failed to set value");
     let entry_c = op_c.commit().expect("Failed to commit");
 
@@ -89,7 +91,9 @@ fn create_branching_tree(
             let op = tree
                 .new_operation_with_tips([current_tip])
                 .expect("Failed to create op");
-            let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+            let kv = op
+                .get_subtree::<DocStore>("data")
+                .expect("Failed to get DocStore");
             kv.set(format!("branch_{branch_idx}_entry_{entry_idx}"), "value")
                 .expect("Failed to set value");
             let entry_id = op.commit().expect("Failed to commit");
@@ -111,7 +115,9 @@ fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str)
         "linear" => {
             for i in 0..num_entries {
                 let op = tree.new_operation().expect("Failed to create op");
-                let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+                let kv = op
+                    .get_subtree::<DocStore>("data")
+                    .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .expect("Failed to set value");
                 let entry_id = op.commit().expect("Failed to commit");
@@ -135,7 +141,9 @@ fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str)
                 let op = tree
                     .new_operation_with_tips(std::slice::from_ref(&root_entry))
                     .expect("Failed to create op");
-                let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+                let kv = op
+                    .get_subtree::<DocStore>("data")
+                    .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .expect("Failed to set value");
                 let entry_id = op.commit().expect("Failed to commit");
@@ -147,7 +155,9 @@ fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str)
             // Default to linear
             for i in 0..num_entries {
                 let op = tree.new_operation().expect("Failed to create op");
-                let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+                let kv = op
+                    .get_subtree::<DocStore>("data")
+                    .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .expect("Failed to set value");
                 let entry_id = op.commit().expect("Failed to commit");
@@ -387,7 +397,9 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                         let op = tree
                             .new_operation_with_tips([tip_entry])
                             .expect("Failed to create op");
-                        let kv = op.get_subtree::<Dict>("data").expect("Failed to get Dict");
+                        let kv = op
+                            .get_subtree::<DocStore>("data")
+                            .expect("Failed to get DocStore");
 
                         // Perform a simple operation that requires CRDT computation
                         kv.set("test_key", "test_value")

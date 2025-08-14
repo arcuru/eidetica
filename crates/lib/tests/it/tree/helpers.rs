@@ -10,7 +10,7 @@ use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 // ===== OPERATION HELPERS =====
 
@@ -19,7 +19,7 @@ pub fn add_data_to_subtree(tree: &Tree, subtree_name: &str, data: &[(&str, &str)
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let store = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -40,7 +40,7 @@ pub fn add_authenticated_data(
         .expect("Failed to create authenticated operation");
     {
         let store = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -61,7 +61,7 @@ pub fn create_branch_from_entry(
         .expect("Failed to create branch operation");
     {
         let store = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -75,7 +75,7 @@ pub fn create_branch_from_entry(
 /// Verify tree contains expected data in subtree
 pub fn assert_subtree_data(tree: &Tree, subtree_name: &str, expected: &[(&str, &str)]) {
     let viewer = tree
-        .get_subtree_viewer::<Dict>(subtree_name)
+        .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get subtree viewer");
 
     for (key, expected_value) in expected {
@@ -158,7 +158,7 @@ pub fn create_diamond_pattern(tree: &Tree, base_data: &[(&str, &str)]) -> (ID, I
         .expect("Failed to create merge operation");
     {
         let store = op
-            .get_subtree::<Dict>("data")
+            .get_subtree::<DocStore>("data")
             .expect("Failed to get data store");
         store.set("merge", "D").expect("Failed to set merge data");
         store
@@ -242,7 +242,7 @@ pub fn assert_deep_operations_performance(tree: &Tree, depth: usize) {
 
     // Reading should not cause stack overflow
     let viewer = tree
-        .get_subtree_viewer::<Dict>("deep_data")
+        .get_subtree_viewer::<DocStore>("deep_data")
         .expect("Deep operations should not fail");
     let final_state = viewer.get_all().expect("Should get final state");
 
@@ -255,8 +255,8 @@ pub fn assert_deep_operations_performance(tree: &Tree, depth: usize) {
     // Final values should be from last operation
     if let Some(Value::Text(depth_value)) = final_state.get("depth") {
         assert_eq!(
-            *depth_value,
-            (depth - 1).to_string(),
+            depth_value,
+            &(depth - 1).to_string(),
             "Should have final depth value"
         );
     } else {
@@ -272,7 +272,7 @@ pub fn assert_deterministic_reads(tree: &Tree, subtree_name: &str, read_count: u
 
     for _ in 0..read_count {
         let viewer = tree
-            .get_subtree_viewer::<Dict>(subtree_name)
+            .get_subtree_viewer::<DocStore>(subtree_name)
             .expect("Failed to get viewer");
         let state = viewer.get_all().expect("Failed to get state");
         results.push(state);
@@ -296,13 +296,13 @@ pub fn assert_caching_consistency(tree: &Tree, subtree_name: &str) {
 
     // First read - should populate cache
     let viewer1 = tree
-        .get_subtree_viewer::<Dict>(subtree_name)
+        .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get viewer 1");
     let state1 = viewer1.get_all().expect("Failed to get state 1");
 
     // Second read - should use cache
     let viewer2 = tree
-        .get_subtree_viewer::<Dict>(subtree_name)
+        .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get viewer 2");
     let state2 = viewer2.get_all().expect("Failed to get state 2");
 

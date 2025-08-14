@@ -4,7 +4,7 @@
 //! on Map functionality, including basic operations, path operations, iterators,
 //! builder pattern, CRDT merge operations, tombstone handling, and JSON serialization.
 
-use eidetica::crdt::map::{List, Value};
+use eidetica::crdt::map::{List, Node, Value};
 use eidetica::crdt::{CRDT, Doc};
 
 // ===== BASIC MAP OPERATIONS =====
@@ -278,7 +278,7 @@ fn test_map_from_iterator() {
         ("active".to_string(), Value::Bool(true)),
     ];
 
-    let map: Doc = pairs.into_iter().collect();
+    let map: Node = pairs.into_iter().collect();
 
     assert_eq!(map.get_text("name"), Some("Alice"));
     assert_eq!(map.get_int("age"), Some(30));

@@ -9,6 +9,7 @@ use crate::crdt::CRDT;
 use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
+use crate::subtree::DocStore;
 use crate::subtree::SubTree;
 use crate::tree::Tree;
 use std::cell::RefCell;
@@ -138,43 +139,46 @@ impl AtomicOp {
         self.auth_key_name.as_deref()
     }
 
-    /// Get the current settings for this operation.
+    /// Get a DocStore handle for the settings subtree within this operation.
     ///
-    /// This method provides a unified view of settings by merging historical settings
-    /// from the tree with any staged changes in the `_settings` subtree within this
-    /// atomic operation.
+    /// This method returns a `DocStore` that provides access to the `_settings` subtree,
+    /// allowing you to read and modify settings data within this atomic operation.
+    /// The DocStore automatically merges historical settings from the tree with any
+    /// staged changes in this operation.
     ///
     /// # Returns
     ///
-    /// Returns a `Result<Doc>` containing the merged settings data. The settings
-    /// include both:
-    /// - Historical settings computed from all relevant entries in the tree
-    /// - Any staged changes to the `_settings` subtree in this operation
+    /// Returns a `Result<DocStore>` that can be used to:
+    /// - Read current settings values (including both historical and staged data)
+    /// - Stage new settings changes within this operation
+    /// - Access nested settings structures
     ///
-    /// # Implementation Details
+    /// # Example
     ///
-    /// The method uses CRDT merge semantics to combine historical and staged data,
-    /// ensuring deterministic conflict resolution. If no staged changes exist,
-    /// the historical settings are returned unchanged.
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let settings = op.get_settings()?;
+    ///
+    /// // Read a setting
+    /// if let Ok(name) = settings.get_string("name") {
+    ///     println!("Tree name: {}", name);
+    /// }
+    ///
+    /// // Modify a setting
+    /// settings.set("description", "Updated description")?;
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Unable to compute historical settings state
-    /// - Unable to deserialize settings data
-    /// - CRDT merge operation fails
-    pub fn get_settings(&self) -> Result<Doc> {
-        // Get historical settings from the tree
-        let mut historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
-
-        // Get any staged changes to the _settings subtree in this operation
-        let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
-
-        // Always merge - get_local_data returns Default::default() if no staged data,
-        // which is an empty Map that won't affect the merge
-        historical_settings = historical_settings.merge(&staged_settings)?;
-
-        Ok(historical_settings)
+    /// - Unable to create the DocStore for the settings subtree
+    /// - Operation has already been committed
+    pub fn get_settings(&self) -> Result<DocStore> {
+        // Create a DocStore for the settings subtree
+        DocStore::new(self, SETTINGS)
     }
 
     /// Set the tree root field for the entry being built.

@@ -9,7 +9,7 @@ use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
 use eidetica::entry::ID;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 use eidetica::tree::Tree;
 
 // Helper functions for auth testing
@@ -280,7 +280,7 @@ pub fn test_operation_succeeds(tree: &Tree, key_name: &str, subtree_name: &str, 
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<Dict>(subtree_name)
+        .get_subtree::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -294,7 +294,7 @@ pub fn test_operation_fails(tree: &Tree, key_name: &str, subtree_name: &str, tes
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<Dict>(subtree_name)
+        .get_subtree::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -358,7 +358,7 @@ pub fn assert_operation_permissions(
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<Dict>(subtree_name)
+        .get_subtree::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store
         .set("test", test_description)

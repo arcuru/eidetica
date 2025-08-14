@@ -17,7 +17,7 @@ use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 /// Test simple tree creation with auth
 #[test]
@@ -47,7 +47,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
 
     // Add delegation to main tree auth settings
     let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_subtree::<Dict>("_settings")?;
+    let settings_store = op.get_subtree::<DocStore>("_settings")?;
 
     let delegation_ref = create_delegation_ref(
         &delegated_tree,
@@ -99,7 +99,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     // Add read-only delegation
     let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_subtree::<Dict>("_settings")?;
+    let settings_store = op.get_subtree::<DocStore>("_settings")?;
 
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
     let mut new_auth_settings = main_tree.get_settings()?.get_all()?;

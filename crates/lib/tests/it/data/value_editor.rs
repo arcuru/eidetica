@@ -280,9 +280,8 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
             let _entries = map.as_hashmap();
 
             // Check that the entries are properly marked as deleted (tombstones)
-            let map_as_doc = eidetica::crdt::Doc::from_node(map.clone());
-            assert_path_deleted(&map_as_doc, &["role"]);
-            assert_path_deleted(&map_as_doc, &["profile"]);
+            assert_path_deleted(&map, &["role"]);
+            assert_path_deleted(&map, &["profile"]);
         }
         _ => panic!("Expected user to be a map after commit"),
     }

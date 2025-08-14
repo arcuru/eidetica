@@ -9,7 +9,7 @@ use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 // ===== DATABASE SETUP HELPERS =====
 
@@ -35,7 +35,7 @@ pub fn create_tree_with_settings(
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<Dict>(SETTINGS)
+            .get_subtree::<DocStore>(SETTINGS)
             .expect("Failed to get settings subtree");
 
         settings
@@ -76,7 +76,7 @@ pub fn create_tree_with_data(
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let data_store = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<DocStore>(subtree_name)
             .expect("Failed to get data subtree");
 
         for (key, value) in data {
@@ -139,7 +139,7 @@ pub fn set_tree_settings(tree: &Tree, settings_data: &[(&str, &str)]) -> ID {
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<Dict>(SETTINGS)
+            .get_subtree::<DocStore>(SETTINGS)
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings_data {
@@ -170,7 +170,7 @@ pub fn perform_basic_subtree_operations(
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let data_store = op
-            .get_subtree::<Dict>(subtree_name)
+            .get_subtree::<DocStore>(subtree_name)
             .expect("Failed to get data subtree");
 
         for (key, value) in operations {
@@ -198,7 +198,7 @@ pub fn create_app_config(tree: &Tree, app_name: &str, config_data: &[(&str, &str
 /// Verify tree has expected settings
 pub fn assert_tree_settings(tree: &Tree, expected_settings: &[(&str, &str)]) {
     let settings_viewer = tree
-        .get_subtree_viewer::<Dict>(SETTINGS)
+        .get_subtree_viewer::<DocStore>(SETTINGS)
         .expect("Failed to get settings viewer");
 
     for (key, expected_value) in expected_settings {
@@ -212,7 +212,7 @@ pub fn assert_tree_settings(tree: &Tree, expected_settings: &[(&str, &str)]) {
 /// Verify tree data in specific subtree
 pub fn assert_tree_data(tree: &Tree, subtree_name: &str, expected_data: &[(&str, &str)]) {
     let data_viewer = tree
-        .get_subtree_viewer::<Dict>(subtree_name)
+        .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get data viewer");
 
     for (key, expected_value) in expected_data {

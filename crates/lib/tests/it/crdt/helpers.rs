@@ -5,35 +5,35 @@
 
 // Helper functions are self-contained and don't need external imports
 use eidetica::crdt::map::list::Position;
-use eidetica::crdt::map::{List, Value};
+use eidetica::crdt::map::{List, Node as Map, Value};
 use eidetica::crdt::{CRDT, Doc};
 
 // ===== MAP HELPERS =====
 
 /// Create a Map with string key-value pairs
-pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Doc {
+pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Map {
     let mut map = Doc::new();
     for (key, value) in pairs {
         map.set_string(*key, *value);
     }
-    map
+    map.into()
 }
 
 /// Create a nested Map structure with multiple levels
-pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Doc {
+pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
     let mut map = Doc::new();
     for (outer_key, inner_pairs) in nested_data {
         let inner_map = create_map_with_values(inner_pairs);
         map.set_map(*outer_key, inner_map);
     }
-    map
+    map.into()
 }
 
 /// Create two maps for merge testing with specified overlap
 pub fn create_merge_test_maps(
     map1_data: &[(&str, &str)],
     map2_data: &[(&str, &str)],
-) -> (Doc, Doc) {
+) -> (Map, Map) {
     (
         create_map_with_values(map1_data),
         create_map_with_values(map2_data),
@@ -42,10 +42,10 @@ pub fn create_merge_test_maps(
 
 /// Test merge operation and verify expected results
 pub fn test_merge_result(
-    map1: &Doc,
-    map2: &Doc,
+    map1: &Map,
+    map2: &Map,
     expected_values: &[(&str, &str)],
-) -> eidetica::Result<Doc> {
+) -> eidetica::Result<Map> {
     let merged = map1.merge(map2)?;
 
     for (key, expected_value) in expected_values {
@@ -67,8 +67,8 @@ pub fn assert_text_value(value: &Value, expected: &str) {
 }
 
 /// Assert that a nested value matches expected string
-pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
-    let mut current = map.as_node();
+pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
+    let mut current = map;
 
     // Navigate to the parent of the final key
     for &key in &path[..path.len() - 1] {
@@ -88,7 +88,7 @@ pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
 }
 
 /// Assert that a path is deleted (tombstone exists)
-pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
+pub fn assert_path_deleted(map: &Map, path: &[&str]) {
     if path.len() == 1 {
         // Simple case: check directly in this map
         match map.as_hashmap().get(&path[0].to_string()) {
@@ -98,7 +98,7 @@ pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
         }
     } else {
         // Navigate to parent and check final key
-        let mut current = map.as_node();
+        let mut current = map;
         for &key in &path[..path.len() - 1] {
             match current.get(key) {
                 Some(Value::Node(inner)) => current = inner,
@@ -116,7 +116,7 @@ pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
 }
 
 /// Create a complex nested structure for testing
-pub fn create_complex_nested_structure() -> Doc {
+pub fn create_complex_nested_structure() -> Map {
     let mut root = Doc::new();
 
     // Level 1
@@ -133,7 +133,7 @@ pub fn create_complex_nested_structure() -> Doc {
     level2.set_map("level3", level3);
 
     root.set_map("level2", level2);
-    root
+    root.into()
 }
 
 /// Build test data for multi-generation update scenarios
@@ -147,7 +147,7 @@ pub fn build_generation_test_data() -> Vec<(&'static str, Value)> {
 }
 
 /// Build complex merge scenario data
-pub fn build_complex_merge_data() -> (Doc, Doc) {
+pub fn build_complex_merge_data() -> (Map, Map) {
     let mut map1 = Doc::new();
     let mut level1a = Doc::new();
     level1a.set_string("key1", "value1");
@@ -165,19 +165,19 @@ pub fn build_complex_merge_data() -> (Doc, Doc) {
     map2.remove("top_level_key");
     map2.set_string("new_top_key", "new_top_value");
 
-    (map1, map2)
+    (map1.into(), map2.into())
 }
 
 /// Create a test Map with some initial data
-pub fn setup_test_map() -> Doc {
+pub fn setup_test_map() -> Map {
     let mut map = Doc::new();
     map.set_string("key1".to_string(), "value1".to_string());
     map.set_string("key2".to_string(), "value2".to_string());
-    map
+    map.into()
 }
 
 /// Create two concurrent Maps with different modifications
-pub fn setup_concurrent_maps() -> (Doc, Doc) {
+pub fn setup_concurrent_maps() -> (Map, Map) {
     let base = setup_test_map();
 
     let mut map1 = base.clone();
@@ -192,7 +192,7 @@ pub fn setup_concurrent_maps() -> (Doc, Doc) {
 }
 
 /// Create a complex nested Map structure for testing
-pub fn create_complex_map() -> Doc {
+pub fn create_complex_map() -> Map {
     let mut map = Doc::new();
 
     // Add basic values
@@ -212,11 +212,11 @@ pub fn create_complex_map() -> Doc {
     tags.push(Value::Text("draft".to_string()));
     map.set("tags".to_string(), Value::List(tags));
 
-    map
+    map.into()
 }
 
 /// Create a Map with mixed value types for comprehensive testing
-pub fn create_mixed_value_map() -> Doc {
+pub fn create_mixed_value_map() -> Map {
     let mut map = Doc::new();
     map.set("null_val".to_string(), Value::Null);
     map.set("bool_val".to_string(), Value::Bool(true));
@@ -225,7 +225,7 @@ pub fn create_mixed_value_map() -> Doc {
     map.set("map_val".to_string(), Doc::new());
     map.set("list_val".to_string(), Value::List(List::new()));
     map.set("deleted_val".to_string(), Value::Deleted);
-    map
+    map.into()
 }
 
 // ===== LIST HELPERS =====
@@ -300,12 +300,12 @@ pub fn create_merge_test_values() -> (Value, Value) {
 // ===== ASSERTION HELPERS =====
 
 /// Assert that a Map contains expected key-value pairs
-pub fn assert_map_contains(map: &Doc, expected: &[(&str, &str)]) {
+pub fn assert_map_contains(map: &Map, expected: &[(&str, &str)]) {
     for (key, expected_value) in expected {
         match map.get(key) {
             Some(Value::Text(actual_value)) => {
                 assert_eq!(
-                    actual_value, expected_value,
+                    actual_value, *expected_value,
                     "Value mismatch for key '{key}'"
                 );
             }
@@ -325,7 +325,7 @@ pub fn assert_value_content(value: &Value, expected_type: &str, test_equality: O
 }
 
 /// Assert that two Maps are equivalent (same keys and values)
-pub fn assert_maps_equivalent(map1: &Doc, map2: &Doc) {
+pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
     let hashmap1 = map1.as_hashmap();
     let hashmap2 = map2.as_hashmap();
 
@@ -409,15 +409,15 @@ pub fn test_list_bounds_checking(list: &List) {
 // ===== PERFORMANCE HELPERS =====
 
 /// Create a large Map for performance testing
-pub fn create_large_map(size: usize) -> Doc {
+pub fn create_large_map(size: usize) -> Map {
     let mut map = Doc::new();
     for i in 0..size {
         map.set(format!("key_{i}"), Value::Text(format!("value_{i}")));
     }
-    map
+    map.into_root()
 }
 
-/// Create a large List for performance testing
+/// Create a large List for performance testing  
 pub fn create_large_list(size: usize) -> List {
     let mut list = List::new();
     for i in 0..size {

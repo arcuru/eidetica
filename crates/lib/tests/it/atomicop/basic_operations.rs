@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::{Dict, SubTree};
+use eidetica::subtree::{DocStore, SubTree};
 
 #[test]
 fn test_atomicop_through_dict() {
@@ -16,7 +16,7 @@ fn test_atomicop_through_dict() {
     let operation = tree.new_operation().unwrap();
 
     // Get a Doc subtree, which will use AtomicOp internally
-    let dict = Dict::new(&operation, "test").unwrap();
+    let dict = DocStore::new(&operation, "test").unwrap();
 
     // Set a value in the Doc, which will use AtomicOp::update_subtree internally
     dict.set("key", "value").unwrap();
@@ -26,7 +26,7 @@ fn test_atomicop_through_dict() {
 
     // Use a new operation to read the data
     let read_op = tree.new_operation().unwrap();
-    let read_store = Dict::new(&read_op, "test").unwrap();
+    let read_store = DocStore::new(&read_op, "test").unwrap();
 
     // Verify the value was set correctly
     assert_dict_value(&read_store, "key", "value");
@@ -44,8 +44,8 @@ fn test_atomicop_multiple_subtrees() {
     let operation = tree.new_operation().unwrap();
 
     // Create two different Doc subtrees
-    let store1 = Dict::new(&operation, "store1").unwrap();
-    let store2 = Dict::new(&operation, "store2").unwrap();
+    let store1 = DocStore::new(&operation, "store1").unwrap();
+    let store2 = DocStore::new(&operation, "store2").unwrap();
 
     // Set values in each store
     store1.set("key1", "value1").unwrap();
@@ -59,8 +59,8 @@ fn test_atomicop_multiple_subtrees() {
 
     // Create a new operation to read the data
     let read_op = tree.new_operation().unwrap();
-    let store1_read = Dict::new(&read_op, "store1").unwrap();
-    let store2_read = Dict::new(&read_op, "store2").unwrap();
+    let store1_read = DocStore::new(&read_op, "store1").unwrap();
+    let store2_read = DocStore::new(&read_op, "store2").unwrap();
 
     // Verify values in both stores using helpers
     assert_dict_contains(&store1_read, &[("key1", "updated")]);
@@ -76,10 +76,10 @@ fn test_atomicop_empty_subtree_removal() {
     let operation = tree.new_operation().unwrap();
 
     // Create a Doc subtree but don't add any data (will be empty)
-    let _empty_store = Dict::new(&operation, "empty").unwrap();
+    let _empty_store = DocStore::new(&operation, "empty").unwrap();
 
     // Create another Doc and add data
-    let data_store = Dict::new(&operation, "data").unwrap();
+    let data_store = DocStore::new(&operation, "data").unwrap();
     data_store.set("key", "value").unwrap();
 
     // Commit the operation - should remove the empty subtree
@@ -89,8 +89,8 @@ fn test_atomicop_empty_subtree_removal() {
     let read_op = tree.new_operation().unwrap();
 
     // Try to access both subtrees
-    let data_result = Dict::new(&read_op, "data");
-    let empty_result = Dict::new(&read_op, "empty");
+    let data_result = DocStore::new(&read_op, "data");
+    let empty_result = DocStore::new(&read_op, "empty");
 
     // The data subtree should be accessible
     assert!(data_result.is_ok());
@@ -112,19 +112,19 @@ fn test_atomicop_parent_relationships() {
 
     // Create first operation and set data
     let op1 = tree.new_operation().unwrap();
-    let store1 = Dict::new(&op1, "data").unwrap();
+    let store1 = DocStore::new(&op1, "data").unwrap();
     store1.set("first", "entry").unwrap();
     op1.commit().unwrap();
 
     // Create second operation that will use the first as parent
     let op2 = tree.new_operation().unwrap();
-    let store2 = Dict::new(&op2, "data").unwrap();
+    let store2 = DocStore::new(&op2, "data").unwrap();
     store2.set("second", "entry").unwrap();
     op2.commit().unwrap();
 
     // Create a third operation to read all entries
     let op3 = tree.new_operation().unwrap();
-    let store3 = Dict::new(&op3, "data").unwrap();
+    let store3 = DocStore::new(&op3, "data").unwrap();
 
     // Get all data - should include both entries due to CRDT merge
     let all_data = get_dict_data(&store3);

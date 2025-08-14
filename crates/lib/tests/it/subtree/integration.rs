@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::{Dict, Table};
+use eidetica::subtree::{DocStore, Table};
 
 #[test]
 fn test_table_complex_data_merging() {
@@ -67,7 +67,9 @@ fn test_mixed_subtree_operations() {
         let key = table.insert(record).expect("Failed to insert record");
 
         // Use Doc subtree in same operation
-        let dict = op.get_subtree::<Dict>("config").expect("Failed to get Doc");
+        let dict = op
+            .get_subtree::<DocStore>("config")
+            .expect("Failed to get Doc");
         dict.set("mode", "mixed").expect("Failed to set config");
         dict.set("version", "1.0").expect("Failed to set version");
 
@@ -81,7 +83,7 @@ fn test_mixed_subtree_operations() {
         .get_subtree_viewer::<Table<TestRecord>>("records")
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
-        .get_subtree_viewer::<Dict>("config")
+        .get_subtree_viewer::<DocStore>("config")
         .expect("Failed to get Doc viewer");
 
     // Check Table data
@@ -104,7 +106,7 @@ fn test_subtree_persistence_across_operations() {
             .get_subtree::<Table<SimpleRecord>>("data")
             .expect("Op1: Failed to get Table");
         let dict = op1
-            .get_subtree::<Dict>("metadata")
+            .get_subtree::<DocStore>("metadata")
             .expect("Op1: Failed to get Doc");
 
         let record = SimpleRecord { value: 100 };
@@ -125,7 +127,7 @@ fn test_subtree_persistence_across_operations() {
             .get_subtree::<Table<SimpleRecord>>("data")
             .expect("Op2: Failed to get Table");
         let dict = op2
-            .get_subtree::<Dict>("metadata")
+            .get_subtree::<DocStore>("metadata")
             .expect("Op2: Failed to get Doc");
 
         // Update existing record
@@ -149,7 +151,7 @@ fn test_subtree_persistence_across_operations() {
         .get_subtree_viewer::<Table<SimpleRecord>>("data")
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
-        .get_subtree_viewer::<Dict>("metadata")
+        .get_subtree_viewer::<DocStore>("metadata")
         .expect("Failed to get Doc viewer");
 
     // Check updated record
@@ -176,7 +178,7 @@ fn test_subtree_concurrent_access_patterns() {
             .get_subtree::<Table<TestRecord>>("shared_data")
             .expect("Base: Failed to get Table");
         let dict = op_base
-            .get_subtree::<Dict>("shared_config")
+            .get_subtree::<DocStore>("shared_config")
             .expect("Base: Failed to get Doc");
 
         let record = TestRecord {
@@ -219,7 +221,7 @@ fn test_subtree_concurrent_access_patterns() {
         .expect("Branch B: Failed to start");
     {
         let dict = op_branch_b
-            .get_subtree::<Dict>("shared_config")
+            .get_subtree::<DocStore>("shared_config")
             .expect("Branch B: Failed to get Doc");
 
         dict.set("status", "modified")
@@ -236,7 +238,7 @@ fn test_subtree_concurrent_access_patterns() {
             .get_subtree::<Table<TestRecord>>("shared_data")
             .expect("Merge: Failed to get Table");
         let dict = op_merge
-            .get_subtree::<Dict>("shared_config")
+            .get_subtree::<DocStore>("shared_config")
             .expect("Merge: Failed to get Doc");
 
         let record = table
@@ -263,7 +265,7 @@ fn test_subtree_concurrent_access_patterns() {
         .get_subtree_viewer::<Table<TestRecord>>("shared_data")
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
-        .get_subtree_viewer::<Dict>("shared_config")
+        .get_subtree_viewer::<DocStore>("shared_config")
         .expect("Failed to get Doc viewer");
 
     let final_record = table_viewer

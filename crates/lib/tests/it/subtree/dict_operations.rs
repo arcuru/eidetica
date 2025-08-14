@@ -7,7 +7,7 @@ use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 #[test]
 fn test_dict_set_and_get_via_op() {
@@ -19,7 +19,9 @@ fn test_dict_set_and_get_via_op() {
 
     // Test operation-level modifications
     let op = tree.new_operation().expect("Failed to start operation");
-    let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
+    let dict = op
+        .get_subtree::<DocStore>("my_kv")
+        .expect("Failed to get Doc");
 
     // Verify initial values are accessible
     assert_dict_value(&dict, "key1", "value1");
@@ -59,7 +61,7 @@ fn test_dict_get_all_via_viewer() {
 
     // Verify get_all using a viewer
     let viewer = tree
-        .get_subtree_viewer::<Dict>("my_kv")
+        .get_subtree_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data");
     let all_data_map = all_data_crdt.as_hashmap();
@@ -85,7 +87,7 @@ fn test_dict_get_all_empty() {
 
     // Get viewer for a non-existent subtree
     let viewer = tree
-        .get_subtree_viewer::<Dict>("empty_kv")
+        .get_subtree_viewer::<DocStore>("empty_kv")
         .expect("Failed to get viewer for empty");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data from empty");
     let all_data_map = all_data_crdt.as_hashmap();
@@ -99,7 +101,9 @@ fn test_dict_delete() {
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
+        let dict = op
+            .get_subtree::<DocStore>("my_kv")
+            .expect("Failed to get Doc");
 
         // Set initial values
         dict.set("key1", "value1").expect("Failed to set key1");
@@ -120,7 +124,7 @@ fn test_dict_delete() {
 
     // Verify the deletion persisted
     let viewer = tree
-        .get_subtree_viewer::<Dict>("my_kv")
+        .get_subtree_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
     assert_key_not_found(viewer.get("key1"));
 
@@ -136,15 +140,14 @@ fn test_dict_set_value() {
 
     // Get viewer to verify persistence
     let viewer = tree
-        .get_subtree_viewer::<Dict>("my_kv")
+        .get_subtree_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
 
     // Check string value persisted
     assert_dict_value(&viewer, "key1", "value1");
 
     // Check nested map structure
-    let data = viewer.get_all().unwrap();
-    assert_dict_nested_map(&data, "key2", &[("inner", "nested_value")]);
+    assert_dict_nested_map(&viewer, "key2", &[("inner", "nested_value")]);
 }
 
 #[test]
@@ -165,7 +168,9 @@ fn test_dict_list_nonexistent_key() {
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
+        let dict = op
+            .get_subtree::<DocStore>("my_kv")
+            .expect("Failed to get Doc");
 
         // Test getting non-existent list should return NotFound error
         assert_key_not_found(dict.get("nonexistent"));
@@ -198,7 +203,9 @@ fn test_dict_list_persistence() {
     // Create list in first operation
     let op1 = tree.new_operation().expect("Failed to start op1");
     {
-        let dict = op1.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
+        let dict = op1
+            .get_subtree::<DocStore>("my_kv")
+            .expect("Failed to get Doc");
 
         let mut colors = eidetica::crdt::map::List::new();
         colors.push(Value::Text("red".to_string()));
@@ -212,7 +219,9 @@ fn test_dict_list_persistence() {
     // Modify list in second operation
     let op2 = tree.new_operation().expect("Failed to start op2");
     {
-        let dict = op2.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
+        let dict = op2
+            .get_subtree::<DocStore>("my_kv")
+            .expect("Failed to get Doc");
 
         // List should persist from previous operation
         let colors = dict.get_list("colors").expect("Failed to get colors list");
@@ -242,7 +251,7 @@ fn test_dict_update_nested_value() {
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     {
         let dict = op1
-            .get_subtree::<Dict>("nested_test")
+            .get_subtree::<DocStore>("nested_test")
             .expect("Op1: Failed to get Doc");
 
         // Create level1 -> level2_str structure
@@ -257,7 +266,7 @@ fn test_dict_update_nested_value() {
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     {
         let dict = op2
-            .get_subtree::<Dict>("nested_test")
+            .get_subtree::<DocStore>("nested_test")
             .expect("Op2: Failed to get Doc");
 
         // Create an entirely new map structure that will replace the old one
@@ -290,7 +299,7 @@ fn test_dict_update_nested_value() {
 
     // Verify the update persists after commit
     let viewer = tree
-        .get_subtree_viewer::<Dict>("nested_test")
+        .get_subtree_viewer::<DocStore>("nested_test")
         .expect("Failed to get viewer");
 
     // Verify the structure after commit
@@ -316,7 +325,7 @@ fn test_dict_comprehensive_operations() {
 
     {
         let dict = op
-            .get_subtree::<Dict>("test_store")
+            .get_subtree::<DocStore>("test_store")
             .expect("Failed to get Doc");
 
         // Set basic string values
@@ -336,7 +345,7 @@ fn test_dict_comprehensive_operations() {
 
     // Get a viewer to check the subtree
     let viewer = tree
-        .get_subtree_viewer::<Dict>("test_store")
+        .get_subtree_viewer::<DocStore>("test_store")
         .expect("Failed to get viewer");
 
     // Check string values
@@ -344,9 +353,8 @@ fn test_dict_comprehensive_operations() {
     assert_dict_value(&viewer, "key2", "value2");
 
     // Check nested map
-    let data = viewer.get_all().unwrap();
     assert_dict_nested_map(
-        &data,
+        &viewer,
         "nested",
         &[
             ("nested_key1", "nested_value1"),
@@ -366,7 +374,7 @@ fn test_empty_dict_behavior() {
     assert_dict_viewer_count(&tree, "empty_dict", 0);
 
     let dict_viewer = tree
-        .get_subtree_viewer::<Dict>("empty_dict")
+        .get_subtree_viewer::<DocStore>("empty_dict")
         .expect("Failed to get empty Doc viewer");
     assert_key_not_found(dict_viewer.get("any_key"));
 }

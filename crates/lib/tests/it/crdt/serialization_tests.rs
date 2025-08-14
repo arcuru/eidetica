@@ -7,7 +7,7 @@
 use crate::crdt::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::list::Position;
-use eidetica::crdt::map::{List, Value};
+use eidetica::crdt::map::{List, Node, Value};
 
 // ===== JSON STRING SERIALIZATION TESTS =====
 
@@ -534,7 +534,7 @@ fn test_serialization_helpers_integration() {
     assert!(!json.is_empty());
 
     // Test that it deserializes back correctly
-    let deserialized: Doc = serde_json::from_str(&json).unwrap();
+    let deserialized: Node = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.get_text("title"), Some("My Document"));
 }
 
@@ -544,7 +544,7 @@ fn test_mixed_value_serialization() {
 
     // Test that all value types can be serialized and deserialized
     let json = serde_json::to_string(&mixed_map).unwrap();
-    let deserialized: Doc = serde_json::from_str(&json).unwrap();
+    let deserialized: Node = serde_json::from_str(&json).unwrap();
 
     // Check that basic value types are preserved
     assert_eq!(mixed_map.get("null_val"), deserialized.get("null_val"));
@@ -571,7 +571,7 @@ fn test_large_structure_serialization() {
 
     // Test Map serialization
     let map_json = serde_json::to_string(&large_map).unwrap();
-    let deserialized_map: Doc = serde_json::from_str(&map_json).unwrap();
+    let deserialized_map: Node = serde_json::from_str(&map_json).unwrap();
     assert_eq!(large_map.len(), deserialized_map.len());
 
     // Test List serialization

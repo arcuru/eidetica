@@ -4,8 +4,8 @@
 //! tombstone handling, recursive merging, and complex conflict resolution.
 
 use super::helpers::*;
+use eidetica::crdt::CRDT;
 use eidetica::crdt::map::Value;
-use eidetica::crdt::{CRDT, Doc};
 
 #[test]
 fn test_map_basic_operations() {
@@ -78,7 +78,7 @@ fn test_map_tombstone_handling() {
     let mut map3 = eidetica::crdt::Doc::new();
     map3.remove("map_key"); // Delete the map
 
-    let final_merged = merged.merge(&map3).expect("Second merge failed");
+    let final_merged = merged.merge(map3.as_node()).expect("Second merge failed");
 
     // The map should be gone - verify using the path helper
     assert_path_deleted(&final_merged, &["map_key"]);
@@ -112,7 +112,7 @@ fn test_map_recursive_merge() {
     map2.set_string("top_key", "updated_top_value");
 
     // Merge them
-    let merged = map1.merge(&map2).expect("Merge failed");
+    let merged = map1.merge(map2.as_node()).expect("Merge failed");
 
     // Check merged result - top level
     assert_text_value(merged.get("top_key").unwrap(), "updated_top_value"); // map2 overwrites
@@ -192,7 +192,7 @@ fn test_map_complex_merge_with_tombstones() {
             // Verify level1.to_delete (deleted in map2, should be gone)
             assert_eq!(level1_merged.get("to_delete"), None);
             // Verify it's a tombstone
-            assert_path_deleted(&Doc::from_node(level1_merged.clone()), &["to_delete"]);
+            assert_path_deleted(level1_merged, &["to_delete"]);
 
             // Verify level1.to_update (updated in map2, should have new value)
             assert_text_value(level1_merged.get("to_update").unwrap(), "updated_value");
@@ -225,7 +225,7 @@ fn test_map_multi_generation_updates() {
 
     // Verify gen2
     assert_eq!(gen2.get("key"), None);
-    assert_path_deleted(&gen2, &["key"]);
+    assert_path_deleted(gen2.as_node(), &["key"]);
 
     // Generation 3: Resurrect in branch3
     let mut branch3 = eidetica::crdt::Doc::new();
@@ -300,7 +300,7 @@ fn test_map_remove_existing_tombstone() {
 
     // Verify it's a tombstone
     assert_eq!(map.get("key_to_tombstone"), None);
-    assert_path_deleted(&map, &["key_to_tombstone"]);
+    assert_path_deleted(map.as_node(), &["key_to_tombstone"]);
 
     // Try to remove the key again (which is now a tombstone)
     let removed_again = map.remove("key_to_tombstone");
@@ -315,14 +315,14 @@ fn test_map_remove_existing_tombstone() {
     assert_eq!(map.get("key_to_tombstone"), None);
 
     // as_hashmap() should still show the tombstone
-    assert_path_deleted(&map, &["key_to_tombstone"]);
+    assert_path_deleted(map.as_node(), &["key_to_tombstone"]);
 
     // Directly set a tombstone and then remove it
     map.set("direct_tombstone", Value::Deleted);
     let removed_direct = map.remove("direct_tombstone");
     assert!(removed_direct.is_none());
     assert_eq!(map.get("direct_tombstone"), None);
-    assert_path_deleted(&map, &["direct_tombstone"]);
+    assert_path_deleted(map.as_node(), &["direct_tombstone"]);
 }
 
 #[test]
@@ -348,15 +348,15 @@ fn test_map_merge_dual_tombstones() {
 
     // Check key1_map1 (only in map1, tombstoned)
     assert_eq!(merged.get("key1_map1"), None);
-    assert_path_deleted(&merged, &["key1_map1"]);
+    assert_path_deleted(merged.as_node(), &["key1_map1"]);
 
     // Check key2_map2 (only in map2, tombstoned)
     assert_eq!(merged.get("key2_map2"), None);
-    assert_path_deleted(&merged, &["key2_map2"]);
+    assert_path_deleted(merged.as_node(), &["key2_map2"]);
 
     // Check common_key (tombstoned in both, map2's tombstone should prevail, resulting in a tombstone)
     assert_eq!(merged.get("common_key"), None);
-    assert_path_deleted(&merged, &["common_key"]);
+    assert_path_deleted(merged.as_node(), &["common_key"]);
 
     // What if one has a value and the other a tombstone (map2's tombstone wins)
     let mut map3 = eidetica::crdt::Doc::new();
@@ -367,7 +367,7 @@ fn test_map_merge_dual_tombstones() {
 
     let merged2 = map3.merge(&map4).expect("Merge val then tomb failed");
     assert_eq!(merged2.get("val_then_tomb"), None);
-    assert_path_deleted(&merged2, &["val_then_tomb"]);
+    assert_path_deleted(merged2.as_node(), &["val_then_tomb"]);
 
     // What if one has a tombstone and the other a value (map3's value wins)
     let merged3 = map4.merge(&map3).expect("Merge tomb then val failed");

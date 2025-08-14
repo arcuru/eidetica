@@ -46,7 +46,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Add delegation to non-existent tree using operations
     let op = tree.new_authenticated_operation("admin")?;
-    let settings_store = op.get_subtree::<eidetica::subtree::Dict>("_settings")?;
+    let settings_store = op.get_subtree::<eidetica::subtree::DocStore>("_settings")?;
 
     let nonexistent_delegation = DelegatedTreeRef {
         permission_bounds: PermissionBounds {

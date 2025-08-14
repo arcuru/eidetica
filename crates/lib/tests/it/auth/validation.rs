@@ -7,7 +7,7 @@ use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 #[test]
 fn test_authentication_validation_revoked_key() {
@@ -26,7 +26,7 @@ fn test_authentication_validation_revoked_key() {
         .new_authenticated_operation("REVOKED_KEY")
         .expect("Failed to create authenticated operation");
     let store = op
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op.commit();
@@ -81,7 +81,7 @@ fn test_permission_checking_admin_operations() {
         .new_authenticated_operation("WRITE_KEY")
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<Dict>("_settings")
+        .get_subtree::<DocStore>("_settings")
         .expect("Failed to get settings subtree");
     store
         .set("forbidden_setting", "value")
@@ -120,7 +120,7 @@ fn test_multiple_authenticated_entries() {
     tree.clear_default_auth_key();
     let op1 = tree.new_operation().expect("Failed to create operation");
     let store1 = op1
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree");
     store1
         .set("unsigned", "value")
@@ -133,7 +133,7 @@ fn test_multiple_authenticated_entries() {
         .new_authenticated_operation("TEST_KEY")
         .expect("Failed to create authenticated operation");
     let store2 = op2
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree");
     store2.set("signed", "value").expect("Failed to set value");
     let entry_id2 = op2.commit().expect("Failed to commit signed");

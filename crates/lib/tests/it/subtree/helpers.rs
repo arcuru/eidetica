@@ -6,13 +6,13 @@
 use crate::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
-use eidetica::subtree::{Dict, Table};
+use eidetica::subtree::{DocStore, Table};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "y-crdt")]
 use eidetica::subtree::YDoc;
 #[cfg(feature = "y-crdt")]
-use yrs::{Doc as YrsDoc, GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
+use yrs::{GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
 
 // ===== TEST DATA STRUCTURES =====
 
@@ -37,7 +37,7 @@ pub fn create_dict_operation(
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<Dict>(subtree_name).unwrap();
+    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
 
     for (key, value) in data {
         dict.set(*key, *value).unwrap();
@@ -52,7 +52,7 @@ pub fn create_dict_with_nested_map(
     subtree_name: &str,
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<Dict>(subtree_name).unwrap();
+    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
 
     // Set regular string
     dict.set("key1", "value1").unwrap();
@@ -72,7 +72,7 @@ pub fn create_dict_with_list(
     list_items: &[&str],
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<Dict>(subtree_name).unwrap();
+    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
 
     let mut fruits = eidetica::crdt::map::List::new();
     for item in list_items {
@@ -93,7 +93,7 @@ pub fn test_dict_persistence(
     // Op 1: Initial data
     let op1 = tree.new_operation().unwrap();
     {
-        let dict = op1.get_subtree::<Dict>(subtree_name).unwrap();
+        let dict = op1.get_subtree::<DocStore>(subtree_name).unwrap();
         dict.set("key_a", "val_a").unwrap();
         dict.set("key_b", "val_b").unwrap();
     }
@@ -102,7 +102,7 @@ pub fn test_dict_persistence(
     // Op 2: Update one, add another
     let op2 = tree.new_operation().unwrap();
     {
-        let dict = op2.get_subtree::<Dict>(subtree_name).unwrap();
+        let dict = op2.get_subtree::<DocStore>(subtree_name).unwrap();
         dict.set("key_b", "val_b_updated").unwrap();
         dict.set("key_c", "val_c").unwrap();
     }
@@ -119,7 +119,7 @@ pub fn assert_dict_viewer_data(
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let viewer = tree.get_subtree_viewer::<Dict>(subtree_name).unwrap();
+    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
     for (key, expected_value) in expected_data {
         assert_dict_value(&viewer, key, expected_value);
     }
@@ -127,7 +127,7 @@ pub fn assert_dict_viewer_data(
 
 /// Verify Doc viewer shows correct number of entries
 pub fn assert_dict_viewer_count(tree: &eidetica::Tree, subtree_name: &str, expected_count: usize) {
-    let viewer = tree.get_subtree_viewer::<Dict>(subtree_name).unwrap();
+    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
     let all_data = viewer.get_all().unwrap();
     assert_eq!(all_data.as_hashmap().len(), expected_count);
 }
@@ -139,7 +139,7 @@ pub fn assert_dict_list_data(
     list_key: &str,
     expected_items: &[&str],
 ) {
-    let viewer = tree.get_subtree_viewer::<Dict>(subtree_name).unwrap();
+    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
     let list = viewer.get_list(list_key).unwrap();
 
     assert_eq!(list.len(), expected_items.len());
@@ -148,8 +148,8 @@ pub fn assert_dict_list_data(
     }
 }
 
-/// Verify nested Map structure in Doc
-pub fn assert_dict_nested_map(dict: &Doc, map_key: &str, nested_data: &[(&str, &str)]) {
+/// Verify nested Map structure in DocStore
+pub fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&str, &str)]) {
     match dict.get(map_key).unwrap() {
         Value::Node(map) => {
             for (key, expected_value) in nested_data {
@@ -293,7 +293,7 @@ pub fn assert_ydoc_map_content(
 #[cfg(feature = "y-crdt")]
 /// Create external YDoc update for testing
 pub fn create_external_ydoc_update(content: &str) -> Vec<u8> {
-    let external_doc = YrsDoc::new();
+    let external_doc = yrs::Doc::new();
     let text = external_doc.get_or_insert_text("shared_doc");
     let mut txn = external_doc.transact_mut();
     text.insert(&mut txn, 0, content);

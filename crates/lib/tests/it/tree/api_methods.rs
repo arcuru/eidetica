@@ -7,7 +7,7 @@ use super::helpers::*;
 use crate::helpers::*;
 use eidetica::auth::types::SigKey;
 use eidetica::crdt::Doc;
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 /// Test basic entry retrieval functionality
 #[test]
@@ -92,7 +92,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree1");
     let store1 = op1
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree in tree1");
     store1
         .set("key", "value1")
@@ -104,7 +104,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -155,7 +155,7 @@ fn test_tree_validation_get_entries() {
             .new_operation()
             .expect("Failed to create operation in tree1");
         let store = op
-            .get_subtree::<Dict>("data")
+            .get_subtree::<DocStore>("data")
             .expect("Failed to get subtree in tree1");
         store
             .set("key", format!("value1_{i}"))
@@ -169,7 +169,7 @@ fn test_tree_validation_get_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -271,7 +271,7 @@ fn test_verify_entry_signature_unauthorized_key() {
         .new_authenticated_operation("UNAUTHORIZED_KEY")
         .expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<Dict>("data")
+        .get_subtree::<DocStore>("data")
         .expect("Failed to get subtree");
     store2.set("key", "value2").expect("Failed to set value");
     let commit_result = op2.commit();
@@ -318,7 +318,7 @@ fn test_tree_queries() {
     for i in 0..3 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<Dict>("data")
+            .get_subtree::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))
@@ -348,7 +348,7 @@ fn test_batch_vs_individual_retrieval() {
     for i in 0..5 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<Dict>("data")
+            .get_subtree::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))

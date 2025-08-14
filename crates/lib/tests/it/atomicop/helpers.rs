@@ -4,10 +4,10 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use crate::helpers::*;
-use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
+use eidetica::crdt::{Doc, map::Node as Map};
 use eidetica::entry::ID;
-use eidetica::subtree::{Dict, SubTree};
+use eidetica::subtree::{DocStore, SubTree};
 
 // ===== BASIC OPERATION HELPERS =====
 
@@ -19,7 +19,7 @@ pub fn create_simple_operation(
     value: &str,
 ) -> ID {
     let operation = tree.new_operation().unwrap();
-    let dict = Dict::new(&operation, subtree_name).unwrap();
+    let dict = DocStore::new(&operation, subtree_name).unwrap();
     dict.set(key, value).unwrap();
     operation.commit().unwrap()
 }
@@ -32,7 +32,7 @@ pub fn create_multi_subtree_operation(
     let operation = tree.new_operation().unwrap();
 
     for (subtree_name, data) in subtree_data {
-        let dict = Dict::new(&operation, *subtree_name).unwrap();
+        let dict = DocStore::new(&operation, *subtree_name).unwrap();
         for (key, value) in *data {
             dict.set(*key, *value).unwrap();
         }
@@ -54,7 +54,7 @@ pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetic
 pub fn create_diamond_pattern(tree: &eidetica::Tree) -> DiamondIds {
     // Create base
     let base_op = tree.new_operation().unwrap();
-    let base_store = base_op.get_subtree::<Dict>("data").unwrap();
+    let base_store = base_op.get_subtree::<DocStore>("data").unwrap();
     base_store.set("base", "initial").unwrap();
     let base_id = base_op.commit().unwrap();
 
@@ -62,14 +62,14 @@ pub fn create_diamond_pattern(tree: &eidetica::Tree) -> DiamondIds {
     let left_op = tree
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
-    let left_store = left_op.get_subtree::<Dict>("data").unwrap();
+    let left_store = left_op.get_subtree::<DocStore>("data").unwrap();
     left_store.set("left", "left_value").unwrap();
     left_store.set("shared", "left_version").unwrap();
     let left_id = left_op.commit().unwrap();
 
     // Create right branch
     let right_op = tree.new_operation_with_tips([base_id.clone()]).unwrap();
-    let right_store = right_op.get_subtree::<Dict>("data").unwrap();
+    let right_store = right_op.get_subtree::<DocStore>("data").unwrap();
     right_store.set("right", "right_value").unwrap();
     right_store.set("shared", "right_version").unwrap();
     let right_id = right_op.commit().unwrap();
@@ -93,32 +93,32 @@ pub fn create_merge_from_diamond(tree: &eidetica::Tree, diamond: &DiamondIds) ->
     let merge_op = tree
         .new_operation_with_tips([diamond.left.clone(), diamond.right.clone()])
         .unwrap();
-    let merge_store = merge_op.get_subtree::<Dict>("data").unwrap();
+    let merge_store = merge_op.get_subtree::<DocStore>("data").unwrap();
     merge_store.set("merged", "merge_value").unwrap();
     merge_op.commit().unwrap()
 }
 
 // ===== DATA VALIDATION HELPERS =====
 
-/// Verify that a Dict contains expected key-value pairs
-pub fn assert_dict_contains(dict: &Dict, expected_data: &[(&str, &str)]) {
+/// Verify that a DocStore contains expected key-value pairs
+pub fn assert_dict_contains(dict: &DocStore, expected_data: &[(&str, &str)]) {
     for (key, expected_value) in expected_data {
         assert_dict_value(dict, key, expected_value);
     }
 }
 
-/// Get all data from a Dict as a Doc for detailed inspection
-pub fn get_dict_data(dict: &Dict) -> Doc {
-    dict.get_all().unwrap()
+/// Get all data from a DocStore as a Map for detailed inspection
+pub fn get_dict_data(dict: &DocStore) -> Map {
+    dict.get_all().unwrap().into()
 }
 
-/// Verify that all expected data exists in a Doc's Doc
-pub fn assert_map_data(map: &Doc, expected_data: &[(&str, &str)]) {
+/// Verify that all expected data exists in a Doc's Map
+pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
     for (key, expected_value) in expected_data {
         match map.get(key) {
             Some(Value::Text(actual_value)) => {
                 assert_eq!(
-                    actual_value, expected_value,
+                    actual_value, *expected_value,
                     "Value mismatch for key '{key}'"
                 );
             }
@@ -133,13 +133,13 @@ pub fn assert_map_data(map: &Doc, expected_data: &[(&str, &str)]) {
 /// Create operation that deletes a key and verify tombstone behavior
 pub fn test_delete_operation(tree: &eidetica::Tree, subtree_name: &str, key_to_delete: &str) -> ID {
     let op = tree.new_operation().unwrap();
-    let dict = Dict::new(&op, subtree_name).unwrap();
+    let dict = DocStore::new(&op, subtree_name).unwrap();
     dict.delete(key_to_delete).unwrap();
     op.commit().unwrap()
 }
 
 /// Verify that a map contains a tombstone for a deleted key
-pub fn assert_has_tombstone(map: &Doc, key: &str) {
+pub fn assert_has_tombstone(map: &Map, key: &str) {
     match map.as_hashmap().get(key) {
         Some(Value::Deleted) => (), // Expected
         Some(other) => panic!("Expected tombstone for key '{key}', got: {other:?}"),
@@ -148,7 +148,7 @@ pub fn assert_has_tombstone(map: &Doc, key: &str) {
 }
 
 /// Verify that public API hides tombstone but internal API shows it
-pub fn assert_tombstone_hidden(map: &Doc, key: &str) {
+pub fn assert_tombstone_hidden(map: &Map, key: &str) {
     // Internal API should show tombstone
     assert_has_tombstone(map, key);
 
@@ -177,7 +177,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
 /// Setup operation with nested Map values
 pub fn create_operation_with_nested_data(tree: &eidetica::Tree) -> ID {
     let op = tree.new_operation().unwrap();
-    let store = Dict::new(&op, "data").unwrap();
+    let store = DocStore::new(&op, "data").unwrap();
 
     // Set regular string value
     store.set("string_key", "string_value").unwrap();
@@ -189,9 +189,9 @@ pub fn create_operation_with_nested_data(tree: &eidetica::Tree) -> ID {
     op.commit().unwrap()
 }
 
-/// Verify nested data structure in a Dict
+/// Verify nested data structure in a DocStore
 pub fn assert_nested_data(
-    dict: &Dict,
+    dict: &DocStore,
     string_key: &str,
     map_key: &str,
     nested_data: &[(&str, &str)],
@@ -219,7 +219,7 @@ pub fn assert_nested_data(
 pub fn create_lca_test_scenario(tree: &eidetica::Tree) -> LcaTestIds {
     // Create LCA
     let lca_op = tree.new_operation().unwrap();
-    let lca_store = lca_op.get_subtree::<Dict>("data").unwrap();
+    let lca_store = lca_op.get_subtree::<DocStore>("data").unwrap();
     lca_store.set("base", "LCA").unwrap();
     let lca_id = lca_op.commit().unwrap();
 
@@ -227,7 +227,7 @@ pub fn create_lca_test_scenario(tree: &eidetica::Tree) -> LcaTestIds {
     let a_op = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let a_store = a_op.get_subtree::<Dict>("data").unwrap();
+    let a_store = a_op.get_subtree::<DocStore>("data").unwrap();
     a_store.set("branch_a", "modification_A").unwrap();
     let a_id = a_op.commit().unwrap();
 
@@ -235,7 +235,7 @@ pub fn create_lca_test_scenario(tree: &eidetica::Tree) -> LcaTestIds {
     let b_op = tree
         .new_operation_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
-    let b_store = b_op.get_subtree::<Dict>("data").unwrap();
+    let b_store = b_op.get_subtree::<DocStore>("data").unwrap();
     b_store.set("branch_b", "modification_B").unwrap();
     let b_id = b_op.commit().unwrap();
 
@@ -243,13 +243,13 @@ pub fn create_lca_test_scenario(tree: &eidetica::Tree) -> LcaTestIds {
     let merge_op = tree
         .new_operation_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
-    let merge_store = merge_op.get_subtree::<Dict>("data").unwrap();
+    let merge_store = merge_op.get_subtree::<DocStore>("data").unwrap();
     merge_store.set("tip", "merged").unwrap();
     let merge_id = merge_op.commit().unwrap();
 
     // Create independent tip
     let indep_op = tree.new_operation_with_tips([lca_id.clone()]).unwrap();
-    let indep_store = indep_op.get_subtree::<Dict>("data").unwrap();
+    let indep_store = indep_op.get_subtree::<DocStore>("data").unwrap();
     indep_store.set("independent", "tip").unwrap();
     let indep_id = indep_op.commit().unwrap();
 
@@ -268,7 +268,7 @@ pub struct LcaTestIds {
 /// Verify that LCA path finding includes all expected data
 pub fn assert_lca_path_completeness(tree: &eidetica::Tree, tips: &[ID], expected_keys: &[&str]) {
     let op = tree.new_operation_with_tips(tips).unwrap();
-    let store = op.get_subtree::<Dict>("data").unwrap();
+    let store = op.get_subtree::<DocStore>("data").unwrap();
     let state = store.get_all().unwrap();
 
     for key in expected_keys {
@@ -287,7 +287,7 @@ pub fn test_deterministic_operations(tree: &eidetica::Tree, tips: &[ID], iterati
 
     for _i in 0..iterations {
         let op = tree.new_operation_with_tips(tips).unwrap();
-        let store = op.get_subtree::<Dict>("data").unwrap();
+        let store = op.get_subtree::<DocStore>("data").unwrap();
         let state = store.get_all().unwrap();
         results.push(state);
     }

@@ -7,8 +7,8 @@ use eidetica::atomicop::AtomicOp;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::Value;
-use eidetica::subtree::Dict;
+use eidetica::crdt::map::{Node, Value};
+use eidetica::subtree::DocStore;
 use eidetica::tree::Tree;
 
 // ===== BASIC SETUP HELPERS =====
@@ -22,14 +22,14 @@ pub fn setup_db_and_tree() -> eidetica::Result<(BaseDB, Tree)> {
 }
 
 /// Setup a Doc subtree for testing
-pub fn setup_dict_subtree(op: &AtomicOp, subtree_name: &str) -> eidetica::Result<Dict> {
-    op.get_subtree::<Dict>(subtree_name)
+pub fn setup_dict_subtree(op: &AtomicOp, subtree_name: &str) -> eidetica::Result<DocStore> {
+    op.get_subtree::<DocStore>(subtree_name)
 }
 
-/// Create a complete test environment with DB, tree, operation, and Dict
+/// Create a complete test environment with DB, tree, operation, and Doc
 pub fn setup_complete_test_env(
     subtree_name: &str,
-) -> eidetica::Result<(BaseDB, Tree, AtomicOp, Dict)> {
+) -> eidetica::Result<(BaseDB, Tree, AtomicOp, DocStore)> {
     let (db, tree) = setup_db_and_tree()?;
     let op = tree.new_operation()?;
     let dict = setup_dict_subtree(&op, subtree_name)?;
@@ -49,8 +49,8 @@ pub fn assert_text_value(value: &Value, expected: &str) {
 }
 
 /// Assert that a nested value matches expected string
-pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
-    let mut current = map.as_node();
+pub fn assert_nested_value(map: &Node, path: &[&str], expected: &str) {
+    let mut current = map;
 
     // Navigate to the parent of the final key
     for &key in &path[..path.len() - 1] {
@@ -70,7 +70,7 @@ pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
 }
 
 /// Create a complex nested structure for testing
-pub fn create_complex_nested_structure() -> Doc {
+pub fn create_complex_nested_structure() -> Node {
     let mut root = Doc::new();
 
     // Level 1
@@ -87,11 +87,11 @@ pub fn create_complex_nested_structure() -> Doc {
     level2.set_map("level3", level3);
 
     root.set_map("level2", level2);
-    root
+    root.into()
 }
 
 /// Assert that a path is deleted (tombstone exists)
-pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
+pub fn assert_path_deleted(map: &Node, path: &[&str]) {
     if path.len() == 1 {
         // Simple case: check directly in this map
         match map.as_hashmap().get(&path[0].to_string()) {
@@ -101,7 +101,7 @@ pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
         }
     } else {
         // Navigate to parent and check final key
-        let mut current = map.as_node();
+        let mut current = map;
         for &key in &path[..path.len() - 1] {
             match current.get(key) {
                 Some(Value::Node(inner)) => current = inner,
@@ -119,7 +119,7 @@ pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
 }
 
 /// Create a Map with mixed value types
-pub fn create_mixed_map() -> Doc {
+pub fn create_mixed_map() -> Node {
     let mut map = Doc::new();
     map.set_string("string_val", "test_string");
 
@@ -130,13 +130,13 @@ pub fn create_mixed_map() -> Doc {
     // Create a tombstone
     map.remove("deleted_val");
 
-    map
+    map.into()
 }
 
 /// Test serialization roundtrip for a Map
-pub fn test_serialization_roundtrip(map: &Doc) -> eidetica::Result<()> {
+pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Node = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Compare the hashmaps directly since Map doesn't implement PartialEq
     let original_hashmap = map.as_hashmap();
@@ -179,12 +179,12 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
-pub fn setup_path_test_dict(op: &AtomicOp) -> eidetica::Result<Dict> {
+pub fn setup_path_test_dict(op: &AtomicOp) -> eidetica::Result<DocStore> {
     setup_dict_subtree(op, "path_test_store")
 }
 
 /// Test value editor basic functionality
-pub fn test_editor_basic_set_get(dict: &Dict, key: &str, value: Value) -> eidetica::Result<()> {
+pub fn test_editor_basic_set_get(dict: &DocStore, key: &str, value: Value) -> eidetica::Result<()> {
     let editor = dict.get_value_mut(key);
     editor.set(value.clone())?;
 
@@ -196,7 +196,7 @@ pub fn test_editor_basic_set_get(dict: &Dict, key: &str, value: Value) -> eideti
 
 /// Test nested editor operations
 pub fn test_nested_editor_operations(
-    dict: &Dict,
+    dict: &DocStore,
     path: &[&str],
     value: Value,
 ) -> eidetica::Result<()> {
@@ -217,7 +217,7 @@ pub fn test_nested_editor_operations(
 }
 
 /// Test path-based operations
-pub fn test_path_operations(dict: &Dict, path: &[&str], value: Value) -> eidetica::Result<()> {
+pub fn test_path_operations(dict: &DocStore, path: &[&str], value: Value) -> eidetica::Result<()> {
     dict.set_at_path(path, value.clone())?;
     let retrieved = dict.get_at_path(path)?;
     assert_eq!(retrieved, value, "Path operation mismatch at {path:?}");

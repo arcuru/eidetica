@@ -4,7 +4,8 @@
 //! including handling of nested maps and tombstones.
 
 use super::helpers::*;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::Doc;
+use eidetica::crdt::map::{Node, Value};
 
 #[test]
 fn test_map_serialization() {
@@ -22,12 +23,11 @@ fn test_map_serialization() {
     map.remove("deleted_key");
 
     // Test serialization roundtrip
-    test_serialization_roundtrip(&map).expect("Serialization roundtrip failed");
+    test_serialization_roundtrip(map.as_node()).expect("Serialization roundtrip failed");
 
     // Verify specific values survived serialization
     let serialized = serde_json::to_string(&map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Doc =
-        serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify string survived
     assert_text_value(deserialized.get("string_key").unwrap(), "string_value");
@@ -40,7 +40,7 @@ fn test_map_serialization() {
 
     // Verify tombstone survived
     assert!(deserialized.as_hashmap().contains_key("deleted_key"));
-    assert_path_deleted(&deserialized, &["deleted_key"]);
+    assert_path_deleted(deserialized.as_node(), &["deleted_key"]);
 }
 
 #[test]
@@ -52,8 +52,7 @@ fn test_serialization_complex_nested_structure() {
 
     // Verify structure integrity after serialization
     let serialized = serde_json::to_string(&complex_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Doc =
-        serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Node = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify nested structure preserved
     assert_nested_value(
@@ -73,8 +72,7 @@ fn test_serialization_mixed_map() {
 
     // Verify all types preserved
     let serialized = serde_json::to_string(&mixed_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Doc =
-        serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Node = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Check string value
     assert_text_value(deserialized.get("string_val").unwrap(), "test_string");
@@ -93,11 +91,10 @@ fn test_serialization_mixed_map() {
 fn test_serialization_empty_map() {
     let empty_map = eidetica::crdt::Doc::new();
 
-    test_serialization_roundtrip(&empty_map).expect("Empty map serialization failed");
+    test_serialization_roundtrip(empty_map.as_node()).expect("Empty map serialization failed");
 
     let serialized = serde_json::to_string(&empty_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Doc =
-        serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     assert_eq!(
         deserialized.as_hashmap().len(),
@@ -113,16 +110,16 @@ fn test_serialization_tombstone_only_map() {
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);
 
-    test_serialization_roundtrip(&tombstone_map).expect("Tombstone-only map serialization failed");
+    test_serialization_roundtrip(tombstone_map.as_node())
+        .expect("Tombstone-only map serialization failed");
 
     let serialized = serde_json::to_string(&tombstone_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Doc =
-        serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify all tombstones preserved
-    assert_path_deleted(&deserialized, &["tombstone1"]);
-    assert_path_deleted(&deserialized, &["tombstone2"]);
-    assert_path_deleted(&deserialized, &["direct_tombstone"]);
+    assert_path_deleted(deserialized.as_node(), &["tombstone1"]);
+    assert_path_deleted(deserialized.as_node(), &["tombstone2"]);
+    assert_path_deleted(deserialized.as_node(), &["direct_tombstone"]);
 
     // Verify no accessible values
     assert_eq!(deserialized.get("tombstone1"), None);

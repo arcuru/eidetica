@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
 use crate::crdt::map::{List, Node, Value};
-use crate::crdt::{CRDT, Doc};
+use crate::crdt::{Doc, traits::CRDT};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 
@@ -110,10 +110,10 @@ impl DocStore {
     /// Stages the setting of a key-value pair within the associated `AtomicOp`.
     ///
     /// This method updates the `Map` data held within the `AtomicOp` for this
-    /// `DocStore` instance's subtree name. The change is **not** persisted to the backend
+    /// `Doc` instance's subtree name. The change is **not** persisted to the backend
     /// until the `AtomicOp::commit()` method is called.
     ///
-    /// Calling this method on a `DocStore` obtained via `Tree::get_subtree_viewer` is possible
+    /// Calling this method on a `Doc` obtained via `Tree::get_subtree_viewer` is possible
     /// but the changes will be ephemeral and discarded, as the viewer's underlying `AtomicOp`
     /// is not intended to be committed.
     ///
@@ -202,7 +202,7 @@ impl DocStore {
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
     /// This method removes the key-value pair from the `Map` data held within
-    /// the `AtomicOp` for this `DocStore` instance's subtree name. A tombstone is created,
+    /// the `AtomicOp` for this `Doc` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `AtomicOp::commit()` method is called.
     ///
@@ -283,26 +283,26 @@ impl DocStore {
     /// later using `ValueEditor::set()`.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `DocStore`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Doc`'s backend.
     pub fn get_value_mut(&self, key: impl Into<String>) -> ValueEditor<'_> {
         ValueEditor::new(self, vec![key.into()])
     }
 
-    /// Gets a mutable editor for the root of this DocStore's subtree.
+    /// Gets a mutable editor for the root of this Doc's subtree.
     ///
     /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `DocStore`'s backend.
+    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Doc`'s backend.
     pub fn get_root_mut(&self) -> ValueEditor<'_> {
         ValueEditor::new(self, Vec::new())
     }
 
-    /// Retrieves a `Value` from the DocStore using a specified path.
+    /// Retrieves a `Value` from the Doc using a specified path.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure. If the path is empty, it retrieves the entire
-    /// content of this DocStore's named subtree as a `Value::Map`.
+    /// content of this Doc's named subtree as a `Value::Node`.
     ///
-    /// This method operates on the fully merged view of the DocStore's data,
+    /// This method operates on the fully merged view of the Doc's data,
     /// including any local changes from the current `AtomicOp` layered on top
     /// of the backend state.
     ///
@@ -331,7 +331,7 @@ impl DocStore {
 
         for key_segment_s in path_slice.iter() {
             match current_value_view {
-                Value::Node(map_data) => match map_data.get(key_segment_s.as_ref()) {
+                Value::Node(node) => match node.get(key_segment_s.as_ref()) {
                     Some(next_value) => {
                         current_value_view = next_value.clone();
                     }
@@ -386,7 +386,7 @@ impl DocStore {
         }
     }
 
-    /// Sets a `Value` at a specified path within the `DocStore`'s `AtomicOp`.
+    /// Sets a `Value` at a specified path within the `Doc`'s `AtomicOp`.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure.
@@ -403,7 +403,7 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Map`.
+    /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Node`.
     /// * `Error::Serialize` if the updated subtree data cannot be serialized to JSON.
     /// * Potentially other errors from `AtomicOp::update_subtree`.
     pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
@@ -414,9 +414,9 @@ impl DocStore {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
             // Setting the root of this Doc's named subtree.
-            // The value must be a map.
-            if let Value::Node(map_data) = value {
-                let serialized_data = serde_json::to_string(&map_data)?;
+            // The value must be a node.
+            if let Value::Node(node) = value {
+                let serialized_data = serde_json::to_string(&node)?;
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
                 return Err(SubtreeError::TypeMismatch {
@@ -440,13 +440,13 @@ impl DocStore {
             let key_segment_string = key_segment_s.clone().into();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
             current_map_mut = match entry.or_insert_with(|| Value::Node(Node::default())) {
-                Value::Node(map) => map,
+                Value::Node(node) => node,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
                     *non_map_val = Value::Node(Node::default());
                     match non_map_val {
-                        Value::Node(map) => map,
+                        Value::Node(node) => node,
                         _ => unreachable!("Just assigned a map"),
                     }
                 }
@@ -517,9 +517,9 @@ impl<'a> ValueEditor<'a> {
     /// If the path specified by `self.keys` does not exist, it will be created.
     /// Intermediate non-map values in the path will be overwritten by maps as needed.
     /// If `self.keys` is empty (editor points to root), the provided `value` must
-    /// be a `Value::Map`.
+    /// be a `Value::Node`.
     ///
-    /// Returns `Error::InvalidOperation` if setting the root and `value` is not a map.
+    /// Returns `Error::InvalidOperation` if setting the root and `value` is not a node.
     pub fn set(&self, value: Value) -> Result<()> {
         self.kv_store.set_at_path(&self.keys, value)
     }
@@ -567,6 +567,3 @@ impl<'a> ValueEditor<'a> {
         self.kv_store.set_at_path(&path_to_delete, Value::Deleted)
     }
 }
-
-// Backwards compatibility type alias
-pub type Dict = DocStore;
