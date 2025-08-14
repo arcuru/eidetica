@@ -5,7 +5,7 @@
 
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 
 #[test]
@@ -19,7 +19,7 @@ fn test_settings_tips_in_metadata() {
     db.add_private_key(key_id).unwrap();
 
     // Create initial settings
-    let mut settings = Map::new();
+    let mut settings = Doc::new();
     settings.set("name".to_string(), "test_tree".to_string());
 
     // Create a tree with authentication
@@ -105,7 +105,7 @@ fn test_entry_get_settings_from_subtree() {
     db.add_private_key(key_id).unwrap();
 
     // Create initial settings with some data
-    let mut settings = Map::new();
+    let mut settings = Doc::new();
     settings.set("name".to_string(), "test_tree".to_string());
     settings.set("version".to_string(), "1.0".to_string());
 
@@ -118,7 +118,7 @@ fn test_entry_get_settings_from_subtree() {
     // Entry shouldn't know about settings - that's AtomicOp's job
     // But we can verify the entry has the _settings subtree data
     let settings_data = root_entry.data("_settings").unwrap();
-    let parsed_settings: Map = serde_json::from_str(settings_data).unwrap();
+    let parsed_settings: Doc = serde_json::from_str(settings_data).unwrap();
 
     // Verify the settings contain what we expect
     match parsed_settings.get("name").unwrap() {
@@ -150,7 +150,7 @@ fn test_settings_tips_propagation() {
     db.add_private_key(key_id).unwrap();
 
     // Create a tree
-    let settings = Map::new();
+    let settings = Doc::new();
     let tree = db.new_tree(settings, key_id).unwrap();
 
     // Create a chain of entries
@@ -226,7 +226,7 @@ fn test_settings_metadata_with_complex_operations() {
     db.add_private_key(key_id).unwrap();
 
     // Create tree with initial settings
-    let mut initial_settings = Map::new();
+    let mut initial_settings = Doc::new();
     initial_settings.set("name".to_string(), "ComplexTree".to_string());
     initial_settings.set("version".to_string(), "1.0".to_string());
     let tree = db.new_tree(initial_settings, key_id).unwrap();
@@ -321,7 +321,7 @@ fn test_settings_metadata_with_branching() {
     let key_id = "branch_key";
     db.add_private_key(key_id).unwrap();
 
-    let tree = db.new_tree(Map::new(), key_id).unwrap();
+    let tree = db.new_tree(Doc::new(), key_id).unwrap();
 
     // Create base entry
     let base_op = tree.new_operation().unwrap();
@@ -400,7 +400,7 @@ fn test_metadata_consistency_across_operations() {
     let key_id = "consistency_key";
     db.add_private_key(key_id).unwrap();
 
-    let mut settings = Map::new();
+    let mut settings = Doc::new();
     settings.set("initial".to_string(), "true".to_string());
     let tree = db.new_tree(settings, key_id).unwrap();
 

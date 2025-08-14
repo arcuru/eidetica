@@ -2,14 +2,14 @@
 mod test_map {
     use crate::crdt::map::list::Position;
     use crate::crdt::map::{List, Node, Value};
-    use crate::crdt::{CRDTError, Map};
+    use crate::crdt::{CRDTError, Doc};
 
     // Minimal unit tests for internal implementation details not accessible from integration tests
     // Most functionality is now comprehensively tested in integration tests under tests/it/crdt/
 
     #[test]
     fn test_map_as_hashmap_internal_access() {
-        let mut map = Map::new();
+        let mut map = Doc::new();
         map.set("key1", "value1");
         map.set("key2", "value2");
         map.remove("key1");

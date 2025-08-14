@@ -2,7 +2,7 @@ use super::helpers::*;
 use crate::create_auth_keys;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
 
@@ -44,7 +44,7 @@ fn test_operation_auth_methods() {
         .expect("Failed to add test key");
 
     let tree = db
-        .new_tree(Map::new(), "TEST_KEY")
+        .new_tree(Doc::new(), "TEST_KEY")
         .expect("Failed to create tree");
 
     // Test operations with different auth key IDs
@@ -148,8 +148,8 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     let key2 = db.add_private_key("KEY2").expect("Failed to add key2");
 
     // Create initial tree with KEY1 only
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
     auth_settings
         .set_json(
             "KEY1",
@@ -175,7 +175,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to get settings subtree");
 
     // Add KEY2 to auth settings
-    let mut new_auth_settings = Map::new();
+    let mut new_auth_settings = Doc::new();
     new_auth_settings
         .set_json(
             "KEY1",
@@ -230,8 +230,8 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     let valid_key = db.add_private_key("VALID_KEY").expect("Failed to add key");
 
     // Create tree with valid auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
     auth_settings
         .set_json(
             "VALID_KEY",
@@ -301,8 +301,8 @@ fn test_validation_pipeline_entry_level_validation() {
         .expect("Failed to add key");
 
     // Create auth settings with admin, active and revoked keys
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
 
     auth_settings
         .set_json(

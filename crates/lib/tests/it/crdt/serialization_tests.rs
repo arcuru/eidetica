@@ -5,7 +5,7 @@
 //! Map, List, and Value types.
 
 use crate::crdt::helpers::*;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::list::Position;
 use eidetica::crdt::map::{List, Value};
 
@@ -13,7 +13,7 @@ use eidetica::crdt::map::{List, Value};
 
 #[test]
 fn test_map_to_json_string_basic() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
     map.set("name", "Alice");
     map.set("age", 30);
     map.set("active", true);
@@ -31,17 +31,17 @@ fn test_map_to_json_string_basic() {
 
 #[test]
 fn test_map_to_json_string_empty() {
-    let map = Map::new();
+    let map = Doc::new();
     assert_eq!(map.to_json_string(), "{}");
 }
 
 #[test]
 fn test_map_to_json_string_nested() {
-    let mut inner_map = Map::new();
+    let mut inner_map = Doc::new();
     inner_map.set("city", "NYC");
     inner_map.set("zip", 10001);
 
-    let mut outer_map = Map::new();
+    let mut outer_map = Doc::new();
     outer_map.set("name", "Alice");
     outer_map.set("address", inner_map);
 
@@ -108,7 +108,7 @@ fn test_complex_nested_structure_to_json() {
     let mut users_list = List::new();
 
     // Create first user
-    let mut user1 = Map::new();
+    let mut user1 = Doc::new();
     user1.set("name", "Alice");
     user1.set("age", 30);
 
@@ -118,7 +118,7 @@ fn test_complex_nested_structure_to_json() {
     user1.set("tags", tags1);
 
     // Create second user
-    let mut user2 = Map::new();
+    let mut user2 = Doc::new();
     user2.set("name", "Bob");
     user2.set("age", 25);
 
@@ -130,7 +130,7 @@ fn test_complex_nested_structure_to_json() {
     users_list.push(user2);
 
     // Create root structure
-    let mut root = Map::new();
+    let mut root = Doc::new();
     root.set("users", Value::List(users_list));
     root.set("total", 2);
 
@@ -151,7 +151,7 @@ fn test_complex_nested_structure_to_json() {
 
 #[test]
 fn test_to_json_string_with_tombstones() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
     map.set("name", "Alice");
     map.set("age", 30);
     map.set("temp", "delete_me");
@@ -197,7 +197,7 @@ fn test_to_json_string_with_list_tombstones() {
 #[test]
 fn test_json_round_trip_validation() {
     // Test that our JSON output is valid and can be parsed
-    let mut map = Map::new();
+    let mut map = Doc::new();
     map.set("text", "hello \"world\"");
     map.set("number", 42);
     map.set("boolean", true);
@@ -227,7 +227,7 @@ fn test_json_round_trip_validation() {
 
 #[test]
 fn test_map_to_json_string_key_ordering() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
     map.set("zebra", 1);
     map.set("alpha", 2);
     map.set("beta", 3);
@@ -250,13 +250,13 @@ fn test_map_to_json_string_key_ordering() {
 #[test]
 fn test_serde_json_round_trip_map() {
     // Test round-trip using serde JSON serialization/deserialization
-    let mut original_map = Map::new();
+    let mut original_map = Doc::new();
     original_map.set("name", "Alice");
     original_map.set("age", 30);
     original_map.set("active", true);
     original_map.set("score", 95.5); // Will be converted to int
 
-    let mut nested_map = Map::new();
+    let mut nested_map = Doc::new();
     nested_map.set("city", "NYC");
     nested_map.set("zip", 10001);
     original_map.set("address", nested_map);
@@ -265,7 +265,7 @@ fn test_serde_json_round_trip_map() {
     let json = serde_json::to_string(&original_map).unwrap();
 
     // Deserialize back to Map
-    let deserialized_map: Map = serde_json::from_str(&json).unwrap();
+    let deserialized_map: Doc = serde_json::from_str(&json).unwrap();
 
     // Compare the maps
     assert_eq!(
@@ -324,7 +324,7 @@ fn test_serde_json_round_trip_list() {
 #[test]
 fn test_serde_json_round_trip_complex_structure() {
     // Test round-trip with complex nested structure
-    let mut root = Map::new();
+    let mut root = Doc::new();
 
     // Add simple values
     root.set("app_name", "Eidetica");
@@ -332,7 +332,7 @@ fn test_serde_json_round_trip_complex_structure() {
     root.set("enabled", true);
 
     // Add nested map
-    let mut config = Map::new();
+    let mut config = Doc::new();
     config.set("timeout", 30);
     config.set("debug", false);
     root.set("config", config);
@@ -347,12 +347,12 @@ fn test_serde_json_round_trip_complex_structure() {
     // Add list of maps
     let mut users = List::new();
 
-    let mut user1 = Map::new();
+    let mut user1 = Doc::new();
     user1.set("id", 1);
     user1.set("name", "Alice");
     user1.set("admin", true);
 
-    let mut user2 = Map::new();
+    let mut user2 = Doc::new();
     user2.set("id", 2);
     user2.set("name", "Bob");
     user2.set("admin", false);
@@ -365,7 +365,7 @@ fn test_serde_json_round_trip_complex_structure() {
     let json = serde_json::to_string(&root).unwrap();
 
     // Deserialize back to Map
-    let deserialized_root: Map = serde_json::from_str(&json).unwrap();
+    let deserialized_root: Doc = serde_json::from_str(&json).unwrap();
 
     // Compare the entire structure
     assert_eq!(root, deserialized_root);
@@ -398,7 +398,7 @@ fn test_serde_json_round_trip_complex_structure() {
 #[test]
 fn test_serde_json_round_trip_with_tombstones() {
     // Test that tombstones are preserved during round-trip
-    let mut original_map = Map::new();
+    let mut original_map = Doc::new();
     original_map.set("keep", "this");
     original_map.set("remove", "this");
 
@@ -418,7 +418,7 @@ fn test_serde_json_round_trip_with_tombstones() {
     let json = serde_json::to_string(&original_map).unwrap();
 
     // Deserialize back to Map
-    let deserialized_map: Map = serde_json::from_str(&json).unwrap();
+    let deserialized_map: Doc = serde_json::from_str(&json).unwrap();
 
     // The deserialized map should be equal to the original (including tombstones)
     assert_eq!(original_map, deserialized_map);
@@ -490,7 +490,7 @@ fn test_list_position_preservation_round_trip() {
 
 #[test]
 fn test_map_list_serialization() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
 
     // Add a list element
     let result = map.list_add("fruits", Value::Text("apple".to_string()));
@@ -502,7 +502,7 @@ fn test_map_list_serialization() {
 
     // Serialize and deserialize
     let serialized = serde_json::to_string(&map).unwrap();
-    let deserialized: Map = serde_json::from_str(&serialized).unwrap();
+    let deserialized: Doc = serde_json::from_str(&serialized).unwrap();
 
     // Check list length after deserialization
     let length_after = deserialized.list_len("fruits");
@@ -534,7 +534,7 @@ fn test_serialization_helpers_integration() {
     assert!(!json.is_empty());
 
     // Test that it deserializes back correctly
-    let deserialized: Map = serde_json::from_str(&json).unwrap();
+    let deserialized: Doc = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.get_text("title"), Some("My Document"));
 }
 
@@ -544,7 +544,7 @@ fn test_mixed_value_serialization() {
 
     // Test that all value types can be serialized and deserialized
     let json = serde_json::to_string(&mixed_map).unwrap();
-    let deserialized: Map = serde_json::from_str(&json).unwrap();
+    let deserialized: Doc = serde_json::from_str(&json).unwrap();
 
     // Check that basic value types are preserved
     assert_eq!(mixed_map.get("null_val"), deserialized.get("null_val"));
@@ -571,7 +571,7 @@ fn test_large_structure_serialization() {
 
     // Test Map serialization
     let map_json = serde_json::to_string(&large_map).unwrap();
-    let deserialized_map: Map = serde_json::from_str(&map_json).unwrap();
+    let deserialized_map: Doc = serde_json::from_str(&map_json).unwrap();
     assert_eq!(large_map.len(), deserialized_map.len());
 
     // Test List serialization

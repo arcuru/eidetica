@@ -66,10 +66,8 @@ fn test_mixed_subtree_operations() {
 
         let key = table.insert(record).expect("Failed to insert record");
 
-        // Use Dict subtree in same operation
-        let dict = op
-            .get_subtree::<Dict>("config")
-            .expect("Failed to get Dict");
+        // Use Doc subtree in same operation
+        let dict = op.get_subtree::<Dict>("config").expect("Failed to get Doc");
         dict.set("mode", "mixed").expect("Failed to set config");
         dict.set("version", "1.0").expect("Failed to set version");
 
@@ -84,13 +82,13 @@ fn test_mixed_subtree_operations() {
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
         .get_subtree_viewer::<Dict>("config")
-        .expect("Failed to get Dict viewer");
+        .expect("Failed to get Doc viewer");
 
     // Check Table data
     let record = table_viewer.get(&table_key).expect("Failed to get record");
     assert_eq!(record.name, "Mixed Operation User");
 
-    // Check Dict data
+    // Check Doc data
     assert_dict_value(&dict_viewer, "mode", "mixed");
     assert_dict_value(&dict_viewer, "version", "1.0");
 }
@@ -107,7 +105,7 @@ fn test_subtree_persistence_across_operations() {
             .expect("Op1: Failed to get Table");
         let dict = op1
             .get_subtree::<Dict>("metadata")
-            .expect("Op1: Failed to get Dict");
+            .expect("Op1: Failed to get Doc");
 
         let record = SimpleRecord { value: 100 };
         let key = table.insert(record).expect("Op1: Failed to insert");
@@ -128,7 +126,7 @@ fn test_subtree_persistence_across_operations() {
             .expect("Op2: Failed to get Table");
         let dict = op2
             .get_subtree::<Dict>("metadata")
-            .expect("Op2: Failed to get Dict");
+            .expect("Op2: Failed to get Doc");
 
         // Update existing record
         let updated_record = SimpleRecord { value: 200 };
@@ -152,7 +150,7 @@ fn test_subtree_persistence_across_operations() {
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
         .get_subtree_viewer::<Dict>("metadata")
-        .expect("Failed to get Dict viewer");
+        .expect("Failed to get Doc viewer");
 
     // Check updated record
     let final_record = table_viewer
@@ -171,7 +169,7 @@ fn test_subtree_persistence_across_operations() {
 fn test_subtree_concurrent_access_patterns() {
     let tree = setup_tree();
 
-    // Create base entry with both Dict and Table data
+    // Create base entry with both Doc and Table data
     let op_base = tree.new_operation().expect("Base: Failed to start");
     let base_table_key = {
         let table = op_base
@@ -179,7 +177,7 @@ fn test_subtree_concurrent_access_patterns() {
             .expect("Base: Failed to get Table");
         let dict = op_base
             .get_subtree::<Dict>("shared_config")
-            .expect("Base: Failed to get Dict");
+            .expect("Base: Failed to get Doc");
 
         let record = TestRecord {
             name: "Base User".to_string(),
@@ -215,14 +213,14 @@ fn test_subtree_concurrent_access_patterns() {
     }
     op_branch_a.commit().expect("Branch A: Failed to commit");
 
-    // Branch B: Modify Dict data (parallel to Branch A)
+    // Branch B: Modify Doc data (parallel to Branch A)
     let op_branch_b = tree
         .new_operation_with_tips([base_entry_id])
         .expect("Branch B: Failed to start");
     {
         let dict = op_branch_b
             .get_subtree::<Dict>("shared_config")
-            .expect("Branch B: Failed to get Dict");
+            .expect("Branch B: Failed to get Doc");
 
         dict.set("status", "modified")
             .expect("Branch B: Failed to set");
@@ -239,7 +237,7 @@ fn test_subtree_concurrent_access_patterns() {
             .expect("Merge: Failed to get Table");
         let dict = op_merge
             .get_subtree::<Dict>("shared_config")
-            .expect("Merge: Failed to get Dict");
+            .expect("Merge: Failed to get Doc");
 
         let record = table
             .get(&base_table_key)
@@ -257,7 +255,7 @@ fn test_subtree_concurrent_access_patterns() {
     assert_eq!(merged_record.name, "Branch A User");
     assert_eq!(merged_record.age, 26);
 
-    // Dict should have Branch B's changes
+    // Doc should have Branch B's changes
     assert_eq!(merged_status, "modified");
 
     // Verify final persistence
@@ -266,7 +264,7 @@ fn test_subtree_concurrent_access_patterns() {
         .expect("Failed to get Table viewer");
     let dict_viewer = tree
         .get_subtree_viewer::<Dict>("shared_config")
-        .expect("Failed to get Dict viewer");
+        .expect("Failed to get Doc viewer");
 
     let final_record = table_viewer
         .get(&base_table_key)
@@ -302,7 +300,7 @@ fn test_subtree_integration_with_helpers() {
 fn test_subtree_helper_functions_integration() {
     let tree = setup_tree();
 
-    // Test Dict helper functions
+    // Test Doc helper functions
     let dict_data = &[("key1", "value1"), ("key2", "value2")];
     create_dict_operation(&tree, "helper_dict", dict_data);
     assert_dict_viewer_data(&tree, "helper_dict", dict_data);

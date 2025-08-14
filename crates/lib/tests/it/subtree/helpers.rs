@@ -1,10 +1,10 @@
 //! Comprehensive helper functions for subtree testing
 //!
-//! This module provides utilities for testing Dict, YDoc, and Table subtree functionality
+//! This module provides utilities for testing Doc, YDoc, and Table subtree functionality
 //! including basic operations, CRUD operations, search functionality, and integration scenarios.
 
 use crate::helpers::*;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::{Dict, Table};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "y-crdt")]
 use eidetica::subtree::YDoc;
 #[cfg(feature = "y-crdt")]
-use yrs::{Doc, GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
+use yrs::{Doc as YrsDoc, GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
 
 // ===== TEST DATA STRUCTURES =====
 
@@ -30,7 +30,7 @@ pub struct SimpleRecord {
 
 // ===== DICT OPERATION HELPERS =====
 
-/// Create and commit a basic Dict operation with key-value data
+/// Create and commit a basic Doc operation with key-value data
 pub fn create_dict_operation(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -46,7 +46,7 @@ pub fn create_dict_operation(
     op.commit().unwrap()
 }
 
-/// Create Dict operation with nested Map values
+/// Create Doc operation with nested Map values
 pub fn create_dict_with_nested_map(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -58,14 +58,14 @@ pub fn create_dict_with_nested_map(
     dict.set("key1", "value1").unwrap();
 
     // Set nested map
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_string("inner", "nested_value");
     dict.set_value("key2", Value::Node(nested.into())).unwrap();
 
     op.commit().unwrap()
 }
 
-/// Create Dict operation with List values
+/// Create Doc operation with List values
 pub fn create_dict_with_list(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -83,7 +83,7 @@ pub fn create_dict_with_list(
     op.commit().unwrap()
 }
 
-/// Test multiple Dict operations across commits
+/// Test multiple Doc operations across commits
 pub fn test_dict_persistence(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -113,7 +113,7 @@ pub fn test_dict_persistence(
 
 // ===== DICT VERIFICATION HELPERS =====
 
-/// Verify Dict has expected key-value pairs using viewer
+/// Verify Doc has expected key-value pairs using viewer
 pub fn assert_dict_viewer_data(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -125,14 +125,14 @@ pub fn assert_dict_viewer_data(
     }
 }
 
-/// Verify Dict viewer shows correct number of entries
+/// Verify Doc viewer shows correct number of entries
 pub fn assert_dict_viewer_count(tree: &eidetica::Tree, subtree_name: &str, expected_count: usize) {
     let viewer = tree.get_subtree_viewer::<Dict>(subtree_name).unwrap();
     let all_data = viewer.get_all().unwrap();
     assert_eq!(all_data.as_hashmap().len(), expected_count);
 }
 
-/// Verify Dict viewer List operations
+/// Verify Doc viewer List operations
 pub fn assert_dict_list_data(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -148,8 +148,8 @@ pub fn assert_dict_list_data(
     }
 }
 
-/// Verify nested Map structure in Dict
-pub fn assert_dict_nested_map(dict: &Dict, map_key: &str, nested_data: &[(&str, &str)]) {
+/// Verify nested Map structure in Doc
+pub fn assert_dict_nested_map(dict: &Doc, map_key: &str, nested_data: &[(&str, &str)]) {
     match dict.get(map_key).unwrap() {
         Value::Node(map) => {
             for (key, expected_value) in nested_data {
@@ -293,7 +293,7 @@ pub fn assert_ydoc_map_content(
 #[cfg(feature = "y-crdt")]
 /// Create external YDoc update for testing
 pub fn create_external_ydoc_update(content: &str) -> Vec<u8> {
-    let external_doc = Doc::new();
+    let external_doc = YrsDoc::new();
     let text = external_doc.get_or_insert_text("shared_doc");
     let mut txn = external_doc.transact_mut();
     text.insert(&mut txn, 0, content);

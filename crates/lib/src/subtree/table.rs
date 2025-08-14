@@ -1,6 +1,6 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
-use crate::crdt::{CRDT, Map};
+use crate::crdt::{CRDT, Doc};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ where
     pub fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
-        let local_data: Result<Map> = self.atomic_op.get_local_data(&self.name);
+        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
 
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
@@ -91,7 +91,7 @@ where
         }
 
         // Otherwise, get the full state from the backend
-        let data: Map = self.atomic_op.get_full_state(&self.name)?;
+        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the value
         match data.get(key).and_then(|v| v.as_text()) {
@@ -132,7 +132,7 @@ where
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Map>(&self.name)
+            .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Serialize the row
@@ -177,7 +177,7 @@ where
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
-            .get_local_data::<Map>(&self.name)
+            .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Serialize the row
@@ -214,10 +214,10 @@ where
         let mut result = Vec::new();
 
         // Get data from the atomic op if it exists
-        let local_data = self.atomic_op.get_local_data::<Map>(&self.name);
+        let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Map>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name)?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {

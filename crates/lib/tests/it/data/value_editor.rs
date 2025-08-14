@@ -202,7 +202,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     assert_text_value(&root_editor.get_value("key1")?, "value1");
 
     // Create a new nested map at root level
-    let mut nested = eidetica::crdt::Map::new();
+    let mut nested = eidetica::crdt::Doc::new();
     nested.set_string("nested_key", "nested_value");
     root_editor.get_value_mut("nested").set(nested.into())?;
 
@@ -231,11 +231,11 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     let (_db, tree, op, dict) = setup_complete_test_env("editor_test_store")?;
 
     // Set up a nested structure
-    let mut user_profile = eidetica::crdt::Map::new();
+    let mut user_profile = eidetica::crdt::Doc::new();
     user_profile.set_string("name", "Alice");
     user_profile.set_string("email", "alice@example.com");
 
-    let mut user_data = eidetica::crdt::Map::new();
+    let mut user_data = eidetica::crdt::Doc::new();
     user_data.set("profile", user_profile);
     user_data.set_string("role", "admin");
 
@@ -301,7 +301,7 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     assert_type_error(root_editor.set(Value::Text("test string".to_string())));
 
     // Setting a map value should succeed
-    let mut map = eidetica::crdt::Map::new();
+    let mut map = eidetica::crdt::Doc::new();
     map.set_string("key", "value");
     assert!(root_editor.set(map.into()).is_ok());
 

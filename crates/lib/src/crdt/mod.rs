@@ -27,6 +27,3 @@ pub use doc::Doc;
 pub use errors::CRDTError;
 pub use map::{List, Value}; // Export Value and List from map module
 pub use traits::{CRDT, Data};
-
-// Backwards compatibility alias - Map now refers to the new Doc type
-pub type Map = Doc;

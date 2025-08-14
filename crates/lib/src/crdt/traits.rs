@@ -41,13 +41,13 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::{CRDT, Data, Map};
+/// use eidetica::crdt::{CRDT, Data, Doc};
 /// use eidetica::Result;
 ///
-/// let mut kv1 = Map::new();
+/// let mut kv1 = Doc::new();
 /// kv1.set("key", "value1");
 ///
-/// let mut kv2 = Map::new();
+/// let mut kv2 = Doc::new();
 /// kv2.set("key", "value2");
 ///
 /// let merged = kv1.merge(&kv2).unwrap();

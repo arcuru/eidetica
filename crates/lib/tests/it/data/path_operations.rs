@@ -1,4 +1,4 @@
-//! Tests for path-based operations on Dict structures
+//! Tests for path-based operations on Doc structures
 //!
 //! This module tests the path-based API for accessing and modifying nested data
 //! structures using string paths.
@@ -113,7 +113,7 @@ fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
 
     // Test path where an intermediate key segment does not exist within a valid map.
     // Set up: existing_root -> some_child_map (empty map)
-    let child_map = eidetica::crdt::Map::new();
+    let child_map = eidetica::crdt::Doc::new();
     dict.set_at_path(["existing_root_map"], child_map.into())?;
 
     let path_intermediate_missing = ["existing_root_map", "non_existent_child_in_map", "key"];
@@ -152,7 +152,7 @@ fn test_dict_set_at_path_empty_path() -> eidetica::Result<()> {
     assert_type_error(dict.set_at_path(&path, Value::Text("test".to_string())));
 
     // Setting a map value at the root should succeed
-    let nested_map = eidetica::crdt::Map::new();
+    let nested_map = eidetica::crdt::Doc::new();
     assert!(dict.set_at_path(&path, nested_map.into()).is_ok());
 
     Ok(())
@@ -164,7 +164,7 @@ fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
 
     let path: Vec<String> = vec![];
 
-    // Getting the root should return a map (the entire Dict contents)
+    // Getting the root should return a map (the entire Doc contents)
     match dict.get_at_path(&path)? {
         Value::Node(_) => (),
         other => panic!("Expected Map for root path, got {other:?}"),

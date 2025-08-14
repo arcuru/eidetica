@@ -6,7 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::{Dict, SubTree};
 
@@ -58,7 +58,7 @@ fn test_atomicop_nested_values() {
     store1.set("string_key", "string_value").unwrap();
 
     // Create and set a nested map value
-    let mut nested = Map::new();
+    let mut nested = Doc::new();
     nested.set_string("inner1".to_string(), "value1".to_string());
     nested.set_string("inner2".to_string(), "value2".to_string());
 

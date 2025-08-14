@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::subtree::Table;
 use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
@@ -208,7 +208,7 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = Map::new();
+            let mut settings = Doc::new();
             settings.set_string("name", tree_name);
 
             db.new_tree(settings, TODO_APP_KEY_NAME)?

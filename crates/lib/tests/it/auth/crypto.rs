@@ -2,7 +2,7 @@ use super::helpers::{setup_authenticated_tree, setup_db as auth_setup_db};
 use crate::helpers::*;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{KeyStatus, Permission, SigKey};
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 
 #[test]
 fn test_key_management() {
@@ -39,7 +39,7 @@ fn test_key_management() {
 
     // Test signing and verification
     let tree = db
-        .new_tree(Map::new(), key_id)
+        .new_tree(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
@@ -86,7 +86,7 @@ fn test_import_private_key() {
 
     // Test that we can sign with the imported key
     let tree = db
-        .new_tree(Map::new(), key_id)
+        .new_tree(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
@@ -202,7 +202,7 @@ fn test_overwrite_existing_key() {
 
     // New key should work for signing
     let tree = db
-        .new_tree(Map::new(), key_id)
+        .new_tree(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)

@@ -7,7 +7,7 @@
 use crate::crdt::helpers::*;
 use eidetica::crdt::map::list::Position;
 use eidetica::crdt::map::{List, Value};
-use eidetica::crdt::{CRDTError, Map};
+use eidetica::crdt::{CRDTError, Doc};
 
 // ===== BASIC LIST OPERATIONS =====
 
@@ -408,7 +408,7 @@ fn test_list_insert_with_nested_values() {
     let mut list = List::new();
 
     // Insert nested structures
-    let mut nested_map = Map::new();
+    let mut nested_map = Doc::new();
     nested_map.set("name", "Alice");
     nested_map.set("age", 30);
 

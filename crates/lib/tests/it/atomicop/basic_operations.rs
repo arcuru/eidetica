@@ -1,7 +1,7 @@
 //! Basic AtomicOp operation tests
 //!
 //! This module contains tests for fundamental AtomicOp functionality including
-//! Dict operations, multiple subtrees, empty subtree handling, and parent relationships.
+//! Doc operations, multiple subtrees, empty subtree handling, and parent relationships.
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -15,10 +15,10 @@ fn test_atomicop_through_dict() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Get a Dict subtree, which will use AtomicOp internally
+    // Get a Doc subtree, which will use AtomicOp internally
     let dict = Dict::new(&operation, "test").unwrap();
 
-    // Set a value in the Dict, which will use AtomicOp::update_subtree internally
+    // Set a value in the Doc, which will use AtomicOp::update_subtree internally
     dict.set("key", "value").unwrap();
 
     // Commit the operation
@@ -43,7 +43,7 @@ fn test_atomicop_multiple_subtrees() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Create two different Dict subtrees
+    // Create two different Doc subtrees
     let store1 = Dict::new(&operation, "store1").unwrap();
     let store2 = Dict::new(&operation, "store2").unwrap();
 
@@ -75,10 +75,10 @@ fn test_atomicop_empty_subtree_removal() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Create a Dict subtree but don't add any data (will be empty)
+    // Create a Doc subtree but don't add any data (will be empty)
     let _empty_store = Dict::new(&operation, "empty").unwrap();
 
-    // Create another Dict and add data
+    // Create another Doc and add data
     let data_store = Dict::new(&operation, "data").unwrap();
     data_store.set("key", "value").unwrap();
 
@@ -96,7 +96,7 @@ fn test_atomicop_empty_subtree_removal() {
     assert!(data_result.is_ok());
 
     // The empty subtree should have been removed, but accessing it doesn't fail
-    // because Dict creates it if it doesn't exist
+    // because Doc creates it if it doesn't exist
     assert!(empty_result.is_ok());
 
     // However, the empty subtree should not have any data

@@ -76,7 +76,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Tree {
     tree
 }
 
-/// Helper for common assertions around Dict value retrieval
+/// Helper for common assertions around Doc value retrieval
 pub fn assert_dict_value(store: &Dict, key: &str, expected: &str) {
     match store
         .get(key)

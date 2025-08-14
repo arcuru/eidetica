@@ -37,7 +37,7 @@
 use std::{collections::HashMap, fmt};
 
 use crate::crdt::CRDTError;
-use crate::crdt::map::{List, Map, Node, Value};
+use crate::crdt::map::{List, Node, Value};
 use crate::crdt::traits::{CRDT, Data};
 
 /// The main CRDT document type for Eidetica.
@@ -122,7 +122,7 @@ impl Doc {
     /// Returns true if the given key contains a tombstone (deleted value).
     ///
     /// This method provides access to CRDT tombstone information for advanced use cases,
-    /// testing, and debugging. See [`Map::is_tombstone`] for detailed documentation.
+    /// testing, and debugging. See [`Doc::is_tombstone`] for detailed documentation.
     pub fn is_tombstone(&self, key: impl AsRef<str>) -> bool {
         self.root.is_tombstone(key)
     }
@@ -271,7 +271,7 @@ impl Doc {
 
     /// Converts to a JSON-like string representation for human-readable output.
     ///
-    /// See [`Map::to_json_string`] for detailed documentation.
+    /// See [`Doc::to_json_string`] for detailed documentation.
     pub fn to_json_string(&self) -> String {
         self.root.to_json_string()
     }
@@ -304,7 +304,7 @@ impl Doc {
     ///
     /// This method provides the Map type alias which points to Node, maintaining
     /// backwards compatibility during the migration period.
-    pub fn as_map(&self) -> &Map {
+    pub fn as_map(&self) -> &Node {
         &self.root
     }
 
@@ -312,7 +312,7 @@ impl Doc {
     ///
     /// This method provides the Map type alias which points to Node, maintaining
     /// backwards compatibility during the migration period.
-    pub fn as_map_mut(&mut self) -> &mut Map {
+    pub fn as_map_mut(&mut self) -> &mut Node {
         &mut self.root
     }
 

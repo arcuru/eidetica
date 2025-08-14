@@ -146,7 +146,7 @@ impl AtomicOp {
     ///
     /// # Returns
     ///
-    /// Returns a `Result<Map>` containing the merged settings data. The settings
+    /// Returns a `Result<Doc>` containing the merged settings data. The settings
     /// include both:
     /// - Historical settings computed from all relevant entries in the tree
     /// - Any staged changes to the `_settings` subtree in this operation

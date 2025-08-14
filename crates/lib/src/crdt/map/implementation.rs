@@ -54,8 +54,8 @@
 //!
 //! ## Level 1: Basic Access
 //! ```
-//! # use eidetica::crdt::map::{Map, Value};
-//! let mut map = Map::new();
+//! # use eidetica::crdt::{Doc, map::Value};
+//! let mut map = Doc::new();
 //! map.set("name", "Alice");
 //!
 //! // Traditional approach
@@ -64,8 +64,8 @@
 //!
 //! ## Level 2: Typed Getters
 //! ```
-//! # use eidetica::crdt::map::Map;
-//! # let mut map = Map::new();
+//! # use eidetica::crdt::Doc;
+//! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct typed access
@@ -76,8 +76,8 @@
 //!
 //! ## Level 3: Direct Comparisons
 //! ```
-//! # use eidetica::crdt::map::Map;
-//! # let mut map = Map::new();
+//! # use eidetica::crdt::Doc;
+//! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct comparison with PartialEq
@@ -104,9 +104,6 @@ use uuid::Uuid;
 use crate::crdt::CRDTError;
 use crate::crdt::Doc;
 use crate::crdt::traits::{CRDT, Data};
-
-// Type alias for backwards compatibility within the map module
-pub type Map = Node;
 
 /// Position identifier for list elements that enables stable ordering in distributed systems.
 ///
@@ -177,7 +174,7 @@ pub type Map = Node;
 /// `Value` implements `PartialEq` with primitive types for ergonomic comparisons:
 ///
 /// ```
-/// # use eidetica::crdt::map::{Map, Value};
+/// # use eidetica::crdt::map::Value;
 /// let text = Value::Text("hello".to_string());
 /// let number = Value::Int(42);
 /// let flag = Value::Bool(true);
@@ -205,7 +202,7 @@ pub type Map = Node;
 /// - **Resurrection**: Non-deleted values can overwrite tombstones
 ///
 /// ```
-/// # use eidetica::crdt::map::{Map, Value};
+/// # use eidetica::crdt::map::Value;
 /// let mut val1 = Value::Int(42);
 /// let val2 = Value::Int(100);
 /// val1.merge(&val2);  // val1 becomes 100 (last-write-wins)
@@ -1022,8 +1019,8 @@ impl Node {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::Map;
-    /// let mut map = Map::new();
+    /// # use eidetica::crdt::Doc;
+    /// let mut map = Doc::new();
     /// map.set("key", "value");
     ///
     /// // Normal key - not a tombstone
@@ -1069,8 +1066,8 @@ impl Node {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::Map;
-    /// let mut map = Map::new();
+    /// # use eidetica::crdt::Doc;
+    /// let mut map = Doc::new();
     /// map.set("name", "Alice");
     ///
     /// // Concise access
@@ -1181,8 +1178,8 @@ impl Node {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::{Map, List};
-    /// let mut map = Map::new();
+    /// # use eidetica::crdt::{Doc, map::List};
+    /// let mut map = Doc::new();
     /// map.set_path("user.profile.name", "Alice").unwrap();
     ///
     /// // Navigate nested structure
@@ -1393,8 +1390,8 @@ impl Node {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::Map;
-    /// let mut map = Map::new();
+    /// # use eidetica::crdt::Doc;
+    /// let mut map = Doc::new();
     /// map.set("name", "Alice");
     /// map.set("age", 30);
     /// map.delete("age"); // Creates a tombstone
@@ -1442,13 +1439,13 @@ impl CRDT for Node {
     /// # Examples
     ///
     /// ```
-    /// # use eidetica::crdt::map::Map;
+    /// # use eidetica::crdt::Doc;
     /// # use eidetica::crdt::traits::CRDT;
-    /// let mut map1 = Map::new();
+    /// let mut map1 = Doc::new();
     /// map1.set("name", "Alice");
     /// map1.set("age", 30);
     ///
-    /// let mut map2 = Map::new();
+    /// let mut map2 = Doc::new();
     /// map2.set("name", "Bob");     // Conflict: will use last-write-wins
     /// map2.set("city", "NYC");     // New key: will be added
     ///

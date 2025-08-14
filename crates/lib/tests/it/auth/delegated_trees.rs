@@ -14,7 +14,7 @@ use eidetica::auth::types::{
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
 use eidetica::subtree::Dict;
@@ -143,8 +143,8 @@ fn test_nested_delegation() -> Result<()> {
     let user_key = db.add_private_key("user")?;
 
     // Create user tree (bottom level)
-    let mut user_settings = Map::new();
-    let mut user_auth = Map::new();
+    let mut user_settings = Doc::new();
+    let mut user_auth = Doc::new();
     user_auth
         .set_json(
             "user", // Key name must match the private key ID
@@ -159,8 +159,8 @@ fn test_nested_delegation() -> Result<()> {
     let user_tree = db.new_tree(user_settings, "user")?;
 
     // Create org tree (middle level) that delegates to user tree
-    let mut org_settings = Map::new();
-    let mut org_auth = Map::new();
+    let mut org_settings = Doc::new();
+    let mut org_auth = Doc::new();
     org_auth
         .set_json(
             "org_admin", // Key name matches private key ID
@@ -193,8 +193,8 @@ fn test_nested_delegation() -> Result<()> {
     let org_tree = db.new_tree(org_settings, "org_admin")?;
 
     // Create main tree (top level) that delegates to org tree
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "main_admin",
@@ -270,8 +270,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Create delegated tree with user key (initially active)
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -287,8 +287,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
 
     // Create main tree with delegation
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
@@ -342,8 +342,8 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
     // Create a new delegated tree with the same key but revoked
-    let mut revoked_settings = Map::new();
-    let mut revoked_auth = Map::new();
+    let mut revoked_settings = Doc::new();
+    let mut revoked_auth = Doc::new();
     revoked_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
@@ -385,8 +385,8 @@ fn test_delegation_depth_limits() -> Result<()> {
     let user_key = db.add_private_key("user")?;
 
     // Create a simple delegated tree
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "user", // Key name must match the private key ID
@@ -401,8 +401,8 @@ fn test_delegation_depth_limits() -> Result<()> {
     let delegated_tree = db.new_tree(delegated_settings, "user")?;
 
     // Create main tree settings
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "admin", // Key name must match the private key ID
@@ -480,8 +480,8 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // ---------------- Delegated tree ----------------
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -508,8 +508,8 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // ---------------- Main tree with delegation ----------------
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "main_admin",
@@ -579,8 +579,8 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
     // Delegated tree with user key Write(12)
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -606,8 +606,8 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Main tree delegates with max Write(8) (more privileged) and no min
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "main_admin",
@@ -670,8 +670,8 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
 
     // Setup simple tree with direct key
     let admin_key = db.add_private_key("admin")?;
-    let mut settings = Map::new();
-    let mut auth = Map::new();
+    let mut settings = Doc::new();
+    let mut auth = Doc::new();
     auth.set_json(
         "admin",
         AuthKey {
@@ -728,8 +728,8 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let delegated_admin_key = db.add_private_key("delegated_admin")?;
     let delegated_user_key = db.add_private_key("delegated_user")?;
 
-    let mut delegated_settings = Map::new();
-    let mut delegated_auth = Map::new();
+    let mut delegated_settings = Doc::new();
+    let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
             "delegated_admin",
@@ -757,8 +757,8 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let bogus_tip = ID::new("nonexistent_tip_hash");
 
     // Main tree with delegation using bogus tip
-    let mut main_settings = Map::new();
-    let mut main_auth = Map::new();
+    let mut main_settings = Doc::new();
+    let mut main_auth = Doc::new();
     main_auth
         .set_json(
             "main_admin",

@@ -4,14 +4,14 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use crate::helpers::*;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
 use eidetica::subtree::{Dict, SubTree};
 
 // ===== BASIC OPERATION HELPERS =====
 
-/// Create and commit a simple operation with one Dict subtree
+/// Create and commit a simple operation with one Doc subtree
 pub fn create_simple_operation(
     tree: &eidetica::Tree,
     subtree_name: &str,
@@ -107,13 +107,13 @@ pub fn assert_dict_contains(dict: &Dict, expected_data: &[(&str, &str)]) {
     }
 }
 
-/// Get all data from a Dict as a Map for detailed inspection
-pub fn get_dict_data(dict: &Dict) -> Map {
+/// Get all data from a Dict as a Doc for detailed inspection
+pub fn get_dict_data(dict: &Dict) -> Doc {
     dict.get_all().unwrap()
 }
 
-/// Verify that all expected data exists in a Dict's Map
-pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
+/// Verify that all expected data exists in a Doc's Doc
+pub fn assert_map_data(map: &Doc, expected_data: &[(&str, &str)]) {
     for (key, expected_value) in expected_data {
         match map.get(key) {
             Some(Value::Text(actual_value)) => {
@@ -139,7 +139,7 @@ pub fn test_delete_operation(tree: &eidetica::Tree, subtree_name: &str, key_to_d
 }
 
 /// Verify that a map contains a tombstone for a deleted key
-pub fn assert_has_tombstone(map: &Map, key: &str) {
+pub fn assert_has_tombstone(map: &Doc, key: &str) {
     match map.as_hashmap().get(key) {
         Some(Value::Deleted) => (), // Expected
         Some(other) => panic!("Expected tombstone for key '{key}', got: {other:?}"),
@@ -148,7 +148,7 @@ pub fn assert_has_tombstone(map: &Map, key: &str) {
 }
 
 /// Verify that public API hides tombstone but internal API shows it
-pub fn assert_tombstone_hidden(map: &Map, key: &str) {
+pub fn assert_tombstone_hidden(map: &Doc, key: &str) {
     // Internal API should show tombstone
     assert_has_tombstone(map, key);
 
@@ -167,7 +167,7 @@ pub fn assert_tombstone_hidden(map: &Map, key: &str) {
 
 /// Create a nested Map value for testing complex data structures
 pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
-    let mut map = Map::new();
+    let mut map = Doc::new();
     for (key, value) in data {
         map.set_string(key.to_string(), value.to_string());
     }

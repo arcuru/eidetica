@@ -1,7 +1,7 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::crdt::{Doc, Map};
+use crate::crdt::Doc;
 use crate::entry::ID;
 
 #[test]
@@ -278,7 +278,7 @@ fn test_option_permission_nested_value_roundtrip() {
 
     // Test None
     let none_perm: Option<Permission> = None;
-    let mut nested2 = Map::new();
+    let mut nested2 = Doc::new();
     nested2.set_json("perm", &none_perm).unwrap();
     let parsed2: Option<Permission> = nested2.get_json("perm").unwrap();
     assert_eq!(none_perm, parsed2);
@@ -295,7 +295,7 @@ fn test_option_u32_nested_value_roundtrip() {
 
     // Test None
     let none_num: Option<u32> = None;
-    let mut nested2 = Map::new();
+    let mut nested2 = Doc::new();
     nested2.set_json("num", none_num).unwrap();
     let parsed2: Option<u32> = nested2.get_json("num").unwrap();
     assert_eq!(none_num, parsed2);
@@ -321,7 +321,7 @@ fn test_permission_bounds_nested_value_roundtrip() {
         min: None,
     };
 
-    let mut nested2 = Map::new();
+    let mut nested2 = Doc::new();
     nested2.set_json("bounds", &bounds_no_min).unwrap();
     let parsed2: PermissionBounds = nested2.get_json("bounds").unwrap();
     assert_eq!(bounds_no_min.max, parsed2.max);

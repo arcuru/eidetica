@@ -1,11 +1,11 @@
-//! Dict subtree operation tests
+//! Doc subtree operation tests
 //!
-//! This module contains tests for Dict subtree functionality including
+//! This module contains tests for Doc subtree functionality including
 //! basic CRUD operations, List operations, nested values, and persistence.
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::Dict;
 
@@ -19,7 +19,7 @@ fn test_dict_set_and_get_via_op() {
 
     // Test operation-level modifications
     let op = tree.new_operation().expect("Failed to start operation");
-    let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
+    let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
 
     // Verify initial values are accessible
     assert_dict_value(&dict, "key1", "value1");
@@ -99,7 +99,7 @@ fn test_dict_delete() {
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
 
         // Set initial values
         dict.set("key1", "value1").expect("Failed to set key1");
@@ -143,14 +143,15 @@ fn test_dict_set_value() {
     assert_dict_value(&viewer, "key1", "value1");
 
     // Check nested map structure
-    assert_dict_nested_map(&viewer, "key2", &[("inner", "nested_value")]);
+    let data = viewer.get_all().unwrap();
+    assert_dict_nested_map(&data, "key2", &[("inner", "nested_value")]);
 }
 
 #[test]
 fn test_dict_list_basic_operations() {
     let tree = setup_tree();
 
-    // Use helper to create Dict with list
+    // Use helper to create Doc with list
     let list_items = &["apple", "banana", "orange"];
     create_dict_with_list(&tree, "my_kv", list_items);
 
@@ -164,7 +165,7 @@ fn test_dict_list_nonexistent_key() {
     let op = tree.new_operation().expect("Failed to start operation");
 
     {
-        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Dict");
+        let dict = op.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
 
         // Test getting non-existent list should return NotFound error
         assert_key_not_found(dict.get("nonexistent"));
@@ -197,9 +198,7 @@ fn test_dict_list_persistence() {
     // Create list in first operation
     let op1 = tree.new_operation().expect("Failed to start op1");
     {
-        let dict = op1
-            .get_subtree::<Dict>("my_kv")
-            .expect("Failed to get Dict");
+        let dict = op1.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
 
         let mut colors = eidetica::crdt::map::List::new();
         colors.push(Value::Text("red".to_string()));
@@ -213,9 +212,7 @@ fn test_dict_list_persistence() {
     // Modify list in second operation
     let op2 = tree.new_operation().expect("Failed to start op2");
     {
-        let dict = op2
-            .get_subtree::<Dict>("my_kv")
-            .expect("Failed to get Dict");
+        let dict = op2.get_subtree::<Dict>("my_kv").expect("Failed to get Doc");
 
         // List should persist from previous operation
         let colors = dict.get_list("colors").expect("Failed to get colors list");
@@ -246,10 +243,10 @@ fn test_dict_update_nested_value() {
     {
         let dict = op1
             .get_subtree::<Dict>("nested_test")
-            .expect("Op1: Failed to get Dict");
+            .expect("Op1: Failed to get Doc");
 
         // Create level1 -> level2_str structure
-        let mut l1_map = Map::new();
+        let mut l1_map = Doc::new();
         l1_map.set_string("level2_str", "initial_value");
         dict.set_value("level1", l1_map)
             .expect("Op1: Failed to set level1");
@@ -261,13 +258,13 @@ fn test_dict_update_nested_value() {
     {
         let dict = op2
             .get_subtree::<Dict>("nested_test")
-            .expect("Op2: Failed to get Dict");
+            .expect("Op2: Failed to get Doc");
 
         // Create an entirely new map structure that will replace the old one
-        let mut l2_map = Map::new();
+        let mut l2_map = Doc::new();
         l2_map.set_string("deep_key", "deep_value");
 
-        let mut new_l1_map = Map::new();
+        let mut new_l1_map = Doc::new();
         new_l1_map.set_map("level2_map", l2_map);
 
         // Completely replace the previous value at level1
@@ -320,14 +317,14 @@ fn test_dict_comprehensive_operations() {
     {
         let dict = op
             .get_subtree::<Dict>("test_store")
-            .expect("Failed to get Dict");
+            .expect("Failed to get Doc");
 
         // Set basic string values
         dict.set("key1", "value1").expect("Failed to set key1");
         dict.set("key2", "value2").expect("Failed to set key2");
 
         // Set a nested map value
-        let mut nested = Map::new();
+        let mut nested = Doc::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
         dict.set_value("nested", Value::Node(nested.clone().into()))
@@ -347,8 +344,9 @@ fn test_dict_comprehensive_operations() {
     assert_dict_value(&viewer, "key2", "value2");
 
     // Check nested map
+    let data = viewer.get_all().unwrap();
     assert_dict_nested_map(
-        &viewer,
+        &data,
         "nested",
         &[
             ("nested_key1", "nested_value1"),
@@ -364,11 +362,11 @@ fn test_dict_comprehensive_operations() {
 fn test_empty_dict_behavior() {
     let tree = setup_tree();
 
-    // Test empty Dict behavior
+    // Test empty Doc behavior
     assert_dict_viewer_count(&tree, "empty_dict", 0);
 
     let dict_viewer = tree
         .get_subtree_viewer::<Dict>("empty_dict")
-        .expect("Failed to get empty Dict viewer");
+        .expect("Failed to get empty Doc viewer");
     assert_key_not_found(dict_viewer.get("any_key"));
 }

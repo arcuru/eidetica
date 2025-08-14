@@ -54,8 +54,8 @@
 //!
 //! ## Level 1: Basic Access
 //! ```
-//! # use eidetica::crdt::map::{Map, Value};
-//! let mut map = Map::new();
+//! # use eidetica::crdt::{Doc, map::Value};
+//! let mut map = Doc::new();
 //! map.set("name", "Alice");
 //!
 //! // Traditional approach
@@ -64,8 +64,8 @@
 //!
 //! ## Level 2: Typed Getters
 //! ```
-//! # use eidetica::crdt::map::Map;
-//! # let mut map = Map::new();
+//! # use eidetica::crdt::Doc;
+//! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct typed access
@@ -76,8 +76,8 @@
 //!
 //! ## Level 3: Direct Comparisons
 //! ```
-//! # use eidetica::crdt::map::Map;
-//! # let mut map = Map::new();
+//! # use eidetica::crdt::Doc;
+//! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct comparison with PartialEq
@@ -99,4 +99,4 @@ mod implementation;
 pub mod list;
 mod tests;
 
-pub use implementation::{List, Map, Node, Value}; // Map is a compatibility alias for Node
+pub use implementation::{List, Node, Value};

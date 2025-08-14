@@ -6,7 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::auth::types::SigKey;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::subtree::Dict;
 
 /// Test basic entry retrieval functionality
@@ -75,13 +75,13 @@ fn test_tree_validation_rejects_foreign_entries() {
     let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
-    let mut settings1 = Map::new();
+    let mut settings1 = Doc::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
         .new_tree(settings1, "test_key")
         .expect("Failed to create tree1");
 
-    let mut settings2 = Map::new();
+    let mut settings2 = Doc::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
         .new_tree(settings2, "test_key")
@@ -136,13 +136,13 @@ fn test_tree_validation_get_entries() {
     let db = setup_db_with_key("test_key");
 
     // Create two separate trees with different initial settings to ensure different root IDs
-    let mut settings1 = Map::new();
+    let mut settings1 = Doc::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
         .new_tree(settings1, "test_key")
         .expect("Failed to create tree1");
 
-    let mut settings2 = Map::new();
+    let mut settings2 = Doc::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
         .new_tree(settings2, "test_key")

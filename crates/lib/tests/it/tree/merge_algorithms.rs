@@ -173,7 +173,7 @@ fn test_deep_chain_performance() {
 
     // Check that we have the final step
     match final_state.get("step").unwrap() {
-        Value::Text(v) => assert_eq!(v, &CHAIN_LENGTH.to_string()),
+        Value::Text(v) => assert_eq!(*v, CHAIN_LENGTH.to_string()),
         _ => panic!("Expected string for step"),
     }
 
@@ -182,7 +182,7 @@ fn test_deep_chain_performance() {
         let key = format!("step_{i}");
         let expected = format!("value_{i}");
         match final_state.get(&key).unwrap() {
-            Value::Text(v) => assert_eq!(v, &expected),
+            Value::Text(v) => assert_eq!(*v, expected),
             _ => panic!("Expected string for {key}"),
         }
     }

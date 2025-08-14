@@ -12,7 +12,7 @@ use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Doc;
 use crate::crdt::map::Value;
 use crate::entry::{Entry, ID};
-use crate::subtree::{Dict, SubTree};
+use crate::subtree::{DocStore, SubTree};
 
 use crate::auth::crypto::format_public_key;
 use crate::auth::settings::AuthSettings;
@@ -217,12 +217,12 @@ impl Tree {
 
     /// Get a settings store for the tree.
     ///
-    /// Returns a Dict subtree for managing the tree's settings.
+    /// Returns a DocStore subtree for managing the tree's settings.
     ///
     /// # Returns
-    /// A `Result` containing the `Dict` for settings or an error.
-    pub fn get_settings(&self) -> Result<Dict> {
-        self.get_subtree_viewer::<Dict>(SETTINGS)
+    /// A `Result` containing the `DocStore` for settings or an error.
+    pub fn get_settings(&self) -> Result<DocStore> {
+        self.get_subtree_viewer::<DocStore>(SETTINGS)
     }
 
     /// Get the name of the tree from its settings subtree

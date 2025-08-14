@@ -7,7 +7,7 @@ use eidetica::auth::types::{
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::entry::ID;
 use eidetica::subtree::Dict;
 use eidetica::tree::Tree;
@@ -35,7 +35,7 @@ pub fn setup_db_with_key(key_name: &str) -> BaseDB {
 pub fn setup_db_and_tree_with_key(key_name: &str) -> (BaseDB, Tree) {
     let db = setup_db_with_key(key_name);
     let tree = db
-        .new_tree(Map::new(), key_name)
+        .new_tree(Doc::new(), key_name)
         .expect("Failed to create tree");
     (db, tree)
 }
@@ -71,8 +71,8 @@ pub fn setup_authenticated_tree(
     keys: &[(&str, Permission, KeyStatus)],
     public_keys: &[VerifyingKey],
 ) -> Tree {
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
 
     for ((key_name, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
         auth_settings
@@ -120,8 +120,8 @@ pub fn setup_complete_auth_environment(
     }
 
     // Create auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
 
     for ((key_name, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
         auth_settings
@@ -158,8 +158,8 @@ pub fn create_delegated_tree(
     keys: &[(&str, Permission, KeyStatus)],
     creator_key: &str,
 ) -> eidetica::Result<Tree> {
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
 
     for (key_name, permission, status) in keys {
         let public_key = db.add_private_key(key_name)?;
@@ -230,8 +230,8 @@ impl DelegationChain {
             let public_key = db.add_private_key(&key_name)?;
             keys.push(key_name.clone());
 
-            let mut settings = Map::new();
-            let mut auth_settings = Map::new();
+            let mut settings = Doc::new();
+            let mut auth_settings = Doc::new();
 
             auth_settings
                 .set_json(
@@ -306,7 +306,7 @@ pub fn test_operation_fails(tree: &Tree, key_name: &str, subtree_name: &str, tes
 pub fn assert_permission_resolution(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
-    settings: &Map,
+    settings: &Doc,
     backend: Option<&std::sync::Arc<dyn eidetica::backend::Database>>,
     expected_permission: Permission,
     expected_status: KeyStatus,
@@ -329,7 +329,7 @@ pub fn assert_permission_resolution(
 pub fn assert_permission_resolution_fails(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
-    settings: &Map,
+    settings: &Doc,
     backend: Option<&std::sync::Arc<dyn eidetica::backend::Database>>,
     expected_error_pattern: &str,
 ) {

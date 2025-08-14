@@ -9,12 +9,12 @@ use eidetica::crdt::map::Value;
 #[test]
 fn test_map_serialization() {
     // Test serialization and deserialization of Map
-    let mut map = eidetica::crdt::Map::new();
+    let mut map = eidetica::crdt::Doc::new();
 
     // Add various value types
     map.set_string("string_key", "string_value");
 
-    let mut nested = eidetica::crdt::Map::new();
+    let mut nested = eidetica::crdt::Doc::new();
     nested.set_string("inner", "inner_value");
     map.set_map("map_key", nested);
 
@@ -26,7 +26,7 @@ fn test_map_serialization() {
 
     // Verify specific values survived serialization
     let serialized = serde_json::to_string(&map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Map =
+    let deserialized: eidetica::crdt::Doc =
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify string survived
@@ -52,7 +52,7 @@ fn test_serialization_complex_nested_structure() {
 
     // Verify structure integrity after serialization
     let serialized = serde_json::to_string(&complex_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Map =
+    let deserialized: eidetica::crdt::Doc =
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify nested structure preserved
@@ -73,7 +73,7 @@ fn test_serialization_mixed_map() {
 
     // Verify all types preserved
     let serialized = serde_json::to_string(&mixed_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Map =
+    let deserialized: eidetica::crdt::Doc =
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Check string value
@@ -91,12 +91,12 @@ fn test_serialization_mixed_map() {
 
 #[test]
 fn test_serialization_empty_map() {
-    let empty_map = eidetica::crdt::Map::new();
+    let empty_map = eidetica::crdt::Doc::new();
 
     test_serialization_roundtrip(&empty_map).expect("Empty map serialization failed");
 
     let serialized = serde_json::to_string(&empty_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Map =
+    let deserialized: eidetica::crdt::Doc =
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     assert_eq!(
@@ -108,7 +108,7 @@ fn test_serialization_empty_map() {
 
 #[test]
 fn test_serialization_tombstone_only_map() {
-    let mut tombstone_map = eidetica::crdt::Map::new();
+    let mut tombstone_map = eidetica::crdt::Doc::new();
     tombstone_map.remove("tombstone1");
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);
@@ -116,7 +116,7 @@ fn test_serialization_tombstone_only_map() {
     test_serialization_roundtrip(&tombstone_map).expect("Tombstone-only map serialization failed");
 
     let serialized = serde_json::to_string(&tombstone_map).expect("Serialization failed");
-    let deserialized: eidetica::crdt::Map =
+    let deserialized: eidetica::crdt::Doc =
         serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Verify all tombstones preserved

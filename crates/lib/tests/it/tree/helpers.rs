@@ -7,7 +7,7 @@ use crate::helpers::*;
 use eidetica::Tree;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::Value;
 use eidetica::entry::ID;
 use eidetica::subtree::Dict;
@@ -195,8 +195,8 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (BaseDB, Tree) {
     let public_key = db.add_private_key(key_name).expect("Failed to add key");
 
     // Create auth settings
-    let mut settings = Map::new();
-    let mut auth_settings = Map::new();
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
     auth_settings
         .set_json(
             key_name.to_string(),
@@ -255,8 +255,8 @@ pub fn assert_deep_operations_performance(tree: &Tree, depth: usize) {
     // Final values should be from last operation
     if let Some(Value::Text(depth_value)) = final_state.get("depth") {
         assert_eq!(
-            depth_value,
-            &(depth - 1).to_string(),
+            *depth_value,
+            (depth - 1).to_string(),
             "Should have final depth value"
         );
     } else {

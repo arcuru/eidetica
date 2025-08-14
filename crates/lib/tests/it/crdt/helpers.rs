@@ -6,13 +6,13 @@
 // Helper functions are self-contained and don't need external imports
 use eidetica::crdt::map::list::Position;
 use eidetica::crdt::map::{List, Value};
-use eidetica::crdt::{CRDT, Map};
+use eidetica::crdt::{CRDT, Doc};
 
 // ===== MAP HELPERS =====
 
 /// Create a Map with string key-value pairs
-pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Map {
-    let mut map = Map::new();
+pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Doc {
+    let mut map = Doc::new();
     for (key, value) in pairs {
         map.set_string(*key, *value);
     }
@@ -20,8 +20,8 @@ pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Map {
 }
 
 /// Create a nested Map structure with multiple levels
-pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
-    let mut map = Map::new();
+pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Doc {
+    let mut map = Doc::new();
     for (outer_key, inner_pairs) in nested_data {
         let inner_map = create_map_with_values(inner_pairs);
         map.set_map(*outer_key, inner_map);
@@ -33,7 +33,7 @@ pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
 pub fn create_merge_test_maps(
     map1_data: &[(&str, &str)],
     map2_data: &[(&str, &str)],
-) -> (Map, Map) {
+) -> (Doc, Doc) {
     (
         create_map_with_values(map1_data),
         create_map_with_values(map2_data),
@@ -42,10 +42,10 @@ pub fn create_merge_test_maps(
 
 /// Test merge operation and verify expected results
 pub fn test_merge_result(
-    map1: &Map,
-    map2: &Map,
+    map1: &Doc,
+    map2: &Doc,
     expected_values: &[(&str, &str)],
-) -> eidetica::Result<Map> {
+) -> eidetica::Result<Doc> {
     let merged = map1.merge(map2)?;
 
     for (key, expected_value) in expected_values {
@@ -67,7 +67,7 @@ pub fn assert_text_value(value: &Value, expected: &str) {
 }
 
 /// Assert that a nested value matches expected string
-pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
+pub fn assert_nested_value(map: &Doc, path: &[&str], expected: &str) {
     let mut current = map.as_node();
 
     // Navigate to the parent of the final key
@@ -88,7 +88,7 @@ pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
 }
 
 /// Assert that a path is deleted (tombstone exists)
-pub fn assert_path_deleted(map: &Map, path: &[&str]) {
+pub fn assert_path_deleted(map: &Doc, path: &[&str]) {
     if path.len() == 1 {
         // Simple case: check directly in this map
         match map.as_hashmap().get(&path[0].to_string()) {
@@ -116,19 +116,19 @@ pub fn assert_path_deleted(map: &Map, path: &[&str]) {
 }
 
 /// Create a complex nested structure for testing
-pub fn create_complex_nested_structure() -> Map {
-    let mut root = Map::new();
+pub fn create_complex_nested_structure() -> Doc {
+    let mut root = Doc::new();
 
     // Level 1
     root.set_string("top_key", "top_value");
 
     // Level 2
-    let mut level2 = Map::new();
+    let mut level2 = Doc::new();
     level2.set_string("level2_key1", "level2_value1");
     level2.set_string("shared_key", "original_value");
 
     // Level 3
-    let mut level3 = Map::new();
+    let mut level3 = Doc::new();
     level3.set_string("level3_key1", "level3_value1");
     level2.set_map("level3", level3);
 
@@ -147,17 +147,17 @@ pub fn build_generation_test_data() -> Vec<(&'static str, Value)> {
 }
 
 /// Build complex merge scenario data
-pub fn build_complex_merge_data() -> (Map, Map) {
-    let mut map1 = Map::new();
-    let mut level1a = Map::new();
+pub fn build_complex_merge_data() -> (Doc, Doc) {
+    let mut map1 = Doc::new();
+    let mut level1a = Doc::new();
     level1a.set_string("key1", "value1");
     level1a.set_string("to_delete", "will_be_deleted");
     level1a.set_string("to_update", "initial_value");
     map1.set_map("level1", level1a);
     map1.set_string("top_level_key", "top_value");
 
-    let mut map2 = Map::new();
-    let mut level1b = Map::new();
+    let mut map2 = Doc::new();
+    let mut level1b = Doc::new();
     level1b.set_string("key2", "value2");
     level1b.remove("to_delete");
     level1b.set_string("to_update", "updated_value");
@@ -169,15 +169,15 @@ pub fn build_complex_merge_data() -> (Map, Map) {
 }
 
 /// Create a test Map with some initial data
-pub fn setup_test_map() -> Map {
-    let mut map = Map::new();
+pub fn setup_test_map() -> Doc {
+    let mut map = Doc::new();
     map.set_string("key1".to_string(), "value1".to_string());
     map.set_string("key2".to_string(), "value2".to_string());
     map
 }
 
 /// Create two concurrent Maps with different modifications
-pub fn setup_concurrent_maps() -> (Map, Map) {
+pub fn setup_concurrent_maps() -> (Doc, Doc) {
     let base = setup_test_map();
 
     let mut map1 = base.clone();
@@ -192,8 +192,8 @@ pub fn setup_concurrent_maps() -> (Map, Map) {
 }
 
 /// Create a complex nested Map structure for testing
-pub fn create_complex_map() -> Map {
-    let mut map = Map::new();
+pub fn create_complex_map() -> Doc {
+    let mut map = Doc::new();
 
     // Add basic values
     map.set_string("title".to_string(), "My Document".to_string());
@@ -201,7 +201,7 @@ pub fn create_complex_map() -> Map {
     map.set("published".to_string(), Value::Bool(true));
 
     // Add nested map
-    let mut metadata = Map::new();
+    let mut metadata = Doc::new();
     metadata.set_string("author".to_string(), "Alice".to_string());
     metadata.set_string("version".to_string(), "1.0".to_string());
     map.set("metadata".to_string(), metadata);
@@ -216,13 +216,13 @@ pub fn create_complex_map() -> Map {
 }
 
 /// Create a Map with mixed value types for comprehensive testing
-pub fn create_mixed_value_map() -> Map {
-    let mut map = Map::new();
+pub fn create_mixed_value_map() -> Doc {
+    let mut map = Doc::new();
     map.set("null_val".to_string(), Value::Null);
     map.set("bool_val".to_string(), Value::Bool(true));
     map.set("int_val".to_string(), Value::Int(123));
     map.set("text_val".to_string(), Value::Text("hello".to_string()));
-    map.set("map_val".to_string(), Map::new());
+    map.set("map_val".to_string(), Doc::new());
     map.set("list_val".to_string(), Value::List(List::new()));
     map.set("deleted_val".to_string(), Value::Deleted);
     map
@@ -247,7 +247,7 @@ pub fn create_mixed_list() -> List {
     list.push(Value::Int(456));
     list.push(Value::Text("mixed".to_string()));
 
-    let mut nested_map = Map::new();
+    let mut nested_map = Doc::new();
     nested_map.set_string("nested".to_string(), "value".to_string());
     list.push(nested_map);
 
@@ -284,7 +284,7 @@ pub fn create_all_value_types() -> Vec<Value> {
         Value::Int(-123),
         Value::Text("test".to_string()),
         Value::Text("".to_string()),
-        Value::Node(Map::new().into()),
+        Value::Node(Doc::new().into()),
         Value::List(List::new()),
         Value::Deleted,
     ]
@@ -300,7 +300,7 @@ pub fn create_merge_test_values() -> (Value, Value) {
 // ===== ASSERTION HELPERS =====
 
 /// Assert that a Map contains expected key-value pairs
-pub fn assert_map_contains(map: &Map, expected: &[(&str, &str)]) {
+pub fn assert_map_contains(map: &Doc, expected: &[(&str, &str)]) {
     for (key, expected_value) in expected {
         match map.get(key) {
             Some(Value::Text(actual_value)) => {
@@ -325,7 +325,7 @@ pub fn assert_value_content(value: &Value, expected_type: &str, test_equality: O
 }
 
 /// Assert that two Maps are equivalent (same keys and values)
-pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
+pub fn assert_maps_equivalent(map1: &Doc, map2: &Doc) {
     let hashmap1 = map1.as_hashmap();
     let hashmap2 = map2.as_hashmap();
 
@@ -409,8 +409,8 @@ pub fn test_list_bounds_checking(list: &List) {
 // ===== PERFORMANCE HELPERS =====
 
 /// Create a large Map for performance testing
-pub fn create_large_map(size: usize) -> Map {
-    let mut map = Map::new();
+pub fn create_large_map(size: usize) -> Doc {
+    let mut map = Doc::new();
     for i in 0..size {
         map.set(format!("key_{i}"), Value::Text(format!("value_{i}")));
     }

@@ -5,7 +5,7 @@
 //! and PartialEq implementations.
 
 use super::helpers::*;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use eidetica::crdt::map::{List, Node, Value};
 
 // ===== VALUE TYPE TESTS =====
@@ -45,7 +45,7 @@ fn test_map_value_basic_types() {
 
 #[test]
 fn test_map_value_branch_types() {
-    let map_val = Value::Node(Map::new().into());
+    let map_val = Value::Node(Doc::new().into());
     let list_val = Value::List(List::new());
 
     assert!(!map_val.is_leaf());
@@ -111,7 +111,7 @@ fn test_map_value_from_impls() {
     let from_bool: Value = true.into();
     let from_i64: Value = 42i64.into();
     let from_string: Value = "hello".into();
-    let from_node: Value = Map::new().into();
+    let from_node: Value = Doc::new().into();
     let from_list: Value = List::new().into();
 
     assert_eq!(from_bool.as_bool(), Some(true));
@@ -185,7 +185,7 @@ fn test_partial_eq_nodevalue() {
 
 #[test]
 fn test_partial_eq_with_unwrap() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
     map.set("name", "Alice");
     map.set("age", 30);
     map.set("active", true);
@@ -220,7 +220,7 @@ fn test_partial_eq_with_unwrap() {
 
 #[test]
 fn test_cleaner_api_examples() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
 
     // Set some values
     map.set("name", "Alice");
@@ -315,7 +315,7 @@ fn test_value_to_json_string_text_escaping() {
 #[test]
 fn test_value_to_json_string_empty_containers() {
     // Test empty Map
-    let empty_map = Node::new();
+    let empty_map = Doc::new();
     assert_eq!(empty_map.to_json_string(), "{}");
 
     // Test empty List

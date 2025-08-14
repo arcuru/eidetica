@@ -5,11 +5,11 @@
 
 use super::helpers::*;
 use eidetica::crdt::map::Value;
-use eidetica::crdt::{CRDT, Map};
+use eidetica::crdt::{CRDT, Doc};
 
 #[test]
 fn test_crdt_map_basic_operations() {
-    let mut map = Map::new();
+    let mut map = Doc::new();
 
     // Test set and get
     map.set_string("key1".to_string(), "value1".to_string());
@@ -51,11 +51,11 @@ fn test_crdt_map_merge_semantics() {
 #[test]
 fn test_crdt_commutativity() {
     // Create non-conflicting maps to ensure commutativity
-    let mut map1 = Map::new();
+    let mut map1 = Doc::new();
     map1.set_string("key1".to_string(), "value1".to_string());
     map1.set_string("shared".to_string(), "from_map1".to_string());
 
-    let mut map2 = Map::new();
+    let mut map2 = Doc::new();
     map2.set_string("key2".to_string(), "value2".to_string());
     map2.set_string("different".to_string(), "from_map2".to_string());
 
@@ -156,7 +156,7 @@ fn test_complex_crdt_scenario() {
 
 #[test]
 fn test_crdt_with_lists_integration() {
-    let mut doc = Map::new();
+    let mut doc = Doc::new();
 
     // Add a list to the document
     let mut items = eidetica::crdt::map::List::new();
@@ -195,8 +195,8 @@ fn test_crdt_with_lists_integration() {
 
 #[test]
 fn test_crdt_tombstone_behavior_integration() {
-    let mut doc1 = Map::new();
-    let mut doc2 = Map::new();
+    let mut doc1 = Doc::new();
+    let mut doc2 = Doc::new();
 
     // Both start with the same data
     doc1.set_string("shared".to_string(), "original".to_string());
@@ -257,7 +257,7 @@ fn test_crdt_merge_properties_comprehensive() {
 
 #[test]
 fn test_crdt_api_ergonomics() {
-    let mut doc = Map::new();
+    let mut doc = Doc::new();
 
     // Test convenient API methods
     doc.set("title", "My Document");
