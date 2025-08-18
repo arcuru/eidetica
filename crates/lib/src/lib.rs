@@ -41,7 +41,7 @@ pub mod y_crdt {
 }
 
 /// Result type used throughout the Eidetica library.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Common error type for the Eidetica library.
 #[derive(Debug, thiserror::Error)]

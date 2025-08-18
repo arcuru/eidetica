@@ -163,7 +163,7 @@ use crate::crdt::traits::{CRDT, Data};
 /// - [`Value::Text`] - UTF-8 text strings
 ///
 /// ## Branch Values (Container Nodes)
-/// - [`Value::Map`] - Nested tree structures
+/// - [`Value::Node`] - Nested tree structures
 /// - [`Value::List`] - Ordered collections with stable positioning
 ///
 /// ## CRDT Semantics
@@ -619,6 +619,83 @@ impl From<Doc> for Value {
 impl From<List> for Value {
     fn from(value: List) -> Self {
         Value::List(value)
+    }
+}
+
+// TryFrom implementations for better type coercion
+impl TryFrom<&Value> for String {
+    type Error = CRDTError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Text(s) => Ok(s.clone()),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "String".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
+    }
+}
+
+// Note: &str TryFrom is tricky due to lifetimes - users should use String or the existing as_text() method
+
+impl TryFrom<&Value> for i64 {
+    type Error = CRDTError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Int(n) => Ok(*n),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "i64".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&Value> for bool {
+    type Error = CRDTError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Bool(b) => Ok(*b),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "bool".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
+    }
+}
+
+// Note: Reference types (&Node, &List) have lifetime issues with TryFrom
+// Users should use the existing as_node() and as_list() methods for references
+// Or clone into owned types when needed
+
+impl TryFrom<&Value> for Node {
+    type Error = CRDTError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Node(node) => Ok(node.clone()),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "Node".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&Value> for List {
+    type Error = CRDTError;
+
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::List(list) => Ok(list.clone()),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "List".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
     }
 }
 
@@ -1100,6 +1177,44 @@ impl Node {
         self.get(key).and_then(|v| v.as_list())
     }
 
+    /// Gets a value by key with automatic type conversion using TryFrom
+    ///
+    /// This provides a generic interface that can convert to any type that implements
+    /// `TryFrom<&Value>`, making the API more ergonomic by reducing type specification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::map::{Node, Value};
+    /// # use eidetica::Result;
+    /// let mut node = Node::new();
+    /// node.set("name", "Alice");
+    /// node.set("age", 30);
+    /// node.set("active", true);
+    ///
+    /// // Type inference makes this clean
+    /// let name: Result<String> = node.get_as("name");
+    /// let age: Result<i64> = node.get_as("age");
+    /// let active: Result<bool> = node.get_as("active");
+    ///
+    /// assert_eq!(name.unwrap(), "Alice");
+    /// assert_eq!(age.unwrap(), 30);
+    /// assert_eq!(active.unwrap(), true);
+    /// ```
+    pub fn get_as<T>(&self, key: impl AsRef<str>) -> crate::Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
+    {
+        let key_str = key.as_ref();
+        match self.get(key_str) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Err(CRDTError::ElementNotFound {
+                key: key_str.to_string(),
+            }
+            .into()),
+        }
+    }
+
     /// Sets a value at the given key, returns the old value if present
     pub fn set<K, V>(&mut self, key: K, value: V) -> Option<Value>
     where
@@ -1246,6 +1361,39 @@ impl Node {
     /// Gets a list value by path
     pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&List> {
         self.get_path(path).and_then(|v| v.as_list())
+    }
+
+    /// Gets a value by path with automatic type conversion using TryFrom
+    ///
+    /// Similar to `get_as()` but works with dot-notation paths for nested access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::map::Node;
+    /// # use eidetica::Result;
+    /// let mut node = Node::new();
+    /// node.set_path("user.profile.name", "Alice").unwrap();
+    /// node.set_path("user.profile.age", 30).unwrap();
+    ///
+    /// // Type inference with path access
+    /// let name: Result<String> = node.get_path_as("user.profile.name");
+    /// let age: Result<i64> = node.get_path_as("user.profile.age");
+    ///
+    /// assert_eq!(name.unwrap(), "Alice");
+    /// assert_eq!(age.unwrap(), 30);
+    /// ```
+    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> crate::Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
+    {
+        match self.get_path(path.as_ref()) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Err(CRDTError::ElementNotFound {
+                key: path.as_ref().to_string(),
+            }
+            .into()),
+        }
     }
 
     /// Gets a mutable reference to a value by path

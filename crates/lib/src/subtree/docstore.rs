@@ -199,6 +199,199 @@ impl DocStore {
         self.get(key)
     }
 
+    /// Enhanced access methods with type inference
+    ///
+    /// These methods provide cleaner access with automatic type conversion,
+    /// similar to the CRDT Doc interface but adapted for the DocStore transaction model.
+    ///
+    /// Gets a value with automatic type conversion using TryFrom.
+    ///
+    /// This provides a generic interface that can convert to any type that implements
+    /// `TryFrom<&Value>`, making the API more ergonomic by reducing type specification.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// store.set("name", "Alice")?;
+    /// store.set("age", 30)?;
+    ///
+    /// // Type inference makes this clean
+    /// let name: String = store.get_as("name")?;
+    /// let age: i64 = store.get_as("age")?;
+    ///
+    /// assert_eq!(name, "Alice");
+    /// assert_eq!(age, 30);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn get_as<T>(&self, key: impl AsRef<str>) -> Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
+    {
+        let value = self.get(key)?;
+        T::try_from(&value).map_err(Into::into)
+    }
+
+    /// Mutable access methods for transaction-based modification
+    ///
+    /// These methods work with DocStore's staging model, where changes are staged
+    /// in the AtomicOp transaction rather than modified in-place.
+    ///
+    /// Get or insert a value with a default.
+    ///
+    /// If the key exists (in either local staging area or historical data),
+    /// returns the existing value. If the key doesn't exist, sets it to the
+    /// default value and returns that.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Key doesn't exist - will set default
+    /// let count1: i64 = store.get_or_insert("counter", 0)?;
+    /// assert_eq!(count1, 0);
+    ///
+    /// // Key exists - will return existing value
+    /// store.set("counter", 5)?;
+    /// let count2: i64 = store.get_or_insert("counter", 100)?;
+    /// assert_eq!(count2, 5);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn get_or_insert<T>(&self, key: impl AsRef<str>, default: T) -> Result<T>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+    {
+        let key_str = key.as_ref();
+
+        // Try to get existing value first
+        match self.get_as::<T>(key_str) {
+            Ok(existing) => Ok(existing),
+            Err(_) => {
+                // Key doesn't exist or wrong type - set default and return it
+                self.set(key_str, default.clone())?;
+                Ok(default)
+            }
+        }
+    }
+
+    /// Modifies a value in-place using a closure
+    ///
+    /// If the key exists and can be converted to type T, the closure is called
+    /// with the value. After the closure returns, the modified value is staged
+    /// back to the DocStore.
+    ///
+    /// This method handles the DocStore staging model by:
+    /// 1. Getting the current value (from local staging or historical data)
+    /// 2. Converting it to the desired type
+    /// 3. Applying the modification closure
+    /// 4. Staging the result back to the AtomicOp
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The key doesn't exist (`SubtreeError::KeyNotFound`)
+    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
+    /// - Setting the value fails
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// store.set("count", 5)?;
+    /// store.set("text", "hello")?;
+    ///
+    /// // Modify counter
+    /// store.modify::<i64, _>("count", |count| {
+    ///     *count += 10;
+    /// })?;
+    /// assert_eq!(store.get_as::<i64>("count")?, 15);
+    ///
+    /// // Modify string
+    /// store.modify::<String, _>("text", |text| {
+    ///     text.push_str(" world");
+    /// })?;
+    /// assert_eq!(store.get_as::<String>("text")?, "hello world");
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify<T, F>(&self, key: impl AsRef<str>, f: F) -> Result<()>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        F: FnOnce(&mut T),
+    {
+        let key = key.as_ref();
+
+        // Try to get and convert the current value
+        let mut value = self.get_as::<T>(key)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Stage the modified value back
+        self.set(key, value)?;
+        Ok(())
+    }
+
+    /// Modify a value or insert a default if it doesn't exist.
+    ///
+    /// This is a combination of `get_or_insert` and `modify` that ensures
+    /// the key exists before modification.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Key doesn't exist - will create with default then modify
+    /// store.modify_or_insert::<i64, _>("counter", 0, |count| {
+    ///     *count += 5;
+    /// })?;
+    /// assert_eq!(store.get_as::<i64>("counter")?, 5);
+    ///
+    /// // Key exists - will just modify
+    /// store.modify_or_insert::<i64, _>("counter", 100, |count| {
+    ///     *count *= 2;
+    /// })?;
+    /// assert_eq!(store.get_as::<i64>("counter")?, 10);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify_or_insert<T, F>(&self, key: impl AsRef<str>, default: T, f: F) -> Result<()>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        F: FnOnce(&mut T),
+    {
+        let key = key.as_ref();
+
+        // Get existing value or insert default
+        let mut value = self.get_or_insert(key, default)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Stage the modified value back
+        self.set(key, value)?;
+
+        Ok(())
+    }
+
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
     /// This method removes the key-value pair from the `Map` data held within

@@ -76,7 +76,7 @@ impl ServerState {
 pub struct JsonHandler;
 
 impl JsonHandler {
-    /// Serialize a Vec<Entry> to JSON bytes.
+    /// Serialize a `Vec<Entry>` to JSON bytes.
     pub fn serialize_request(request: &[Entry]) -> Result<Vec<u8>, SyncError> {
         serde_json::to_vec(request)
             .map_err(|e| SyncError::Network(format!("Failed to serialize request: {e}")))
@@ -88,7 +88,7 @@ impl JsonHandler {
             .map_err(|e| SyncError::Network(format!("Failed to serialize response: {e}")))
     }
 
-    /// Deserialize JSON bytes to a Vec<Entry>.
+    /// Deserialize JSON bytes to a `Vec<Entry>`.
     pub fn deserialize_request(bytes: &[u8]) -> Result<Vec<Entry>, SyncError> {
         serde_json::from_slice(bytes)
             .map_err(|e| SyncError::Network(format!("Failed to deserialize request: {e}")))

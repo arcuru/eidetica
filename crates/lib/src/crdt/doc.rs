@@ -169,6 +169,44 @@ impl Doc {
         self.root.get_list(key)
     }
 
+    /// Gets a value by key with automatic type conversion using TryFrom
+    ///
+    /// This provides a generic interface that can convert to any type that implements
+    /// `TryFrom<&Value>`, making the API more ergonomic by reducing type specification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// # use eidetica::Result;
+    /// let mut doc = Doc::new();
+    /// doc.set("name", "Alice");
+    /// doc.set("age", 30);
+    /// doc.set("active", true);
+    ///
+    /// // Type inference makes this clean
+    /// let name: Result<String> = doc.get_as("name");
+    /// let age: Result<i64> = doc.get_as("age");
+    /// let active: Result<bool> = doc.get_as("active");
+    ///
+    /// assert_eq!(name.unwrap(), "Alice");
+    /// assert_eq!(age.unwrap(), 30);
+    /// assert_eq!(active.unwrap(), true);
+    /// ```
+    pub fn get_as<T>(&self, key: impl AsRef<str>) -> crate::Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
+    {
+        let key_str = key.as_ref();
+        match self.get(key_str) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Err(CRDTError::ElementNotFound {
+                key: key_str.to_string(),
+            }
+            .into()),
+        }
+    }
+
     /// Sets a value at the given key, returns the old value if present
     pub fn set<K, V>(&mut self, key: K, value: V) -> Option<Value>
     where
@@ -223,6 +261,39 @@ impl Doc {
     /// Gets a list value by path
     pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&List> {
         self.root.get_list_at_path(path)
+    }
+
+    /// Gets a value by path with automatic type conversion using TryFrom
+    ///
+    /// Similar to `get_as()` but works with dot-notation paths for nested access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// # use eidetica::Result;
+    /// let mut doc = Doc::new();
+    /// doc.set_path("user.profile.name", "Alice").unwrap();
+    /// doc.set_path("user.profile.age", 30).unwrap();
+    ///
+    /// // Type inference with path access
+    /// let name: Result<String> = doc.get_path_as("user.profile.name");
+    /// let age: Result<i64> = doc.get_path_as("user.profile.age");
+    ///
+    /// assert_eq!(name.unwrap(), "Alice");
+    /// assert_eq!(age.unwrap(), 30);
+    /// ```
+    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> crate::Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
+    {
+        match self.get_path(path.as_ref()) {
+            Some(value) => T::try_from(value).map_err(Into::into),
+            None => Err(CRDTError::ElementNotFound {
+                key: path.as_ref().to_string(),
+            }
+            .into()),
+        }
     }
 
     /// Gets a mutable reference to a value by path
@@ -538,6 +609,134 @@ impl Doc {
         K: AsRef<str>,
     {
         self.root.list_clear(key)
+    }
+
+    /// Convenience methods for ergonomic access with better error handling
+    ///
+    /// These methods provide cleaner syntax for common CRDT operations.
+    ///
+    /// Mutable access methods for working with Values directly
+    ///
+    /// These methods provide cleaner access to mutable Values for in-place modification.
+    ///
+    /// Gets or inserts a value with a default, returns a mutable reference
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// # use eidetica::crdt::map::Value;
+    /// let mut doc = Doc::new();
+    ///
+    /// // Key doesn't exist - will insert default
+    /// doc.get_or_insert("counter", 0);
+    /// assert_eq!(doc.get_as::<i64>("counter").unwrap(), 0);
+    ///
+    /// // Key exists - will keep existing value
+    /// doc.set("counter", 5);
+    /// doc.get_or_insert("counter", 100);
+    /// assert_eq!(doc.get_as::<i64>("counter").unwrap(), 5);
+    /// ```
+    pub fn get_or_insert(&mut self, key: impl AsRef<str>, default: impl Into<Value>) -> &mut Value {
+        let key = key.as_ref();
+        if !self.contains_key(key) {
+            self.set(key, default);
+        }
+        self.get_mut(key).expect("Key should exist after insert")
+    }
+
+    /// Modifies a value in-place using a closure
+    ///
+    /// If the key exists and can be converted to type T, the closure is called
+    /// with a mutable reference to the typed value. After the closure returns,
+    /// the modified value is converted back and stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The key doesn't exist (`CRDTError::ElementNotFound`)
+    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("count", 5);
+    /// doc.set("text", "hello");
+    ///
+    /// // Modify counter
+    /// doc.modify::<i64, _>("count", |count| {
+    ///     *count += 10;
+    /// })?;
+    /// assert_eq!(doc.get_as::<i64>("count")?, 15);
+    ///
+    /// // Modify string
+    /// doc.modify::<String, _>("text", |text| {
+    ///     text.push_str(" world");
+    /// })?;
+    /// assert_eq!(doc.get_as::<String>("text")?, "hello world");
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify<T, F>(&mut self, key: impl AsRef<str>, f: F) -> crate::Result<()>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
+        F: FnOnce(&mut T),
+    {
+        let key = key.as_ref();
+
+        // Try to get and convert the current value
+        let mut value = self.get_as::<T>(key)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Store the modified value back
+        self.set(key, value);
+        Ok(())
+    }
+
+    /// Modifies a value at a path in-place using a closure
+    ///
+    /// Similar to `modify()` but works with dot-notation paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path doesn't exist (`CRDTError::ElementNotFound`)
+    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
+    /// - Setting the path fails (`CRDTError::InvalidPath`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set_path("user.score", 100)?;
+    ///
+    /// doc.modify_path::<i64, _>("user.score", |score| {
+    ///     *score += 50;
+    /// })?;
+    ///
+    /// assert_eq!(doc.get_path_as::<i64>("user.score")?, 150);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify_path<T, F>(&mut self, path: impl AsRef<str>, f: F) -> crate::Result<()>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
+        F: FnOnce(&mut T),
+    {
+        let path = path.as_ref();
+
+        // Try to get and convert the current value
+        let mut value = self.get_path_as::<T>(path)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Store the modified value back
+        self.set_path(path, value)?;
+        Ok(())
     }
 }
 
