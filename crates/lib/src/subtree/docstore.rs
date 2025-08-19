@@ -204,6 +204,67 @@ impl DocStore {
     /// These methods provide cleaner access with automatic type conversion,
     /// similar to the CRDT Doc interface but adapted for the DocStore transaction model.
     ///
+    /// Gets a value by path using dot notation (e.g., "user.profile.name")
+    ///
+    /// Traverses the DocStore data structure following the path segments separated by dots.
+    /// This method follows the DocStore staging model by checking local staged data first,
+    /// then falling back to historical data from the backend.
+    ///
+    /// # Path Syntax
+    ///
+    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Lists**: Navigate by index (e.g., "items.0.title")
+    /// - **Mixed**: Combine both (e.g., "users.0.tags.1")
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// store.set("user.profile.name", "Alice")?;
+    ///
+    /// // Navigate nested structure
+    /// let name = store.get_path("user.profile.name")?;
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any segment of the path doesn't exist
+    /// - A non-final segment has the wrong type (not a node or list)
+    /// - The DocStore operation fails
+    pub fn get_path(&self, path: impl AsRef<str>) -> Result<Value> {
+        let path = path.as_ref();
+
+        // First check if there's any local staged data
+        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+
+        // If there's local data, try to get the path from it
+        if let Ok(data) = local_data
+            && let Some(value) = data.get_path(path)
+        {
+            return Ok(value.clone());
+        }
+
+        // Otherwise, get the full state from the backend
+        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+
+        // Get the path from the full state
+        match data.get_path(path) {
+            Some(value) => Ok(value.clone()),
+            None => Err(SubtreeError::KeyNotFound {
+                subtree: self.name.clone(),
+                key: path.to_string(),
+            }
+            .into()),
+        }
+    }
+
     /// Gets a value with automatic type conversion using TryFrom.
     ///
     /// This provides a generic interface that can convert to any type that implements
@@ -234,6 +295,45 @@ impl DocStore {
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
     {
         let value = self.get(key)?;
+        T::try_from(&value).map_err(Into::into)
+    }
+
+    /// Gets a value by path with automatic type conversion using TryFrom
+    ///
+    /// Similar to `get_as()` but works with dot-notation paths for nested access.
+    /// This method follows the DocStore staging model by checking local staged data first,
+    /// then falling back to historical data from the backend.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Assuming nested structure exists
+    /// // Type inference with path access
+    /// let name: String = store.get_path_as("user.profile.name")?;
+    /// let age: i64 = store.get_path_as("user.profile.age")?;
+    ///
+    /// assert_eq!(name, "Alice");
+    /// assert_eq!(age, 30);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path doesn't exist (`SubtreeError::KeyNotFound`)
+    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
+    /// - The DocStore operation fails
+    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
+    {
+        let value = self.get_path(path)?;
         T::try_from(&value).map_err(Into::into)
     }
 

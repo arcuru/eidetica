@@ -3,7 +3,7 @@
 //! This module tests subtree functionality including Doc, YDoc, and Table operations.
 //! Tests are organized by subtree type and integration scenarios for better maintainability.
 
-mod dict_operations;
+mod docstore_operations;
 pub mod helpers;
 mod integration;
 mod table_operations;
