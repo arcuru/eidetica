@@ -492,6 +492,210 @@ impl DocStore {
         Ok(())
     }
 
+    /// Get or insert a value at a path with a default, similar to get_or_insert but for paths
+    ///
+    /// If the path exists (in either local staging area or historical data),
+    /// returns the existing value. If the path doesn't exist, sets it to the
+    /// default value and returns that. Intermediate nodes are created as needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Path doesn't exist - will create structure and set default
+    /// let count1: i64 = store.get_or_insert_path("user.stats.score", 0)?;
+    /// assert_eq!(count1, 0);
+    ///
+    /// // Path exists - will return existing value
+    /// store.set_path("user.stats.score", 42)?;
+    /// let count2: i64 = store.get_or_insert_path("user.stats.score", 100)?;
+    /// assert_eq!(count2, 42);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn get_or_insert_path<T>(&self, path: impl AsRef<str>, default: T) -> Result<T>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+    {
+        let path_str = path.as_ref();
+
+        // Try to get existing value first
+        match self.get_path_as::<T>(path_str) {
+            Ok(existing) => Ok(existing),
+            Err(_) => {
+                // Path doesn't exist or wrong type - set default and return it
+                self.set_path(path_str, default.clone())?;
+                Ok(default)
+            }
+        }
+    }
+
+    /// Modify a value at a path or insert a default if it doesn't exist.
+    ///
+    /// This is a combination of `get_or_insert_path` and `modify_path` that ensures
+    /// the path exists before modification, creating intermediate structure as needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Path doesn't exist - will create structure with default then modify
+    /// store.modify_or_insert_path::<i64, _>("user.stats.score", 0, |score| {
+    ///     *score += 10;
+    /// })?;
+    /// assert_eq!(store.get_path_as::<i64>("user.stats.score")?, 10);
+    ///
+    /// // Path exists - will just modify
+    /// store.modify_or_insert_path::<i64, _>("user.stats.score", 100, |score| {
+    ///     *score *= 2;
+    /// })?;
+    /// assert_eq!(store.get_path_as::<i64>("user.stats.score")?, 20);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify_or_insert_path<T, F>(&self, path: impl AsRef<str>, default: T, f: F) -> Result<()>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        F: FnOnce(&mut T),
+    {
+        let path = path.as_ref();
+
+        // Get existing value or insert default
+        let mut value = self.get_or_insert_path(path, default)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Stage the modified value back
+        self.set_path(path, value)?;
+
+        Ok(())
+    }
+
+    /// Sets a value at the given path, creating intermediate nodes as needed
+    ///
+    /// This method stages a path-based set operation in the AtomicOp transaction.
+    /// The path uses dot notation to navigate nested structures, automatically
+    /// creating intermediate maps where necessary. This operation follows the
+    /// DocStore staging model by working on local staged data.
+    ///
+    /// # Path Syntax
+    ///
+    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Creating structure**: Intermediate nodes are created automatically
+    /// - **Overwriting**: If a path segment points to a non-node value, it will be overwritten
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Set nested values, creating structure as needed
+    /// store.set_path("user.profile.name", "Alice")?;
+    /// store.set_path("user.profile.age", 30)?;
+    /// store.set_path("user.settings.theme", "dark")?;
+    ///
+    /// // Verify the structure was created
+    /// assert_eq!(store.get_path_as::<String>("user.profile.name")?, "Alice");
+    /// assert_eq!(store.get_path_as::<i64>("user.profile.age")?, 30);
+    /// assert_eq!(store.get_path_as::<String>("user.settings.theme")?, "dark");
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is empty
+    /// - A non-final segment contains a non-node value that cannot be navigated through
+    /// - The DocStore operation fails
+    pub fn set_path(&self, path: impl AsRef<str>, value: impl Into<Value>) -> Result<()> {
+        let path = path.as_ref();
+        let value = value.into();
+        let parts: Vec<&str> = path.split('.').collect();
+
+        if parts.is_empty() {
+            return Err(crate::crdt::CRDTError::InvalidPath {
+                path: "Empty path".to_string(),
+            }
+            .into());
+        }
+
+        // Get current data from the atomic op, or create new if not existing
+        let mut data = self
+            .atomic_op
+            .get_local_data::<Doc>(&self.name)
+            .unwrap_or_default();
+
+        // Use Doc's set_path method to handle the path logic
+        data.set_path(path, value)
+            .map_err(|e| -> crate::Error { e.into() })?;
+
+        // Serialize and update the atomic op
+        let serialized = serde_json::to_string(&data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized)
+    }
+
+    /// Modifies a value at a path in-place using a closure
+    ///
+    /// Similar to `modify()` but works with dot-notation paths for nested access.
+    /// This method follows the DocStore staging model by checking local staged data
+    /// first, then falling back to historical data from the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path doesn't exist (`SubtreeError::KeyNotFound`)
+    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
+    /// - Setting the path fails (`CRDTError::InvalidPath`)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// store.set_path("user.score", 100)?;
+    ///
+    /// store.modify_path::<i64, _>("user.score", |score| {
+    ///     *score += 50;
+    /// })?;
+    ///
+    /// assert_eq!(store.get_path_as::<i64>("user.score")?, 150);
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn modify_path<T, F>(&self, path: impl AsRef<str>, f: F) -> Result<()>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        F: FnOnce(&mut T),
+    {
+        let path = path.as_ref();
+
+        // Try to get and convert the current value
+        let mut value = self.get_path_as::<T>(path)?;
+
+        // Apply the modification
+        f(&mut value);
+
+        // Stage the modified value back
+        self.set_path(path, value)?;
+        Ok(())
+    }
+
     /// Stages the deletion of a key within the associated `AtomicOp`.
     ///
     /// This method removes the key-value pair from the `Map` data held within
