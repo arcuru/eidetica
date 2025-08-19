@@ -1014,3 +1014,254 @@ fn test_docstore_path_mutation_interoperability() {
         "deep"
     );
 }
+
+#[test]
+fn test_docstore_contains_key() {
+    let tree = setup_tree();
+
+    let op = tree.new_operation().expect("Failed to start operation");
+    let dict = op
+        .get_subtree::<DocStore>("contains_key_test")
+        .expect("Failed to get DocStore");
+
+    // Test empty DocStore
+    assert!(!dict.contains_key("nonexistent"));
+    assert!(!dict.contains_key("missing"));
+
+    // Test with staged data (not yet committed)
+    dict.set("name", "Alice").expect("Failed to set name");
+    dict.set("age", 30).expect("Failed to set age");
+    assert!(dict.contains_key("name"));
+    assert!(dict.contains_key("age"));
+    assert!(!dict.contains_key("missing"));
+
+    // Test with nested values
+    dict.set_path("user.profile.email", "alice@example.com")
+        .expect("Failed to set nested value");
+    assert!(dict.contains_key("user")); // Top-level key exists
+    assert!(!dict.contains_key("profile")); // Nested key doesn't exist at top level
+    assert!(!dict.contains_key("email")); // Deep nested key doesn't exist at top level
+
+    // Test deletion (tombstones)
+    dict.delete("name").expect("Failed to delete name");
+    assert!(!dict.contains_key("name")); // Deleted key should not exist
+    assert!(dict.contains_key("age")); // Other keys should still exist
+
+    // Commit and test persistence
+    op.commit().expect("Failed to commit operation");
+
+    // Test with committed data
+    let viewer = tree
+        .get_subtree_viewer::<DocStore>("contains_key_test")
+        .expect("Failed to get viewer");
+
+    assert!(!viewer.contains_key("name")); // Deleted key not in committed data
+    assert!(viewer.contains_key("age")); // Existing key in committed data
+    assert!(viewer.contains_key("user")); // Nested structure in committed data
+
+    // Test with new operation on committed data
+    let op2 = tree
+        .new_operation()
+        .expect("Failed to start second operation");
+    let dict2 = op2
+        .get_subtree::<DocStore>("contains_key_test")
+        .expect("Failed to get DocStore");
+
+    // Should see committed data
+    assert!(!dict2.contains_key("name")); // Still deleted
+    assert!(dict2.contains_key("age")); // Still exists
+    assert!(dict2.contains_key("user")); // Still exists
+
+    // Stage new changes
+    dict2.set("name", "Bob").expect("Failed to re-set name");
+    dict2.set("city", "NYC").expect("Failed to set city");
+
+    // Should see both committed and staged data
+    assert!(dict2.contains_key("name")); // Now exists in staging
+    assert!(dict2.contains_key("age")); // Exists in committed data
+    assert!(dict2.contains_key("user")); // Exists in committed data
+    assert!(dict2.contains_key("city")); // Exists in staging
+
+    // Viewer should only see committed data
+    assert!(!viewer.contains_key("name")); // Not in committed data
+    assert!(!viewer.contains_key("city")); // Not in committed data
+}
+
+#[test]
+fn test_docstore_contains_path() {
+    let tree = setup_tree();
+
+    let op = tree.new_operation().expect("Failed to start operation");
+    let dict = op
+        .get_subtree::<DocStore>("contains_path_test")
+        .expect("Failed to get DocStore");
+
+    // Test empty DocStore
+    assert!(!dict.contains_path("nonexistent"));
+    assert!(!dict.contains_path("missing.path"));
+
+    // Test with simple paths
+    dict.set("name", "Alice").expect("Failed to set name");
+    assert!(dict.contains_path("name")); // Direct key exists
+    assert!(!dict.contains_path("name.invalid")); // Can't navigate through string
+
+    // Test with nested structure
+    dict.set_path("user.profile.name", "Alice")
+        .expect("Failed to set nested path");
+    dict.set_path("user.profile.email", "alice@example.com")
+        .expect("Failed to set nested email");
+    dict.set_path("user.settings.theme", "dark")
+        .expect("Failed to set settings");
+
+    // Test intermediate paths
+    assert!(dict.contains_path("user")); // Top level
+    assert!(dict.contains_path("user.profile")); // Intermediate level
+    assert!(dict.contains_path("user.settings")); // Another intermediate level
+
+    // Test full paths
+    assert!(dict.contains_path("user.profile.name")); // Full nested path
+    assert!(dict.contains_path("user.profile.email")); // Another full path
+    assert!(dict.contains_path("user.settings.theme")); // Different branch
+
+    // Test non-existent paths
+    assert!(!dict.contains_path("user.profile.age")); // Missing leaf
+    assert!(!dict.contains_path("user.profile.missing")); // Missing leaf
+    assert!(!dict.contains_path("user.missing")); // Missing intermediate
+    assert!(!dict.contains_path("missing.user.profile")); // Missing root
+
+    // Test deep nesting
+    dict.set_path("app.config.database.host", "localhost")
+        .expect("Failed to set deep path");
+    dict.set_path("app.config.database.port", 5432)
+        .expect("Failed to set deep port");
+
+    assert!(dict.contains_path("app"));
+    assert!(dict.contains_path("app.config"));
+    assert!(dict.contains_path("app.config.database"));
+    assert!(dict.contains_path("app.config.database.host"));
+    assert!(dict.contains_path("app.config.database.port"));
+    assert!(!dict.contains_path("app.config.database.name"));
+
+    // Test path deletion
+    dict.set_path("temp.value", "test")
+        .expect("Failed to set temp value");
+    assert!(dict.contains_path("temp"));
+    assert!(dict.contains_path("temp.value"));
+
+    // Override with simple value (should make nested path invalid)
+    dict.set("temp", "simple").expect("Failed to override temp");
+    assert!(dict.contains_path("temp")); // Exists as simple value
+    assert!(!dict.contains_path("temp.value")); // No longer accessible
+
+    // Commit and test persistence
+    op.commit().expect("Failed to commit operation");
+
+    let viewer = tree
+        .get_subtree_viewer::<DocStore>("contains_path_test")
+        .expect("Failed to get viewer");
+
+    // Test committed paths
+    assert!(viewer.contains_path("name"));
+    assert!(viewer.contains_path("user.profile.name"));
+    assert!(viewer.contains_path("user.profile.email"));
+    assert!(viewer.contains_path("user.settings.theme"));
+    assert!(viewer.contains_path("app.config.database.host"));
+    assert!(viewer.contains_path("temp")); // Should be simple value
+    assert!(!viewer.contains_path("temp.value")); // Should not exist
+
+    // Test with new operation adding more paths
+    let op2 = tree
+        .new_operation()
+        .expect("Failed to start second operation");
+    let dict2 = op2
+        .get_subtree::<DocStore>("contains_path_test")
+        .expect("Failed to get DocStore");
+
+    // Should see committed paths
+    assert!(dict2.contains_path("user.profile.name"));
+
+    // Add staged paths
+    dict2
+        .set_path("user.profile.age", 30)
+        .expect("Failed to set age");
+    dict2
+        .set_path("new.staged.path", "value")
+        .expect("Failed to set staged path");
+
+    // Should see both committed and staged paths
+    assert!(dict2.contains_path("user.profile.name")); // Committed
+    assert!(dict2.contains_path("user.profile.age")); // Staged
+    assert!(dict2.contains_path("new")); // Staged intermediate
+    assert!(dict2.contains_path("new.staged")); // Staged intermediate
+    assert!(dict2.contains_path("new.staged.path")); // Staged full
+
+    // Viewer should only see committed paths
+    assert!(viewer.contains_path("user.profile.name")); // Committed
+    assert!(!viewer.contains_path("user.profile.age")); // Not committed
+    assert!(!viewer.contains_path("new")); // Not committed
+}
+
+#[test]
+fn test_docstore_contains_methods_consistency() {
+    let tree = setup_tree();
+
+    let op = tree.new_operation().expect("Failed to start operation");
+    let dict = op
+        .get_subtree::<DocStore>("consistency_test")
+        .expect("Failed to get DocStore");
+
+    // Test consistency between contains_key and contains_path for simple keys
+    dict.set("simple", "value").expect("Failed to set simple");
+    dict.set("number", 42).expect("Failed to set number");
+
+    assert_eq!(dict.contains_key("simple"), dict.contains_path("simple"));
+    assert_eq!(dict.contains_key("number"), dict.contains_path("number"));
+    assert_eq!(dict.contains_key("missing"), dict.contains_path("missing"));
+
+    // Test nested structure
+    dict.set_path("nested.key", "value")
+        .expect("Failed to set nested");
+
+    // contains_key should find top-level key
+    assert!(dict.contains_key("nested"));
+    assert!(dict.contains_path("nested"));
+
+    // contains_path should find nested path, contains_key should not
+    assert!(!dict.contains_key("key")); // key is not at top level
+    assert!(dict.contains_path("nested.key")); // but path exists
+
+    // Test get methods consistency with contains methods
+    assert_eq!(dict.get("simple").is_ok(), dict.contains_key("simple"));
+    assert_eq!(dict.get("number").is_ok(), dict.contains_key("number"));
+    assert_eq!(dict.get("missing").is_err(), !dict.contains_key("missing"));
+
+    assert_eq!(
+        dict.get_path("simple").is_ok(),
+        dict.contains_path("simple")
+    );
+    assert_eq!(
+        dict.get_path("nested.key").is_ok(),
+        dict.contains_path("nested.key")
+    );
+    assert_eq!(
+        dict.get_path("missing.path").is_err(),
+        !dict.contains_path("missing.path")
+    );
+
+    // Test with deletion
+    dict.delete("simple").expect("Failed to delete simple");
+    assert_eq!(dict.get("simple").is_err(), !dict.contains_key("simple"));
+    assert_eq!(
+        dict.get_path("simple").is_err(),
+        !dict.contains_path("simple")
+    );
+
+    // Test with type-safe getters
+    let name_exists = dict.contains_key("number");
+    let name_get_result = dict.get_as::<i64>("number").is_ok();
+    assert_eq!(name_exists, name_get_result);
+
+    let path_exists = dict.contains_path("nested.key");
+    let path_get_result = dict.get_path_as::<String>("nested.key").is_ok();
+    assert_eq!(path_exists, path_get_result);
+}

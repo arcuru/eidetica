@@ -773,6 +773,101 @@ impl DocStore {
         Ok(data)
     }
 
+    /// Returns true if the DocStore contains the given key
+    ///
+    /// This method checks both local staged data and historical backend data
+    /// following the DocStore staging model. A key is considered to exist if:
+    /// - It exists in local staged data (and is not deleted)
+    /// - It exists in backend data (and is not deleted)
+    ///
+    /// Deleted keys (tombstones) are treated as non-existent.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// assert!(!store.contains_key("missing")); // Key doesn't exist
+    ///
+    /// store.set("name", "Alice")?;
+    /// assert!(store.contains_key("name")); // Key exists in staging
+    ///
+    /// store.delete("name")?;
+    /// assert!(!store.contains_key("name")); // Key deleted (tombstone)
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn contains_key(&self, key: impl AsRef<str>) -> bool {
+        let key = key.as_ref();
+
+        // Check local staged data first
+        if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
+            && local_data.contains_key(key)
+        {
+            return true;
+        }
+
+        // Check backend data
+        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
+            backend_data.contains_key(key)
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the DocStore contains the given path
+    ///
+    /// This method checks both local staged data and historical backend data
+    /// following the DocStore staging model. A path is considered to exist if:
+    /// - The complete path exists and points to a non-deleted value
+    /// - All intermediate segments are navigable (nodes or lists)
+    ///
+    /// # Path Syntax
+    ///
+    /// Uses the same dot notation as other path methods:
+    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Lists**: Navigate by index (e.g., "items.0.title")
+    /// - **Mixed**: Combine both (e.g., "users.0.tags.1")
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// assert!(!store.contains_path("user.name")); // Path doesn't exist
+    ///
+    /// store.set_path("user.profile.name", "Alice")?;
+    /// assert!(store.contains_path("user")); // Intermediate path exists
+    /// assert!(store.contains_path("user.profile")); // Intermediate path exists
+    /// assert!(store.contains_path("user.profile.name")); // Full path exists
+    /// assert!(!store.contains_path("user.profile.age")); // Path doesn't exist
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn contains_path(&self, path: impl AsRef<str>) -> bool {
+        let path = path.as_ref();
+
+        // Check local staged data first
+        if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
+            && local_data.get_path(path).is_some()
+        {
+            return true;
+        }
+
+        // Check backend data
+        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
+            backend_data.get_path(path).is_some()
+        } else {
+            false
+        }
+    }
+
     /// Gets a mutable editor for a value associated with the given key.
     ///
     /// If the key does not exist, the editor will be initialized with an empty map,
