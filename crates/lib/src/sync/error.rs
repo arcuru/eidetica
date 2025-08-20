@@ -64,6 +64,14 @@ pub enum SyncError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    /// Protocol version mismatch.
+    #[error("Protocol version mismatch: expected {expected}, received {received}")]
+    ProtocolMismatch { expected: u32, received: u32 },
+
+    /// Handshake failed.
+    #[error("Handshake failed: {0}")]
+    HandshakeFailed(String),
 }
 
 impl SyncError {

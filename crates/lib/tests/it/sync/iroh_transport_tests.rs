@@ -1,5 +1,6 @@
 use eidetica::sync::{
     Address,
+    protocol::SyncRequest,
     transports::{SyncTransport, iroh::IrohTransport},
 };
 
@@ -77,7 +78,10 @@ async fn test_iroh_transport_send_request_no_endpoint() {
     // Try to send request without initializing endpoint
     let entry = Entry::builder("test").build();
     let result = transport
-        .send_request(&Address::iroh("invalid_node_id"), &[entry])
+        .send_request(
+            &Address::iroh("invalid_node_id"),
+            &SyncRequest::SendEntries(vec![entry]),
+        )
         .await;
 
     assert!(result.is_err());

@@ -5,11 +5,9 @@
 
 use super::{SyncTransport, shared::*};
 use crate::Result;
-use crate::entry::Entry;
 use crate::sync::error::SyncError;
-use crate::sync::handler::handle_request;
 use crate::sync::peer_types::Address;
-use crate::sync::protocol::SyncResponse;
+use crate::sync::protocol::{HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse};
 use async_trait::async_trait;
 use axum::{Router, extract::Json as ExtractJson, response::Json, routing::post};
 use std::net::SocketAddr;
@@ -118,7 +116,7 @@ impl SyncTransport for HttpTransport {
         Ok(())
     }
 
-    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse> {
+    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
         if !self.can_handle_address(address) {
             return Err(SyncError::UnsupportedTransport {
                 transport_type: address.transport_type.clone(),
@@ -131,7 +129,7 @@ impl SyncTransport for HttpTransport {
 
         let response = client
             .post(&url)
-            .json(&request) // Send Vec<Entry> as JSON body
+            .json(&request) // Send SyncRequest as JSON body
             .send()
             .await
             .map_err(|e| SyncError::ConnectionFailed {
@@ -164,8 +162,36 @@ impl SyncTransport for HttpTransport {
     }
 }
 
-/// Handler for the /api/v0 endpoint - accepts JSON Vec<Entry> and returns JSON SyncResponse.
-async fn handle_sync_request(ExtractJson(request): ExtractJson<Vec<Entry>>) -> Json<SyncResponse> {
-    let response = handle_request(&request).await;
+/// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
+async fn handle_sync_request(ExtractJson(request): ExtractJson<SyncRequest>) -> Json<SyncResponse> {
+    // For now, handle requests without the Sync instance
+    // This is a simplified implementation for the MVP
+    let response = match request {
+        SyncRequest::Handshake(handshake_req) => {
+            // Simple handshake response without signature verification
+            SyncResponse::Handshake(HandshakeResponse {
+                device_id: "server_device".to_string(),
+                public_key: "ed25519:server_key".to_string(),
+                display_name: Some("HTTP Server".to_string()),
+                protocol_version: PROTOCOL_VERSION,
+                challenge_response: handshake_req.challenge.clone(), // Echo challenge for now
+                new_challenge: vec![0u8; 32],                        // Dummy challenge
+            })
+        }
+        SyncRequest::SendEntries(entries) => {
+            // Acknowledge receipt of entries
+            let count = entries.len();
+            println!("Received {count} entries for synchronization");
+            if count == 1 {
+                SyncResponse::Ack
+            } else {
+                SyncResponse::Count(count)
+            }
+        }
+        SyncRequest::GetTips(_) => SyncResponse::Error("GetTips not yet implemented".to_string()),
+        SyncRequest::GetEntries(_) => {
+            SyncResponse::Error("GetEntries not yet implemented".to_string())
+        }
+    };
     Json(response)
 }

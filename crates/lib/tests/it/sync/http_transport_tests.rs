@@ -1,6 +1,6 @@
 use eidetica::sync::{
     Address,
-    protocol::SyncResponse,
+    protocol::{SyncRequest, SyncResponse},
     transports::{SyncTransport, http::HttpTransport},
 };
 
@@ -63,8 +63,9 @@ async fn test_http_transport_client_server_communication() {
         .set_subtree_data("data", r#"{"single": "entry"}"#)
         .build();
 
+    let single_request = SyncRequest::SendEntries(vec![single_entry]);
     let single_response = client_transport
-        .send_request(&http_address, &[single_entry])
+        .send_request(&http_address, &single_request)
         .await
         .unwrap();
 
@@ -83,8 +84,9 @@ async fn test_http_transport_client_server_communication() {
         .set_subtree_data("data", r#"{"entry": "2"}"#)
         .build();
 
+    let multi_request = SyncRequest::SendEntries(vec![entry1, entry2]);
     let multi_response = client_transport
-        .send_request(&http_address, &[entry1, entry2])
+        .send_request(&http_address, &multi_request)
         .await
         .unwrap();
 
@@ -109,7 +111,8 @@ async fn test_http_transport_connection_refused() {
     // Using a high port that's unlikely to be in use
     let entry = Entry::builder("test").build();
     let unreachable_address = Address::http("127.0.0.1:59999");
-    let result = transport.send_request(&unreachable_address, &[entry]).await;
+    let request = SyncRequest::SendEntries(vec![entry]);
+    let result = transport.send_request(&unreachable_address, &request).await;
 
     assert!(result.is_err());
 }

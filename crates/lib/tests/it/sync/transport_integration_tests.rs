@@ -1,5 +1,6 @@
 use eidetica::sync::{
     Address,
+    protocol::SyncRequest,
     transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
 };
 
@@ -66,14 +67,15 @@ async fn test_transport_error_handling_consistency() {
 
     // Both should fail to send requests when no server is running
     let entry = Entry::builder("test").build();
+    let request = SyncRequest::SendEntries(vec![entry.clone()]);
     let http_result = http_transport
-        .send_request(
-            &Address::http("127.0.0.1:59999"),
-            std::slice::from_ref(&entry),
-        )
+        .send_request(&Address::http("127.0.0.1:59999"), &request)
         .await;
     let iroh_result = iroh_transport
-        .send_request(&Address::iroh("invalid_node_id"), &[entry])
+        .send_request(
+            &Address::iroh("invalid_node_id"),
+            &SyncRequest::SendEntries(vec![entry]),
+        )
         .await;
 
     assert!(http_result.is_err());

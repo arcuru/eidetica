@@ -1,6 +1,6 @@
 use eidetica::sync::{
     Address,
-    protocol::SyncResponse,
+    protocol::{SyncRequest, SyncResponse},
     transports::{SyncTransport, http::HttpTransport},
 };
 
@@ -23,7 +23,8 @@ async fn test_unified_message_handling() {
         .build();
 
     // Test single entry request directly through shared handler
-    let single_response = handle_request(std::slice::from_ref(&single_entry)).await;
+    let single_request = SyncRequest::SendEntries(vec![single_entry.clone()]);
+    let single_response = handle_request(&single_request).await;
     match single_response {
         SyncResponse::Ack => {
             // Expected for single entry
@@ -32,7 +33,8 @@ async fn test_unified_message_handling() {
     }
 
     // Test multiple entries request directly through shared handler
-    let multi_response = handle_request(&[entry1.clone(), entry2.clone()]).await;
+    let multi_request = SyncRequest::SendEntries(vec![entry1.clone(), entry2.clone()]);
+    let multi_response = handle_request(&multi_request).await;
     match multi_response {
         SyncResponse::Count(count) => {
             assert_eq!(count, 2);
@@ -47,7 +49,7 @@ async fn test_unified_message_handling() {
     let http_address = Address::http(&http_addr);
 
     let http_single = http_transport
-        .send_request(&http_address, &[single_entry])
+        .send_request(&http_address, &SyncRequest::SendEntries(vec![single_entry]))
         .await
         .unwrap();
 
@@ -55,7 +57,10 @@ async fn test_unified_message_handling() {
     assert_eq!(http_single, SyncResponse::Ack);
 
     let http_multi = http_transport
-        .send_request(&http_address, &[entry1, entry2])
+        .send_request(
+            &http_address,
+            &SyncRequest::SendEntries(vec![entry1, entry2]),
+        )
         .await
         .unwrap();
 
@@ -86,7 +91,8 @@ async fn test_http_v0_json_endpoint() {
         .set_subtree_data("data", r#"{"test": "direct_http"}"#)
         .build();
 
-    let response = client.post(&url).json(&vec![entry]).send().await.unwrap();
+    let request = SyncRequest::SendEntries(vec![entry]);
+    let response = client.post(&url).json(&request).send().await.unwrap();
 
     assert!(response.status().is_success());
 
@@ -106,12 +112,8 @@ async fn test_http_v0_json_endpoint() {
         .set_subtree_data("data", r#"{"test": "direct_http_2"}"#)
         .build();
 
-    let response = client
-        .post(&url)
-        .json(&vec![entry1, entry2])
-        .send()
-        .await
-        .unwrap();
+    let multi_request = SyncRequest::SendEntries(vec![entry1, entry2]);
+    let response = client.post(&url).json(&multi_request).send().await.unwrap();
 
     assert!(response.status().is_success());
 

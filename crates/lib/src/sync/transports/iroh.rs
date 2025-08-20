@@ -5,11 +5,10 @@
 
 use super::{SyncTransport, shared::*};
 use crate::Result;
-use crate::entry::Entry;
 use crate::sync::error::SyncError;
 use crate::sync::handler::handle_request;
 use crate::sync::peer_types::Address;
-use crate::sync::protocol::SyncResponse;
+use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr};
@@ -119,7 +118,7 @@ impl IrohTransport {
         };
 
         // Deserialize the request using JsonHandler
-        let request: Vec<Entry> = match JsonHandler::deserialize_request(&buffer) {
+        let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to deserialize request: {e}");
@@ -196,7 +195,7 @@ impl SyncTransport for IrohTransport {
         Ok(())
     }
 
-    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse> {
+    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
         if !self.can_handle_address(address) {
             return Err(SyncError::UnsupportedTransport {
                 transport_type: address.transport_type.clone(),

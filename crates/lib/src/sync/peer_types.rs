@@ -5,6 +5,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Connection state for a peer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ConnectionState {
+    /// Not connected to the peer
+    Disconnected,
+    /// Currently attempting to connect
+    Connecting,
+    /// Successfully connected
+    Connected,
+    /// Connection failed with error message
+    Failed(String),
+}
+
 /// Simple address type containing transport type and address string
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Address {
@@ -51,6 +64,14 @@ pub struct PeerInfo {
     pub status: PeerStatus,
     /// Connection addresses for this peer
     pub addresses: Vec<Address>,
+    /// Current connection state
+    pub connection_state: ConnectionState,
+    /// ISO timestamp of last successful sync
+    pub last_successful_sync: Option<String>,
+    /// Number of connection attempts
+    pub connection_attempts: u32,
+    /// Last connection error if any
+    pub last_error: Option<String>,
 }
 
 /// Status of a remote peer in the sync network.
@@ -75,6 +96,10 @@ impl PeerInfo {
             last_seen: now,
             status: PeerStatus::Active,
             addresses: Vec::new(),
+            connection_state: ConnectionState::Disconnected,
+            last_successful_sync: None,
+            connection_attempts: 0,
+            last_error: None,
         }
     }
 

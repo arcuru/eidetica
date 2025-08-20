@@ -7,7 +7,7 @@
 use crate::Result;
 use crate::entry::Entry;
 use crate::sync::peer_types::Address;
-use crate::sync::protocol::SyncResponse;
+use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
 
 pub mod http;
@@ -44,15 +44,15 @@ pub trait SyncTransport: Send + Sync {
     /// A Result indicating success or failure of server shutdown.
     async fn stop_server(&mut self) -> Result<()>;
 
-    /// Send a request to a sync peer and receive a response.
+    /// Send a sync request to a peer and receive a response.
     ///
     /// # Arguments
     /// * `address` - The address of the peer to connect to
-    /// * `request` - The sync request to send (list of entries)
+    /// * `request` - The sync request to send
     ///
     /// # Returns
     /// The response from the peer, or an error if the request failed.
-    async fn send_request(&self, address: &Address, request: &[Entry]) -> Result<SyncResponse>;
+    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
 
     /// Send entries to a sync peer and ensure they are acknowledged.
     ///
@@ -65,9 +65,16 @@ pub trait SyncTransport: Send + Sync {
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
     async fn send_entries(&self, address: &Address, entries: &[Entry]) -> Result<()> {
-        let response = self.send_request(address, entries).await?;
+        let request = SyncRequest::SendEntries(entries.to_vec());
+        let response = self.send_request(address, &request).await?;
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+            SyncResponse::Error(msg) => Err(crate::sync::SyncError::Network(msg).into()),
+            _ => Err(crate::sync::SyncError::UnexpectedResponse {
+                expected: "Ack or Count",
+                actual: format!("{response:?}"),
+            }
+            .into()),
         }
     }
 

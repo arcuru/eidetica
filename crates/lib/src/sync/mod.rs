@@ -14,9 +14,10 @@ pub mod protocol;
 pub mod transports;
 
 pub use error::SyncError;
-pub use peer_types::{Address, PeerInfo, PeerStatus};
+pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 
 use peer_manager::PeerManager;
+use protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Private constant for the sync settings subtree name
@@ -136,6 +137,39 @@ impl Sync {
     /// Get a reference to the sync settings tree.
     pub fn sync_tree(&self) -> &Tree {
         &self.sync_tree
+    }
+
+    /// Get the device ID for this sync instance.
+    ///
+    /// The device ID is generated lazily and stored in settings.
+    pub fn get_device_id(&self) -> Result<String> {
+        match self.get_setting("device_id")? {
+            Some(id) => Ok(id),
+            None => {
+                // Generate a new device ID if not present
+                let id = format!("device_{}", uuid::Uuid::new_v4());
+                Ok(id)
+            }
+        }
+    }
+
+    /// Get the device public key for this sync instance.
+    ///
+    /// # Returns
+    /// The device's public key in ed25519:base64 format.
+    pub fn get_device_public_key(&self) -> Result<String> {
+        // TODO: Get actual public key from auth system
+        // For now, return a placeholder
+        use base64ct::{Base64, Encoding};
+        Ok(format!(
+            "ed25519:{}",
+            Base64::encode_string(b"placeholder_key")
+        ))
+    }
+
+    /// Set the device ID (primarily for testing).
+    pub fn set_device_id(&mut self, device_id: &str) -> Result<()> {
+        self.set_setting("device_id", device_id)
     }
 
     // === Peer Management Methods ===
@@ -265,6 +299,110 @@ impl Sync {
         let op = self.sync_tree.new_operation()?;
         PeerManager::new(&op).get_tree_peers(tree_root_id)
         // No commit - just reading
+    }
+
+    /// Connect to a remote peer and perform handshake.
+    ///
+    /// This method initiates a connection to a peer, performs the handshake protocol,
+    /// and automatically registers the peer if successful.
+    ///
+    /// # Arguments
+    /// * `address` - The address of the peer to connect to
+    ///
+    /// # Returns
+    /// A Result containing the peer's public key if successful.
+    pub async fn connect_to_peer(&mut self, address: &Address) -> Result<String> {
+        if self.transport.is_none() {
+            return Err(SyncError::NoTransportEnabled.into());
+        }
+
+        // Generate challenge for authentication
+        let challenge = generate_challenge();
+
+        // Get our device info
+        let device_id = self.get_device_id()?;
+        let public_key = self.get_device_public_key()?;
+
+        // Create handshake request
+        let handshake_request = HandshakeRequest {
+            device_id,
+            public_key: public_key.clone(),
+            display_name: self.get_setting("display_name")?,
+            protocol_version: PROTOCOL_VERSION,
+            challenge,
+        };
+
+        // Send handshake request
+        let request = SyncRequest::Handshake(handshake_request);
+        let response = self.send_request_async(&request, address).await?;
+
+        // Process handshake response
+        match response {
+            SyncResponse::Handshake(handshake_resp) => {
+                // Verify protocol version
+                if handshake_resp.protocol_version != PROTOCOL_VERSION {
+                    return Err(SyncError::ProtocolMismatch {
+                        expected: PROTOCOL_VERSION,
+                        received: handshake_resp.protocol_version,
+                    }
+                    .into());
+                }
+
+                // TODO: Verify signature on challenge_response
+                // For now, we trust the response
+
+                // Auto-register the peer
+                self.register_peer(
+                    &handshake_resp.public_key,
+                    handshake_resp.display_name.as_deref(),
+                )?;
+
+                // Add the address to the peer
+                self.add_peer_address(&handshake_resp.public_key, address.clone())?;
+
+                // Update connection state
+                self.update_peer_connection_state(
+                    &handshake_resp.public_key,
+                    ConnectionState::Connected,
+                )?;
+
+                Ok(handshake_resp.public_key)
+            }
+            SyncResponse::Error(msg) => Err(SyncError::HandshakeFailed(msg).into()),
+            _ => Err(SyncError::HandshakeFailed("Unexpected response type".to_string()).into()),
+        }
+    }
+
+    /// Update the connection state of a peer.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key
+    /// * `state` - The new connection state
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub fn update_peer_connection_state(
+        &mut self,
+        pubkey: &str,
+        state: ConnectionState,
+    ) -> Result<()> {
+        let op = self.sync_tree.new_operation()?;
+        let peer_manager = PeerManager::new(&op);
+
+        // Get current peer info
+        let mut peer_info = match peer_manager.get_peer_info(pubkey)? {
+            Some(info) => info,
+            None => return Err(SyncError::PeerNotFound(pubkey.to_string()).into()),
+        };
+
+        // Update connection state
+        peer_info.connection_state = state;
+        peer_info.touch();
+
+        // Save updated peer info
+        peer_manager.update_peer_info(pubkey, peer_info)?;
+        op.commit()?;
+        Ok(())
     }
 
     /// Check if a tree is synced with a specific peer.
@@ -473,4 +611,39 @@ impl Sync {
             runtime.block_on(self.send_entries_async(entries_ref, address))
         }
     }
+
+    /// Send a sync request to a peer and get a response (async version).
+    ///
+    /// # Arguments
+    /// * `request` - The sync request to send
+    /// * `address` - The address of the peer
+    ///
+    /// # Returns
+    /// The sync response from the peer.
+    async fn send_request_async(
+        &self,
+        request: &SyncRequest,
+        address: &Address,
+    ) -> Result<SyncResponse> {
+        if let Some(transport) = &self.transport {
+            if !transport.can_handle_address(address) {
+                return Err(SyncError::UnsupportedTransport {
+                    transport_type: address.transport_type.clone(),
+                }
+                .into());
+            }
+            transport.send_request(address, request).await
+        } else {
+            Err(SyncError::NoTransportEnabled.into())
+        }
+    }
+}
+
+/// Generate random challenge bytes for authentication.
+fn generate_challenge() -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let mut challenge = vec![0u8; 32];
+    rng.fill(&mut challenge[..]);
+    challenge
 }

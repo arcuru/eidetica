@@ -39,15 +39,18 @@ async fn test_http_v0_endpoint_format() {
 
     // Test that the v0 endpoint is accessible
     use eidetica::entry::Entry;
+    use eidetica::sync::protocol::SyncRequest;
 
     let client = reqwest::Client::new();
     let entry = Entry::builder("test_root")
         .set_subtree_data("data", r#"{"test": "v0_endpoint"}"#)
         .build();
 
+    let request = SyncRequest::SendEntries(vec![entry]);
+
     let response = client
         .post(format!("http://{addr}/api/v0"))
-        .json(&vec![entry])
+        .json(&request)
         .send()
         .await
         .unwrap();

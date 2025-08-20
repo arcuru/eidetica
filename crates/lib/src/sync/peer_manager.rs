@@ -4,7 +4,7 @@
 //! sync relationships. It operates on the sync tree but doesn't own it.
 
 use super::error::SyncError;
-use super::peer_types::{Address, PeerInfo, PeerStatus};
+use super::peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use crate::atomicop::AtomicOp;
 use crate::subtree::DocStore;
 use crate::{Error, Result};
@@ -110,6 +110,91 @@ impl<'a> PeerManager<'a> {
         Ok(())
     }
 
+    /// Update complete peer information.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The peer's public key
+    /// * `peer_info` - The updated peer information
+    ///
+    /// # Returns
+    /// A Result indicating success or an error.
+    pub(super) fn update_peer_info(&self, pubkey: &str, peer_info: PeerInfo) -> Result<()> {
+        let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
+
+        // Check if peer exists
+        if !peers.contains_path(Self::peer_path(pubkey, None)) {
+            return Err(Error::Sync(SyncError::PeerNotFound(pubkey.to_string())));
+        }
+
+        // Update all peer fields
+        peers.set_path(
+            Self::peer_path(pubkey, Some("pubkey")),
+            peer_info.pubkey.clone(),
+        )?;
+
+        if let Some(name) = &peer_info.display_name {
+            peers.set_path(Self::peer_path(pubkey, Some("display_name")), name.clone())?;
+        }
+
+        peers.set_path(
+            Self::peer_path(pubkey, Some("first_seen")),
+            peer_info.first_seen.clone(),
+        )?;
+
+        peers.set_path(
+            Self::peer_path(pubkey, Some("last_seen")),
+            peer_info.last_seen.clone(),
+        )?;
+
+        // Update status
+        let status_str = match peer_info.status {
+            PeerStatus::Active => "active",
+            PeerStatus::Inactive => "inactive",
+            PeerStatus::Blocked => "blocked",
+        };
+        peers.set_path(
+            Self::peer_path(pubkey, Some("status")),
+            status_str.to_string(),
+        )?;
+
+        // Update connection state
+        let connection_state_str = match &peer_info.connection_state {
+            ConnectionState::Disconnected => "disconnected",
+            ConnectionState::Connecting => "connecting",
+            ConnectionState::Connected => "connected",
+            ConnectionState::Failed(msg) => &format!("failed:{msg}"),
+        };
+        peers.set_path(
+            Self::peer_path(pubkey, Some("connection_state")),
+            connection_state_str.to_string(),
+        )?;
+
+        // Update optional fields
+        if let Some(last_sync) = &peer_info.last_successful_sync {
+            peers.set_path(
+                Self::peer_path(pubkey, Some("last_successful_sync")),
+                last_sync.clone(),
+            )?;
+        }
+
+        peers.set_path(
+            Self::peer_path(pubkey, Some("connection_attempts")),
+            peer_info.connection_attempts as i64,
+        )?;
+
+        if let Some(error) = &peer_info.last_error {
+            peers.set_path(Self::peer_path(pubkey, Some("last_error")), error.clone())?;
+        }
+
+        // Store addresses if any
+        if !peer_info.addresses.is_empty() {
+            let addresses_json = serde_json::to_string(&peer_info.addresses).unwrap_or_default();
+            peers.set_path(Self::peer_path(pubkey, Some("addresses")), addresses_json)?;
+        }
+
+        Ok(())
+    }
+
     /// Update the status of a registered peer.
     ///
     /// # Arguments
@@ -198,6 +283,33 @@ impl<'a> PeerManager<'a> {
             _ => PeerStatus::Active, // Default
         };
 
+        // Get connection state if present
+        let connection_state_str = peers
+            .get_path_as::<String>(&Self::peer_path(pubkey, Some("connection_state")))
+            .unwrap_or_else(|_| "disconnected".to_string());
+        let connection_state = match connection_state_str.as_str() {
+            "disconnected" => ConnectionState::Disconnected,
+            "connecting" => ConnectionState::Connecting,
+            "connected" => ConnectionState::Connected,
+            s if s.starts_with("failed:") => {
+                ConnectionState::Failed(s.strip_prefix("failed:").unwrap_or("").to_string())
+            }
+            _ => ConnectionState::Disconnected,
+        };
+
+        let last_successful_sync = peers
+            .get_path_as::<String>(&Self::peer_path(pubkey, Some("last_successful_sync")))
+            .ok();
+
+        let connection_attempts = peers
+            .get_path_as::<i64>(&Self::peer_path(pubkey, Some("connection_attempts")))
+            .map(|v| v as u32)
+            .unwrap_or(0);
+
+        let last_error = peers
+            .get_path_as::<String>(&Self::peer_path(pubkey, Some("last_error")))
+            .ok();
+
         let mut peer_info = PeerInfo {
             pubkey: peer_pubkey,
             display_name,
@@ -205,6 +317,10 @@ impl<'a> PeerManager<'a> {
             last_seen,
             status,
             addresses: Vec::new(),
+            connection_state,
+            last_successful_sync,
+            connection_attempts,
+            last_error,
         };
 
         // Parse addresses if present
