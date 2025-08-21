@@ -29,6 +29,10 @@ pub enum SyncError {
     #[error("Network error: {0}")]
     Network(String),
 
+    /// Command channel send error.
+    #[error("Failed to send command to background sync: {0}")]
+    CommandSendError(String),
+
     /// Transport initialization error.
     #[error("Failed to initialize transport: {0}")]
     TransportInit(String),
@@ -72,6 +76,22 @@ pub enum SyncError {
     /// Handshake failed.
     #[error("Handshake failed: {0}")]
     HandshakeFailed(String),
+
+    /// Entry not found in backend storage.
+    #[error("Entry not found: {0}")]
+    EntryNotFound(crate::entry::ID),
+
+    /// Invalid entry received (validation failed).
+    #[error("Invalid entry: {0}")]
+    InvalidEntry(String),
+
+    /// Sync protocol error.
+    #[error("Sync protocol error: {0}")]
+    SyncProtocolError(String),
+
+    /// Backend storage error.
+    #[error("Backend error: {0}")]
+    BackendError(String),
 }
 
 impl SyncError {
@@ -105,6 +125,19 @@ impl SyncError {
 
     /// Check if this is a not found error.
     pub fn is_not_found(&self) -> bool {
-        matches!(self, SyncError::PeerNotFound(_))
+        matches!(
+            self,
+            SyncError::PeerNotFound(_) | SyncError::EntryNotFound(_)
+        )
+    }
+
+    /// Check if this is a validation error.
+    pub fn is_validation_error(&self) -> bool {
+        matches!(self, SyncError::InvalidEntry(_))
+    }
+
+    /// Check if this is a backend error.
+    pub fn is_backend_error(&self) -> bool {
+        matches!(self, SyncError::BackendError(_))
     }
 }

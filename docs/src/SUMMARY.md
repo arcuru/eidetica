@@ -12,6 +12,8 @@
   - [Subtrees](user_guide/concepts/subtrees.md)
   - [Operations](user_guide/operations.md)
 - [Authentication Guide](user_guide/authentication_guide.md)
+- [Synchronization Guide](user_guide/synchronization_guide.md)
+- [Sync Quick Reference](user_guide/sync_quick_reference.md)
 - [Tutorial: Todo App](user_guide/tutorial_todo_app.md)
 - [Code Examples](user_guide/examples_snippets.md)
 
@@ -24,6 +26,7 @@
   - [BaseDB](internal/core_components/basedb.md)
   - [Tree](internal/core_components/tree.md)
   - [Authentication](internal/core_components/authentication.md)
+  - [Synchronization](internal/core_components/synchronization.md)
   - [Subtree Implementations](internal/core_components/subtrees.md)
   - [DocStore (Internal)](internal/core_components/docstore.md)
   - [CRDT System](internal/core_components/crdt.md)
@@ -46,5 +49,6 @@
 
 - [Overview](design/index.md)
   - [Authentication](design/authentication.md)
+  - [Synchronization](design/synchronization.md)
   - [Settings Storage](design/settings_storage.md)
   - [Error Handling](design/error_handling.md)

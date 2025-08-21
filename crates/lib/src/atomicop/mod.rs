@@ -11,9 +11,11 @@ use crate::crdt::doc::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
 use crate::subtree::DocStore;
 use crate::subtree::SubTree;
+use crate::sync::hooks::{SyncHookCollection, SyncHookContext};
 use crate::tree::Tree;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +55,8 @@ pub struct AtomicOp {
     tree: Tree,
     /// Optional authentication key ID for signing entries
     auth_key_name: Option<String>,
+    /// Optional sync hooks to execute after successful commit
+    sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
 impl AtomicOp {
@@ -107,6 +111,7 @@ impl AtomicOp {
             entry_builder: Rc::new(RefCell::new(Some(builder))),
             tree: tree.clone(),
             auth_key_name: None,
+            sync_hooks: None,
         })
     }
 
@@ -124,6 +129,29 @@ impl AtomicOp {
     pub fn with_auth(mut self, key_name: impl Into<String>) -> Self {
         self.auth_key_name = Some(key_name.into());
         self
+    }
+
+    /// Set sync hooks for this operation.
+    ///
+    /// Sync hooks are called after successful commit to notify the sync system
+    /// about new entries that may need to be synchronized.
+    ///
+    /// # Arguments
+    /// * `hooks` - The sync hook collection to execute after commit
+    ///
+    /// # Returns
+    /// Self for method chaining
+    pub fn with_sync_hooks(mut self, hooks: Arc<SyncHookCollection>) -> Self {
+        self.sync_hooks = Some(hooks);
+        self
+    }
+
+    /// Set sync hooks for this operation (mutable version).
+    ///
+    /// # Arguments
+    /// * `hooks` - The sync hook collection to execute after commit
+    pub fn set_sync_hooks(&mut self, hooks: Arc<SyncHookCollection>) {
+        self.sync_hooks = Some(hooks);
     }
 
     /// Set the authentication key ID for this operation (mutable version).
@@ -864,7 +892,25 @@ impl AtomicOp {
         let id = entry.id();
 
         // Store in the backend with the determined verification status
-        self.tree.backend().put(verification_status, entry)?;
+        self.tree
+            .backend()
+            .put(verification_status, entry.clone())?;
+
+        // Execute sync hooks if present
+        if let Some(hooks) = &self.sync_hooks
+            && hooks.has_hooks()
+        {
+            let context = SyncHookContext {
+                tree_id: self.tree.root_id().clone(),
+                entry: entry.clone(),
+                is_root_entry: entry.root().is_empty(),
+            };
+
+            // Execute hooks - failures are logged but don't fail the commit
+            if let Err(e) = hooks.execute_hooks(&context) {
+                eprintln!("Sync hook execution failed (commit succeeded): {e}");
+            }
+        }
 
         Ok(id)
     }

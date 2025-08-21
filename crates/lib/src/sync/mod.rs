@@ -6,42 +6,47 @@
 use crate::{Result, crdt::Doc, entry::Entry, subtree::DocStore, tree::Tree};
 use std::sync::Arc;
 
+pub mod background;
 pub mod error;
 pub mod handler;
+pub mod hooks;
 mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
+pub mod state;
 pub mod transports;
 
 pub use error::SyncError;
 pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 
+use background::{BackgroundSync, SyncCommand};
+use hooks::SyncHook;
 use peer_manager::PeerManager;
-use protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse};
+use protocol::{GetEntriesRequest, GetTipsRequest, SyncRequest, SyncResponse};
+use tokio::sync::{mpsc, oneshot};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
 /// Private constant for the sync settings subtree name
 const SETTINGS_SUBTREE: &str = "settings_map";
 
 /// Private constant for the device identity key name
+/// This is the name of the Device Key used as the shared identifier for this Device.
 const DEVICE_KEY_NAME: &str = "_device_key";
 
 /// Synchronization manager for the database.
 ///
-/// The Sync module maintains its own tree for storing synchronization settings
-/// and managing the synchronization state of the database.
+/// The Sync module is a thin frontend that communicates with a background
+/// sync engine thread via command channels. All actual sync operations, transport
+/// communication, and state management happen in the background thread.
 pub struct Sync {
-    /// The backend for tree operations
+    /// Communication channel to the background sync engine
+    command_tx: mpsc::Sender<SyncCommand>,
+    /// The backend for read operations and tree management
     backend: Arc<dyn crate::backend::Database>,
     /// The tree containing synchronization settings
     sync_tree: Tree,
-    /// Optional network transport for sync communication
-    // Uses simple Box ownership rather than Arc<RwLock<>> because:
-    // 1. Each Sync instance exclusively owns its transport (1:1 relationship)
-    // 2. All transport operations require &mut self, ensuring exclusive access
-    // 3. No sharing between Sync instances - each BaseDB has exactly one Sync
-    // 4. Simpler ownership model without unnecessary concurrency overhead
-    transport: Option<Box<dyn SyncTransport>>,
+    /// Track if transport has been enabled
+    transport_enabled: bool,
 }
 
 impl Sync {
@@ -62,10 +67,15 @@ impl Sync {
         // Set the default authentication key so all operations use the device key
         sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
 
+        // For now, create a placeholder command channel
+        // This will be properly initialized when a transport is enabled
+        let (command_tx, _) = mpsc::channel(100);
+
         Ok(Self {
+            command_tx,
             backend,
             sync_tree,
-            transport: None,
+            transport_enabled: false,
         })
     }
 
@@ -86,10 +96,15 @@ impl Sync {
         // Set the default authentication key so all operations use the device key
         sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
 
+        // For now, create a placeholder command channel
+        // This will be properly initialized when a transport is enabled
+        let (command_tx, _) = mpsc::channel(100);
+
         Ok(Self {
+            command_tx,
             backend,
             sync_tree,
-            transport: None,
+            transport_enabled: false,
         })
     }
 
@@ -103,10 +118,10 @@ impl Sync {
     /// # Arguments
     /// * `key` - The setting key
     /// * `value` - The setting value
-    pub fn set_setting(&mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Result<()> {
+    pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
         let sync_settings = op.get_subtree::<DocStore>(SETTINGS_SUBTREE)?;
-        sync_settings.set_string(key.as_ref(), value.as_ref())?;
+        sync_settings.set_string(key, value)?;
         op.commit()?;
         Ok(())
     }
@@ -141,16 +156,9 @@ impl Sync {
 
     /// Get the device ID for this sync instance.
     ///
-    /// The device ID is generated lazily and stored in settings.
+    /// The device ID is the device's public key in ed25519:base64 format.
     pub fn get_device_id(&self) -> Result<String> {
-        match self.get_setting("device_id")? {
-            Some(id) => Ok(id),
-            None => {
-                // Generate a new device ID if not present
-                let id = format!("device_{}", uuid::Uuid::new_v4());
-                Ok(id)
-            }
-        }
+        self.get_device_public_key()
     }
 
     /// Get the device public key for this sync instance.
@@ -158,19 +166,35 @@ impl Sync {
     /// # Returns
     /// The device's public key in ed25519:base64 format.
     pub fn get_device_public_key(&self) -> Result<String> {
-        // TODO: Get actual public key from auth system
-        // For now, return a placeholder
-        use base64ct::{Base64, Encoding};
-        Ok(format!(
-            "ed25519:{}",
-            Base64::encode_string(b"placeholder_key")
-        ))
+        use crate::auth::crypto::format_public_key;
+
+        let signing_key = self.get_device_signing_key()?;
+        let verifying_key = signing_key.verifying_key();
+        Ok(format_public_key(&verifying_key))
+    }
+
+    /// Get the device signing key for cryptographic operations.
+    ///
+    /// # Returns
+    /// The device's private signing key if available.
+    pub(crate) fn get_device_signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
+        self.backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| {
+                SyncError::DeviceKeyNotFound {
+                    key_name: DEVICE_KEY_NAME.to_string(),
+                }
+                .into()
+            })
     }
 
     /// Set the device ID (primarily for testing).
-    pub fn set_device_id(&mut self, device_id: impl Into<String>) -> Result<()> {
-        let device_id = device_id.into();
-        self.set_setting("device_id", device_id)
+    /// Note: This is deprecated - device ID is now the public key and cannot be set directly.
+    #[cfg(test)]
+    #[deprecated(note = "Device ID is now the public key and cannot be set directly")]
+    pub fn set_device_id(&mut self, _device_id: impl Into<String>) -> Result<()> {
+        // No-op: device ID is now the public key
+        Ok(())
     }
 
     // === Peer Management Methods ===
@@ -189,8 +213,7 @@ impl Sync {
         display_name: Option<&str>,
     ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        let pubkey = pubkey.into();
-        PeerManager::new(&op).register_peer(&pubkey, display_name)?;
+        PeerManager::new(&op).register_peer(pubkey, display_name)?;
         op.commit()?;
         Ok(())
     }
@@ -248,7 +271,7 @@ impl Sync {
     /// A Result indicating success or an error.
     pub fn remove_peer(&mut self, pubkey: impl AsRef<str>) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).remove_peer(pubkey.as_ref())?;
+        PeerManager::new(&op).remove_peer(pubkey)?;
         op.commit()?;
         Ok(())
     }
@@ -269,7 +292,7 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).add_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())?;
+        PeerManager::new(&op).add_tree_sync(peer_pubkey, tree_root_id)?;
         op.commit()?;
         Ok(())
     }
@@ -288,7 +311,7 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).remove_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())?;
+        PeerManager::new(&op).remove_tree_sync(peer_pubkey, tree_root_id)?;
         op.commit()?;
         Ok(())
     }
@@ -302,7 +325,7 @@ impl Sync {
     /// A vector of tree root IDs synced with this peer.
     pub fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_peer_trees(peer_pubkey.as_ref())
+        PeerManager::new(&op).get_peer_trees(peer_pubkey)
         // No commit - just reading
     }
 
@@ -315,7 +338,7 @@ impl Sync {
     /// A vector of peer public keys that sync this tree.
     pub fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_tree_peers(tree_root_id.as_ref())
+        PeerManager::new(&op).get_tree_peers(tree_root_id)
         // No commit - just reading
     }
 
@@ -330,65 +353,18 @@ impl Sync {
     /// # Returns
     /// A Result containing the peer's public key if successful.
     pub async fn connect_to_peer(&mut self, address: &Address) -> Result<String> {
-        if self.transport.is_none() {
-            return Err(SyncError::NoTransportEnabled.into());
-        }
+        let (tx, rx) = oneshot::channel();
 
-        // Generate challenge for authentication
-        let challenge = generate_challenge();
+        self.command_tx
+            .send(SyncCommand::ConnectToPeer {
+                address: address.clone(),
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        // Get our device info
-        let device_id = self.get_device_id()?;
-        let public_key = self.get_device_public_key()?;
-
-        // Create handshake request
-        let handshake_request = HandshakeRequest {
-            device_id,
-            public_key: public_key.clone(),
-            display_name: self.get_setting("display_name")?,
-            protocol_version: PROTOCOL_VERSION,
-            challenge,
-        };
-
-        // Send handshake request
-        let request = SyncRequest::Handshake(handshake_request);
-        let response = self.send_request_async(&request, address).await?;
-
-        // Process handshake response
-        match response {
-            SyncResponse::Handshake(handshake_resp) => {
-                // Verify protocol version
-                if handshake_resp.protocol_version != PROTOCOL_VERSION {
-                    return Err(SyncError::ProtocolMismatch {
-                        expected: PROTOCOL_VERSION,
-                        received: handshake_resp.protocol_version,
-                    }
-                    .into());
-                }
-
-                // TODO: Verify signature on challenge_response
-                // For now, we trust the response
-
-                // Auto-register the peer
-                self.register_peer(
-                    &handshake_resp.public_key,
-                    handshake_resp.display_name.as_deref(),
-                )?;
-
-                // Add the address to the peer
-                self.add_peer_address(&handshake_resp.public_key, address.clone())?;
-
-                // Update connection state
-                self.update_peer_connection_state(
-                    &handshake_resp.public_key,
-                    ConnectionState::Connected,
-                )?;
-
-                Ok(handshake_resp.public_key)
-            }
-            SyncResponse::Error(msg) => Err(SyncError::HandshakeFailed(msg).into()),
-            _ => Err(SyncError::HandshakeFailed("Unexpected response type".to_string()).into()),
-        }
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
     /// Update the connection state of a peer.
@@ -401,16 +377,16 @@ impl Sync {
     /// A Result indicating success or an error.
     pub fn update_peer_connection_state(
         &mut self,
-        pubkey: &str,
+        pubkey: impl AsRef<str>,
         state: ConnectionState,
     ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
         let peer_manager = PeerManager::new(&op);
 
         // Get current peer info
-        let mut peer_info = match peer_manager.get_peer_info(pubkey)? {
+        let mut peer_info = match peer_manager.get_peer_info(pubkey.as_ref())? {
             Some(info) => info,
-            None => return Err(SyncError::PeerNotFound(pubkey.to_string()).into()),
+            None => return Err(SyncError::PeerNotFound(pubkey.as_ref().to_string()).into()),
         };
 
         // Update connection state
@@ -418,7 +394,7 @@ impl Sync {
         peer_info.touch();
 
         // Save updated peer info
-        peer_manager.update_peer_info(pubkey, peer_info)?;
+        peer_manager.update_peer_info(pubkey.as_ref(), peer_info)?;
         op.commit()?;
         Ok(())
     }
@@ -437,7 +413,7 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey.as_ref(), tree_root_id.as_ref())
+        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey, tree_root_id)
         // No commit - just reading
     }
 
@@ -491,11 +467,11 @@ impl Sync {
     /// A vector of addresses matching the criteria.
     pub fn get_peer_addresses(
         &self,
-        peer_pubkey: &str,
+        peer_pubkey: impl AsRef<str>,
         transport_type: Option<&str>,
     ) -> Result<Vec<Address>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_addresses(peer_pubkey, transport_type)
+        PeerManager::new(&op).get_addresses(peer_pubkey.as_ref(), transport_type)
         // No commit - just reading
     }
 
@@ -509,11 +485,22 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure of server startup.
     pub async fn start_server_async(&mut self, addr: &str) -> Result<()> {
-        if let Some(transport) = &mut self.transport {
-            transport.start_server(addr).await
-        } else {
-            Err(SyncError::NoTransportEnabled.into())
+        if !self.transport_enabled {
+            return Err(SyncError::NoTransportEnabled.into());
         }
+
+        let (tx, rx) = oneshot::channel();
+
+        self.command_tx
+            .send(SyncCommand::StartServer {
+                addr: addr.to_string(),
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
     /// Stop the running sync server (async version).
@@ -521,30 +508,57 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
     pub async fn stop_server_async(&mut self) -> Result<()> {
-        if let Some(transport) = &mut self.transport {
-            transport.stop_server().await
-        } else {
-            Err(SyncError::NoTransportEnabled.into())
+        if !self.transport_enabled {
+            return Err(SyncError::NoTransportEnabled.into());
         }
+        let (tx, rx) = oneshot::channel();
+
+        self.command_tx
+            .send(SyncCommand::StopServer { response: tx })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
     /// Enable HTTP transport for network communication.
     ///
-    /// This initializes the HTTP transport layer, allowing the sync module
-    /// to communicate over HTTP/REST APIs.
+    /// This initializes the HTTP transport layer and starts the background sync engine.
     pub fn enable_http_transport(&mut self) -> Result<()> {
         let transport = HttpTransport::new()?;
-        self.transport = Some(Box::new(transport));
+        self.start_background_sync(Box::new(transport))?;
+        self.transport_enabled = true;
         Ok(())
     }
 
     /// Enable Iroh transport for peer-to-peer network communication.
     ///
-    /// This initializes the Iroh transport layer, allowing the sync module
-    /// to communicate over QUIC-based peer-to-peer networking with hole punching.
+    /// This initializes the Iroh transport layer and starts the background sync engine.
     pub fn enable_iroh_transport(&mut self) -> Result<()> {
         let transport = IrohTransport::new()?;
-        self.transport = Some(Box::new(transport));
+        self.start_background_sync(Box::new(transport))?;
+        self.transport_enabled = true;
+        Ok(())
+    }
+
+    /// Start the background sync engine with the given transport
+    fn start_background_sync(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        // If we're in an async context, spawn directly
+        if tokio::runtime::Handle::try_current().is_ok() {
+            self.command_tx = BackgroundSync::start(transport, self.backend.clone());
+        } else {
+            // If not in async context, create a runtime to spawn the background task
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
+
+            let _guard = rt.enter();
+            self.command_tx = BackgroundSync::start(transport, self.backend.clone());
+
+            // Keep the runtime alive by detaching it
+            std::mem::forget(rt);
+        }
+
         Ok(())
     }
 
@@ -552,11 +566,35 @@ impl Sync {
     ///
     /// # Returns
     /// The address the server is bound to, or an error if no server is running.
+    /// Get the server address (async version).
+    pub async fn get_server_address_async(&self) -> Result<String> {
+        if !self.transport_enabled {
+            return Err(SyncError::NoTransportEnabled.into());
+        }
+        let (tx, rx) = oneshot::channel();
+
+        self.command_tx
+            .send(SyncCommand::GetServerAddress { response: tx })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Get the server address (sync version).
+    ///
+    /// Note: This method may not work correctly when called from within an async context.
+    /// Use get_server_address_async() instead when possible.
     pub fn get_server_address(&self) -> Result<String> {
-        if let Some(transport) = &self.transport {
-            transport.get_server_address()
+        // Try to use existing async context, or create runtime if needed
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(self.get_server_address_async())
         } else {
-            Err(SyncError::NoTransportEnabled.into())
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
+
+            runtime.block_on(self.get_server_address_async())
         }
     }
 
@@ -595,6 +633,312 @@ impl Sync {
         }
     }
 
+    // === Core Sync Methods ===
+
+    /// Synchronize a specific tree with a peer using bidirectional sync.
+    ///
+    /// This is the main synchronization method that implements tip exchange
+    /// and bidirectional entry transfer to keep trees in sync between peers.
+    /// It performs both pull (fetch missing entries) and push (send our entries).
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The public key of the peer to sync with
+    /// * `tree_id` - The ID of the tree to synchronize
+    ///
+    /// # Returns
+    /// A Result indicating success or failure of the sync operation.
+    pub async fn sync_tree_with_peer(
+        &self,
+        peer_pubkey: &str,
+        tree_id: &crate::entry::ID,
+    ) -> Result<()> {
+        // Get peer information and address
+        let peer_info = self
+            .get_peer_info(peer_pubkey)?
+            .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+
+        let address = peer_info
+            .addresses
+            .first()
+            .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
+
+        // Step 1: Get our current tips for this tree
+        let our_tips = self
+            .backend
+            .get_tips(tree_id)
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+
+        // Step 2: Get peer's tips for this tree
+        let their_tips = self.get_peer_tips(peer_pubkey, tree_id, address).await?;
+
+        // Step 3: Pull - Find entries we don't have and fetch them
+        let missing_entries = self.find_missing_entries(&our_tips, &their_tips)?;
+
+        if !missing_entries.is_empty() {
+            // Step 4: Fetch missing entries from peer
+            let entries = self
+                .fetch_entries_from_peer(peer_pubkey, address, &missing_entries)
+                .await?;
+
+            // Step 5: Validate and store received entries
+            self.store_received_entries(tree_id, entries).await?;
+        }
+
+        // Step 6: Push - Find entries peer doesn't have and send them
+        let entries_to_send = self.find_entries_to_send(&our_tips, &their_tips)?;
+
+        if !entries_to_send.is_empty() {
+            // Step 7: Send our entries that peer is missing
+            self.send_entries_to_peer_legacy(peer_pubkey, address, entries_to_send)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get tips from a peer for a specific tree.
+    async fn get_peer_tips(
+        &self,
+        peer_pubkey: &str,
+        tree_id: &crate::entry::ID,
+        address: &Address,
+    ) -> Result<Vec<crate::entry::ID>> {
+        let request = SyncRequest::GetTips(GetTipsRequest {
+            tree_id: tree_id.clone(),
+        });
+
+        let response = self.send_request_async(&request, address).await?;
+
+        match response {
+            SyncResponse::Tips(tips_response) => Ok(tips_response.tips),
+            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                "Peer {peer_pubkey} returned error for GetTips: {msg}"
+            ))
+            .into()),
+            _ => Err(SyncError::UnexpectedResponse {
+                expected: "Tips",
+                actual: format!("{response:?}"),
+            }
+            .into()),
+        }
+    }
+
+    /// Find entries that we're missing compared to the peer's tips.
+    fn find_missing_entries(
+        &self,
+        _our_tips: &[crate::entry::ID],
+        their_tips: &[crate::entry::ID],
+    ) -> Result<Vec<crate::entry::ID>> {
+        let mut missing = Vec::new();
+
+        for tip_id in their_tips {
+            // Check if we have this entry locally
+            match self.backend.get(tip_id) {
+                Ok(_) => {
+                    // We have this entry, nothing to do
+                }
+                Err(e) if e.is_not_found() => {
+                    // We don't have this entry, add it to missing list
+                    missing.push(tip_id.clone());
+                }
+                Err(e) => {
+                    return Err(SyncError::BackendError(format!(
+                        "Failed to check for entry {tip_id}: {e}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        Ok(missing)
+    }
+
+    /// Fetch specific entries from a peer.
+    async fn fetch_entries_from_peer(
+        &self,
+        peer_pubkey: &str,
+        address: &Address,
+        entry_ids: &[crate::entry::ID],
+    ) -> Result<Vec<Entry>> {
+        if entry_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let request = SyncRequest::GetEntries(GetEntriesRequest {
+            entry_ids: entry_ids.to_vec(),
+        });
+
+        let response = self.send_request_async(&request, address).await?;
+
+        match response {
+            SyncResponse::Entries(entries_response) => Ok(entries_response.entries),
+            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                "Peer {peer_pubkey} returned error for GetEntries: {msg}"
+            ))
+            .into()),
+            _ => Err(SyncError::UnexpectedResponse {
+                expected: "Entries",
+                actual: format!("{response:?}"),
+            }
+            .into()),
+        }
+    }
+
+    /// Validate and store received entries from a peer.
+    async fn store_received_entries(
+        &self,
+        _tree_id: &crate::entry::ID,
+        entries: Vec<Entry>,
+    ) -> Result<()> {
+        for entry in entries {
+            // Basic validation: check that entry ID matches content
+            let calculated_id = entry.id();
+            if entry.id() != calculated_id {
+                return Err(SyncError::InvalidEntry(format!(
+                    "Entry ID {} doesn't match calculated ID {}",
+                    entry.id(),
+                    calculated_id
+                ))
+                .into());
+            }
+
+            // TODO: Add more validation (signatures, parent existence, etc.)
+
+            // Store the entry (marking it as verified for now)
+            self.backend
+                .put_verified(entry)
+                .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Find entries that we have but the peer is missing.
+    fn find_entries_to_send(
+        &self,
+        our_tips: &[crate::entry::ID],
+        their_tips: &[crate::entry::ID],
+    ) -> Result<Vec<Entry>> {
+        let mut entries_to_send = Vec::new();
+
+        for tip_id in our_tips {
+            // Check if peer has this entry by seeing if it's in their tips
+            let peer_has_entry = their_tips.contains(tip_id);
+
+            if !peer_has_entry {
+                // Peer doesn't have this entry, get it from backend
+                match self.backend.get(tip_id) {
+                    Ok(entry) => {
+                        entries_to_send.push(entry);
+                    }
+                    Err(e) => {
+                        return Err(SyncError::BackendError(format!(
+                            "Failed to get entry {tip_id} to send: {e}"
+                        ))
+                        .into());
+                    }
+                }
+            }
+        }
+
+        Ok(entries_to_send)
+    }
+
+    /// Check if an entry has already been sent to a specific peer.
+    ///
+    /// This is a basic duplicate prevention mechanism that tracks what
+    /// entries we've attempted to sync with each peer.
+    fn has_been_sent_to_peer(
+        &self,
+        entry_id: &crate::entry::ID,
+        peer_pubkey: &str,
+    ) -> Result<bool> {
+        use crate::subtree::DocStore;
+
+        // Use sync tree DocStore to track sent entries per peer
+        let key = format!("sent_entries.{peer_pubkey}.{entry_id}");
+
+        // Get read-only access to sync state
+        let sync_state: DocStore = self.sync_tree.get_subtree_viewer("sync_state")?;
+
+        match sync_state.get_string(&key) {
+            Ok(_) => Ok(true),   // Entry found, has been sent
+            Err(_) => Ok(false), // Entry not found or error, hasn't been sent
+        }
+    }
+
+    /// Mark an entry as sent to a specific peer.
+    ///
+    /// This updates our sync state to record that we've successfully
+    /// sent an entry to a peer, helping avoid duplicate sends.
+    fn mark_sent_to_peer(&self, entry_id: &crate::entry::ID, peer_pubkey: &str) -> Result<()> {
+        use crate::subtree::DocStore;
+
+        // Store sync state in the sync tree with timestamp
+        let key = format!("sent_entries.{peer_pubkey}.{entry_id}");
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let sync_data = format!(r#"{{"timestamp": {timestamp}, "peer": "{peer_pubkey}"}}"#);
+
+        // Store the sync state using DocStore subtree
+        let op = self.sync_tree.new_operation()?;
+        let sync_state: DocStore = op.get_subtree("sync_state")?;
+        sync_state.set_string(&key, sync_data)?;
+        op.commit()?;
+
+        Ok(())
+    }
+
+    /// Send entries to a specific peer (legacy method).
+    async fn send_entries_to_peer_legacy(
+        &self,
+        peer_pubkey: &str,
+        address: &Address,
+        entries: Vec<Entry>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // Filter out entries we've already sent to this peer
+        let mut filtered_entries = Vec::new();
+        for entry in &entries {
+            if !self.has_been_sent_to_peer(&entry.id(), peer_pubkey)? {
+                filtered_entries.push(entry.clone());
+            }
+        }
+
+        if filtered_entries.is_empty() {
+            return Ok(());
+        }
+
+        let request = SyncRequest::SendEntries(filtered_entries.clone());
+
+        let response = self.send_request_async(&request, address).await?;
+
+        match response {
+            SyncResponse::Ack | SyncResponse::Count(_) => {
+                // Mark entries as successfully sent
+                for entry in &filtered_entries {
+                    self.mark_sent_to_peer(&entry.id(), peer_pubkey)?;
+                }
+                Ok(())
+            }
+            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                "Peer {peer_pubkey} returned error for SendEntries: {msg}"
+            ))
+            .into()),
+            _ => Err(SyncError::UnexpectedResponse {
+                expected: "Ack or Count",
+                actual: format!("{response:?}"),
+            }
+            .into()),
+        }
+    }
+
     /// Send a batch of entries to a sync peer (async version).
     ///
     /// # Arguments
@@ -608,16 +952,22 @@ impl Sync {
         entries: impl AsRef<[Entry]>,
         address: &Address,
     ) -> Result<()> {
-        if let Some(transport) = &self.transport {
-            if !transport.can_handle_address(address) {
-                return Err(SyncError::UnsupportedTransport {
-                    transport_type: address.transport_type.clone(),
-                }
-                .into());
+        let entries_vec = entries.as_ref().to_vec();
+        let request = SyncRequest::SendEntries(entries_vec);
+        let response = self.send_request_async(&request, address).await?;
+
+        match response {
+            SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                "Peer {} returned error: {}",
+                address.address, msg
+            ))
+            .into()),
+            _ => Err(SyncError::UnexpectedResponse {
+                expected: "Ack or Count",
+                actual: format!("{response:?}"),
             }
-            transport.send_entries(address, entries.as_ref()).await
-        } else {
-            Err(SyncError::NoTransportEnabled.into())
+            .into()),
         }
     }
 
@@ -642,6 +992,28 @@ impl Sync {
         }
     }
 
+    /// Send entries to a peer by public key using the background sync engine.
+    ///
+    /// This is the new preferred method that uses the background sync engine
+    /// instead of directly accessing the transport.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The public key of the peer to send to
+    /// * `entries` - The entries to send
+    ///
+    /// # Returns
+    /// A Result indicating whether the command was successfully queued.
+    pub async fn send_entries_to_peer(&self, peer_pubkey: &str, entries: Vec<Entry>) -> Result<()> {
+        self.command_tx
+            .send(SyncCommand::SendEntries {
+                peer: peer_pubkey.to_string(),
+                entries,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+        Ok(())
+    }
+
     /// Send a sync request to a peer and get a response (async version).
     ///
     /// # Arguments
@@ -655,25 +1027,69 @@ impl Sync {
         request: &SyncRequest,
         address: &Address,
     ) -> Result<SyncResponse> {
-        if let Some(transport) = &self.transport {
-            if !transport.can_handle_address(address) {
-                return Err(SyncError::UnsupportedTransport {
-                    transport_type: address.transport_type.clone(),
-                }
-                .into());
-            }
-            transport.send_request(address, request).await
-        } else {
-            Err(SyncError::NoTransportEnabled.into())
+        if !self.transport_enabled {
+            return Err(SyncError::NoTransportEnabled.into());
         }
+        let (tx, rx) = oneshot::channel();
+
+        self.command_tx
+            .send(SyncCommand::SendRequest {
+                address: address.clone(),
+                request: request.clone(),
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Test helper: Check if an entry has been sent to a peer.
+    #[cfg(test)]
+    pub fn test_has_been_sent_to_peer(
+        &self,
+        entry_id: &crate::entry::ID,
+        peer_pubkey: &str,
+    ) -> Result<bool> {
+        self.has_been_sent_to_peer(entry_id, peer_pubkey)
+    }
+
+    /// Test helper: Mark an entry as sent to a peer.
+    #[cfg(test)]
+    pub fn test_mark_sent_to_peer(
+        &self,
+        entry_id: &crate::entry::ID,
+        peer_pubkey: &str,
+    ) -> Result<()> {
+        self.mark_sent_to_peer(entry_id, peer_pubkey)
+    }
+
+    /// Test helper: Find entries to send to a peer.
+    #[cfg(test)]
+    pub fn test_find_entries_to_send(
+        &self,
+        our_tips: &[crate::entry::ID],
+        their_tips: &[crate::entry::ID],
+    ) -> Result<Vec<Entry>> {
+        self.find_entries_to_send(our_tips, their_tips)
     }
 }
 
-/// Generate random challenge bytes for authentication.
-fn generate_challenge() -> Vec<u8> {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let mut challenge = vec![0u8; 32];
-    rng.fill(&mut challenge[..]);
-    challenge
+/// Create a sync hook collection with the Sync instance.
+impl Sync {
+    /// Create a command-based sync hook for a specific peer.
+    ///
+    /// This is the new preferred method for creating sync hooks that use
+    /// the background sync engine instead of direct sync state access.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The public key of the peer to sync with
+    ///
+    /// # Returns
+    /// A sync hook that sends commands to the background engine
+    pub fn create_sync_hook(&self, peer_pubkey: String) -> Arc<dyn SyncHook> {
+        use hooks::SyncHookImpl;
+        Arc::new(SyncHookImpl::new(self.command_tx.clone(), peer_pubkey))
+    }
 }

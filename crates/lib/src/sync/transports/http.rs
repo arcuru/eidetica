@@ -6,11 +6,18 @@
 use super::{SyncTransport, shared::*};
 use crate::Result;
 use crate::sync::error::SyncError;
+use crate::sync::handler::SyncHandler;
 use crate::sync::peer_types::Address;
-use crate::sync::protocol::{HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse};
+use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
-use axum::{Router, extract::Json as ExtractJson, response::Json, routing::post};
+use axum::{
+    Router,
+    extract::{Json as ExtractJson, State},
+    response::Json,
+    routing::post,
+};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 /// HTTP transport implementation using axum and reqwest.
@@ -30,9 +37,11 @@ impl HttpTransport {
         })
     }
 
-    /// Create the axum router with single JSON endpoint.
-    fn create_router() -> Router {
-        Router::new().route("/api/v0", post(handle_sync_request))
+    /// Create the axum router with single JSON endpoint and handler state.
+    fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
+        Router::new()
+            .route("/api/v0", post(handle_sync_request))
+            .with_state(handler)
     }
 }
 
@@ -42,7 +51,7 @@ impl SyncTransport for HttpTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, addr: &str) -> Result<()> {
+    async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
@@ -56,7 +65,7 @@ impl SyncTransport for HttpTransport {
             reason: format!("Invalid address: {e}"),
         })?;
 
-        let router = Self::create_router();
+        let router = Self::create_router(handler);
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -163,35 +172,11 @@ impl SyncTransport for HttpTransport {
 }
 
 /// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
-async fn handle_sync_request(ExtractJson(request): ExtractJson<SyncRequest>) -> Json<SyncResponse> {
-    // For now, handle requests without the Sync instance
-    // This is a simplified implementation for the MVP
-    let response = match request {
-        SyncRequest::Handshake(handshake_req) => {
-            // Simple handshake response without signature verification
-            SyncResponse::Handshake(HandshakeResponse {
-                device_id: "server_device".to_string(),
-                public_key: "ed25519:server_key".to_string(),
-                display_name: Some("HTTP Server".to_string()),
-                protocol_version: PROTOCOL_VERSION,
-                challenge_response: handshake_req.challenge.clone(), // Echo challenge for now
-                new_challenge: vec![0u8; 32],                        // Dummy challenge
-            })
-        }
-        SyncRequest::SendEntries(entries) => {
-            // Acknowledge receipt of entries
-            let count = entries.len();
-            println!("Received {count} entries for synchronization");
-            if count == 1 {
-                SyncResponse::Ack
-            } else {
-                SyncResponse::Count(count)
-            }
-        }
-        SyncRequest::GetTips(_) => SyncResponse::Error("GetTips not yet implemented".to_string()),
-        SyncRequest::GetEntries(_) => {
-            SyncResponse::Error("GetEntries not yet implemented".to_string())
-        }
-    };
+async fn handle_sync_request(
+    State(handler): State<Arc<dyn SyncHandler>>,
+    ExtractJson(request): ExtractJson<SyncRequest>,
+) -> Json<SyncResponse> {
+    // Use the SyncHandler to process the request
+    let response = handler.handle_request(&request).await;
     Json(response)
 }

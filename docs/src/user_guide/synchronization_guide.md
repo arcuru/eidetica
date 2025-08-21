@@ -1,0 +1,366 @@
+# Synchronization Guide
+
+Eidetica's synchronization system enables real-time data synchronization between distributed peers in a decentralized network. This guide covers how to set up, configure, and use the sync features.
+
+## Overview
+
+The sync system uses a **BackgroundSync architecture** with command-pattern communication:
+
+- **Single background thread** handles all sync operations
+- **Command-channel communication** between frontend and backend
+- **Automatic change detection** via hook system
+- **Multiple transport protocols** (HTTP, Iroh P2P)
+- **Tree-level sync relationships** for granular control
+- **Authentication and security** using Ed25519 signatures
+- **Persistent state tracking** via DocStore
+
+## Quick Start
+
+### 1. Enable Sync on Your Database
+
+```rust
+use eidetica::{BaseDB, backend::InMemory};
+
+// Create a database with sync enabled
+let backend = Box::new(InMemory::new());
+let db = BaseDB::new(backend).with_sync()?;
+
+// Add a private key for authentication
+db.add_private_key("device_key")?;
+```
+
+### 2. Enable a Transport Protocol
+
+```rust
+// Enable HTTP transport
+db.sync_mut()?.enable_http_transport()?;
+
+// Start a server to accept connections
+db.sync_mut()?.start_server("127.0.0.1:8080")?;
+```
+
+### 3. Connect to a Remote Peer
+
+```rust
+use eidetica::sync::{Address, peer_types::PeerStatus};
+
+// Create an address for the remote peer
+let remote_addr = Address::http("192.168.1.100:8080")?;
+
+// Connect and perform handshake
+let peer_pubkey = db.sync_mut()?.connect_to_peer(&remote_addr).await?;
+
+// Activate the peer for syncing
+db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
+```
+
+### 4. Set Up Tree Synchronization
+
+```rust
+// Create a tree to sync
+let tree = db.new_tree(Doc::new(), "device_key")?;
+let tree_id = tree.root_id().to_string();
+
+// Configure this tree to sync with the peer
+db.sync_mut()?.add_tree_sync(&peer_pubkey, &tree_id)?;
+```
+
+### 5. Automatic Synchronization
+
+Once configured, any changes to the tree will automatically be queued for synchronization:
+
+```rust
+// Make changes to the tree - these will be auto-synced
+let op = tree.new_operation()?;
+let store = op.get_subtree::<DocStore>("data")?;
+store.set_string("message", "Hello, distributed world!")?;
+op.commit()?; // This triggers sync queue entry
+```
+
+## Transport Protocols
+
+### HTTP Transport
+
+The HTTP transport uses REST APIs for synchronization:
+
+```rust
+// Enable HTTP transport
+sync.enable_http_transport()?;
+
+// Start server
+sync.start_server("127.0.0.1:8080")?;
+
+// Connect to remote peer
+let addr = Address::http("peer.example.com:8080")?;
+let peer_key = sync.connect_to_peer(&addr).await?;
+```
+
+### Iroh P2P Transport (Recommended)
+
+Iroh provides direct peer-to-peer connectivity with NAT traversal:
+
+```rust
+// Enable Iroh transport (includes built-in NAT traversal)
+sync.enable_iroh_transport()?;
+
+// Connect using Iroh addresses
+let addr = Address::iroh("iroh://peer_id@relay.example.com")?;
+let peer_key = sync.connect_to_peer(&addr).await?;
+```
+
+## Sync Configuration
+
+### BackgroundSync Architecture
+
+The sync system automatically starts a background thread when transport is enabled:
+
+```rust
+// The BackgroundSync engine starts automatically when you enable transport
+sync.enable_http_transport()?;  // This starts the background thread
+
+// The background thread runs an event loop with:
+// - Command processing (immediate)
+// - Periodic sync timer (5 minutes)
+// - Retry queue timer (30 seconds)
+// - Connection check timer (60 seconds)
+```
+
+### Automatic Sync Behavior
+
+Once configured, the system handles everything automatically:
+
+```rust
+// When you commit changes, they're sent immediately
+let op = tree.new_operation()?;
+op.commit()?;  // Sync hook sends command to background thread
+
+// Failed sends are retried with exponential backoff
+// 2^attempts seconds delay (max 64 seconds)
+// Configurable max attempts before dropping
+
+// No manual queue management or worker control needed
+// The BackgroundSync engine handles all operations
+```
+
+## Peer Management
+
+### Registering Peers
+
+```rust
+// Register a peer manually
+sync.register_peer("ed25519:abc123...", Some("Alice's Device"))?;
+
+// Add multiple addresses for the same peer
+sync.add_peer_address(&peer_key, Address::http("192.168.1.100:8080")?)?;
+sync.add_peer_address(&peer_key, Address::iroh("iroh://peer_id@relay")?)?;
+```
+
+### Peer Status Management
+
+```rust
+use eidetica::sync::peer_types::PeerStatus;
+
+// Activate peer for syncing
+sync.update_peer_status(&peer_key, PeerStatus::Active)?;
+
+// Pause syncing with a peer
+sync.update_peer_status(&peer_key, PeerStatus::Inactive)?;
+
+// Get peer information
+if let Some(peer_info) = sync.get_peer_info(&peer_key)? {
+    println!("Peer: {} ({})", peer_info.display_name.unwrap_or("Unknown".to_string()), peer_info.status);
+}
+```
+
+### Tree Sync Relationships
+
+```rust
+// Add tree to sync relationship
+sync.add_tree_sync(&peer_key, &tree_id)?;
+
+// List all trees synced with a peer
+let synced_trees = sync.get_peer_trees(&peer_key)?;
+
+// List all peers syncing a specific tree
+let syncing_peers = sync.get_tree_peers(&tree_id)?;
+
+// Remove tree from sync relationship
+sync.remove_tree_sync(&peer_key, &tree_id)?;
+```
+
+## Security
+
+### Authentication
+
+All sync operations use Ed25519 digital signatures:
+
+```rust
+// The sync system automatically uses your device key for authentication
+// Add additional keys if needed
+db.add_private_key("backup_key")?;
+
+// Set a specific key as default for a tree
+tree.set_default_auth_key("backup_key");
+```
+
+### Peer Verification
+
+During handshake, peers exchange and verify public keys:
+
+```rust
+// The connect_to_peer method automatically:
+// 1. Exchanges public keys
+// 2. Verifies signatures
+// 3. Registers the verified peer
+let verified_peer_key = sync.connect_to_peer(&addr).await?;
+```
+
+## Monitoring and Diagnostics
+
+### Sync Operations
+
+The BackgroundSync engine handles all operations automatically:
+
+```rust
+// Entries are synced immediately when committed
+// No manual queue management needed
+
+// The background thread handles:
+// - Immediate sending of new entries
+// - Retry queue with exponential backoff
+// - Periodic sync every 5 minutes
+// - Connection health checks every minute
+
+// Server status
+let is_running = sync.is_server_running();
+let server_addr = sync.get_server_address()?;
+```
+
+### Sync State Tracking
+
+```rust
+use eidetica::sync::state::SyncStateManager;
+
+// Get sync state for a tree-peer relationship
+let op = sync.sync_tree().new_operation()?;
+let state_manager = SyncStateManager::new(&op);
+
+let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id)?;
+println!("Last synced: {:?}", cursor.last_synced_entry);
+
+let metadata = state_manager.get_sync_metadata(&peer_key)?;
+println!("Success rate: {:.2}%", metadata.sync_success_rate() * 100.0);
+```
+
+## Error Handling
+
+The sync system provides detailed error reporting:
+
+```rust
+use eidetica::sync::SyncError;
+
+match sync.connect_to_peer(&addr).await {
+    Ok(peer_key) => println!("Connected to peer: {}", peer_key),
+    Err(e) if e.is_sync_error() => {
+        match e.sync_error().unwrap() {
+            SyncError::HandshakeFailed(msg) => eprintln!("Handshake failed: {}", msg),
+            SyncError::NoTransportEnabled => eprintln!("No transport protocol enabled"),
+            SyncError::PeerNotFound(key) => eprintln!("Peer not found: {}", key),
+            _ => eprintln!("Sync error: {}", e),
+        }
+    },
+    Err(e) => eprintln!("Other error: {}", e),
+}
+```
+
+## Best Practices
+
+### 1. **Use Iroh Transport for Production**
+
+Iroh provides better NAT traversal and P2P capabilities than HTTP.
+
+### 2. **Understand Automatic Sync Behavior**
+
+The BackgroundSync engine handles operations automatically:
+
+- Entries sync immediately when committed
+- Failed sends retry with exponential backoff (2^attempts seconds)
+- Periodic sync runs every 5 minutes for all peers
+
+### 3. **Monitor Sync Health**
+
+Regularly check sync statistics and peer status to ensure healthy operation.
+
+### 4. **Handle Network Failures Gracefully**
+
+The sync system automatically retries failed operations, but your application should handle temporary disconnections.
+
+### 5. **Secure Your Private Keys**
+
+Store device keys securely and use different keys for different purposes when appropriate.
+
+## Advanced Topics
+
+### Custom Sync Hooks
+
+You can implement custom sync hooks to extend the sync system:
+
+```rust
+use eidetica::sync::hooks::{SyncHook, SyncHookContext};
+
+struct CustomSyncHook;
+
+impl SyncHook for CustomSyncHook {
+    fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()> {
+        println!("Entry {} committed to tree {}", context.entry.id(), context.tree_id);
+        // Custom logic here
+        Ok(())
+    }
+}
+```
+
+### Multiple Database Instances
+
+You can run multiple sync-enabled databases in the same process:
+
+```rust
+// Database 1
+let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+db1.sync_mut()?.enable_http_transport()?;
+db1.sync_mut()?.start_server("127.0.0.1:8080")?;
+
+// Database 2
+let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+db2.sync_mut()?.enable_http_transport()?;
+db2.sync_mut()?.start_server("127.0.0.1:8081")?;
+
+// Connect them
+let addr = Address::http("127.0.0.1:8080")?;
+let peer_key = db2.sync_mut()?.connect_to_peer(&addr).await?;
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**"No transport enabled" error:**
+
+- Ensure you've called `enable_http_transport()` or `enable_iroh_transport()`
+
+**Sync not happening:**
+
+- Check peer status is `Active`
+- Verify tree sync relationships are configured
+- Check network connectivity between peers
+
+**Performance issues:**
+
+- Consider using Iroh transport for better performance
+- Check retry queue for persistent failures
+- Verify network connectivity is stable
+
+**Authentication failures:**
+
+- Ensure private keys are properly configured
+- Verify peer public keys are correct
+- Check that peers are using compatible protocol versions

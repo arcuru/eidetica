@@ -12,7 +12,11 @@ async fn test_http_transport_server_lifecycle() {
     assert!(!transport.is_server_running());
 
     // Start server
-    transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
     assert!(transport.is_server_running());
 
     // Stop server
@@ -25,10 +29,15 @@ async fn test_http_transport_double_start_error() {
     let mut transport = HttpTransport::new().unwrap();
 
     // Start server
-    transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
 
     // Attempting to start again should fail
-    let result = transport.start_server("127.0.0.1:0").await;
+    let handler = super::helpers::setup_test_handler();
+    let result = transport.start_server("127.0.0.1:0", handler).await;
     assert!(result.is_err());
 
     // Clean up
@@ -52,7 +61,11 @@ async fn test_http_transport_client_server_communication() {
     let client_transport = HttpTransport::new().unwrap();
 
     // Start server on port 0 for dynamic assignment
-    server_transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    server_transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
 
     // Get the actual bound address
     let addr = server_transport.get_server_address().unwrap();
@@ -126,7 +139,11 @@ async fn test_http_transport_get_server_address() {
     assert!(result.is_err());
 
     // Start server on port 0
-    transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
 
     // Should return the actual bound address
     let addr = transport.get_server_address().unwrap();

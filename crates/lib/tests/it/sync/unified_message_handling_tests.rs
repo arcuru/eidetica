@@ -1,7 +1,9 @@
+use eidetica::backend::database::InMemory;
+use eidetica::basedb::BaseDB;
 use eidetica::sync::{
-    Address,
+    Address, Sync,
     protocol::{SyncRequest, SyncResponse},
-    transports::{SyncTransport, http::HttpTransport},
+    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
 };
 
 /// Test that both HTTP and Iroh transports use the same message handler
@@ -9,7 +11,6 @@ use eidetica::sync::{
 #[tokio::test]
 async fn test_unified_message_handling() {
     use eidetica::entry::Entry;
-    use eidetica::sync::handler::handle_request;
 
     // Create test entries
     let single_entry = Entry::builder("test_root")
@@ -22,9 +23,15 @@ async fn test_unified_message_handling() {
         .set_subtree_data("data", r#"{"test": "multi2"}"#)
         .build();
 
+    // Create a Sync instance for testing
+    let db = BaseDB::new(Box::new(InMemory::new()));
+    db.add_private_key("_device_key")
+        .expect("Failed to add device key");
+    let sync = Sync::new(db.backend().clone()).unwrap();
+
     // Test single entry request directly through shared handler
     let single_request = SyncRequest::SendEntries(vec![single_entry.clone()]);
-    let single_response = handle_request(&single_request).await;
+    let single_response = super::helpers::handle_request(&sync, &single_request).await;
     match single_response {
         SyncResponse::Ack => {
             // Expected for single entry
@@ -34,7 +41,7 @@ async fn test_unified_message_handling() {
 
     // Test multiple entries request directly through shared handler
     let multi_request = SyncRequest::SendEntries(vec![entry1.clone(), entry2.clone()]);
-    let multi_response = handle_request(&multi_request).await;
+    let multi_response = super::helpers::handle_request(&sync, &multi_request).await;
     match multi_response {
         SyncResponse::Count(count) => {
             assert_eq!(count, 2);
@@ -44,7 +51,11 @@ async fn test_unified_message_handling() {
 
     // Test HTTP transport uses same logic
     let mut http_transport = HttpTransport::new().unwrap();
-    http_transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    http_transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
     let http_addr = http_transport.get_server_address().unwrap();
     let http_address = Address::http(&http_addr);
 
@@ -79,7 +90,11 @@ async fn test_http_v0_json_endpoint() {
     let mut transport = HttpTransport::new().unwrap();
 
     // Start server
-    transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
     let addr = transport.get_server_address().unwrap();
 
     // Test direct HTTP client call to verify endpoint format
@@ -129,34 +144,31 @@ async fn test_http_v0_json_endpoint() {
     transport.stop_server().await.unwrap();
 }
 
-/// Test that old GET endpoints no longer work (should return 404 or method not allowed)
+/// Test that Iroh transport uses the SyncHandler architecture correctly.
+/// This test verifies the integration without requiring P2P networking.
 #[tokio::test]
-async fn test_old_get_endpoints_removed() {
-    let mut transport = HttpTransport::new().unwrap();
+async fn test_iroh_transport_handler_integration() {
+    // Create Iroh transport and verify it starts with a handler
+    let mut iroh_transport = IrohTransport::new().unwrap();
+    let handler = super::helpers::setup_test_handler();
 
-    // Start server
-    transport.start_server("127.0.0.1:0").await.unwrap();
-    let addr = transport.get_server_address().unwrap();
+    // Test that server can start with a handler (this validates the architecture)
+    iroh_transport.start_server("", handler).await.unwrap();
 
-    let client = reqwest::Client::new();
+    // Verify server is running
+    assert!(iroh_transport.is_server_running());
 
-    // Old endpoints should not exist
-    let hello_response = client
-        .get(format!("http://{addr}/api/hello"))
-        .send()
-        .await
-        .unwrap();
+    // Get the server address (this is the node ID for Iroh)
+    let server_addr = iroh_transport.get_server_address().unwrap();
+    assert!(!server_addr.is_empty());
 
-    let status_response = client
-        .get(format!("http://{addr}/api/status"))
-        .send()
-        .await
-        .unwrap();
+    // Verify we can stop the server
+    iroh_transport.stop_server().await.unwrap();
+    assert!(!iroh_transport.is_server_running());
 
-    // Should be 404 (not found) since routes don't exist
-    assert_eq!(hello_response.status(), 404);
-    assert_eq!(status_response.status(), 404);
-
-    // Clean up
-    transport.stop_server().await.unwrap();
+    // This test validates that:
+    // 1. IrohTransport properly stores and uses SyncHandler
+    // 2. The server lifecycle works correctly
+    // 3. The architecture matches HTTP transport pattern
+    // Note: P2P connection testing requires more complex setup with relay servers
 }

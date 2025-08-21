@@ -16,7 +16,7 @@ async fn test_sync_iroh_transport_integration() {
     sync.start_server_async("ignored").await.unwrap();
 
     // Get the server address (should be node ID)
-    let server_addr = sync.get_server_address().unwrap();
+    let server_addr = sync.get_server_address_async().await.unwrap();
     assert!(!server_addr.is_empty());
     assert!(server_addr.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -46,7 +46,7 @@ async fn test_sync_transport_switching() {
     sync.enable_http_transport().unwrap();
     sync.start_server_async("127.0.0.1:0").await.unwrap();
 
-    let http_addr = sync.get_server_address().unwrap();
+    let http_addr = sync.get_server_address_async().await.unwrap();
     assert!(http_addr.contains(":"));
 
     sync.stop_server_async().await.unwrap();
@@ -55,7 +55,7 @@ async fn test_sync_transport_switching() {
     sync.enable_iroh_transport().unwrap();
     sync.start_server_async("ignored").await.unwrap();
 
-    let iroh_addr = sync.get_server_address().unwrap();
+    let iroh_addr = sync.get_server_address_async().await.unwrap();
     assert!(!iroh_addr.contains(":")); // Node ID format, no port
     assert!(iroh_addr.chars().all(|c| c.is_ascii_hexdigit()));
 
@@ -110,7 +110,7 @@ async fn test_send_entries_iroh() {
 
     // Start server
     sync_server.start_server_async("ignored").await.unwrap();
-    let server_addr = sync_server.get_server_address().unwrap();
+    let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Create client instance
     let (_base_db2, mut sync_client) = helpers::setup();

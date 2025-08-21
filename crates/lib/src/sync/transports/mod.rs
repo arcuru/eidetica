@@ -6,9 +6,11 @@
 
 use crate::Result;
 use crate::entry::Entry;
+use crate::sync::handler::SyncHandler;
 use crate::sync::peer_types::Address;
 use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
+use std::sync::Arc;
 
 pub mod http;
 pub mod iroh;
@@ -29,14 +31,15 @@ pub trait SyncTransport: Send + Sync {
     /// True if this transport can handle the address, false otherwise.
     fn can_handle_address(&self, address: &Address) -> bool;
 
-    /// Start a server listening on the specified address.
+    /// Start a server listening on the specified address with a sync handler.
     ///
     /// # Arguments
     /// * `addr` - The address to bind the server to (use port 0 for automatic port assignment)
+    /// * `handler` - The sync handler to process incoming requests
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    async fn start_server(&mut self, addr: &str) -> Result<()>;
+    async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
 
     /// Stop the running server gracefully.
     ///

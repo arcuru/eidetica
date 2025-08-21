@@ -14,7 +14,7 @@ async fn test_sync_with_http_transport() {
     sync.start_server_async("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address
-    let server_addr = sync.get_server_address().unwrap();
+    let server_addr = sync.get_server_address_async().await.unwrap();
     let http_address = Address::http(&server_addr);
 
     // Test the new protocol by sending entries
@@ -46,7 +46,7 @@ async fn test_multiple_sync_instances_communication() {
     sync_server.start_server_async("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address from the server instance
-    let server_addr = sync_server.get_server_address().unwrap();
+    let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Test communication by sending entries from client to server
     let entry = Entry::builder("communication_test")
@@ -79,7 +79,7 @@ async fn test_send_entries_http() {
     sync_server.start_server_async("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address from the server instance
-    let server_addr = sync_server.get_server_address().unwrap();
+    let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Create some test entries
     let entry1 = Entry::builder("test_root_1")

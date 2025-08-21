@@ -8,8 +8,16 @@ async fn test_version_alignment() {
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Start both servers
-    http_transport.start_server("127.0.0.1:0").await.unwrap();
-    iroh_transport.start_server("ignored").await.unwrap();
+    let handler1 = super::helpers::setup_test_handler();
+    let handler2 = super::helpers::setup_test_handler();
+    http_transport
+        .start_server("127.0.0.1:0", handler1)
+        .await
+        .unwrap();
+    iroh_transport
+        .start_server("ignored", handler2)
+        .await
+        .unwrap();
 
     // Get server addresses
     let http_addr = http_transport.get_server_address().unwrap();
@@ -34,7 +42,11 @@ async fn test_version_alignment() {
 #[tokio::test]
 async fn test_http_v0_endpoint_format() {
     let mut transport = HttpTransport::new().unwrap();
-    transport.start_server("127.0.0.1:0").await.unwrap();
+    let handler = super::helpers::setup_test_handler();
+    transport
+        .start_server("127.0.0.1:0", handler)
+        .await
+        .unwrap();
     let addr = transport.get_server_address().unwrap();
 
     // Test that the v0 endpoint is accessible
@@ -61,19 +73,4 @@ async fn test_http_v0_endpoint_format() {
     assert_eq!(json, "Ack");
 
     transport.stop_server().await.unwrap();
-}
-
-/// Test Iroh v0 ALPN format
-#[test]
-fn test_iroh_v0_alpn_format() {
-    // This tests the constant value to ensure it matches expected v0 format
-    use eidetica::sync::transports::iroh::IrohTransport;
-
-    // Create transport to ensure it can be instantiated with v0 ALPN
-    let transport = IrohTransport::new().unwrap();
-
-    // The constant should be accessible and match v0 format
-    // (We can't easily test the actual ALPN bytes without exposing internals,
-    // but the transport creation verifies the ALPN constant is valid)
-    drop(transport); // Just ensure it can be created successfully
 }

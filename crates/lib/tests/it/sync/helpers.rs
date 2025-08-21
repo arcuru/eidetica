@@ -3,6 +3,7 @@
 //! This module provides utilities for testing Sync functionality including
 //! setup operations, common test patterns, and assertion helpers.
 
+use eidetica::sync::handler::{SyncHandler, SyncHandlerImpl};
 use eidetica::{basedb::BaseDB, sync::Sync};
 use std::sync::Arc;
 
@@ -24,6 +25,25 @@ pub fn setup() -> (Arc<BaseDB>, Sync) {
 pub fn setup_basedb_with_initialized() -> BaseDB {
     let base_db = crate::helpers::setup_db();
     base_db.with_sync().expect("Failed to initialize sync")
+}
+
+/// Create a test SyncHandler for transport-specific tests
+pub fn setup_test_handler() -> Arc<dyn SyncHandler> {
+    let base_db = setup_db();
+    Arc::new(SyncHandlerImpl::new(
+        base_db.backend().clone(),
+        "_device_key",
+    ))
+}
+
+/// Test helper function for backward compatibility with existing tests.
+/// Creates a SyncHandlerImpl from a Sync instance and delegates to it.
+pub async fn handle_request(
+    sync: &Sync,
+    request: &eidetica::sync::protocol::SyncRequest,
+) -> eidetica::sync::protocol::SyncResponse {
+    let handler = SyncHandlerImpl::new(sync.backend().clone(), "_device_key");
+    handler.handle_request(request).await
 }
 
 // ===== ASSERTION HELPERS =====
@@ -50,7 +70,7 @@ pub fn assert_trees_equal(sync1: &Sync, sync2: &Sync) {
 /// Set multiple settings on a sync instance
 pub fn set_multiple_settings(sync: &mut Sync, settings: &[(&str, &str)]) {
     for (key, value) in settings {
-        sync.set_setting(key, value)
+        sync.set_setting(*key, *value)
             .unwrap_or_else(|_| panic!("Failed to set setting: {key} = {value}"));
     }
 }

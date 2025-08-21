@@ -121,7 +121,8 @@ impl BaseDB {
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
     pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Tree> {
-        Tree::new(settings, Arc::clone(&self.backend), signing_key_name)
+        let tree = Tree::new(settings, Arc::clone(&self.backend), signing_key_name)?;
+        Ok(self.configure_tree_sync_hooks(tree))
     }
 
     /// Create a new tree with default empty settings
@@ -164,7 +165,8 @@ impl BaseDB {
         self.backend.get(root_id)?;
 
         // Create a tree object with the given root_id
-        Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))
+        let tree = Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+        Ok(self.configure_tree_sync_hooks(tree))
     }
 
     /// Load all trees stored in the backend.
@@ -179,10 +181,8 @@ impl BaseDB {
         let mut trees = Vec::new();
 
         for root_id in root_ids {
-            trees.push(Tree::new_from_id(
-                root_id.clone(),
-                Arc::clone(&self.backend),
-            )?);
+            let tree = Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+            trees.push(self.configure_tree_sync_hooks(tree));
         }
 
         Ok(trees)
@@ -393,5 +393,22 @@ impl BaseDB {
         let sync = Sync::load(Arc::clone(&self.backend), sync_tree_root_id)?;
         self.sync = Some(sync);
         Ok(self)
+    }
+
+    /// Configure a tree with sync hooks if sync is enabled.
+    ///
+    /// This is a helper method that sets up sync hooks for a tree
+    /// when sync is available in this BaseDB instance.
+    ///
+    /// # Arguments
+    /// * `tree` - The tree to configure with sync hooks
+    ///
+    /// # Returns
+    /// The tree with sync hooks configured if sync is enabled
+    fn configure_tree_sync_hooks(&self, tree: Tree) -> Tree {
+        // TODO: Implement tree sync hooks for the new BackgroundSync architecture
+        // The new architecture requires per-peer hooks rather than a collection
+        // For now, sync hooks need to be set up manually per peer
+        tree
     }
 }

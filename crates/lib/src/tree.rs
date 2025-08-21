@@ -17,6 +17,7 @@ use crate::subtree::{DocStore, SubTree};
 use crate::auth::crypto::format_public_key;
 use crate::auth::settings::AuthSettings;
 use crate::auth::types::{AuthKey, KeyStatus, Permission};
+use crate::sync::hooks::SyncHookCollection;
 use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
 use std::sync::Arc;
@@ -31,6 +32,8 @@ pub struct Tree {
     backend: Arc<dyn Database>,
     /// Default authentication key name for operations on this tree
     default_auth_key: Option<String>,
+    /// Optional sync hooks to execute after successful commits
+    sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
 impl Tree {
@@ -102,6 +105,7 @@ impl Tree {
             root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
             default_auth_key: Some(super_user_key_name.clone()),
+            sync_hooks: None,
         };
 
         // Create the operation. If we have an auth key, it will be used automatically
@@ -123,6 +127,7 @@ impl Tree {
             root: new_root_id,
             backend,
             default_auth_key: Some(super_user_key_name),
+            sync_hooks: None,
         })
     }
 
@@ -142,6 +147,7 @@ impl Tree {
             root: id,
             backend,
             default_auth_key: None,
+            sync_hooks: None,
         })
     }
 
@@ -183,6 +189,28 @@ impl Tree {
     /// Get the default authentication key ID for this tree.
     pub fn default_auth_key(&self) -> Option<&str> {
         self.default_auth_key.as_deref()
+    }
+
+    /// Set sync hooks for this tree.
+    ///
+    /// When sync hooks are set, all operations created via `new_operation()` and
+    /// `new_operation_with_tips()` will automatically include these hooks and execute
+    /// them after successful commits.
+    ///
+    /// # Arguments
+    /// * `hooks` - The sync hook collection to use for operations on this tree
+    pub fn set_sync_hooks(&mut self, hooks: Arc<SyncHookCollection>) {
+        self.sync_hooks = Some(hooks);
+    }
+
+    /// Clear sync hooks for this tree.
+    pub fn clear_sync_hooks(&mut self) {
+        self.sync_hooks = None;
+    }
+
+    /// Get the sync hooks for this tree.
+    pub fn sync_hooks(&self) -> Option<&Arc<SyncHookCollection>> {
+        self.sync_hooks.as_ref()
     }
 
     /// Create a new atomic operation on this tree with authentication.
@@ -264,6 +292,11 @@ impl Tree {
         // Set default authentication if configured
         if let Some(ref key_name) = self.default_auth_key {
             op.set_auth_key(key_name);
+        }
+
+        // Set sync hooks if configured
+        if let Some(ref hooks) = self.sync_hooks {
+            op.set_sync_hooks(hooks.clone());
         }
 
         Ok(op)

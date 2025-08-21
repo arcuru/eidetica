@@ -6,12 +6,13 @@
 use super::{SyncTransport, shared::*};
 use crate::Result;
 use crate::sync::error::SyncError;
-use crate::sync::handler::handle_request;
+use crate::sync::handler::SyncHandler;
 use crate::sync::peer_types::Address;
 use crate::sync::protocol::{SyncRequest, SyncResponse};
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::{Endpoint, NodeAddr};
+use std::sync::Arc;
 #[allow(unused_imports)] // Used by write_all method on streams
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
@@ -24,6 +25,8 @@ pub struct IrohTransport {
     endpoint: Option<Endpoint>,
     /// Shared server state management.
     server_state: ServerState,
+    /// Handler for processing sync requests.
+    handler: Option<Arc<dyn SyncHandler>>,
 }
 
 impl IrohTransport {
@@ -35,6 +38,7 @@ impl IrohTransport {
         Ok(Self {
             endpoint: None,
             server_state: ServerState::new(),
+            handler: None,
         })
     }
 
@@ -62,6 +66,7 @@ impl IrohTransport {
         endpoint: Endpoint,
         ready_tx: oneshot::Sender<()>,
         shutdown_rx: oneshot::Receiver<()>,
+        handler: Arc<dyn SyncHandler>,
     ) -> Result<()> {
         let mut shutdown_rx = shutdown_rx;
 
@@ -80,9 +85,10 @@ impl IrohTransport {
                     connection_result = endpoint.accept() => {
                         match connection_result {
                             Some(connecting) => {
+                                let handler_clone = handler.clone();
                                 tokio::spawn(async move {
                                     if let Ok(conn) = connecting.await {
-                                        Self::handle_connection(conn).await;
+                                        Self::handle_connection(conn, handler_clone).await;
                                     }
                                 });
                             }
@@ -99,15 +105,20 @@ impl IrohTransport {
     }
 
     /// Handle an incoming connection.
-    async fn handle_connection(conn: Connection) {
+    async fn handle_connection(conn: Connection, handler: Arc<dyn SyncHandler>) {
         // Accept incoming streams
         while let Ok((send_stream, recv_stream)) = conn.accept_bi().await {
-            tokio::spawn(Self::handle_stream(send_stream, recv_stream));
+            let handler_clone = handler.clone();
+            tokio::spawn(Self::handle_stream(send_stream, recv_stream, handler_clone));
         }
     }
 
     /// Handle an incoming bidirectional stream.
-    async fn handle_stream(mut send_stream: SendStream, mut recv_stream: RecvStream) {
+    async fn handle_stream(
+        mut send_stream: SendStream,
+        mut recv_stream: RecvStream,
+        handler: Arc<dyn SyncHandler>,
+    ) {
         // Read the request with size limit (1MB)
         let buffer: Vec<u8> = match recv_stream.read_to_end(1024 * 1024).await {
             Ok(buffer) => buffer,
@@ -126,8 +137,8 @@ impl IrohTransport {
             }
         };
 
-        // Handle the request
-        let response = handle_request(&request).await;
+        // Handle the request using the SyncHandler
+        let response = handler.handle_request(&request).await;
 
         // Serialize and send response using JsonHandler
         match JsonHandler::serialize_response(&response) {
@@ -153,7 +164,7 @@ impl SyncTransport for IrohTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, _addr: &str) -> Result<()> {
+    async fn start_server(&mut self, _addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
@@ -161,6 +172,9 @@ impl SyncTransport for IrohTransport {
             }
             .into());
         }
+
+        // Store the handler
+        self.handler = Some(handler);
 
         // Ensure we have an endpoint and get node ID before borrowing
         let endpoint = self.ensure_endpoint().await?;
@@ -172,8 +186,13 @@ impl SyncTransport for IrohTransport {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         // Start server loop
-        self.start_server_loop(endpoint_clone, ready_tx, shutdown_rx)
-            .await?;
+        self.start_server_loop(
+            endpoint_clone,
+            ready_tx,
+            shutdown_rx,
+            self.handler.clone().unwrap(),
+        )
+        .await?;
 
         // Wait for server to be ready using shared utility
         wait_for_ready(ready_rx, "iroh-endpoint").await?;
