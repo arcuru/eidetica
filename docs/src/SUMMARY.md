@@ -25,6 +25,7 @@
   - [Tree](internal/core_components/tree.md)
   - [Authentication](internal/core_components/authentication.md)
   - [Subtree Implementations](internal/core_components/subtrees.md)
+  - [DocStore (Internal)](internal/core_components/docstore.md)
   - [CRDT System](internal/core_components/crdt.md)
 - [Data Flow](internal/data_flow.md)
 - [CRDT Principles & Merging](internal/crdt_principles.md)

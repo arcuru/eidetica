@@ -25,25 +25,19 @@ Record-oriented store for managing collections with unique identifiers.
 
 **Use Cases**: User lists, task management, any collection requiring persistent IDs.
 
-### Dict
+### DocStore
 
-Key-value store using Map CRDT for nested structures and reliable deletion tracking.
+Document-oriented store wrapping `crdt::Doc` for nested structures and path-based access.
 
 **Features**:
 
-- Nested data structures via Value enum (String, Map, Deleted)
+- Path-based operations for nested data (set_path, get_path, etc.)
+- Simple key-value operations (get, set, delete)
+- Support for nested map structures via Value enum
 - Tombstone support for distributed deletion propagation
-- ValueEditor for fluent nested navigation
-- Path-based APIs for deep value access
-- Last-write-wins merge strategy with recursive merging
+- Last-write-wins merge strategy
 
-**Operations**:
-
-- Basic: get, set, delete
-- Advanced: nested path access, tombstone management
-- Editor: fluent API for complex modifications
-
-**Use Cases**: Configuration data, metadata, hierarchical structures.
+**Use Cases**: Configuration data, metadata, structured documents, sync state.
 
 ### YDoc (Y-CRDT Integration)
 

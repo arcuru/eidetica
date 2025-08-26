@@ -21,7 +21,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
 3.  [**Core Concepts**](core_concepts.md): Understand the fundamental building blocks:
     - [Entries & Trees](concepts/entries_trees.md): The core DAG structure.
     - [Databases](concepts/backends.md): How data is stored.
-    - [Subtrees](concepts/subtrees.md): Where structured data lives (`Dict`, `Table`).
+    - [Subtrees](concepts/subtrees.md): Where structured data lives (`DocStore`, `Table`, `YDoc`).
     - [Operations](operations.md): How atomic changes are made.
 4.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
 5.  [**Code Examples**](examples_snippets.md): Focused code snippets for common tasks.
@@ -34,7 +34,7 @@ Eidetica revolves around a few key components working together:
 2.  **`BaseDB`**: You create a `BaseDB` instance, providing it the `Database`. This is your main database handle.
 3.  **`Tree`**: Using the `BaseDB`, you create or load a `Tree`, which acts as a logical container for related data and tracks its history.
 4.  **`Operation`**: To **read or write** data, you start an `Operation` from the `Tree`. This ensures atomicity and consistent views.
-5.  **`Subtree`**: Within an `Operation`, you get handles to named `Subtree`s (like `Dict` or `Table<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
+5.  **`Subtree`**: Within an `Operation`, you get handles to named `Subtree`s (like `DocStore` or `Table<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
 6.  **`Commit`**: Changes made via `Subtree` handles within the `Operation` are staged. Calling `commit()` on the `Operation` finalizes these changes atomically, creating a new historical `Entry` in the `Tree`.
 
 ## Basic Usage Pattern (Conceptual Code)
@@ -42,7 +42,7 @@ Eidetica revolves around a few key components working together:
 ```rust
 use eidetica::{BaseDB, Tree, Error};
 use eidetica::backend::database::InMemory;
-use eidetica::subtree::{Dict, Table};
+use eidetica::subtree::{DocStore, Table};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -54,13 +54,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Create BaseDB
     let db = BaseDB::new(Box::new(database));
 
+    // Add authentication key (required for all operations)
+    db.add_private_key("my_key")?;
+
     // 3. Create/Load Tree (e.g., named "my_tree")
     let tree = match db.find_tree("my_tree") {
         Ok(mut trees) => trees.pop().unwrap(), // Found existing
         Err(e) if e.is_not_found() => {
-            let mut settings = eidetica::crdt::Map::new();
-            settings.set("name".to_string(), "my_tree".to_string());
-            db.new_tree(settings)? // Create new
+            let mut doc = eidetica::crdt::Doc::new();
+            doc.set("name", "my_tree");
+            db.new_tree(doc, "my_key")? // Create new with auth
         }
         Err(e) => return Err(e.into()),
     };
@@ -70,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let op_write = tree.new_operation()?;
     { // Scope for subtree handles
         // 5. Get Subtree handles
-        let config = op_write.get_subtree::<Dict>("config")?;
+        let config = op_write.get_subtree::<DocStore>("config")?;
         let items = op_write.get_subtree::<Table<MyData>>("items")?;
 
         // 6. Use Subtree methods

@@ -26,7 +26,7 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 
 **Key Properties:**
 
-- **Data Type**: `Map` CRDT for deterministic merging
+- **Data Type**: `Doc` CRDT for deterministic merging
 - **Location**: Exclusively in `_settings` subtree
 - **Access**: Through `AtomicOp::get_settings()` method
 
@@ -35,12 +35,12 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 `AtomicOp::get_settings()` provides unified access to settings:
 
 ```rust
-pub fn get_settings(&self) -> Result<Map> {
+pub fn get_settings(&self) -> Result<Doc> {
     // Get historical settings from the tree
-    let mut historical_settings = self.get_full_state::<Map>(SETTINGS)?;
+    let mut historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
 
     // Get any staged changes to the _settings subtree in this operation
-    let staged_settings = self.get_local_data::<Map>(SETTINGS)?;
+    let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
 
     // Merge using CRDT semantics
     historical_settings = historical_settings.merge(&staged_settings)?;
@@ -116,7 +116,7 @@ Authentication configuration is stored in `_settings.auth`:
 
 ```rust
 pub struct AuthSettings {
-    inner: Map,  // Wraps Map data from _settings.auth
+    inner: Doc,  // Wraps Doc data from _settings.auth
 }
 ```
 
@@ -151,8 +151,8 @@ if let Some(Value::Map(auth_map)) = settings.get("auth") {
 ### Modifying Settings
 
 ```rust
-// Get a Dict handle for the _settings subtree
-let mut settings_store = op.get_subtree::<Dict>("_settings")?;
+// Get a DocStore handle for the _settings subtree
+let mut settings_store = op.get_subtree::<DocStore>("_settings")?;
 
 // Update a setting
 settings_store.set("tree_config.name", "My Tree")?;

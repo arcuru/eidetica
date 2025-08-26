@@ -96,9 +96,9 @@ Authentication configuration is stored in the special `_settings` subtree under 
 - Access control changes are tracked in the immutable history
 - Settings can be validated against the current entry being created
 
-The `_settings` subtree uses the `crate::crdt::Map` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
+The `_settings` subtree uses the `crate::crdt::Doc` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
 
-**Clarification**: Throughout this document, when we refer to `Map`, this is the hierarchical CRDT implementation that supports nested maps. The `_settings` subtree specifically uses `Map` to enable complex authentication configurations.
+**Clarification**: Throughout this document, when we refer to `Doc`, this is the hierarchical CRDT document type that wraps internal Node structures supporting nested maps. The `_settings` subtree specifically uses `Doc` to enable complex authentication configurations.
 
 ### Permission Hierarchy
 
@@ -441,7 +441,7 @@ By treating delegated tree key deletion as `revoked` status, users can manage th
 
 ## Conflict Resolution and Merging
 
-Conflicts in the `_settings` tree are resolved by the `crate::crdt::Map` type using Last Write Wins (LWW) semantics. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the write with the higher logical timestamp (determined by the DAG structure) will win, regardless of the priority of the signing key.
+Conflicts in the `_settings` tree are resolved by the `crate::crdt::Doc` type using Last Write Wins (LWW) semantics. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the write with the higher logical timestamp (determined by the DAG structure) will win, regardless of the priority of the signing key.
 
 Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
@@ -568,7 +568,7 @@ graph TD
 
 **Conflict Resolution Rules Applied**:
 
-- **Settings Merge**: All authentication changes are merged using Map CRDT semantics with Last Write Wins
+- **Settings Merge**: All authentication changes are merged using Doc CRDT semantics with Last Write Wins
 - **Timestamp Ordering**: Changes are resolved based on logical timestamps, with the most recent change taking precedence
 - **Historical Validity**: Entry B1 remains valid because it was created before the status change
 - **Content Preservation**: With "revoked" status, content is preserved in merges but cannot be used as parents for new entries
@@ -677,7 +677,7 @@ The current system uses entry metadata to reference settings tips. With authenti
 
 #### Storage Format
 
-Authentication configuration is stored in `_settings.auth` as a Map CRDT:
+Authentication configuration is stored in `_settings.auth` as a Doc CRDT:
 
 ```rust
 // Key storage structure

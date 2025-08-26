@@ -62,15 +62,15 @@ println!("Available keys: {:?}", keys);
 All trees require authentication from creation:
 
 ```rust
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 
 // Create tree settings
-let mut settings = Map::new();
-settings.set_string("name", "my_data");
+let mut doc = Doc::new();
+doc.set("name", "my_data");
 
 // Create tree with authentication
 // The key will be used to sign the root entry
-let tree = db.new_tree(settings, "ADMIN_KEY")?;
+let tree = db.new_tree(doc, "ADMIN_KEY")?;
 ```
 
 ### Performing Authenticated Operations
@@ -78,13 +78,13 @@ let tree = db.new_tree(settings, "ADMIN_KEY")?;
 All operations are automatically authenticated using the tree's default key:
 
 ```rust
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 // Start an operation (uses tree's default authentication key)
 let op = tree.new_operation()?;
 
 // Make changes
-let store = op.get_subtree::<Dict>("config")?;
+let store = op.get_subtree::<DocStore>("config")?;
 store.set("api_url", "https://api.example.com")?;
 
 // Commit (automatically signs with the tree's key)
@@ -222,7 +222,7 @@ Here's a complete example showing authentication in a multi-user context:
 ```rust
 use eidetica::{BaseDB, Tree, backend::database::InMemory};
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 
 fn setup_multi_user_app() -> Result<Tree> {
     // Create database with admin key
@@ -231,9 +231,9 @@ fn setup_multi_user_app() -> Result<Tree> {
     db.add_private_key("SUPER_ADMIN")?;
 
     // Create application tree
-    let mut settings = Map::new();
-    settings.set_string("name", "multi_user_app");
-    let tree = db.new_tree(settings, "SUPER_ADMIN")?;
+    let mut doc = Doc::new();
+    doc.set("name", "multi_user_app");
+    let tree = db.new_tree(doc, "SUPER_ADMIN")?;
 
     // Set up authentication hierarchy
     let op = tree.new_operation()?;

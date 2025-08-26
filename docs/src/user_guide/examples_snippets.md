@@ -38,7 +38,7 @@ if db_path.exists() {
 ## 2. Creating or Loading a Tree
 
 ```rust
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 
 let db: BaseDB = /* obtained from step 1 */;
 let tree_name = "my_app_data";
@@ -51,9 +51,9 @@ let tree = match db.find_tree(tree_name) {
     }
     Err(e) if e.is_not_found() => {
         println!("Creating new tree: {}", tree_name);
-        let mut settings = Map::new();
-        settings.set_string("name", tree_name);
-        db.new_tree(settings, auth_key)? // All trees require authentication
+        let mut doc = Doc::new();
+        doc.set("name", tree_name);
+        db.new_tree(doc, auth_key)? // All trees require authentication
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };
@@ -61,10 +61,10 @@ let tree = match db.find_tree(tree_name) {
 println!("Using Tree with root ID: {}", tree.root_id());
 ```
 
-## 3. Writing Data (Dict Example)
+## 3. Writing Data (DocStore Example)
 
 ```rust
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 let tree: Tree = /* obtained from step 2 */;
 
@@ -72,8 +72,8 @@ let tree: Tree = /* obtained from step 2 */;
 let op = tree.new_operation()?;
 
 {
-    // Get the Dict subtree handle (scoped)
-    let config_store = op.get_subtree::<Dict>("configuration")?;
+    // Get the DocStore subtree handle (scoped)
+    let config_store = op.get_subtree::<DocStore>("configuration")?;
 
     // Set some values
     config_store.set("api_key", "secret-key-123")?;
@@ -88,7 +88,7 @@ let op = tree.new_operation()?;
 
 // Commit the changes atomically
 let entry_id = op.commit()?;
-println!("Dict changes committed in entry: {}", entry_id);
+println!("DocStore changes committed in entry: {}", entry_id);
 ```
 
 ## 4. Writing Data (Table Example)
@@ -140,15 +140,15 @@ let entry_id = op.commit()?;
 println!("Table changes committed in entry: {}", entry_id);
 ```
 
-## 5. Reading Data (Dict Viewer)
+## 5. Reading Data (DocStore Viewer)
 
 ```rust
-use eidetica::subtree::Dict;
+use eidetica::subtree::DocStore;
 
 let tree: Tree = /* obtained from step 2 */;
 
 // Get a read-only viewer for the latest state
-let config_viewer = tree.get_subtree_viewer::<Dict>("configuration")?;
+let config_viewer = tree.get_subtree_viewer::<DocStore>("configuration")?;
 
 match config_viewer.get("api_key") {
     Ok(api_key) => println!("Current API Key: {}", api_key),
@@ -158,7 +158,7 @@ match config_viewer.get("api_key") {
 
 match config_viewer.get("retry_count") {
     Ok(count_str) => {
-        // Note: Dict values are strings
+        // Note: DocStore values can be various types
         let count: u32 = count_str.parse().unwrap_or(0);
         println!("Retry Count: {}", count);
     }
@@ -203,16 +203,15 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust
-use eidetica::subtree::{Dict, Value};
-use eidetica::crdt::Map;
+use eidetica::subtree::{DocStore, Value};
 
 let tree: Tree = /* obtained from step 2 */;
 
 // Start an authenticated operation (automatically uses the tree's default key)
 let op = tree.new_operation()?;
 
-// Get the Dict subtree handle
-let user_store = op.get_subtree::<Dict>("users")?;
+// Get the DocStore subtree handle
+let user_store = op.get_subtree::<DocStore>("users")?;
 
 // Using ValueEditor to create and modify nested structures
 {
@@ -257,7 +256,7 @@ println!("ValueEditor changes committed in entry: {}", entry_id);
 
 // Read back the nested data
 let viewer_op = tree.new_operation()?;
-let viewer_store = viewer_op.get_subtree::<Dict>("users")?;
+let viewer_store = viewer_op.get_subtree::<DocStore>("users")?;
 
 // Get the user data and navigate through it
 if let Ok(user_data) = viewer_store.get("user123") {

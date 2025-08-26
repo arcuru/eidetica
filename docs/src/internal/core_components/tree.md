@@ -6,7 +6,7 @@ Analogous to tables in traditional databases. Collections of related entries ide
 
 - Identified by root entry's content-addressable ID
 - Default authentication key for all operations
-- Settings stored using Map CRDT
+- Settings stored using Doc CRDT
 - Access through atomic operations
 
 ## Integration

@@ -29,7 +29,7 @@ Using an `Operation` follows a distinct lifecycle:
     ```rust
     // Get handles within a scope or manage their lifetime
     let users_store = op.get_subtree::<Table<User>>("users")?;
-    let config_store = op.get_subtree::<Dict>("config")?;
+    let config_store = op.get_subtree::<DocStore>("config")?;
     ```
 3.  **Staging Changes**: Use the methods provided by the `Subtree` handles (`set`, `insert`, `get`, `remove`, etc.). These methods interact with the data staged _within the `Operation`_.
     ```rust

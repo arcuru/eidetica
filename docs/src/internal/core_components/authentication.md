@@ -14,7 +14,7 @@ Mandatory Ed25519 cryptographic authentication system for all entries.
 - **Write(priority)**: Data read/write access
 - **Read**: Read-only access
 
-**Key Management**: Authentication keys stored in `_settings.auth` subtree using Map CRDT for conflict resolution.
+**Key Management**: Authentication keys stored in `_settings.auth` subtree using Doc CRDT for conflict resolution.
 
 ## Authentication Flow
 

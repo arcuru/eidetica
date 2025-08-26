@@ -29,133 +29,64 @@ Eidetica provides three main subtree types, each optimized for different data pa
 
 | Type          | Purpose               | Key Features                              | Best For                                     |
 | ------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
-| **Dict**      | Key-value storage     | Nested maps, tombstones, path operations  | Configuration, metadata, hierarchical data   |
+| **DocStore**  | Document storage      | Path-based operations, nested structures  | Configuration, metadata, structured docs     |
 | **Table\<T>** | Record collections    | Auto-generated UUIDs, type safety, search | User lists, products, any structured records |
 | **YDoc**      | Collaborative editing | Y-CRDT integration, real-time sync        | Shared documents, collaborative text editing |
 
-### Dict (Key-Value Store)
+### DocStore (Document-Oriented Storage)
 
-The `Dict` subtree implements a flexible key-value store that supports both simple string values and nested hierarchical data structures. It uses the `Map` CRDT implementation internally, which includes support for tombstones to properly track deletions across distributed systems.
+The `DocStore` subtree provides a document-oriented interface for storing and retrieving structured data. It wraps the `crdt::Doc` type to provide ergonomic access patterns with both simple key-value operations and path-based operations for nested data structures.
 
 #### Basic Usage
 
 ```rust
-// Get a Dict subtree
+// Get a DocStore subtree
 let op = tree.new_operation()?;
-let config = op.get_subtree::<Dict>("config")?;
+let store = op.get_subtree::<DocStore>("app_data")?;
 
-// Set simple string values
-config.set("api_url", "https://api.example.com")?;
-config.set("max_connections", "100")?;
+// Set simple values
+store.set("version", "1.0.0")?;
+store.set("author", "Alice")?;
 
-// Get values
-let url = config.get("api_url")?; // Returns a Value
-let url_string = config.get_string("api_url")?; // Returns a String directly
+// Path-based operations for nested structures
+// This creates nested maps: {"database": {"host": "localhost", "port": "5432"}}
+store.set_path("database.host", "localhost")?;
+store.set_path("database.port", "5432")?;
 
-// Remove values
-config.delete("temporary_setting")?; // Creates a tombstone
-// Even if temporary_setting doesn't exist, it will be marked as deleted
-// This ensures the deletion propagates during synchronization
+// Retrieve values
+let version = store.get("version")?; // Returns a Value
+let host = store.get_path("database.host")?; // Navigate nested structure
 
 op.commit()?;
 ```
 
-#### Working with Nested Structures
+#### Important: Path Operations Create Nested Structures
 
-`Dict` can handle nested map structures, allowing you to build hierarchical data:
-
-```rust
-// Create nested structures
-let mut preferences = Map::new();
-preferences.set_string("theme", "dark");
-preferences.set_string("language", "en");
-
-// Set this map as a value in the Dict
-config.set_value("user_prefs", Value::Map(preferences))?;
-
-// Later retrieve and modify the nested data
-if let Value::Map(mut prefs) = config.get("user_prefs")? {
-    // Modify the map
-    prefs.set_string("theme", "light");
-
-    // Update the value in the store
-    config.set_value("user_prefs", Value::Map(prefs))?;
-}
-```
-
-#### Using ValueEditor for Fluent API
-
-The `ValueEditor` provides a more ergonomic way to work with nested data structures in `Dict`. It allows you to navigate and modify nested values without having to manually extract and reinsert the intermediate maps:
+When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not flat keys with dots:
 
 ```rust
-// Get an editor for a specific key
-let prefs_editor = config.get_value_mut("user_prefs");
+// This code:
+store.set_path("user.profile.name", "Bob")?;
 
-// Read nested values
-match prefs_editor.get_value("theme")? {
-    Value::String(theme) => println!("Current theme: {}", theme),
-    _ => println!("Theme not found or not a string"),
-}
+// Creates this structure:
+// {
+//   "user": {
+//     "profile": {
+//       "name": "Bob"
+//     }
+//   }
+// }
 
-// Set nested values directly
-prefs_editor
-    .get_value_mut("theme")
-    .set(Value::String("light".to_string()))?;
-
-// Navigate deep structures with method chaining
-config
-    .get_value_mut("user")
-    .get_value_mut("profile")
-    .get_value_mut("display_name")
-    .set(Value::String("Alice Smith".to_string()))?;
-
-// Even if intermediate paths don't exist yet, they'll be created automatically
-// The line above will work even if "user", "profile", or "display_name" don't exist
-
-// Delete operations
-prefs_editor.delete_child("deprecated_setting")?; // Delete a child key
-prefs_editor.delete_self()?; // Delete the entire user_prefs object
-
-// Working with the root of the subtree
-let root_editor = config.get_root_mut();
-match root_editor.get()? {
-    Value::Map(root_map) => {
-        // Access all top-level keys
-        for (key, value) in root_map.as_hashmap() {
-            println!("Key: {}, Value type: {}", key, value.type_name());
-        }
-    },
-    _ => unreachable!("Root should always be a map"),
-}
-
-// Don't forget to commit changes!
-op.commit()?;
+// NOT: { "user.profile.name": "Bob" } ❌
 ```
 
-#### Path-Based Operations
+Use cases for `DocStore`:
 
-`Dict` also provides direct path-based access, which the `ValueEditor` uses internally:
-
-```rust
-// Set a value using a path array
-config.set_at_path(
-    &["user".to_string(), "settings".to_string(), "notifications".to_string()],
-    Value::String("enabled".to_string())
-)?;
-
-// Get a value using a path array
-let notification_setting = config.get_at_path(
-    &["user".to_string(), "settings".to_string(), "notifications".to_string()]
-)?;
-```
-
-Use cases for `Dict`:
-
-- Configuration settings
-- User preferences
-- Hierarchical metadata
-- Structured document storage
-- Application state
+- Application configuration
+- Metadata storage
+- Structured documents
+- Settings management
+- Any data requiring path-based access
 
 ### Table
 
@@ -283,7 +214,7 @@ While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Sub
 
 Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
 
-- **`Dict`**: Implements a **Last-Writer-Wins (LWW)** strategy using `Map`. When merging concurrent writes to the _same key_, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `remove()`) are tracked with tombstones to ensure deletions propagate properly.
+- **`DocStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using the internal `Doc` type. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly.
 
 - **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 
@@ -297,6 +228,6 @@ Eidetica's architecture allows for adding new Subtree implementations. Potential
 
 - **ObjectStore**: For storing large binary blobs.
 
-These are **not yet implemented**. Development is currently focused on the core API and the existing `Dict` and `Table` types.
+These are **not yet implemented**. Development is currently focused on the core API and the existing `DocStore` and `Table` types.
 
 <!-- TODO: Update this list if/when new subtree types become available or development starts -->

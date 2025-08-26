@@ -83,9 +83,9 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo tree found, creating a new one...");
-            let mut settings = eidetica::crdt::Map::new(); // Tree settings
-            settings.set_string("name", tree_name);
-            let tree = db.new_tree(settings, auth_key)?;
+            let mut doc = eidetica::crdt::Doc::new(); // Tree settings
+            doc.set("name", tree_name);
+            let tree = db.new_tree(doc, auth_key)?;
 
             // No initial commit needed here as subtrees like Table handle
             // their creation upon first access within an operation.

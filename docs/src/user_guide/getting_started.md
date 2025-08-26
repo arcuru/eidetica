@@ -29,7 +29,7 @@ Here's a simple example:
 ```rust
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
-use eidetica::crdt::Map;
+use eidetica::crdt::Doc;
 use std::path::PathBuf;
 
 // Create a new in-memory database
@@ -40,9 +40,9 @@ let db = BaseDB::new(Box::new(database));
 db.add_private_key("my_key")?;
 
 // Create a tree to store data
-let mut settings = Map::new();
-settings.set_string("name", "my_tree");
-let tree = db.new_tree(settings, "my_key")?;
+let mut doc = Doc::new();
+doc.set("name", "my_tree");
+let tree = db.new_tree(doc, "my_key")?;
 ```
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
