@@ -9,7 +9,7 @@
 //! - [`Doc`] - The main CRDT document type for user interactions
 //! - [`Value`] - The value type for nested structures  
 //! - [`List`] - An ordered collection with rational number positioning
-//! - [`map::list::Position`] - Rational number-based positions for stable list ordering
+//! - [`doc::list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # Traits
 //!
@@ -19,11 +19,9 @@
 // Core modules
 pub mod doc;
 pub mod errors;
-pub mod map;
 pub mod traits;
 
 // Re-export core types
 pub use doc::Doc;
 pub use errors::CRDTError;
-pub use map::{List, Value}; // Export Value and List from map module
 pub use traits::{CRDT, Data};

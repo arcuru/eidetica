@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use eidetica::crdt::CRDT;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_end_to_end_data_workflow() -> eidetica::Result<()> {

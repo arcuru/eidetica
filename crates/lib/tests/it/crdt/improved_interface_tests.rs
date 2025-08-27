@@ -7,8 +7,7 @@
 
 use eidetica::Result;
 use eidetica::crdt::Doc;
-use eidetica::crdt::doc::path;
-use eidetica::crdt::map::{Node, Value};
+use eidetica::crdt::doc::{Node, Value, path};
 
 #[test]
 fn test_tryfrom_value_implementations() {
@@ -72,13 +71,13 @@ fn test_node_get_as_method() {
     node.set("enabled", false);
 
     // Test successful type inference
-    let name: Result<String> = node.get_as("name");
+    let name = node.get_as::<String>("name");
     assert_eq!(name.unwrap(), "Bob");
 
-    let count: Result<i64> = node.get_as("count");
+    let count = node.get_as::<i64>("count");
     assert_eq!(count.unwrap(), 100);
 
-    let enabled: Result<bool> = node.get_as("enabled");
+    let enabled = node.get_as::<bool>("enabled");
     assert!(!enabled.unwrap());
 }
 
@@ -104,9 +103,9 @@ fn test_mixed_path_and_direct_access() {
     // Access nested values set via path using direct access to intermediate nodes
     let user_node: Result<Node> = doc.get_as("user");
     let user = user_node.unwrap();
-    let profile_node: Result<Node> = user.get_as("profile");
+    let profile_node = user.get_as::<Node>("profile");
     let profile = profile_node.unwrap();
-    let profile_name: Result<String> = profile.get_as("name");
+    let profile_name = profile.get_as::<String>("name");
     assert_eq!(profile_name.unwrap(), "Charlie");
 
     // Access nested values using path methods
@@ -128,7 +127,7 @@ fn test_mixed_path_and_direct_access() {
         26
     );
     let user_again: Result<Node> = doc.get_as("user");
-    let profile_age: Result<i64> = user_again.unwrap().get_path_as(path!("profile.age"));
+    let profile_age = user_again.unwrap().get_path_as::<i64>(path!("profile.age"));
     assert_eq!(profile_age.unwrap(), 26);
 
     // Set nested value directly on retrieved node, then access via path
@@ -302,7 +301,7 @@ fn test_mutable_access_methods_mixed() {
 
     // Verify via direct node access
     let stats_node: Result<Node> = doc.get_as("stats");
-    let views_direct: Result<i64> = stats_node.unwrap().get_as("views");
+    let views_direct = stats_node.unwrap().get_as::<i64>("views");
     assert_eq!(views_direct.unwrap(), 200);
 
     // Modify direct key, then use path to access it

@@ -6,8 +6,7 @@
 
 use super::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::doc::path;
-use eidetica::crdt::map::{List, Value};
+use eidetica::crdt::doc::{List, Value, path};
 
 // ===== VALUE TYPE TESTS =====
 

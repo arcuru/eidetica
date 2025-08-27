@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use eidetica::crdt::CRDT;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_map_basic_operations() {
@@ -54,7 +54,7 @@ fn test_map_tombstone_handling() {
     // Add a nested map
     let mut nested = eidetica::crdt::Doc::new();
     nested.set_string("inner_key", "inner_value");
-    map.set_map("map_key", nested);
+    map.set_map("map_key", nested.into());
 
     // Remove a string value
     let removed = map.remove("str_key");

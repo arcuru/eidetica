@@ -51,7 +51,7 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// kv2.set("key", "value2");
 ///
 /// let merged = kv1.merge(&kv2).unwrap();
-/// // Map uses last-write-wins semantics for scalar values
+/// // Doc uses last-write-wins semantics for scalar values
 /// ```
 pub trait CRDT: Data {
     /// Merge this CRDT with another instance, returning a new merged instance.

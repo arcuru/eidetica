@@ -1,21 +1,21 @@
 #[cfg(test)]
-mod test_map {
-    use crate::crdt::map::list::Position;
-    use crate::crdt::map::{List, Node, Value};
+mod test_node {
+    use crate::crdt::doc::list::Position;
+    use crate::crdt::doc::{List, Node, Value};
     use crate::crdt::{CRDTError, Doc};
 
     // Minimal unit tests for internal implementation details not accessible from integration tests
     // Most functionality is now comprehensively tested in integration tests under tests/it/crdt/
 
     #[test]
-    fn test_map_as_hashmap_internal_access() {
-        let mut map = Doc::new();
-        map.set("key1", "value1");
-        map.set("key2", "value2");
-        map.remove("key1");
+    fn test_doc_as_hashmap_internal_access() {
+        let mut doc = Doc::new();
+        doc.set("key1", "value1");
+        doc.set("key2", "value2");
+        doc.remove("key1");
 
         // Test internal hashmap access - this exposes tombstones which the public API hides
-        let hashmap = map.as_hashmap();
+        let hashmap = doc.as_hashmap();
         assert_eq!(hashmap.len(), 2);
         assert_eq!(hashmap.get("key1"), Some(&Value::Deleted)); // Tombstone visible
         assert_eq!(
@@ -24,8 +24,8 @@ mod test_map {
         );
 
         // Public API should hide the tombstone
-        assert_eq!(map.get("key1"), None);
-        assert_eq!(map.get("key2"), Some(&Value::Text("value2".to_string())));
+        assert_eq!(doc.get("key1"), None);
+        assert_eq!(doc.get("key2"), Some(&Value::Text("value2".to_string())));
     }
 
     #[test]

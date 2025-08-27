@@ -6,8 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::doc::path;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::{Value, path};
 use eidetica::subtree::DocStore;
 
 #[test]
@@ -181,7 +180,7 @@ fn test_dict_list_nonexistent_key() {
         assert!(list_result.is_err());
 
         // Create a new list
-        let mut new_list = eidetica::crdt::map::List::new();
+        let mut new_list = eidetica::crdt::doc::List::new();
         new_list.push(Value::Text("first_item".to_string()));
 
         dict.set_list("new_list", new_list)
@@ -208,7 +207,7 @@ fn test_dict_list_persistence() {
             .get_subtree::<DocStore>("my_kv")
             .expect("Failed to get Doc");
 
-        let mut colors = eidetica::crdt::map::List::new();
+        let mut colors = eidetica::crdt::doc::List::new();
         colors.push(Value::Text("red".to_string()));
         colors.push(Value::Text("green".to_string()));
 

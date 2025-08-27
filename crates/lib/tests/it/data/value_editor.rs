@@ -4,7 +4,7 @@
 //! through a fluent interface.
 
 use super::helpers::*;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {

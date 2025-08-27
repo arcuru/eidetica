@@ -38,16 +38,25 @@
 use std::{collections::HashMap, fmt, str::FromStr};
 
 use crate::crdt::CRDTError;
-use crate::crdt::map::{List, Node, Value};
 use crate::crdt::traits::{CRDT, Data};
 
 // Submodules
+pub mod list;
+pub mod node;
+#[cfg(test)]
+mod node_tests;
 pub mod path;
+pub mod value;
 
-// Re-exports
+// Path re-exports (no conflicts)
 pub use path::{Path, PathBuf, PathError};
 // Re-export the macro from crate root
 pub use crate::path;
+
+// Convenience re-exports for core Doc types
+pub use list::List;
+pub use node::Node;
+pub use value::Value;
 
 /// The main CRDT document type for Eidetica.
 ///
@@ -414,17 +423,17 @@ impl Doc {
         &mut self.root
     }
 
-    /// Provides access to the internal structure as Map for backwards compatibility
+    /// Provides access to the internal structure as Node for advanced use cases
     ///
-    /// This method provides the Map type alias which points to Node, maintaining
+    /// This method provides access to the internal Node structure, maintaining
     /// backwards compatibility during the migration period.
     pub fn as_map(&self) -> &Node {
         &self.root
     }
 
-    /// Provides mutable access to the internal structure as Map for backwards compatibility
+    /// Provides mutable access to the internal structure as Node for advanced use cases
     ///
-    /// This method provides the Map type alias which points to Node, maintaining
+    /// This method provides mutable access to the internal Node structure, maintaining
     /// backwards compatibility during the migration period.
     pub fn as_map_mut(&mut self) -> &mut Node {
         &mut self.root
@@ -448,7 +457,7 @@ impl Doc {
 
     /// Clones the internal Node structure
     ///
-    /// This method is useful when you need a Node copy for use in Value::Map
+    /// This method is useful when you need a Node copy for use in Value::Node
     /// or other internal CRDT operations.
     pub fn clone_as_node(&self) -> Node {
         self.root.clone()
@@ -483,7 +492,7 @@ impl fmt::Display for Doc {
 
 impl FromIterator<(String, Value)> for Doc {
     fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
-        let root = Node::from_iter(iter);
+        let root = Node::from_pairs(iter);
         Doc { root }
     }
 }
@@ -588,12 +597,12 @@ impl Doc {
         self.root.get_map_mut(key)
     }
 
-    /// Get a reference to the internal HashMap compatible with Map API
+    /// Get a reference to the internal HashMap for advanced access
     pub fn as_hashmap(&self) -> &HashMap<String, Value> {
         self.root.as_hashmap()
     }
 
-    /// Get a mutable reference to the internal HashMap (compatibility method)
+    /// Get a mutable reference to the internal HashMap for advanced access
     pub fn as_hashmap_mut(&mut self) -> &mut HashMap<String, Value> {
         self.root.as_hashmap_mut()
     }
@@ -609,7 +618,7 @@ impl Doc {
     /// List remove operation - tombstones element by position ID
     pub fn list_remove<K>(&mut self, key: K, id: &str) -> crate::Result<bool>
     where
-        K: Into<String>,
+        K: Into<String> + AsRef<str>,
     {
         self.root.list_remove(key, id)
     }
@@ -668,7 +677,7 @@ impl Doc {
     ///
     /// ```
     /// # use eidetica::crdt::Doc;
-    /// # use eidetica::crdt::map::Value;
+    /// # use eidetica::crdt::doc::Value;
     /// let mut doc = Doc::new();
     ///
     /// // Key doesn't exist - will insert default
@@ -791,7 +800,7 @@ impl From<Node> for Doc {
 
 impl From<Doc> for Node {
     fn from(doc: Doc) -> Self {
-        doc.into_root()
+        doc.root
     }
 }
 

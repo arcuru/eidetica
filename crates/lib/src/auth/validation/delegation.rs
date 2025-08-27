@@ -12,7 +12,7 @@ use crate::auth::types::{
 };
 use crate::backend::Database;
 use crate::crdt::Doc;
-use crate::crdt::map::Value;
+use crate::crdt::doc::Value;
 use crate::entry::ID;
 use crate::tree::Tree;
 use std::sync::Arc;

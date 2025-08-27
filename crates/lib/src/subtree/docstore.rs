@@ -1,8 +1,8 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
+use crate::crdt::doc::{List, Node, Value};
 use crate::crdt::doc::{Path, PathBuf, PathError};
-use crate::crdt::map::{List, Node, Value};
-use crate::crdt::{Doc, traits::CRDT};
+use crate::crdt::{CRDT, Doc};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 use std::str::FromStr;
@@ -642,6 +642,7 @@ impl DocStore {
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
     /// # use eidetica::crdt::doc::path;
+    /// # use eidetica::crdt::doc::Value;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
@@ -805,6 +806,42 @@ impl DocStore {
     /// fully merged historical state from the backend, providing a complete view
     /// of the document as it would appear if the operation were committed.
     /// The staged data takes precedence in case of conflicts (overwrites).
+    ///
+    /// # Important: Understanding Nested Structure
+    ///
+    /// When using `set_path()` with dot-notation paths, the data is stored as **nested maps**.
+    /// The returned Doc will contain the top-level keys, with nested structures as `Value::Node` values.
+    ///
+    /// ## Example:
+    /// ```rust,no_run
+    /// # use eidetica::Tree;
+    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::Value;
+    /// # let tree: Tree = unimplemented!();
+    /// let op = tree.new_operation()?;
+    /// let store = op.get_subtree::<DocStore>("data")?;
+    ///
+    /// // Using set_path_str creates nested structure
+    /// store.set_path_str("user.name", "Alice")?;
+    /// store.set_path_str("user.age", 30)?;
+    /// store.set_path_str("config.theme", "dark")?;
+    ///
+    /// let all_data = store.get_all()?;
+    ///
+    /// // The top-level map has keys "user" and "config", NOT "user.name", "user.age", etc.
+    /// assert_eq!(all_data.as_hashmap().len(), 2); // Only 2 top-level keys
+    ///
+    /// // To access nested data from get_all():
+    /// if let Some(Value::Node(user_node)) = all_data.get("user") {
+    ///     // user_node contains "name" and "age" as its children
+    ///     assert_eq!(user_node.get("name"), Some(&Value::Text("Alice".to_string())));
+    ///     assert_eq!(user_node.get("age"), Some(&Value::Text("30".to_string())));
+    /// }
+    ///
+    /// // For direct access, use get_path_str() or get_path_as_str() instead:
+    /// assert_eq!(store.get_path_as_str::<String>("user.name")?, "Alice");
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
     ///
     /// # Returns
     /// A `Result` containing the merged `Map` data structure.

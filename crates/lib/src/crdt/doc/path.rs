@@ -12,8 +12,9 @@
 //! # Usage
 //!
 //! ```rust
-//! use eidetica::crdt::doc::{Doc, PathBuf};
+//! use eidetica::crdt::doc::{Path, PathBuf};
 //! use std::str::FromStr;
+//! # use eidetica::crdt::Doc;
 //!
 //! // Construct from string (with validation)
 //! let path = PathBuf::from_str("user.profile.name")?;

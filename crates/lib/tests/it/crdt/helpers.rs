@@ -4,8 +4,8 @@
 //! functionality of the CRDT system.
 
 // Helper functions are self-contained and don't need external imports
-use eidetica::crdt::map::list::Position;
-use eidetica::crdt::map::{List, Node as Map, Value};
+use eidetica::crdt::doc::list::Position;
+use eidetica::crdt::doc::{List, Node as Map, Value};
 use eidetica::crdt::{CRDT, Doc};
 
 // ===== MAP HELPERS =====

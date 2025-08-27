@@ -4,8 +4,7 @@
 //! and test their interaction with the broader Eidetica system.
 
 use super::helpers::*;
-use eidetica::crdt::doc::path;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::{Value, path};
 use eidetica::crdt::{CRDT, Doc};
 
 #[test]
@@ -160,7 +159,7 @@ fn test_crdt_with_lists_integration() {
     let mut doc = Doc::new();
 
     // Add a list to the document
-    let mut items = eidetica::crdt::map::List::new();
+    let mut items = eidetica::crdt::doc::List::new();
     items.push(Value::Text("item1".to_string()));
     items.push(Value::Text("item2".to_string()));
     doc.set("items".to_string(), Value::List(items));

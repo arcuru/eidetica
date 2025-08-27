@@ -5,8 +5,8 @@
 //! JSON serialization.
 
 use crate::crdt::helpers::*;
-use eidetica::crdt::map::list::Position;
-use eidetica::crdt::map::{List, Value};
+use eidetica::crdt::doc::list::Position;
+use eidetica::crdt::doc::{List, Value};
 use eidetica::crdt::{CRDTError, Doc};
 
 // ===== BASIC LIST OPERATIONS =====

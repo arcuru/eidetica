@@ -8,7 +8,7 @@ use eidetica::Tree;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
 use eidetica::subtree::DocStore;
 

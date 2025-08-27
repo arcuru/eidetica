@@ -10,7 +10,7 @@ use crate::backend::Database;
 use crate::basedb::errors::BaseError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Doc;
-use crate::crdt::map::Value;
+use crate::crdt::doc::Value;
 use crate::entry::{Entry, ID};
 use crate::subtree::{DocStore, SubTree};
 

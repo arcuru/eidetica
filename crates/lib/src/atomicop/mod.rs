@@ -7,7 +7,7 @@ use crate::auth::validation::AuthValidator;
 use crate::constants::SETTINGS;
 use crate::crdt::CRDT;
 use crate::crdt::Doc;
-use crate::crdt::map::Value;
+use crate::crdt::doc::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
 use crate::subtree::DocStore;
 use crate::subtree::SubTree;

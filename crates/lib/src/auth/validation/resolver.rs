@@ -9,7 +9,7 @@ use crate::auth::errors::AuthError;
 use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
 use crate::backend::Database;
 use crate::crdt::Doc;
-use crate::crdt::map::Value;
+use crate::crdt::doc::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -6,7 +6,7 @@
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_settings_tips_in_metadata() {

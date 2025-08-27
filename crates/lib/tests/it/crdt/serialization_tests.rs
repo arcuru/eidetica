@@ -6,9 +6,8 @@
 
 use crate::crdt::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::doc::path;
-use eidetica::crdt::map::list::Position;
-use eidetica::crdt::map::{List, Node, Value};
+use eidetica::crdt::doc::list::Position;
+use eidetica::crdt::doc::{List, Node, Value, path};
 
 // ===== JSON STRING SERIALIZATION TESTS =====
 

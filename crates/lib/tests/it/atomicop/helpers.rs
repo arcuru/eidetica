@@ -4,8 +4,8 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use crate::helpers::*;
-use eidetica::crdt::map::Value;
-use eidetica::crdt::{Doc, map::Node as Map};
+use eidetica::crdt::doc::Value;
+use eidetica::crdt::{Doc, doc::node::Node as Map};
 use eidetica::entry::ID;
 use eidetica::subtree::{DocStore, SubTree};
 

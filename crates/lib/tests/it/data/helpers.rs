@@ -7,7 +7,7 @@ use eidetica::atomicop::AtomicOp;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::{Node, Value};
+use eidetica::crdt::doc::{Node, Value};
 use eidetica::subtree::DocStore;
 use eidetica::tree::Tree;
 

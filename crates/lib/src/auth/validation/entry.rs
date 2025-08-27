@@ -8,7 +8,7 @@ use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
 use crate::backend::Database;
 use crate::crdt::Doc;
-use crate::crdt::map::Value;
+use crate::crdt::doc::Value;
 use crate::entry::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;

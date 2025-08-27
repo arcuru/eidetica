@@ -4,7 +4,7 @@
 //! structures using string paths.
 
 use super::helpers::*;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {

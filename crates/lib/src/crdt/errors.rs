@@ -39,8 +39,8 @@ pub enum CRDTError {
     #[error("CRDT list operation failed: {operation} - {reason}")]
     ListOperationFailed { operation: String, reason: String },
 
-    /// Map operation failed
-    #[error("CRDT map operation failed: {operation} - {reason}")]
+    /// Document operation failed
+    #[error("CRDT document operation failed: {operation} - {reason}")]
     MapOperationFailed { operation: String, reason: String },
 
     /// Nested structure operation failed

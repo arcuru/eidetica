@@ -5,7 +5,7 @@
 
 use crate::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 use eidetica::subtree::{DocStore, Table};
 use serde::{Deserialize, Serialize};
 
@@ -74,7 +74,7 @@ pub fn create_dict_with_list(
     let op = tree.new_operation().unwrap();
     let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
 
-    let mut fruits = eidetica::crdt::map::List::new();
+    let mut fruits = eidetica::crdt::doc::List::new();
     for item in list_items {
         fruits.push(Value::Text(item.to_string()));
     }

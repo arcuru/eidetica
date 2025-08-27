@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 use eidetica::subtree::DocStore;
 
 #[test]

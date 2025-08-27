@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::{Node, Value};
+use eidetica::crdt::doc::{Node, Value};
 
 #[test]
 fn test_map_serialization() {

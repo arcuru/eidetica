@@ -14,7 +14,7 @@ use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
-use eidetica::crdt::map::Value;
+use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
 
 /// Test delegation resolution with missing backend
