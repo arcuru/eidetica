@@ -65,13 +65,14 @@
 //! ## Level 2: Typed Getters
 //! ```
 //! # use eidetica::crdt::Doc;
+//! # use eidetica::crdt::doc::path;
 //! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct typed access
 //! let name = map.get_text("name");           // Option<&str>
 //! let age = map.get_int("age");              // Option<i64>
-//! let bio = map.get_text_at_path("user.bio"); // Option<&str>
+//! let bio = map.get_text_at_path(path!("user.bio")); // Option<&str>
 //! ```
 //!
 //! ## Level 3: Direct Comparisons
@@ -103,7 +104,9 @@ use uuid::Uuid;
 
 use crate::crdt::CRDTError;
 use crate::crdt::Doc;
+use crate::crdt::doc::{Path, PathBuf, PathError};
 use crate::crdt::traits::{CRDT, Data};
+use std::str::FromStr;
 
 /// Position identifier for list elements that enables stable ordering in distributed systems.
 ///
@@ -1281,8 +1284,8 @@ impl Node {
 
     /// Gets a value by path using dot notation (e.g., "users.123.name").
     ///
-    /// Traverses the tree structure following the path segments separated by dots.
-    /// Each segment navigates deeper into the tree structure.
+    /// Traverses the tree structure following the path components separated by dots.
+    /// Each component navigates deeper into the tree structure.
     ///
     /// # Path Syntax
     ///
@@ -1294,31 +1297,30 @@ impl Node {
     ///
     /// ```
     /// # use eidetica::crdt::{Doc, map::List};
+    /// # use eidetica::crdt::doc::path;
     /// let mut map = Doc::new();
-    /// map.set_path("user.profile.name", "Alice").unwrap();
+    /// map.set_path(path!("user.profile.name"), "Alice").unwrap();
     ///
     /// // Navigate nested structure
-    /// let name = map.get_path("user.profile.name");
+    /// let name = map.get_path(path!("user.profile.name"));
     /// assert_eq!(name.and_then(|v| v.as_text()), Some("Alice"));
     ///
     /// // Or use typed getter
-    /// assert_eq!(map.get_text_at_path("user.profile.name"), Some("Alice"));
+    /// assert_eq!(map.get_text_at_path(path!("user.profile.name")), Some("Alice"));
     /// ```
     ///
     /// # Returns
     ///
     /// - `Some(&Value)` if the path exists
-    /// - `None` if any segment of the path doesn't exist or has wrong type
-    pub fn get_path(&self, path: impl AsRef<str>) -> Option<&Value> {
-        let path = path.as_ref();
-        let parts: Vec<&str> = path.split('.').collect();
-        if parts.is_empty() {
-            return None;
-        }
+    /// - `None` if any component of the path doesn't exist or has wrong type
+    pub fn get_path(&self, path: impl AsRef<Path>) -> Option<&Value> {
+        let path_ref = path.as_ref();
+        let mut components = path_ref.components();
+        let first_component = components.next()?;
 
-        let mut current_value = self.children.get(parts[0])?;
+        let mut current_value = self.children.get(first_component)?;
 
-        for part in parts.iter().skip(1) {
+        for part in components {
             match current_value {
                 Value::Node(node) => {
                     current_value = node.get(part)?;
@@ -1338,28 +1340,34 @@ impl Node {
         Some(current_value)
     }
 
+    /// Gets a value by path from a string, validating at runtime.
+    pub fn get_path_str(&self, path: &str) -> Result<Option<&Value>, PathError> {
+        let path_buf = PathBuf::from_str(path)?;
+        Ok(self.get_path(&path_buf))
+    }
+
     /// Gets a text value by path
-    pub fn get_text_at_path(&self, path: impl AsRef<str>) -> Option<&str> {
+    pub fn get_text_at_path(&self, path: impl AsRef<Path>) -> Option<&str> {
         self.get_path(path).and_then(|v| v.as_text())
     }
 
     /// Gets an integer value by path
-    pub fn get_int_at_path(&self, path: impl AsRef<str>) -> Option<i64> {
+    pub fn get_int_at_path(&self, path: impl AsRef<Path>) -> Option<i64> {
         self.get_path(path).and_then(|v| v.as_int())
     }
 
     /// Gets a boolean value by path
-    pub fn get_bool_at_path(&self, path: impl AsRef<str>) -> Option<bool> {
+    pub fn get_bool_at_path(&self, path: impl AsRef<Path>) -> Option<bool> {
         self.get_path(path).and_then(|v| v.as_bool())
     }
 
     /// Gets a node value by path
-    pub fn get_node_at_path(&self, path: impl AsRef<str>) -> Option<&Node> {
+    pub fn get_node_at_path(&self, path: impl AsRef<Path>) -> Option<&Node> {
         self.get_path(path).and_then(|v| v.as_node())
     }
 
     /// Gets a list value by path
-    pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&List> {
+    pub fn get_list_at_path(&self, path: impl AsRef<Path>) -> Option<&List> {
         self.get_path(path).and_then(|v| v.as_list())
     }
 
@@ -1372,41 +1380,39 @@ impl Node {
     /// ```
     /// # use eidetica::crdt::map::Node;
     /// # use eidetica::Result;
+    /// # use eidetica::crdt::doc::path;
     /// let mut node = Node::new();
-    /// node.set_path("user.profile.name", "Alice").unwrap();
-    /// node.set_path("user.profile.age", 30).unwrap();
+    /// node.set_path(path!("user.profile.name"), "Alice").unwrap();
+    /// node.set_path(path!("user.profile.age"), 30).unwrap();
     ///
     /// // Type inference with path access
-    /// let name: Result<String> = node.get_path_as("user.profile.name");
-    /// let age: Result<i64> = node.get_path_as("user.profile.age");
+    /// let name: Result<String> = node.get_path_as(path!("user.profile.name"));
+    /// let age: Result<i64> = node.get_path_as(path!("user.profile.age"));
     ///
     /// assert_eq!(name.unwrap(), "Alice");
     /// assert_eq!(age.unwrap(), 30);
     /// ```
-    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> crate::Result<T>
+    pub fn get_path_as<T>(&self, path: impl AsRef<Path>) -> crate::Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
-        match self.get_path(path.as_ref()) {
+        let path_ref = path.as_ref();
+        let key = path_ref.as_str().to_string(); // Store for error message
+        match self.get_path(path_ref) {
             Some(value) => T::try_from(value).map_err(Into::into),
-            None => Err(CRDTError::ElementNotFound {
-                key: path.as_ref().to_string(),
-            }
-            .into()),
+            None => Err(CRDTError::ElementNotFound { key }.into()),
         }
     }
 
     /// Gets a mutable reference to a value by path
-    pub fn get_path_mut(&mut self, path: impl AsRef<str>) -> Option<&mut Value> {
-        let path = path.as_ref();
-        let parts: Vec<&str> = path.split('.').collect();
-        if parts.is_empty() {
-            return None;
-        }
+    pub fn get_path_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut Value> {
+        let path_ref = path.as_ref();
+        let mut components = path_ref.components();
+        let first_component = components.next()?;
 
-        let mut current_value = self.children.get_mut(parts[0])?;
+        let mut current_value = self.children.get_mut(first_component)?;
 
-        for part in parts.iter().skip(1) {
+        for part in components {
             match current_value {
                 Value::Node(node) => {
                     current_value = node.get_mut(part)?;
@@ -1426,29 +1432,39 @@ impl Node {
         Some(current_value)
     }
 
+    /// Sets a value at the given path from a string, validating at runtime.
+    pub fn set_path_str(
+        &mut self,
+        path: &str,
+        value: impl Into<Value>,
+    ) -> Result<Result<Option<Value>, CRDTError>, PathError> {
+        let path_buf = PathBuf::from_str(path)?;
+        Ok(self.set_path(&path_buf, value))
+    }
+
     /// Sets a value at the given path, creating intermediate nodes as needed
     pub fn set_path(
         &mut self,
-        path: impl AsRef<str>,
+        path: impl AsRef<Path>,
         value: impl Into<Value>,
     ) -> Result<Option<Value>, CRDTError> {
-        let path = path.as_ref();
+        let path_ref = path.as_ref();
         let value = value.into();
-        let parts: Vec<&str> = path.split('.').collect();
-        if parts.is_empty() {
+        let components: Vec<&str> = path_ref.components().collect();
+        if components.is_empty() {
             return Err(CRDTError::InvalidPath {
                 path: "Empty path".to_string(),
             });
         }
 
-        if parts.len() == 1 {
+        if components.len() == 1 {
             // Simple key set
-            return Ok(self.set(parts[0], value));
+            return Ok(self.set(components[0], value));
         }
 
         // Navigate to the parent, creating intermediate nodes as needed
         let mut current_map = self;
-        for part in parts.iter().take(parts.len() - 1) {
+        for part in components.iter().take(components.len() - 1) {
             let part_owned = part.to_string();
 
             // Check if we need to create a new node
@@ -1479,7 +1495,7 @@ impl Node {
         }
 
         // Set the final value
-        let final_key = parts[parts.len() - 1];
+        let final_key = components[components.len() - 1];
         Ok(current_map.set(final_key, value))
     }
 

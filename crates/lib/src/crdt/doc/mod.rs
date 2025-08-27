@@ -20,11 +20,12 @@
 //!
 //! ```
 //! use eidetica::crdt::{Doc, traits::CRDT};
+//! use eidetica::crdt::doc::path;
 //!
 //! let mut doc = Doc::new();
 //! doc.set("name", "Alice");
 //! doc.set("age", 30);
-//! doc.set_path("user.profile.bio", "Software developer").unwrap();
+//! doc.set_path(path!("user.profile.bio"), "Software developer").unwrap();
 //!
 //! // Merge with another document
 //! let mut doc2 = Doc::new();
@@ -34,11 +35,19 @@
 //! let merged = doc.merge(&doc2).unwrap();
 //! ```
 
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, str::FromStr};
 
 use crate::crdt::CRDTError;
 use crate::crdt::map::{List, Node, Value};
 use crate::crdt::traits::{CRDT, Data};
+
+// Submodules
+pub mod path;
+
+// Re-exports
+pub use path::{Path, PathBuf, PathError};
+// Re-export the macro from crate root
+pub use crate::path;
 
 /// The main CRDT document type for Eidetica.
 ///
@@ -70,10 +79,11 @@ use crate::crdt::traits::{CRDT, Data};
 /// ## Path Operations
 /// ```
 /// # use eidetica::crdt::Doc;
+/// # use eidetica::crdt::doc::path;
 /// let mut doc = Doc::new();
-/// doc.set_path("user.profile.name", "Alice").unwrap();
+/// doc.set_path(path!("user.profile.name"), "Alice").unwrap();
 ///
-/// assert_eq!(doc.get_text_at_path("user.profile.name"), Some("Alice"));
+/// assert_eq!(doc.get_text_at_path(path!("user.profile.name")), Some("Alice"));
 /// ```
 ///
 /// ## CRDT Merging
@@ -234,33 +244,54 @@ impl Doc {
     /// Gets a value by path using dot notation (e.g., "users.123.name").
     ///
     /// See [`Node::get_path`] for detailed documentation and examples.
-    pub fn get_path(&self, path: impl AsRef<str>) -> Option<&Value> {
+    pub fn get_path(&self, path: impl AsRef<Path>) -> Option<&Value> {
         self.root.get_path(path)
     }
 
+    /// Gets a value by path from a string, validating at runtime.
+    pub fn get_path_str(&self, path: &str) -> Result<Option<&Value>, PathError> {
+        let path_buf = PathBuf::from_str(path)?;
+        Ok(self.get_path(&path_buf))
+    }
+
     /// Gets a text value by path
-    pub fn get_text_at_path(&self, path: impl AsRef<str>) -> Option<&str> {
-        self.root.get_text_at_path(path)
+    pub fn get_text_at_path(&self, path: impl AsRef<Path>) -> Option<&str> {
+        match self.get_path(path)? {
+            Value::Text(s) => Some(s),
+            _ => None,
+        }
     }
 
     /// Gets an integer value by path
-    pub fn get_int_at_path(&self, path: impl AsRef<str>) -> Option<i64> {
-        self.root.get_int_at_path(path)
+    pub fn get_int_at_path(&self, path: impl AsRef<Path>) -> Option<i64> {
+        match self.get_path(path)? {
+            Value::Int(i) => Some(*i),
+            _ => None,
+        }
     }
 
     /// Gets a boolean value by path
-    pub fn get_bool_at_path(&self, path: impl AsRef<str>) -> Option<bool> {
-        self.root.get_bool_at_path(path)
+    pub fn get_bool_at_path(&self, path: impl AsRef<Path>) -> Option<bool> {
+        match self.get_path(path)? {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
     }
 
     /// Gets a map value by path
-    pub fn get_map_at_path(&self, path: impl AsRef<str>) -> Option<&Node> {
-        self.root.get_node_at_path(path)
+    pub fn get_map_at_path(&self, path: impl AsRef<Path>) -> Option<&Node> {
+        match self.get_path(path)? {
+            Value::Node(node) => Some(node),
+            _ => None,
+        }
     }
 
     /// Gets a list value by path
-    pub fn get_list_at_path(&self, path: impl AsRef<str>) -> Option<&List> {
-        self.root.get_list_at_path(path)
+    pub fn get_list_at_path(&self, path: impl AsRef<Path>) -> Option<&List> {
+        match self.get_path(path)? {
+            Value::List(list) => Some(list),
+            _ => None,
+        }
     }
 
     /// Gets a value by path with automatic type conversion using TryFrom
@@ -272,42 +303,54 @@ impl Doc {
     /// ```
     /// # use eidetica::crdt::Doc;
     /// # use eidetica::Result;
+    /// # use eidetica::crdt::doc::path;
     /// let mut doc = Doc::new();
-    /// doc.set_path("user.profile.name", "Alice").unwrap();
-    /// doc.set_path("user.profile.age", 30).unwrap();
+    /// doc.set_path(path!("user.profile.name"), "Alice").unwrap();
+    /// doc.set_path(path!("user.profile.age"), 30).unwrap();
     ///
     /// // Type inference with path access
-    /// let name: Result<String> = doc.get_path_as("user.profile.name");
-    /// let age: Result<i64> = doc.get_path_as("user.profile.age");
+    /// let name: Result<String> = doc.get_path_as(path!("user.profile.name"));
+    /// let age: Result<i64> = doc.get_path_as(path!("user.profile.age"));
     ///
     /// assert_eq!(name.unwrap(), "Alice");
     /// assert_eq!(age.unwrap(), 30);
     /// ```
-    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> crate::Result<T>
+    pub fn get_path_as<T>(&self, path: impl AsRef<Path>) -> crate::Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
-        match self.get_path(path.as_ref()) {
+        let path_ref = path.as_ref();
+        match self.get_path(path_ref) {
             Some(value) => T::try_from(value).map_err(Into::into),
             None => Err(CRDTError::ElementNotFound {
-                key: path.as_ref().to_string(),
+                key: path_ref.as_str().to_string(),
             }
             .into()),
         }
     }
 
     /// Gets a mutable reference to a value by path
-    pub fn get_path_mut(&mut self, path: impl AsRef<str>) -> Option<&mut Value> {
+    pub fn get_path_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut Value> {
         self.root.get_path_mut(path)
     }
 
     /// Sets a value at the given path, creating intermediate maps as needed
     pub fn set_path(
         &mut self,
-        path: impl AsRef<str>,
+        path: impl AsRef<Path>,
         value: impl Into<Value>,
     ) -> Result<Option<Value>, CRDTError> {
         self.root.set_path(path, value)
+    }
+
+    /// Sets a value at the given path from a string, validating at runtime.
+    pub fn set_path_str(
+        &mut self,
+        path: &str,
+        value: impl Into<Value>,
+    ) -> Result<Result<Option<Value>, CRDTError>, PathError> {
+        let path_buf = PathBuf::from_str(path)?;
+        Ok(self.set_path(&path_buf, value))
     }
 
     /// Returns an iterator over all key-value pairs (excluding tombstones)
@@ -711,25 +754,24 @@ impl Doc {
     ///
     /// ```
     /// # use eidetica::crdt::Doc;
+    /// # use eidetica::crdt::doc::path;
     /// let mut doc = Doc::new();
-    /// doc.set_path("user.score", 100)?;
+    /// doc.set_path(path!("user.score"), 100)?;
     ///
-    /// doc.modify_path::<i64, _>("user.score", |score| {
+    /// doc.modify_path::<i64, _>(path!("user.score"), |score| {
     ///     *score += 50;
     /// })?;
     ///
-    /// assert_eq!(doc.get_path_as::<i64>("user.score")?, 150);
+    /// assert_eq!(doc.get_path_as::<i64>(path!("user.score"))?, 150);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_path<T, F>(&mut self, path: impl AsRef<str>, f: F) -> crate::Result<()>
+    pub fn modify_path<T, F>(&mut self, path: impl AsRef<Path>, f: F) -> crate::Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
-        let path = path.as_ref();
-
         // Try to get and convert the current value
-        let mut value = self.get_path_as::<T>(path)?;
+        let mut value = self.get_path_as::<T>(&path)?;
 
         // Apply the modification
         f(&mut value);

@@ -65,13 +65,14 @@
 //! ## Level 2: Typed Getters
 //! ```
 //! # use eidetica::crdt::Doc;
+//! # use eidetica::crdt::doc::path;
 //! # let mut map = Doc::new();
 //! # map.set("name", "Alice");
 //! # map.set("age", 30);
 //! // Direct typed access
 //! let name = map.get_text("name");           // Option<&str>
 //! let age = map.get_int("age");              // Option<i64>
-//! let bio = map.get_text_at_path("user.bio"); // Option<&str>
+//! let bio = map.get_text_at_path(path!("user.bio")); // Option<&str>
 //! ```
 //!
 //! ## Level 3: Direct Comparisons

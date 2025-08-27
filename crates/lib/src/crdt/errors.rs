@@ -4,6 +4,7 @@
 //! operations, providing detailed context for merge failures, serialization issues,
 //! and type mismatches that can occur during CRDT operations.
 
+use crate::crdt::doc::PathError;
 use thiserror::Error;
 
 /// Structured error types for CRDT operations.
@@ -135,6 +136,15 @@ impl CRDTError {
     }
 }
 
+// Conversion from PathError to CRDTError
+impl From<PathError> for CRDTError {
+    fn from(err: PathError) -> Self {
+        CRDTError::InvalidPath {
+            path: err.to_string(),
+        }
+    }
+}
+
 // Conversion from CRDTError to the main Error type
 impl From<CRDTError> for crate::Error {
     fn from(err: CRDTError) -> Self {
@@ -253,5 +263,23 @@ mod tests {
             assert!(!display.is_empty());
             assert!(display.len() > 10); // Should have meaningful error messages
         }
+    }
+
+    #[test]
+    fn test_path_error_conversion() {
+        let path_error = PathError::EmptyComponent { position: 1 };
+        let crdt_error: CRDTError = path_error.into();
+
+        match crdt_error {
+            CRDTError::InvalidPath { path } => {
+                assert!(path.contains("Path component at position 1 is empty"));
+            }
+            _ => panic!("Expected InvalidPath variant"),
+        }
+
+        // Test conversion through main Error type
+        let path_error = PathError::LeadingDot;
+        let main_error: crate::Error = CRDTError::from(path_error).into();
+        assert_eq!(main_error.module(), "crdt");
     }
 }

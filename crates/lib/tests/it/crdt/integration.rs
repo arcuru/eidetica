@@ -4,6 +4,7 @@
 //! and test their interaction with the broader Eidetica system.
 
 use super::helpers::*;
+use eidetica::crdt::doc::path;
 use eidetica::crdt::map::Value;
 use eidetica::crdt::{CRDT, Doc};
 
@@ -275,10 +276,10 @@ fn test_crdt_api_ergonomics() {
     assert!(*doc.get("published").unwrap() == true);
 
     // Test path operations
-    doc.set_path("user.name", "Alice")
+    doc.set_path(path!("user.name"), "Alice")
         .expect("Path set should work");
     assert_eq!(
-        doc.get_text_at_path("user.name"),
+        doc.get_text_at_path(path!("user.name")),
         Some("Alice"),
         "Path get should work"
     );

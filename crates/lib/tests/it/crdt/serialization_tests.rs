@@ -6,6 +6,7 @@
 
 use crate::crdt::helpers::*;
 use eidetica::crdt::Doc;
+use eidetica::crdt::doc::path;
 use eidetica::crdt::map::list::Position;
 use eidetica::crdt::map::{List, Node, Value};
 
@@ -373,11 +374,11 @@ fn test_serde_json_round_trip_complex_structure() {
     // Verify specific nested access works
     assert_eq!(deserialized_root.get_text("app_name"), Some("Eidetica"));
     assert_eq!(
-        deserialized_root.get_int_at_path("config.timeout"),
+        deserialized_root.get_int_at_path(path!("config.timeout")),
         Some(30)
     );
     assert_eq!(
-        deserialized_root.get_bool_at_path("config.debug"),
+        deserialized_root.get_bool_at_path(path!("config.debug")),
         Some(false)
     );
 

@@ -6,6 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::Doc;
+use eidetica::crdt::doc::path;
 use eidetica::crdt::map::Value;
 use eidetica::subtree::DocStore;
 
@@ -411,34 +412,34 @@ fn test_docstore_path_based_access() {
 
     // Top-level path access (equivalent to direct access)
     let top_value = dict
-        .get_path("top_level")
+        .get_path(path!("top_level"))
         .expect("Failed to get top_level path");
     assert_eq!(top_value, Value::Text("root_value".to_string()));
 
     let counter_value = dict
-        .get_path("counter")
+        .get_path(path!("counter"))
         .expect("Failed to get counter path");
     assert_eq!(counter_value, Value::Int(42));
 
     // Nested path access
     let user_name = dict
-        .get_path("user.name")
+        .get_path(path!("user.name"))
         .expect("Failed to get user.name path");
     assert_eq!(user_name, Value::Text("Alice".to_string()));
 
     let user_age = dict
-        .get_path("user.age")
+        .get_path(path!("user.age"))
         .expect("Failed to get user.age path");
     assert_eq!(user_age, Value::Int(30));
 
     // Deep nested path access
     let user_email = dict
-        .get_path("user.profile.email")
+        .get_path(path!("user.profile.email"))
         .expect("Failed to get user.profile.email path");
     assert_eq!(user_email, Value::Text("alice@example.com".to_string()));
 
     let user_verified = dict
-        .get_path("user.profile.verified")
+        .get_path(path!("user.profile.verified"))
         .expect("Failed to get user.profile.verified path");
     assert_eq!(user_verified, Value::Bool(true));
 
@@ -446,53 +447,53 @@ fn test_docstore_path_based_access() {
 
     // Direct type conversion
     let top_typed: String = dict
-        .get_path_as("top_level")
+        .get_path_as(path!("top_level"))
         .expect("Failed to get typed top_level");
     assert_eq!(top_typed, "root_value");
 
     let counter_typed: i64 = dict
-        .get_path_as("counter")
+        .get_path_as(path!("counter"))
         .expect("Failed to get typed counter");
     assert_eq!(counter_typed, 42);
 
     // Nested type conversion
     let name_typed: String = dict
-        .get_path_as("user.name")
+        .get_path_as(path!("user.name"))
         .expect("Failed to get typed user.name");
     assert_eq!(name_typed, "Alice");
 
     let age_typed: i64 = dict
-        .get_path_as("user.age")
+        .get_path_as(path!("user.age"))
         .expect("Failed to get typed user.age");
     assert_eq!(age_typed, 30);
 
     // Deep nested type conversion
     let email_typed: String = dict
-        .get_path_as("user.profile.email")
+        .get_path_as(path!("user.profile.email"))
         .expect("Failed to get typed user.profile.email");
     assert_eq!(email_typed, "alice@example.com");
 
     let verified_typed: bool = dict
-        .get_path_as("user.profile.verified")
+        .get_path_as(path!("user.profile.verified"))
         .expect("Failed to get typed user.profile.verified");
     assert!(verified_typed);
 
     // Test error cases
 
     // Non-existent top-level path
-    let missing_result = dict.get_path("missing_key");
+    let missing_result = dict.get_path(path!("missing_key"));
     assert!(missing_result.is_err());
 
     // Non-existent nested path
-    let missing_nested = dict.get_path("user.missing");
+    let missing_nested = dict.get_path(path!("user.missing"));
     assert!(missing_nested.is_err());
 
     // Non-existent deep path
-    let missing_deep = dict.get_path("user.profile.missing");
+    let missing_deep = dict.get_path(path!("user.profile.missing"));
     assert!(missing_deep.is_err());
 
     // Type mismatch with get_path_as
-    let type_mismatch: Result<i64, _> = dict.get_path_as("user.name"); // String as i64
+    let type_mismatch: Result<i64, _> = dict.get_path_as(path!("user.name")); // String as i64
     assert!(type_mismatch.is_err());
 
     // Commit and verify persistence
@@ -505,21 +506,21 @@ fn test_docstore_path_based_access() {
 
     // Verify all path access still works after commit
     assert_eq!(
-        viewer.get_path("top_level").unwrap(),
+        viewer.get_path(path!("top_level")).unwrap(),
         Value::Text("root_value".to_string())
     );
     assert_eq!(
-        viewer.get_path("user.name").unwrap(),
+        viewer.get_path(path!("user.name")).unwrap(),
         Value::Text("Alice".to_string())
     );
     assert_eq!(
-        viewer.get_path("user.profile.email").unwrap(),
+        viewer.get_path(path!("user.profile.email")).unwrap(),
         Value::Text("alice@example.com".to_string())
     );
 
     // Verify typed access still works
     let persisted_name: String = viewer
-        .get_path_as("user.name")
+        .get_path_as(path!("user.name"))
         .expect("Failed to get persisted name");
     assert_eq!(persisted_name, "Alice");
 }
@@ -553,12 +554,12 @@ fn test_docstore_path_mixed_with_staging() {
 
     // Verify we can access committed data via path
     let initial_version: String = dict
-        .get_path_as("config.version")
+        .get_path_as(path!("config.version"))
         .expect("Failed to get initial version");
     assert_eq!(initial_version, "1.0");
 
     let initial_debug: bool = dict
-        .get_path_as("config.debug")
+        .get_path_as(path!("config.debug"))
         .expect("Failed to get initial debug");
     assert!(!initial_debug);
 
@@ -574,21 +575,23 @@ fn test_docstore_path_mixed_with_staging() {
 
     // Test that staged changes are visible via path access
     let staged_version: String = dict
-        .get_path_as("config.version")
+        .get_path_as(path!("config.version"))
         .expect("Failed to get staged version");
     assert_eq!(staged_version, "2.0"); // Should see staged version
 
     let staged_env: String = dict
-        .get_path_as("config.environment")
+        .get_path_as(path!("config.environment"))
         .expect("Failed to get staged environment");
     assert_eq!(staged_env, "production");
 
-    let new_value: String = dict.get_path_as("new_key").expect("Failed to get new key");
+    let new_value: String = dict
+        .get_path_as(path!("new_key"))
+        .expect("Failed to get new key");
     assert_eq!(new_value, "new_value");
 
     // Verify that committed data that wasn't changed is still accessible
     let unchanged_debug: bool = dict
-        .get_path_as("config.debug")
+        .get_path_as(path!("config.debug"))
         .expect("Failed to get unchanged debug");
     assert!(!unchanged_debug); // Should still be false
 
@@ -598,15 +601,15 @@ fn test_docstore_path_mixed_with_staging() {
         .expect("Failed to get viewer");
 
     let viewer_version: String = viewer
-        .get_path_as("config.version")
+        .get_path_as(path!("config.version"))
         .expect("Failed to get viewer version");
     assert_eq!(viewer_version, "1.0"); // Should see committed version
 
     // New staged data shouldn't be visible to viewer
-    let viewer_env = viewer.get_path("config.environment");
+    let viewer_env = viewer.get_path(path!("config.environment"));
     assert!(viewer_env.is_err()); // Should not exist in committed data
 
-    let viewer_new = viewer.get_path("new_key");
+    let viewer_new = viewer.get_path(path!("new_key"));
     assert!(viewer_new.is_err()); // Should not exist in committed data
 }
 
@@ -620,67 +623,67 @@ fn test_docstore_set_path() {
         .expect("Failed to get DocStore");
 
     // Test setting simple path (single level)
-    dict.set_path("simple", "value")
+    dict.set_path(path!("simple"), "value")
         .expect("Failed to set simple path");
     assert_eq!(
-        dict.get_path("simple").unwrap(),
+        dict.get_path(path!("simple")).unwrap(),
         Value::Text("value".to_string())
     );
 
     // Test setting nested paths (creates intermediate structure)
-    dict.set_path("user.name", "Alice")
+    dict.set_path(path!("user.name"), "Alice")
         .expect("Failed to set user.name");
-    dict.set_path("user.age", 30)
+    dict.set_path(path!("user.age"), 30)
         .expect("Failed to set user.age");
-    dict.set_path("user.profile.email", "alice@example.com")
+    dict.set_path(path!("user.profile.email"), "alice@example.com")
         .expect("Failed to set user.profile.email");
-    dict.set_path("user.profile.verified", true)
+    dict.set_path(path!("user.profile.verified"), true)
         .expect("Failed to set user.profile.verified");
 
     // Test deep nesting
-    dict.set_path("config.database.host", "localhost")
+    dict.set_path(path!("config.database.host"), "localhost")
         .expect("Failed to set deep path");
-    dict.set_path("config.database.port", 5432)
+    dict.set_path(path!("config.database.port"), 5432)
         .expect("Failed to set deep path port");
 
     // Verify all values are accessible
     assert_eq!(
-        dict.get_path("user.name").unwrap(),
+        dict.get_path(path!("user.name")).unwrap(),
         Value::Text("Alice".to_string())
     );
-    assert_eq!(dict.get_path("user.age").unwrap(), Value::Int(30));
+    assert_eq!(dict.get_path(path!("user.age")).unwrap(), Value::Int(30));
     assert_eq!(
-        dict.get_path("user.profile.email").unwrap(),
+        dict.get_path(path!("user.profile.email")).unwrap(),
         Value::Text("alice@example.com".to_string())
     );
     assert_eq!(
-        dict.get_path("user.profile.verified").unwrap(),
+        dict.get_path(path!("user.profile.verified")).unwrap(),
         Value::Bool(true)
     );
     assert_eq!(
-        dict.get_path("config.database.host").unwrap(),
+        dict.get_path(path!("config.database.host")).unwrap(),
         Value::Text("localhost".to_string())
     );
     assert_eq!(
-        dict.get_path("config.database.port").unwrap(),
+        dict.get_path(path!("config.database.port")).unwrap(),
         Value::Int(5432)
     );
 
     // Test overwriting existing values
-    dict.set_path("user.age", 31)
+    dict.set_path(path!("user.age"), 31)
         .expect("Failed to overwrite user.age");
-    assert_eq!(dict.get_path("user.age").unwrap(), Value::Int(31));
+    assert_eq!(dict.get_path(path!("user.age")).unwrap(), Value::Int(31));
 
     // Test overwriting path segments (should work as expected)
-    dict.set_path("user.profile", "simple_string")
+    dict.set_path(path!("user.profile"), "simple_string")
         .expect("Failed to overwrite user.profile");
     assert_eq!(
-        dict.get_path("user.profile").unwrap(),
+        dict.get_path(path!("user.profile")).unwrap(),
         Value::Text("simple_string".to_string())
     );
 
     // Verify that previous nested values under user.profile are now inaccessible
-    let email_result = dict.get_path("user.profile.email");
+    let email_result = dict.get_path(path!("user.profile.email"));
     assert!(email_result.is_err());
 
     // Commit and verify persistence
@@ -691,12 +694,12 @@ fn test_docstore_set_path() {
         .expect("Failed to get viewer");
 
     assert_eq!(
-        viewer.get_path("user.name").unwrap(),
+        viewer.get_path(path!("user.name")).unwrap(),
         Value::Text("Alice".to_string())
     );
-    assert_eq!(viewer.get_path("user.age").unwrap(), Value::Int(31));
+    assert_eq!(viewer.get_path(path!("user.age")).unwrap(), Value::Int(31));
     assert_eq!(
-        viewer.get_path("config.database.host").unwrap(),
+        viewer.get_path(path!("config.database.host")).unwrap(),
         Value::Text("localhost".to_string())
     );
 }
@@ -711,42 +714,42 @@ fn test_docstore_modify_path() {
         .expect("Failed to get DocStore");
 
     // Set up initial data
-    dict.set_path("stats.score", 100)
+    dict.set_path(path!("stats.score"), 100)
         .expect("Failed to set initial score");
-    dict.set_path("config.retries", 3)
+    dict.set_path(path!("config.retries"), 3)
         .expect("Failed to set initial retries");
-    dict.set_path("user.name", "Alice")
+    dict.set_path(path!("user.name"), "Alice")
         .expect("Failed to set initial name");
 
     // Test modifying integer values
-    dict.modify_path::<i64, _>("stats.score", |score| {
+    dict.modify_path::<i64, _>(path!("stats.score"), |score| {
         *score += 50;
     })
     .expect("Failed to modify score");
-    assert_eq!(dict.get_path_as::<i64>("stats.score").unwrap(), 150);
+    assert_eq!(dict.get_path_as::<i64>(path!("stats.score")).unwrap(), 150);
 
-    dict.modify_path::<i64, _>("config.retries", |retries| {
+    dict.modify_path::<i64, _>(path!("config.retries"), |retries| {
         *retries *= 2;
     })
     .expect("Failed to modify retries");
-    assert_eq!(dict.get_path_as::<i64>("config.retries").unwrap(), 6);
+    assert_eq!(dict.get_path_as::<i64>(path!("config.retries")).unwrap(), 6);
 
     // Test modifying string values
-    dict.modify_path::<String, _>("user.name", |name| {
+    dict.modify_path::<String, _>(path!("user.name"), |name| {
         name.push_str(" Smith");
     })
     .expect("Failed to modify name");
     assert_eq!(
-        dict.get_path_as::<String>("user.name").unwrap(),
+        dict.get_path_as::<String>(path!("user.name")).unwrap(),
         "Alice Smith"
     );
 
     // Test error case - path doesn't exist
-    let result = dict.modify_path::<i64, _>("nonexistent.path", |_| {});
+    let result = dict.modify_path::<i64, _>(path!("nonexistent.path"), |_| {});
     assert!(result.is_err());
 
     // Test error case - type mismatch
-    let result = dict.modify_path::<i64, _>("user.name", |_| {}); // name is string, not int
+    let result = dict.modify_path::<i64, _>(path!("user.name"), |_| {}); // name is string, not int
     assert!(result.is_err());
 
     // Commit and verify persistence
@@ -756,10 +759,16 @@ fn test_docstore_modify_path() {
         .get_subtree_viewer::<DocStore>("modify_path_test")
         .expect("Failed to get viewer");
 
-    assert_eq!(viewer.get_path_as::<i64>("stats.score").unwrap(), 150);
-    assert_eq!(viewer.get_path_as::<i64>("config.retries").unwrap(), 6);
     assert_eq!(
-        viewer.get_path_as::<String>("user.name").unwrap(),
+        viewer.get_path_as::<i64>(path!("stats.score")).unwrap(),
+        150
+    );
+    assert_eq!(
+        viewer.get_path_as::<i64>(path!("config.retries")).unwrap(),
+        6
+    );
+    assert_eq!(
+        viewer.get_path_as::<String>(path!("user.name")).unwrap(),
         "Alice Smith"
     );
 }
@@ -775,47 +784,59 @@ fn test_docstore_get_or_insert_path() {
 
     // Test inserting when path doesn't exist (creates structure)
     let score1: i64 = dict
-        .get_or_insert_path("player.stats.score", 0)
+        .get_or_insert_path(path!("player.stats.score"), 0)
         .expect("Failed to get_or_insert_path score");
     assert_eq!(score1, 0);
 
     // Verify structure was created
-    assert_eq!(dict.get_path_as::<i64>("player.stats.score").unwrap(), 0);
+    assert_eq!(
+        dict.get_path_as::<i64>(path!("player.stats.score"))
+            .unwrap(),
+        0
+    );
 
     // Test returning existing value when path exists
-    dict.set_path("player.stats.score", 42)
+    dict.set_path(path!("player.stats.score"), 42)
         .expect("Failed to set score");
     let score2: i64 = dict
-        .get_or_insert_path("player.stats.score", 100)
+        .get_or_insert_path(path!("player.stats.score"), 100)
         .expect("Failed to get_or_insert_path existing score");
     assert_eq!(score2, 42); // Should return existing value, not default
 
     // Test with different data types
     let name: String = dict
-        .get_or_insert_path("player.info.name", "DefaultName".to_string())
+        .get_or_insert_path(path!("player.info.name"), "DefaultName".to_string())
         .expect("Failed to get_or_insert_path name");
     assert_eq!(name, "DefaultName");
 
     let active: bool = dict
-        .get_or_insert_path("player.status.active", true)
+        .get_or_insert_path(path!("player.status.active"), true)
         .expect("Failed to get_or_insert_path active");
     assert!(active);
 
     // Test existing values are returned
-    dict.set_path("player.info.name", "Alice")
+    dict.set_path(path!("player.info.name"), "Alice")
         .expect("Failed to set name");
     let existing_name: String = dict
-        .get_or_insert_path("player.info.name", "ShouldNotBeUsed".to_string())
+        .get_or_insert_path(path!("player.info.name"), "ShouldNotBeUsed".to_string())
         .expect("Failed to get existing name");
     assert_eq!(existing_name, "Alice");
 
     // Verify all paths exist
-    assert_eq!(dict.get_path_as::<i64>("player.stats.score").unwrap(), 42);
     assert_eq!(
-        dict.get_path_as::<String>("player.info.name").unwrap(),
+        dict.get_path_as::<i64>(path!("player.stats.score"))
+            .unwrap(),
+        42
+    );
+    assert_eq!(
+        dict.get_path_as::<String>(path!("player.info.name"))
+            .unwrap(),
         "Alice"
     );
-    assert!(dict.get_path_as::<bool>("player.status.active").unwrap());
+    assert!(
+        dict.get_path_as::<bool>(path!("player.status.active"))
+            .unwrap()
+    );
 
     // Commit and verify persistence
     op.commit().expect("Failed to commit operation");
@@ -824,12 +845,23 @@ fn test_docstore_get_or_insert_path() {
         .get_subtree_viewer::<DocStore>("get_or_insert_path_test")
         .expect("Failed to get viewer");
 
-    assert_eq!(viewer.get_path_as::<i64>("player.stats.score").unwrap(), 42);
     assert_eq!(
-        viewer.get_path_as::<String>("player.info.name").unwrap(),
+        viewer
+            .get_path_as::<i64>(path!("player.stats.score"))
+            .unwrap(),
+        42
+    );
+    assert_eq!(
+        viewer
+            .get_path_as::<String>(path!("player.info.name"))
+            .unwrap(),
         "Alice"
     );
-    assert!(viewer.get_path_as::<bool>("player.status.active").unwrap());
+    assert!(
+        viewer
+            .get_path_as::<bool>(path!("player.status.active"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -842,62 +874,81 @@ fn test_docstore_modify_or_insert_path() {
         .expect("Failed to get DocStore");
 
     // Test inserting and modifying when path doesn't exist
-    dict.modify_or_insert_path::<i64, _>("metrics.requests", 0, |count| {
+    dict.modify_or_insert_path::<i64, _>(path!("metrics.requests"), 0, |count| {
         *count += 10;
     })
     .expect("Failed to modify_or_insert_path requests");
-    assert_eq!(dict.get_path_as::<i64>("metrics.requests").unwrap(), 10);
+    assert_eq!(
+        dict.get_path_as::<i64>(path!("metrics.requests")).unwrap(),
+        10
+    );
 
     // Test modifying existing value
-    dict.modify_or_insert_path::<i64, _>("metrics.requests", 100, |count| {
+    dict.modify_or_insert_path::<i64, _>(path!("metrics.requests"), 100, |count| {
         *count *= 2;
     })
     .expect("Failed to modify existing requests");
-    assert_eq!(dict.get_path_as::<i64>("metrics.requests").unwrap(), 20); // 10 * 2, not 100 * 2
+    assert_eq!(
+        dict.get_path_as::<i64>(path!("metrics.requests")).unwrap(),
+        20
+    ); // 10 * 2, not 100 * 2
 
     // Test with string values
-    dict.modify_or_insert_path::<String, _>("config.environment", "dev".to_string(), |env| {
-        env.push_str(".local");
-    })
+    dict.modify_or_insert_path::<String, _>(
+        path!("config.environment"),
+        "dev".to_string(),
+        |env| {
+            env.push_str(".local");
+        },
+    )
     .expect("Failed to modify_or_insert_path environment");
     assert_eq!(
-        dict.get_path_as::<String>("config.environment").unwrap(),
+        dict.get_path_as::<String>(path!("config.environment"))
+            .unwrap(),
         "dev.local"
     );
 
     // Test modifying existing string
-    dict.modify_or_insert_path::<String, _>("config.environment", "prod".to_string(), |env| {
-        *env = format!("override-{env}");
-    })
+    dict.modify_or_insert_path::<String, _>(
+        path!("config.environment"),
+        "prod".to_string(),
+        |env| {
+            *env = format!("override-{env}");
+        },
+    )
     .expect("Failed to modify existing environment");
     assert_eq!(
-        dict.get_path_as::<String>("config.environment").unwrap(),
+        dict.get_path_as::<String>(path!("config.environment"))
+            .unwrap(),
         "override-dev.local"
     );
 
     // Test complex nested path creation and modification
-    dict.modify_or_insert_path::<i64, _>("app.features.cache.ttl", 300, |ttl| {
+    dict.modify_or_insert_path::<i64, _>(path!("app.features.cache.ttl"), 300, |ttl| {
         *ttl += 60; // Add 1 minute
     })
     .expect("Failed to modify_or_insert_path ttl");
     assert_eq!(
-        dict.get_path_as::<i64>("app.features.cache.ttl").unwrap(),
+        dict.get_path_as::<i64>(path!("app.features.cache.ttl"))
+            .unwrap(),
         360
     );
 
     // Test multiple operations on the same nested structure
-    dict.modify_or_insert_path::<i64, _>("app.features.cache.size", 1024, |size| {
+    dict.modify_or_insert_path::<i64, _>(path!("app.features.cache.size"), 1024, |size| {
         *size *= 2;
     })
     .expect("Failed to modify_or_insert_path size");
     assert_eq!(
-        dict.get_path_as::<i64>("app.features.cache.size").unwrap(),
+        dict.get_path_as::<i64>(path!("app.features.cache.size"))
+            .unwrap(),
         2048
     );
 
     // Verify that existing structure is preserved
     assert_eq!(
-        dict.get_path_as::<i64>("app.features.cache.ttl").unwrap(),
+        dict.get_path_as::<i64>(path!("app.features.cache.ttl"))
+            .unwrap(),
         360
     );
 
@@ -908,18 +959,27 @@ fn test_docstore_modify_or_insert_path() {
         .get_subtree_viewer::<DocStore>("modify_or_insert_path_test")
         .expect("Failed to get viewer");
 
-    assert_eq!(viewer.get_path_as::<i64>("metrics.requests").unwrap(), 20);
     assert_eq!(
-        viewer.get_path_as::<String>("config.environment").unwrap(),
+        viewer
+            .get_path_as::<i64>(path!("metrics.requests"))
+            .unwrap(),
+        20
+    );
+    assert_eq!(
+        viewer
+            .get_path_as::<String>(path!("config.environment"))
+            .unwrap(),
         "override-dev.local"
     );
     assert_eq!(
-        viewer.get_path_as::<i64>("app.features.cache.ttl").unwrap(),
+        viewer
+            .get_path_as::<i64>(path!("app.features.cache.ttl"))
+            .unwrap(),
         360
     );
     assert_eq!(
         viewer
-            .get_path_as::<i64>("app.features.cache.size")
+            .get_path_as::<i64>(path!("app.features.cache.size"))
             .unwrap(),
         2048
     );
@@ -938,11 +998,11 @@ fn test_docstore_path_mutation_interoperability() {
     dict.set("level1", "direct").expect("Failed to set direct");
 
     // Trying to set a nested path when level1 is not a map should fail
-    let result = dict.set_path("level1.nested", "path_based");
+    let result = dict.set_path(path!("level1.nested"), "path_based");
     assert!(result.is_err()); // Should fail because level1 is a string, not a map
 
     // However, we can set level1 to be a map structure directly
-    dict.set_path("level1_map.nested", "path_based")
+    dict.set_path(path!("level1_map.nested"), "path_based")
         .expect("Failed to set nested"); // This creates level1_map as a map
 
     // Verify that level1_map is now a map
@@ -954,16 +1014,17 @@ fn test_docstore_path_mutation_interoperability() {
 
     // Verify nested value is accessible
     assert_eq!(
-        dict.get_path_as::<String>("level1_map.nested").unwrap(),
+        dict.get_path_as::<String>(path!("level1_map.nested"))
+            .unwrap(),
         "path_based"
     );
 
     // Mix get_as and get_path_as operations
-    dict.set_path("data.count", 42)
+    dict.set_path(path!("data.count"), 42)
         .expect("Failed to set count");
     let direct_count_result: Result<i64, _> = dict.get_as("data"); // Should fail - data is a map
     assert!(direct_count_result.is_err());
-    let path_count: i64 = dict.get_path_as("data.count").unwrap();
+    let path_count: i64 = dict.get_path_as(path!("data.count")).unwrap();
     assert_eq!(path_count, 42);
 
     // Mix modify and modify_path operations
@@ -973,9 +1034,9 @@ fn test_docstore_path_mutation_interoperability() {
         .expect("Failed to modify simple_count");
     assert_eq!(dict.get_as::<i64>("simple_count").unwrap(), 15);
 
-    dict.modify_path::<i64, _>("data.count", |count| *count *= 2)
+    dict.modify_path::<i64, _>(path!("data.count"), |count| *count *= 2)
         .expect("Failed to modify path count");
-    assert_eq!(dict.get_path_as::<i64>("data.count").unwrap(), 84);
+    assert_eq!(dict.get_path_as::<i64>(path!("data.count")).unwrap(), 84);
 
     // Mix get_or_insert and get_or_insert_path
     let simple_new: String = dict
@@ -984,14 +1045,15 @@ fn test_docstore_path_mutation_interoperability() {
     assert_eq!(simple_new, "simple");
 
     let path_new: String = dict
-        .get_or_insert_path("new_path.deep.value", "deep".to_string())
+        .get_or_insert_path(path!("new_path.deep.value"), "deep".to_string())
         .expect("Failed to get_or_insert_path deep");
     assert_eq!(path_new, "deep");
 
     // Verify both exist with different access methods
     assert_eq!(dict.get_as::<String>("new_simple").unwrap(), "simple");
     assert_eq!(
-        dict.get_path_as::<String>("new_path.deep.value").unwrap(),
+        dict.get_path_as::<String>(path!("new_path.deep.value"))
+            .unwrap(),
         "deep"
     );
 
@@ -1003,14 +1065,18 @@ fn test_docstore_path_mutation_interoperability() {
         .expect("Failed to get viewer");
 
     assert_eq!(
-        viewer.get_path_as::<String>("level1_map.nested").unwrap(),
+        viewer
+            .get_path_as::<String>(path!("level1_map.nested"))
+            .unwrap(),
         "path_based"
     );
     assert_eq!(viewer.get_as::<i64>("simple_count").unwrap(), 15);
-    assert_eq!(viewer.get_path_as::<i64>("data.count").unwrap(), 84);
+    assert_eq!(viewer.get_path_as::<i64>(path!("data.count")).unwrap(), 84);
     assert_eq!(viewer.get_as::<String>("new_simple").unwrap(), "simple");
     assert_eq!(
-        viewer.get_path_as::<String>("new_path.deep.value").unwrap(),
+        viewer
+            .get_path_as::<String>(path!("new_path.deep.value"))
+            .unwrap(),
         "deep"
     );
 }
@@ -1036,7 +1102,7 @@ fn test_docstore_contains_key() {
     assert!(!dict.contains_key("missing"));
 
     // Test with nested values
-    dict.set_path("user.profile.email", "alice@example.com")
+    dict.set_path(path!("user.profile.email"), "alice@example.com")
         .expect("Failed to set nested value");
     assert!(dict.contains_key("user")); // Top-level key exists
     assert!(!dict.contains_key("profile")); // Nested key doesn't exist at top level
@@ -1097,61 +1163,61 @@ fn test_docstore_contains_path() {
         .expect("Failed to get DocStore");
 
     // Test empty DocStore
-    assert!(!dict.contains_path("nonexistent"));
-    assert!(!dict.contains_path("missing.path"));
+    assert!(!dict.contains_path(path!("nonexistent")));
+    assert!(!dict.contains_path(path!("missing.path")));
 
     // Test with simple paths
     dict.set("name", "Alice").expect("Failed to set name");
-    assert!(dict.contains_path("name")); // Direct key exists
-    assert!(!dict.contains_path("name.invalid")); // Can't navigate through string
+    assert!(dict.contains_path(path!("name"))); // Direct key exists
+    assert!(!dict.contains_path(path!("name.invalid"))); // Can't navigate through string
 
     // Test with nested structure
-    dict.set_path("user.profile.name", "Alice")
+    dict.set_path(path!("user.profile.name"), "Alice")
         .expect("Failed to set nested path");
-    dict.set_path("user.profile.email", "alice@example.com")
+    dict.set_path(path!("user.profile.email"), "alice@example.com")
         .expect("Failed to set nested email");
-    dict.set_path("user.settings.theme", "dark")
+    dict.set_path(path!("user.settings.theme"), "dark")
         .expect("Failed to set settings");
 
     // Test intermediate paths
-    assert!(dict.contains_path("user")); // Top level
-    assert!(dict.contains_path("user.profile")); // Intermediate level
-    assert!(dict.contains_path("user.settings")); // Another intermediate level
+    assert!(dict.contains_path(path!("user"))); // Top level
+    assert!(dict.contains_path(path!("user.profile"))); // Intermediate level
+    assert!(dict.contains_path(path!("user.settings"))); // Another intermediate level
 
     // Test full paths
-    assert!(dict.contains_path("user.profile.name")); // Full nested path
-    assert!(dict.contains_path("user.profile.email")); // Another full path
-    assert!(dict.contains_path("user.settings.theme")); // Different branch
+    assert!(dict.contains_path(path!("user.profile.name"))); // Full nested path
+    assert!(dict.contains_path(path!("user.profile.email"))); // Another full path
+    assert!(dict.contains_path(path!("user.settings.theme"))); // Different branch
 
     // Test non-existent paths
-    assert!(!dict.contains_path("user.profile.age")); // Missing leaf
-    assert!(!dict.contains_path("user.profile.missing")); // Missing leaf
-    assert!(!dict.contains_path("user.missing")); // Missing intermediate
-    assert!(!dict.contains_path("missing.user.profile")); // Missing root
+    assert!(!dict.contains_path(path!("user.profile.age"))); // Missing leaf
+    assert!(!dict.contains_path(path!("user.profile.missing"))); // Missing leaf
+    assert!(!dict.contains_path(path!("user.missing"))); // Missing intermediate
+    assert!(!dict.contains_path(path!("missing.user.profile"))); // Missing root
 
     // Test deep nesting
-    dict.set_path("app.config.database.host", "localhost")
+    dict.set_path(path!("app.config.database.host"), "localhost")
         .expect("Failed to set deep path");
-    dict.set_path("app.config.database.port", 5432)
+    dict.set_path(path!("app.config.database.port"), 5432)
         .expect("Failed to set deep port");
 
-    assert!(dict.contains_path("app"));
-    assert!(dict.contains_path("app.config"));
-    assert!(dict.contains_path("app.config.database"));
-    assert!(dict.contains_path("app.config.database.host"));
-    assert!(dict.contains_path("app.config.database.port"));
-    assert!(!dict.contains_path("app.config.database.name"));
+    assert!(dict.contains_path(path!("app")));
+    assert!(dict.contains_path(path!("app.config")));
+    assert!(dict.contains_path(path!("app.config.database")));
+    assert!(dict.contains_path(path!("app.config.database.host")));
+    assert!(dict.contains_path(path!("app.config.database.port")));
+    assert!(!dict.contains_path(path!("app.config.database.name")));
 
     // Test path deletion
-    dict.set_path("temp.value", "test")
+    dict.set_path(path!("temp.value"), "test")
         .expect("Failed to set temp value");
-    assert!(dict.contains_path("temp"));
-    assert!(dict.contains_path("temp.value"));
+    assert!(dict.contains_path(path!("temp")));
+    assert!(dict.contains_path(path!("temp.value")));
 
     // Override with simple value (should make nested path invalid)
     dict.set("temp", "simple").expect("Failed to override temp");
-    assert!(dict.contains_path("temp")); // Exists as simple value
-    assert!(!dict.contains_path("temp.value")); // No longer accessible
+    assert!(dict.contains_path(path!("temp"))); // Exists as simple value
+    assert!(!dict.contains_path(path!("temp.value"))); // No longer accessible
 
     // Commit and test persistence
     op.commit().expect("Failed to commit operation");
@@ -1161,13 +1227,13 @@ fn test_docstore_contains_path() {
         .expect("Failed to get viewer");
 
     // Test committed paths
-    assert!(viewer.contains_path("name"));
-    assert!(viewer.contains_path("user.profile.name"));
-    assert!(viewer.contains_path("user.profile.email"));
-    assert!(viewer.contains_path("user.settings.theme"));
-    assert!(viewer.contains_path("app.config.database.host"));
-    assert!(viewer.contains_path("temp")); // Should be simple value
-    assert!(!viewer.contains_path("temp.value")); // Should not exist
+    assert!(viewer.contains_path(path!("name")));
+    assert!(viewer.contains_path(path!("user.profile.name")));
+    assert!(viewer.contains_path(path!("user.profile.email")));
+    assert!(viewer.contains_path(path!("user.settings.theme")));
+    assert!(viewer.contains_path(path!("app.config.database.host")));
+    assert!(viewer.contains_path(path!("temp"))); // Should be simple value
+    assert!(!viewer.contains_path(path!("temp.value"))); // Should not exist
 
     // Test with new operation adding more paths
     let op2 = tree
@@ -1178,27 +1244,27 @@ fn test_docstore_contains_path() {
         .expect("Failed to get DocStore");
 
     // Should see committed paths
-    assert!(dict2.contains_path("user.profile.name"));
+    assert!(dict2.contains_path(path!("user.profile.name")));
 
     // Add staged paths
     dict2
-        .set_path("user.profile.age", 30)
+        .set_path(path!("user.profile.age"), 30)
         .expect("Failed to set age");
     dict2
-        .set_path("new.staged.path", "value")
+        .set_path(path!("new.staged.path"), "value")
         .expect("Failed to set staged path");
 
     // Should see both committed and staged paths
-    assert!(dict2.contains_path("user.profile.name")); // Committed
-    assert!(dict2.contains_path("user.profile.age")); // Staged
-    assert!(dict2.contains_path("new")); // Staged intermediate
-    assert!(dict2.contains_path("new.staged")); // Staged intermediate
-    assert!(dict2.contains_path("new.staged.path")); // Staged full
+    assert!(dict2.contains_path(path!("user.profile.name"))); // Committed
+    assert!(dict2.contains_path(path!("user.profile.age"))); // Staged
+    assert!(dict2.contains_path(path!("new"))); // Staged intermediate
+    assert!(dict2.contains_path(path!("new.staged"))); // Staged intermediate
+    assert!(dict2.contains_path(path!("new.staged.path"))); // Staged full
 
     // Viewer should only see committed paths
-    assert!(viewer.contains_path("user.profile.name")); // Committed
-    assert!(!viewer.contains_path("user.profile.age")); // Not committed
-    assert!(!viewer.contains_path("new")); // Not committed
+    assert!(viewer.contains_path(path!("user.profile.name"))); // Committed
+    assert!(!viewer.contains_path(path!("user.profile.age"))); // Not committed
+    assert!(!viewer.contains_path(path!("new"))); // Not committed
 }
 
 #[test]
@@ -1214,21 +1280,30 @@ fn test_docstore_contains_methods_consistency() {
     dict.set("simple", "value").expect("Failed to set simple");
     dict.set("number", 42).expect("Failed to set number");
 
-    assert_eq!(dict.contains_key("simple"), dict.contains_path("simple"));
-    assert_eq!(dict.contains_key("number"), dict.contains_path("number"));
-    assert_eq!(dict.contains_key("missing"), dict.contains_path("missing"));
+    assert_eq!(
+        dict.contains_key("simple"),
+        dict.contains_path(path!("simple"))
+    );
+    assert_eq!(
+        dict.contains_key("number"),
+        dict.contains_path(path!("number"))
+    );
+    assert_eq!(
+        dict.contains_key("missing"),
+        dict.contains_path(path!("missing"))
+    );
 
     // Test nested structure
-    dict.set_path("nested.key", "value")
+    dict.set_path(path!("nested.key"), "value")
         .expect("Failed to set nested");
 
     // contains_key should find top-level key
     assert!(dict.contains_key("nested"));
-    assert!(dict.contains_path("nested"));
+    assert!(dict.contains_path(path!("nested")));
 
     // contains_path should find nested path, contains_key should not
     assert!(!dict.contains_key("key")); // key is not at top level
-    assert!(dict.contains_path("nested.key")); // but path exists
+    assert!(dict.contains_path(path!("nested.key"))); // but path exists
 
     // Test get methods consistency with contains methods
     assert_eq!(dict.get("simple").is_ok(), dict.contains_key("simple"));
@@ -1236,24 +1311,24 @@ fn test_docstore_contains_methods_consistency() {
     assert_eq!(dict.get("missing").is_err(), !dict.contains_key("missing"));
 
     assert_eq!(
-        dict.get_path("simple").is_ok(),
-        dict.contains_path("simple")
+        dict.get_path(path!("simple")).is_ok(),
+        dict.contains_path(path!("simple"))
     );
     assert_eq!(
-        dict.get_path("nested.key").is_ok(),
-        dict.contains_path("nested.key")
+        dict.get_path(path!("nested.key")).is_ok(),
+        dict.contains_path(path!("nested.key"))
     );
     assert_eq!(
-        dict.get_path("missing.path").is_err(),
-        !dict.contains_path("missing.path")
+        dict.get_path(path!("missing.path")).is_err(),
+        !dict.contains_path(path!("missing.path"))
     );
 
     // Test with deletion
     dict.delete("simple").expect("Failed to delete simple");
     assert_eq!(dict.get("simple").is_err(), !dict.contains_key("simple"));
     assert_eq!(
-        dict.get_path("simple").is_err(),
-        !dict.contains_path("simple")
+        dict.get_path(path!("simple")).is_err(),
+        !dict.contains_path(path!("simple"))
     );
 
     // Test with type-safe getters
@@ -1261,7 +1336,7 @@ fn test_docstore_contains_methods_consistency() {
     let name_get_result = dict.get_as::<i64>("number").is_ok();
     assert_eq!(name_exists, name_get_result);
 
-    let path_exists = dict.contains_path("nested.key");
-    let path_get_result = dict.get_path_as::<String>("nested.key").is_ok();
+    let path_exists = dict.contains_path(path!("nested.key"));
+    let path_get_result = dict.get_path_as::<String>(path!("nested.key")).is_ok();
     assert_eq!(path_exists, path_get_result);
 }

@@ -1,9 +1,11 @@
 use crate::Result;
 use crate::atomicop::AtomicOp;
+use crate::crdt::doc::{Path, PathBuf, PathError};
 use crate::crdt::map::{List, Node, Value};
 use crate::crdt::{Doc, traits::CRDT};
 use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
+use std::str::FromStr;
 
 /// A document-oriented SubTree providing ergonomic access to Map CRDT data.
 ///
@@ -221,14 +223,15 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
-    /// store.set("user.profile.name", "Alice")?;
+    /// store.set_path(path!("user.profile.name"), "Alice")?;
     ///
     /// // Navigate nested structure
-    /// let name = store.get_path("user.profile.name")?;
+    /// let name = store.get_path(path!("user.profile.name"))?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
@@ -238,15 +241,13 @@ impl DocStore {
     /// - Any segment of the path doesn't exist
     /// - A non-final segment has the wrong type (not a node or list)
     /// - The DocStore operation fails
-    pub fn get_path(&self, path: impl AsRef<str>) -> Result<Value> {
-        let path = path.as_ref();
-
+    pub fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
         // First check if there's any local staged data
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
 
         // If there's local data, try to get the path from it
         if let Ok(data) = local_data
-            && let Some(value) = data.get_path(path)
+            && let Some(value) = data.get_path(&path)
         {
             return Ok(value.clone());
         }
@@ -255,16 +256,25 @@ impl DocStore {
         let data: Doc = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the path from the full state
-        match data.get_path(path) {
+        match data.get_path(&path) {
             Some(value) => Ok(value.clone()),
             None => Err(SubtreeError::KeyNotFound {
                 subtree: self.name.clone(),
-                key: path.to_string(),
+                key: path.as_ref().as_str().to_string(),
             }
             .into()),
         }
     }
+}
 
+impl From<PathError> for crate::Error {
+    fn from(err: PathError) -> Self {
+        // Convert PathError to CRDTError first, then to main Error
+        crate::Error::CRDT(err.into())
+    }
+}
+
+impl DocStore {
     /// Gets a value with automatic type conversion using TryFrom.
     ///
     /// This provides a generic interface that can convert to any type that implements
@@ -309,14 +319,15 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Assuming nested structure exists
     /// // Type inference with path access
-    /// let name: String = store.get_path_as("user.profile.name")?;
-    /// let age: i64 = store.get_path_as("user.profile.age")?;
+    /// let name: String = store.get_path_as(path!("user.profile.name"))?;
+    /// let age: i64 = store.get_path_as(path!("user.profile.age"))?;
     ///
     /// assert_eq!(name, "Alice");
     /// assert_eq!(age, 30);
@@ -329,11 +340,21 @@ impl DocStore {
     /// - The path doesn't exist (`SubtreeError::KeyNotFound`)
     /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
     /// - The DocStore operation fails
-    pub fn get_path_as<T>(&self, path: impl AsRef<str>) -> Result<T>
+    pub fn get_path_as<T>(&self, path: impl AsRef<Path>) -> Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
     {
         let value = self.get_path(path)?;
+        T::try_from(&value).map_err(Into::into)
+    }
+
+    /// Gets a value by path with automatic type conversion using string paths for runtime validation
+    pub fn get_path_as_str<T>(&self, path: &str) -> Result<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
+    {
+        let pathbuf = PathBuf::from_str(path)?;
+        let value = self.get_path(&pathbuf)?;
         T::try_from(&value).map_err(Into::into)
     }
 
@@ -503,35 +524,43 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure and set default
-    /// let count1: i64 = store.get_or_insert_path("user.stats.score", 0)?;
+    /// let count1: i64 = store.get_or_insert_path(path!("user.stats.score"), 0)?;
     /// assert_eq!(count1, 0);
     ///
     /// // Path exists - will return existing value
-    /// store.set_path("user.stats.score", 42)?;
-    /// let count2: i64 = store.get_or_insert_path("user.stats.score", 100)?;
+    /// store.set_path(path!("user.stats.score"), 42)?;
+    /// let count2: i64 = store.get_or_insert_path(path!("user.stats.score"), 100)?;
     /// assert_eq!(count2, 42);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn get_or_insert_path<T>(&self, path: impl AsRef<str>, default: T) -> Result<T>
+    pub fn get_or_insert_path<T>(&self, path: impl AsRef<Path>, default: T) -> Result<T>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
     {
-        let path_str = path.as_ref();
-
         // Try to get existing value first
-        match self.get_path_as::<T>(path_str) {
+        match self.get_path_as(path.as_ref()) {
             Ok(existing) => Ok(existing),
             Err(_) => {
                 // Path doesn't exist or wrong type - set default and return it
-                self.set_path(path_str, default.clone())?;
+                self.set_path(path, default.clone())?;
                 Ok(default)
             }
         }
+    }
+
+    /// Get or insert a value at a path with string paths for runtime validation
+    pub fn get_or_insert_path_str<T>(&self, path: &str, default: T) -> Result<T>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+    {
+        let pathbuf = PathBuf::from_str(path)?;
+        self.get_or_insert_path(&pathbuf, default)
     }
 
     /// Modify a value at a path or insert a default if it doesn't exist.
@@ -544,32 +573,36 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
-    /// store.modify_or_insert_path::<i64, _>("user.stats.score", 0, |score| {
+    /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 0, |score| {
     ///     *score += 10;
     /// })?;
-    /// assert_eq!(store.get_path_as::<i64>("user.stats.score")?, 10);
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score"))?, 10);
     ///
     /// // Path exists - will just modify
-    /// store.modify_or_insert_path::<i64, _>("user.stats.score", 100, |score| {
+    /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 100, |score| {
     ///     *score *= 2;
     /// })?;
-    /// assert_eq!(store.get_path_as::<i64>("user.stats.score")?, 20);
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score"))?, 20);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_or_insert_path<T, F>(&self, path: impl AsRef<str>, default: T, f: F) -> Result<()>
+    pub fn modify_or_insert_path<T, F>(
+        &self,
+        path: impl AsRef<Path>,
+        default: T,
+        f: F,
+    ) -> Result<()>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
-        let path = path.as_ref();
-
         // Get existing value or insert default
-        let mut value = self.get_or_insert_path(path, default)?;
+        let mut value = self.get_or_insert_path(path.as_ref(), default)?;
 
         // Apply the modification
         f(&mut value);
@@ -578,6 +611,16 @@ impl DocStore {
         self.set_path(path, value)?;
 
         Ok(())
+    }
+
+    /// Modify a value or insert a default with string paths for runtime validation
+    pub fn modify_or_insert_path_str<T, F>(&self, path: &str, default: T, f: F) -> Result<()>
+    where
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        F: FnOnce(&mut T),
+    {
+        let pathbuf = PathBuf::from_str(path)?;
+        self.modify_or_insert_path(&pathbuf, default, f)
     }
 
     /// Sets a value at the given path, creating intermediate nodes as needed
@@ -598,19 +641,20 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Set nested values, creating structure as needed
-    /// store.set_path("user.profile.name", "Alice")?;
-    /// store.set_path("user.profile.age", 30)?;
-    /// store.set_path("user.settings.theme", "dark")?;
+    /// store.set_path(path!("user.profile.name"), "Alice")?;
+    /// store.set_path(path!("user.profile.age"), 30)?;
+    /// store.set_path(path!("user.settings.theme"), "dark")?;
     ///
     /// // Verify the structure was created
-    /// assert_eq!(store.get_path_as::<String>("user.profile.name")?, "Alice");
-    /// assert_eq!(store.get_path_as::<i64>("user.profile.age")?, 30);
-    /// assert_eq!(store.get_path_as::<String>("user.settings.theme")?, "dark");
+    /// assert_eq!(store.get_path_as::<String>(path!("user.profile.name"))?, "Alice");
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.profile.age"))?, 30);
+    /// assert_eq!(store.get_path_as::<String>(path!("user.settings.theme"))?, "dark");
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
@@ -620,17 +664,8 @@ impl DocStore {
     /// - The path is empty
     /// - A non-final segment contains a non-node value that cannot be navigated through
     /// - The DocStore operation fails
-    pub fn set_path(&self, path: impl AsRef<str>, value: impl Into<Value>) -> Result<()> {
-        let path = path.as_ref();
+    pub fn set_path(&self, path: impl AsRef<Path>, value: impl Into<Value>) -> Result<()> {
         let value = value.into();
-        let parts: Vec<&str> = path.split('.').collect();
-
-        if parts.is_empty() {
-            return Err(crate::crdt::CRDTError::InvalidPath {
-                path: "Empty path".to_string(),
-            }
-            .into());
-        }
 
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
@@ -639,12 +674,18 @@ impl DocStore {
             .unwrap_or_default();
 
         // Use Doc's set_path method to handle the path logic
-        data.set_path(path, value)
+        data.set_path(&path, value)
             .map_err(|e| -> crate::Error { e.into() })?;
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
         self.atomic_op.update_subtree(&self.name, &serialized)
+    }
+
+    /// Sets a value at the given path with string paths for runtime validation
+    pub fn set_path_str(&self, path: &str, value: impl Into<Value>) -> Result<()> {
+        let pathbuf = PathBuf::from_str(path)?;
+        self.set_path(&pathbuf, value)
     }
 
     /// Modifies a value at a path in-place using a closure
@@ -665,28 +706,27 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
-    /// store.set_path("user.score", 100)?;
+    /// store.set_path(path!("user.score"), 100)?;
     ///
-    /// store.modify_path::<i64, _>("user.score", |score| {
+    /// store.modify_path::<i64, _>(path!("user.score"), |score| {
     ///     *score += 50;
     /// })?;
     ///
-    /// assert_eq!(store.get_path_as::<i64>("user.score")?, 150);
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.score"))?, 150);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_path<T, F>(&self, path: impl AsRef<str>, f: F) -> Result<()>
+    pub fn modify_path<T, F>(&self, path: impl AsRef<Path>, f: F) -> Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
-        let path = path.as_ref();
-
         // Try to get and convert the current value
-        let mut value = self.get_path_as::<T>(path)?;
+        let mut value = self.get_path_as(path.as_ref())?;
 
         // Apply the modification
         f(&mut value);
@@ -694,6 +734,16 @@ impl DocStore {
         // Stage the modified value back
         self.set_path(path, value)?;
         Ok(())
+    }
+
+    /// Modify a value at a path with string paths for runtime validation
+    pub fn modify_path_str<T, F>(&self, path: &str, f: F) -> Result<()>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        F: FnOnce(&mut T),
+    {
+        let pathbuf = PathBuf::from_str(path)?;
+        self.modify_path(&pathbuf, f)
     }
 
     /// Stages the deletion of a key within the associated `AtomicOp`.
@@ -837,32 +887,40 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
-    /// assert!(!store.contains_path("user.name")); // Path doesn't exist
+    /// assert!(!store.contains_path(path!("user.name"))); // Path doesn't exist
     ///
-    /// store.set_path("user.profile.name", "Alice")?;
-    /// assert!(store.contains_path("user")); // Intermediate path exists
-    /// assert!(store.contains_path("user.profile")); // Intermediate path exists
-    /// assert!(store.contains_path("user.profile.name")); // Full path exists
-    /// assert!(!store.contains_path("user.profile.age")); // Path doesn't exist
+    /// store.set_path(path!("user.profile.name"), "Alice")?;
+    /// assert!(store.contains_path(path!("user"))); // Intermediate path exists
+    /// assert!(store.contains_path(path!("user.profile"))); // Intermediate path exists
+    /// assert!(store.contains_path(path!("user.profile.name"))); // Full path exists
+    /// assert!(!store.contains_path(path!("user.profile.age"))); // Path doesn't exist
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn contains_path(&self, path: impl AsRef<str>) -> bool {
-        let path = path.as_ref();
-
+    pub fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first
         if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
-            && local_data.get_path(path).is_some()
+            && local_data.get_path(&path).is_some()
         {
             return true;
         }
 
         // Check backend data
         if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
-            backend_data.get_path(path).is_some()
+            backend_data.get_path(&path).is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the DocStore contains the given path with string paths for runtime validation
+    pub fn contains_path_str(&self, path: &str) -> bool {
+        if let Ok(pathbuf) = PathBuf::from_str(path) {
+            self.contains_path(&pathbuf)
         } else {
             false
         }

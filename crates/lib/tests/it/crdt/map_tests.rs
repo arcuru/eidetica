@@ -4,6 +4,7 @@
 //! on Map functionality, including basic operations, path operations, iterators,
 //! builder pattern, CRDT merge operations, tombstone handling, and JSON serialization.
 
+use eidetica::crdt::doc::path;
 use eidetica::crdt::map::{List, Node, Value};
 use eidetica::crdt::{CRDT, Doc};
 
@@ -114,28 +115,34 @@ fn test_map_path_operations() {
     let mut map = Doc::new();
 
     // Test set_path creating intermediate nodes
-    let result = map.set_path("user.profile.name", "Alice");
+    let result = map.set_path(path!("user.profile.name"), "Alice");
     assert!(result.is_ok());
 
-    let result2 = map.set_path("user.profile.age", 30);
+    let result2 = map.set_path(path!("user.profile.age"), 30);
     assert!(result2.is_ok());
 
-    let result3 = map.set_path("user.settings.theme", "dark");
+    let result3 = map.set_path(path!("user.settings.theme"), "dark");
     assert!(result3.is_ok());
 
     // Test get_path
-    assert_eq!(map.get_text_at_path("user.profile.name"), Some("Alice"));
-    assert_eq!(map.get_int_at_path("user.profile.age"), Some(30));
-    assert_eq!(map.get_text_at_path("user.settings.theme"), Some("dark"));
-    assert!(map.get_path("nonexistent.path").is_none());
+    assert_eq!(
+        map.get_text_at_path(path!("user.profile.name")),
+        Some("Alice")
+    );
+    assert_eq!(map.get_int_at_path(path!("user.profile.age")), Some(30));
+    assert_eq!(
+        map.get_text_at_path(path!("user.settings.theme")),
+        Some("dark")
+    );
+    assert!(map.get_path(path!("nonexistent.path")).is_none());
 
     // Test get_path_mut
-    if let Some(Value::Text(name)) = map.get_path_mut("user.profile.name") {
+    if let Some(Value::Text(name)) = map.get_path_mut(path!("user.profile.name")) {
         name.push_str(" Smith");
     }
 
     assert_eq!(
-        map.get_text_at_path("user.profile.name"),
+        map.get_text_at_path(path!("user.profile.name")),
         Some("Alice Smith")
     );
 }
@@ -151,10 +158,10 @@ fn test_map_path_with_lists() {
     map.set("items", list);
 
     // Test path access with list indices
-    assert_eq!(map.get_text_at_path("items.0"), Some("item1"));
-    assert_eq!(map.get_text_at_path("items.1"), Some("item2"));
-    assert!(map.get_path("items.2").is_none());
-    assert!(map.get_path("items.invalid").is_none());
+    assert_eq!(map.get_text_at_path(path!("items.0")), Some("item1"));
+    assert_eq!(map.get_text_at_path(path!("items.1")), Some("item2"));
+    assert!(map.get_path(path!("items.2")).is_none());
+    assert!(map.get_path(path!("items.invalid")).is_none());
 }
 
 #[test]
@@ -164,15 +171,15 @@ fn test_map_path_errors() {
     map.set("scalar", "value");
 
     // Test setting path through scalar value
-    let result = map.set_path("scalar.nested", "should_fail");
+    let result = map.set_path(path!("scalar.nested"), "should_fail");
     assert!(result.is_err());
 
     // Test empty path - this actually works, it just sets at root level
-    let result2 = map.set_path("", "value");
+    let result2 = map.set_path(path!(""), "value");
     assert!(result2.is_ok()); // Empty path is treated as root level
 
     // Test path with single component
-    let result3 = map.set_path("single", "value");
+    let result3 = map.set_path(path!("single"), "value");
     assert!(result3.is_ok());
     assert_eq!(map.get_text("single"), Some("value"));
 }
@@ -232,7 +239,10 @@ fn test_map_builder_pattern() {
     assert!(map.get_list("tags").is_some());
 
     // Test nested access
-    assert_eq!(map.get_text_at_path("profile.bio"), Some("Developer"));
+    assert_eq!(
+        map.get_text_at_path(path!("profile.bio")),
+        Some("Developer")
+    );
 }
 
 #[test]
@@ -576,11 +586,11 @@ fn test_serde_json_round_trip_complex_structure() {
     // Verify specific nested access works
     assert_eq!(deserialized_root.get_text("app_name"), Some("Eidetica"));
     assert_eq!(
-        deserialized_root.get_int_at_path("config.timeout"),
+        deserialized_root.get_int_at_path(path!("config.timeout")),
         Some(30)
     );
     assert_eq!(
-        deserialized_root.get_bool_at_path("config.debug"),
+        deserialized_root.get_bool_at_path(path!("config.debug")),
         Some(false)
     );
 

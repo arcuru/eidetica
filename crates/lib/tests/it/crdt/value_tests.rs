@@ -6,6 +6,7 @@
 
 use super::helpers::*;
 use eidetica::crdt::Doc;
+use eidetica::crdt::doc::path;
 use eidetica::crdt::map::{List, Value};
 
 // ===== VALUE TYPE TESTS =====
@@ -243,19 +244,24 @@ fn test_cleaner_api_examples() {
     assert!(*map.get("active").unwrap() == true);
 
     // Path-based access
-    map.set_path("user.profile.bio", "Developer").unwrap();
+    map.set_path(path!("user.profile.bio"), "Developer")
+        .unwrap();
 
     // Old verbose way (still works)
     assert_eq!(
-        map.get_path("user.profile.bio").and_then(|v| v.as_text()),
+        map.get_path(path!("user.profile.bio"))
+            .and_then(|v| v.as_text()),
         Some("Developer")
     );
 
     // New clean way with typed getters
-    assert_eq!(map.get_text_at_path("user.profile.bio"), Some("Developer"));
+    assert_eq!(
+        map.get_text_at_path(path!("user.profile.bio")),
+        Some("Developer")
+    );
 
     // Even cleaner with direct comparisons on Value!
-    assert!(*map.get_path("user.profile.bio").unwrap() == "Developer");
+    assert!(*map.get_path(path!("user.profile.bio")).unwrap() == "Developer");
 
     // Convenience methods for Value
     let value = Value::Text("hello".to_string());
