@@ -87,10 +87,10 @@ pub enum PeerStatus {
 
 impl PeerInfo {
     /// Create a new PeerInfo with current timestamp.
-    pub fn new(pubkey: String, display_name: Option<&str>) -> Self {
+    pub fn new(pubkey: impl Into<String>, display_name: Option<&str>) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
-            pubkey,
+            pubkey: pubkey.into(),
             display_name: display_name.map(|s| s.to_string()),
             first_seen: now.clone(),
             last_seen: now,
@@ -123,10 +123,10 @@ impl PeerInfo {
     }
 
     /// Get addresses for a specific transport type
-    pub fn get_addresses(&self, transport_type: &str) -> Vec<&Address> {
+    pub fn get_addresses(&self, transport_type: impl AsRef<str>) -> Vec<&Address> {
         self.addresses
             .iter()
-            .filter(|a| a.transport_type == transport_type)
+            .filter(|a| a.transport_type == transport_type.as_ref())
             .collect()
     }
 
@@ -136,10 +136,10 @@ impl PeerInfo {
     }
 
     /// Check if peer has any addresses for a transport type
-    pub fn has_transport(&self, transport_type: &str) -> bool {
+    pub fn has_transport(&self, transport_type: impl AsRef<str>) -> bool {
         self.addresses
             .iter()
-            .any(|a| a.transport_type == transport_type)
+            .any(|a| a.transport_type == transport_type.as_ref())
     }
 }
 

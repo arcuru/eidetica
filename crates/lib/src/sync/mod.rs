@@ -168,7 +168,8 @@ impl Sync {
     }
 
     /// Set the device ID (primarily for testing).
-    pub fn set_device_id(&mut self, device_id: &str) -> Result<()> {
+    pub fn set_device_id(&mut self, device_id: impl Into<String>) -> Result<()> {
+        let device_id = device_id.into();
         self.set_setting("device_id", device_id)
     }
 
@@ -182,9 +183,14 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn register_peer(&mut self, pubkey: &str, display_name: Option<&str>) -> Result<()> {
+    pub fn register_peer(
+        &mut self,
+        pubkey: impl Into<String>,
+        display_name: Option<&str>,
+    ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).register_peer(pubkey, display_name)?;
+        let pubkey = pubkey.into();
+        PeerManager::new(&op).register_peer(&pubkey, display_name)?;
         op.commit()?;
         Ok(())
     }
@@ -197,9 +203,13 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn update_peer_status(&mut self, pubkey: &str, status: PeerStatus) -> Result<()> {
+    pub fn update_peer_status(
+        &mut self,
+        pubkey: impl AsRef<str>,
+        status: PeerStatus,
+    ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).update_peer_status(pubkey, status)?;
+        PeerManager::new(&op).update_peer_status(pubkey.as_ref(), status)?;
         op.commit()?;
         Ok(())
     }
@@ -211,9 +221,9 @@ impl Sync {
     ///
     /// # Returns
     /// The peer information if found, None otherwise.
-    pub fn get_peer_info(&self, pubkey: &str) -> Result<Option<PeerInfo>> {
+    pub fn get_peer_info(&self, pubkey: impl AsRef<str>) -> Result<Option<PeerInfo>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_peer_info(pubkey)
+        PeerManager::new(&op).get_peer_info(pubkey.as_ref())
         // No commit - just reading
     }
 
@@ -236,9 +246,9 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn remove_peer(&mut self, pubkey: &str) -> Result<()> {
+    pub fn remove_peer(&mut self, pubkey: impl AsRef<str>) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).remove_peer(pubkey)?;
+        PeerManager::new(&op).remove_peer(pubkey.as_ref())?;
         op.commit()?;
         Ok(())
     }
@@ -253,9 +263,13 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn add_tree_sync(&mut self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+    pub fn add_tree_sync(
+        &mut self,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).add_tree_sync(peer_pubkey, tree_root_id)?;
+        PeerManager::new(&op).add_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())?;
         op.commit()?;
         Ok(())
     }
@@ -268,9 +282,13 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn remove_tree_sync(&mut self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+    pub fn remove_tree_sync(
+        &mut self,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).remove_tree_sync(peer_pubkey, tree_root_id)?;
+        PeerManager::new(&op).remove_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())?;
         op.commit()?;
         Ok(())
     }
@@ -282,9 +300,9 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
-    pub fn get_peer_trees(&self, peer_pubkey: &str) -> Result<Vec<String>> {
+    pub fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_peer_trees(peer_pubkey)
+        PeerManager::new(&op).get_peer_trees(peer_pubkey.as_ref())
         // No commit - just reading
     }
 
@@ -295,9 +313,9 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of peer public keys that sync this tree.
-    pub fn get_tree_peers(&self, tree_root_id: &str) -> Result<Vec<String>> {
+    pub fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).get_tree_peers(tree_root_id)
+        PeerManager::new(&op).get_tree_peers(tree_root_id.as_ref())
         // No commit - just reading
     }
 
@@ -413,9 +431,13 @@ impl Sync {
     ///
     /// # Returns
     /// True if the tree is synced with the peer, false otherwise.
-    pub fn is_tree_synced_with_peer(&self, peer_pubkey: &str, tree_root_id: &str) -> Result<bool> {
+    pub fn is_tree_synced_with_peer(
+        &self,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<bool> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey, tree_root_id)
+        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey.as_ref(), tree_root_id.as_ref())
         // No commit - just reading
     }
 
@@ -429,9 +451,13 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn add_peer_address(&mut self, peer_pubkey: &str, address: Address) -> Result<()> {
+    pub fn add_peer_address(
+        &mut self,
+        peer_pubkey: impl AsRef<str>,
+        address: Address,
+    ) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).add_address(peer_pubkey, address)?;
+        PeerManager::new(&op).add_address(peer_pubkey.as_ref(), address)?;
         op.commit()?;
         Ok(())
     }
@@ -444,9 +470,13 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error (true if removed, false if not found).
-    pub fn remove_peer_address(&mut self, peer_pubkey: &str, address: &Address) -> Result<bool> {
+    pub fn remove_peer_address(
+        &mut self,
+        peer_pubkey: impl AsRef<str>,
+        address: &Address,
+    ) -> Result<bool> {
         let op = self.sync_tree.new_operation()?;
-        let result = PeerManager::new(&op).remove_address(peer_pubkey, address)?;
+        let result = PeerManager::new(&op).remove_address(peer_pubkey.as_ref(), address)?;
         op.commit()?;
         Ok(result)
     }
@@ -537,15 +567,15 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    pub fn start_server(&mut self, addr: &str) -> Result<()> {
+    pub fn start_server(&mut self, addr: impl AsRef<str>) -> Result<()> {
         // Try to use existing async context, or create runtime if needed
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.start_server_async(addr))
+            handle.block_on(self.start_server_async(addr.as_ref()))
         } else {
             let runtime = tokio::runtime::Runtime::new()
                 .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
 
-            runtime.block_on(self.start_server_async(addr))
+            runtime.block_on(self.start_server_async(addr.as_ref()))
         }
     }
 

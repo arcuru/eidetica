@@ -35,10 +35,10 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A dot-notation path for the peer data
-    fn peer_path(pubkey: &str, field: Option<&str>) -> String {
+    fn peer_path(pubkey: impl AsRef<str>, field: Option<&str>) -> String {
         match field {
-            Some(field) => format!("{pubkey}.{field}"),
-            None => pubkey.to_string(),
+            Some(field) => format!("{}.{field}", pubkey.as_ref()),
+            None => pubkey.as_ref().to_string(),
         }
     }
 
@@ -50,10 +50,10 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A dot-notation path for the tree sync data
-    fn tree_path(tree_id: &str, field: Option<&str>) -> String {
+    fn tree_path(tree_id: impl AsRef<str>, field: Option<&str>) -> String {
         match field {
-            Some(field) => format!("{tree_id}.{field}"),
-            None => tree_id.to_string(),
+            Some(field) => format!("{}.{field}", tree_id.as_ref()),
+            None => tree_id.as_ref().to_string(),
         }
     }
 
@@ -65,35 +65,41 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn register_peer(&self, pubkey: &str, display_name: Option<&str>) -> Result<()> {
-        let peer_info = PeerInfo::new(pubkey.to_string(), display_name);
+    pub(super) fn register_peer(
+        &self,
+        pubkey: impl Into<String>,
+        display_name: Option<&str>,
+    ) -> Result<()> {
+        let pubkey = pubkey.into();
+        let peer_info = PeerInfo::new(&pubkey, display_name);
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer already exists using path-based check
-        if peers.contains_path(Self::peer_path(pubkey, None)) {
-            return Err(Error::Sync(SyncError::PeerAlreadyExists(
-                pubkey.to_string(),
-            )));
+        if peers.contains_path(Self::peer_path(&pubkey as &str, None)) {
+            return Err(Error::Sync(SyncError::PeerAlreadyExists(pubkey.clone())));
         }
 
         // Store peer info using path-based structure
         peers.set_path(
-            Self::peer_path(pubkey, Some("pubkey")),
+            Self::peer_path(&pubkey as &str, Some("pubkey")),
             peer_info.pubkey.clone(),
         )?;
         if let Some(name) = &peer_info.display_name {
-            peers.set_path(Self::peer_path(pubkey, Some("display_name")), name.clone())?;
+            peers.set_path(
+                Self::peer_path(&pubkey as &str, Some("display_name")),
+                name.clone(),
+            )?;
         }
         peers.set_path(
-            Self::peer_path(pubkey, Some("first_seen")),
+            Self::peer_path(&pubkey as &str, Some("first_seen")),
             peer_info.first_seen.clone(),
         )?;
         peers.set_path(
-            Self::peer_path(pubkey, Some("last_seen")),
+            Self::peer_path(&pubkey as &str, Some("last_seen")),
             peer_info.last_seen.clone(),
         )?;
         peers.set_path(
-            Self::peer_path(pubkey, Some("status")),
+            Self::peer_path(&pubkey as &str, Some("status")),
             match peer_info.status {
                 PeerStatus::Active => "active".to_string(),
                 PeerStatus::Inactive => "inactive".to_string(),
@@ -104,7 +110,10 @@ impl<'a> PeerManager<'a> {
         // Store addresses if any
         if !peer_info.addresses.is_empty() {
             let addresses_json = serde_json::to_string(&peer_info.addresses).unwrap_or_default();
-            peers.set_path(Self::peer_path(pubkey, Some("addresses")), addresses_json)?;
+            peers.set_path(
+                Self::peer_path(&pubkey as &str, Some("addresses")),
+                addresses_json,
+            )?;
         }
 
         Ok(())
@@ -118,31 +127,40 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn update_peer_info(&self, pubkey: &str, peer_info: PeerInfo) -> Result<()> {
+    pub(super) fn update_peer_info(
+        &self,
+        pubkey: impl AsRef<str>,
+        peer_info: PeerInfo,
+    ) -> Result<()> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer exists
-        if !peers.contains_path(Self::peer_path(pubkey, None)) {
-            return Err(Error::Sync(SyncError::PeerNotFound(pubkey.to_string())));
+        if !peers.contains_path(Self::peer_path(pubkey.as_ref(), None)) {
+            return Err(Error::Sync(SyncError::PeerNotFound(
+                pubkey.as_ref().to_string(),
+            )));
         }
 
         // Update all peer fields
         peers.set_path(
-            Self::peer_path(pubkey, Some("pubkey")),
+            Self::peer_path(pubkey.as_ref(), Some("pubkey")),
             peer_info.pubkey.clone(),
         )?;
 
         if let Some(name) = &peer_info.display_name {
-            peers.set_path(Self::peer_path(pubkey, Some("display_name")), name.clone())?;
+            peers.set_path(
+                Self::peer_path(pubkey.as_ref(), Some("display_name")),
+                name.clone(),
+            )?;
         }
 
         peers.set_path(
-            Self::peer_path(pubkey, Some("first_seen")),
+            Self::peer_path(pubkey.as_ref(), Some("first_seen")),
             peer_info.first_seen.clone(),
         )?;
 
         peers.set_path(
-            Self::peer_path(pubkey, Some("last_seen")),
+            Self::peer_path(pubkey.as_ref(), Some("last_seen")),
             peer_info.last_seen.clone(),
         )?;
 
@@ -153,7 +171,7 @@ impl<'a> PeerManager<'a> {
             PeerStatus::Blocked => "blocked",
         };
         peers.set_path(
-            Self::peer_path(pubkey, Some("status")),
+            Self::peer_path(pubkey.as_ref(), Some("status")),
             status_str.to_string(),
         )?;
 
@@ -165,31 +183,37 @@ impl<'a> PeerManager<'a> {
             ConnectionState::Failed(msg) => &format!("failed:{msg}"),
         };
         peers.set_path(
-            Self::peer_path(pubkey, Some("connection_state")),
+            Self::peer_path(pubkey.as_ref(), Some("connection_state")),
             connection_state_str.to_string(),
         )?;
 
         // Update optional fields
         if let Some(last_sync) = &peer_info.last_successful_sync {
             peers.set_path(
-                Self::peer_path(pubkey, Some("last_successful_sync")),
+                Self::peer_path(pubkey.as_ref(), Some("last_successful_sync")),
                 last_sync.clone(),
             )?;
         }
 
         peers.set_path(
-            Self::peer_path(pubkey, Some("connection_attempts")),
+            Self::peer_path(pubkey.as_ref(), Some("connection_attempts")),
             peer_info.connection_attempts as i64,
         )?;
 
         if let Some(error) = &peer_info.last_error {
-            peers.set_path(Self::peer_path(pubkey, Some("last_error")), error.clone())?;
+            peers.set_path(
+                Self::peer_path(pubkey.as_ref(), Some("last_error")),
+                error.clone(),
+            )?;
         }
 
         // Store addresses if any
         if !peer_info.addresses.is_empty() {
             let addresses_json = serde_json::to_string(&peer_info.addresses).unwrap_or_default();
-            peers.set_path(Self::peer_path(pubkey, Some("addresses")), addresses_json)?;
+            peers.set_path(
+                Self::peer_path(pubkey.as_ref(), Some("addresses")),
+                addresses_json,
+            )?;
         }
 
         Ok(())
@@ -203,12 +227,18 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn update_peer_status(&self, pubkey: &str, status: PeerStatus) -> Result<()> {
+    pub(super) fn update_peer_status(
+        &self,
+        pubkey: impl AsRef<str>,
+        status: PeerStatus,
+    ) -> Result<()> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer exists
-        if !peers.contains_path(Self::peer_path(pubkey, None)) {
-            return Err(Error::Sync(SyncError::PeerNotFound(pubkey.to_string())));
+        if !peers.contains_path(Self::peer_path(pubkey.as_ref(), None)) {
+            return Err(Error::Sync(SyncError::PeerNotFound(
+                pubkey.as_ref().to_string(),
+            )));
         }
 
         // Update status using path-based modification
@@ -218,13 +248,13 @@ impl<'a> PeerManager<'a> {
             PeerStatus::Blocked => "blocked",
         };
         peers.set_path(
-            Self::peer_path(pubkey, Some("status")),
+            Self::peer_path(pubkey.as_ref(), Some("status")),
             status_str.to_string(),
         )?;
 
         // Update last_seen timestamp
         let now = chrono::Utc::now().to_rfc3339();
-        peers.set_path(Self::peer_path(pubkey, Some("last_seen")), now)?;
+        peers.set_path(Self::peer_path(pubkey.as_ref(), Some("last_seen")), now)?;
 
         Ok(())
     }
@@ -236,17 +266,17 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// The peer information if found, None otherwise.
-    pub(super) fn get_peer_info(&self, pubkey: &str) -> Result<Option<PeerInfo>> {
+    pub(super) fn get_peer_info(&self, pubkey: impl AsRef<str>) -> Result<Option<PeerInfo>> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer exists using path-based check
-        if !peers.contains_path(Self::peer_path(pubkey, None)) {
+        if !peers.contains_path(Self::peer_path(pubkey.as_ref(), None)) {
             return Ok(None);
         }
 
         // Get peer fields using path-based access
         let peer_pubkey = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("pubkey")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("pubkey")))
             .map_err(|_| {
                 Error::Sync(SyncError::SerializationError(
                     "Missing pubkey field".to_string(),
@@ -254,11 +284,11 @@ impl<'a> PeerManager<'a> {
             })?;
 
         let display_name = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("display_name")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("display_name")))
             .ok();
 
         let first_seen = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("first_seen")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("first_seen")))
             .map_err(|_| {
                 Error::Sync(SyncError::SerializationError(
                     "Missing first_seen field".to_string(),
@@ -266,7 +296,7 @@ impl<'a> PeerManager<'a> {
             })?;
 
         let last_seen = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("last_seen")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("last_seen")))
             .map_err(|_| {
                 Error::Sync(SyncError::SerializationError(
                     "Missing last_seen field".to_string(),
@@ -274,7 +304,7 @@ impl<'a> PeerManager<'a> {
             })?;
 
         let status_str = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("status")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("status")))
             .unwrap_or_else(|_| "active".to_string());
         let status = match status_str.as_str() {
             "active" => PeerStatus::Active,
@@ -285,7 +315,7 @@ impl<'a> PeerManager<'a> {
 
         // Get connection state if present
         let connection_state_str = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("connection_state")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("connection_state")))
             .unwrap_or_else(|_| "disconnected".to_string());
         let connection_state = match connection_state_str.as_str() {
             "disconnected" => ConnectionState::Disconnected,
@@ -298,16 +328,22 @@ impl<'a> PeerManager<'a> {
         };
 
         let last_successful_sync = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("last_successful_sync")))
+            .get_path_as::<String>(&Self::peer_path(
+                pubkey.as_ref(),
+                Some("last_successful_sync"),
+            ))
             .ok();
 
         let connection_attempts = peers
-            .get_path_as::<i64>(&Self::peer_path(pubkey, Some("connection_attempts")))
+            .get_path_as::<i64>(&Self::peer_path(
+                pubkey.as_ref(),
+                Some("connection_attempts"),
+            ))
             .map(|v| v as u32)
             .unwrap_or(0);
 
         let last_error = peers
-            .get_path_as::<String>(&Self::peer_path(pubkey, Some("last_error")))
+            .get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("last_error")))
             .ok();
 
         let mut peer_info = PeerInfo {
@@ -325,7 +361,7 @@ impl<'a> PeerManager<'a> {
 
         // Parse addresses if present
         if let Ok(addresses_json) =
-            peers.get_path_as::<String>(&Self::peer_path(pubkey, Some("addresses")))
+            peers.get_path_as::<String>(&Self::peer_path(pubkey.as_ref(), Some("addresses")))
             && let Ok(addresses) = serde_json::from_str(&addresses_json)
         {
             peer_info.addresses = addresses;
@@ -368,13 +404,13 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn remove_peer(&self, pubkey: &str) -> Result<()> {
+    pub(super) fn remove_peer(&self, pubkey: impl AsRef<str>) -> Result<()> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Mark peer as blocked instead of removing (using path-based access)
-        if peers.contains_path(Self::peer_path(pubkey, None)) {
+        if peers.contains_path(Self::peer_path(pubkey.as_ref(), None)) {
             peers.set_path(
-                Self::peer_path(pubkey, Some("status")),
+                Self::peer_path(pubkey.as_ref(), Some("status")),
                 "blocked".to_string(),
             )?;
         }
@@ -388,7 +424,7 @@ impl<'a> PeerManager<'a> {
                 && let Ok(mut peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json)
             {
                 let initial_len = peer_pubkeys.len();
-                peer_pubkeys.retain(|p| p != pubkey);
+                peer_pubkeys.retain(|p| p.as_str() != pubkey.as_ref());
 
                 if peer_pubkeys.len() != initial_len {
                     // Peer was removed
@@ -415,19 +451,23 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn add_tree_sync(&self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+    pub(super) fn add_tree_sync(
+        &self,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<()> {
         // First check if peer exists using path-based check
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
-        if !peers.contains_path(Self::peer_path(peer_pubkey, None)) {
+        if !peers.contains_path(Self::peer_path(peer_pubkey.as_ref(), None)) {
             return Err(Error::Sync(SyncError::PeerNotFound(
-                peer_pubkey.to_string(),
+                peer_pubkey.as_ref().to_string(),
             )));
         }
 
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
 
         // Get existing peer list for this tree, or create empty list
-        let peer_list_path = Self::tree_path(tree_root_id, Some("peer_pubkeys"));
+        let peer_list_path = Self::tree_path(tree_root_id.as_ref(), Some("peer_pubkeys"));
         let mut peer_pubkeys: Vec<String> = trees
             .get_path_as::<String>(&peer_list_path)
             .ok()
@@ -435,8 +475,8 @@ impl<'a> PeerManager<'a> {
             .unwrap_or_else(Vec::new);
 
         // Add peer if not already present
-        if !peer_pubkeys.contains(&peer_pubkey.to_string()) {
-            peer_pubkeys.push(peer_pubkey.to_string());
+        if !peer_pubkeys.contains(&peer_pubkey.as_ref().to_string()) {
+            peer_pubkeys.push(peer_pubkey.as_ref().to_string());
 
             // Store the updated list using path-based access (as JSON)
             let peer_list_json = serde_json::to_string(&peer_pubkeys).unwrap_or_default();
@@ -444,8 +484,8 @@ impl<'a> PeerManager<'a> {
 
             // Also store tree_id for consistency
             trees.set_path(
-                Self::tree_path(tree_root_id, Some("tree_id")),
-                tree_root_id.to_string(),
+                Self::tree_path(tree_root_id.as_ref(), Some("tree_id")),
+                tree_root_id.as_ref().to_string(),
             )?;
         }
 
@@ -460,23 +500,27 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn remove_tree_sync(&self, peer_pubkey: &str, tree_root_id: &str) -> Result<()> {
+    pub(super) fn remove_tree_sync(
+        &self,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<()> {
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
 
         // Get existing peer list for this tree
-        let peer_list_path = Self::tree_path(tree_root_id, Some("peer_pubkeys"));
+        let peer_list_path = Self::tree_path(tree_root_id.as_ref(), Some("peer_pubkeys"));
         if let Ok(peer_list_json) = trees.get_path_as::<String>(&peer_list_path)
             && let Ok(mut peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json)
         {
             // Remove the peer from the list
             let initial_len = peer_pubkeys.len();
-            peer_pubkeys.retain(|p| p != peer_pubkey);
+            peer_pubkeys.retain(|p| p.as_str() != peer_pubkey.as_ref());
 
             if peer_pubkeys.len() != initial_len {
                 // Peer was removed
                 if peer_pubkeys.is_empty() {
                     // Remove the entire tree record if no peers left
-                    trees.delete(tree_root_id)?;
+                    trees.delete(tree_root_id.as_ref())?;
                 } else {
                     // Update the peer list
                     let updated_json = serde_json::to_string(&peer_pubkeys).unwrap_or_default();
@@ -495,7 +539,7 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
-    pub(super) fn get_peer_trees(&self, peer_pubkey: &str) -> Result<Vec<String>> {
+    pub(super) fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
         let all_trees = trees.get_all()?;
         let mut synced_trees = Vec::new();
@@ -504,7 +548,7 @@ impl<'a> PeerManager<'a> {
             let peer_list_path = Self::tree_path(tree_id, Some("peer_pubkeys"));
             if let Ok(peer_list_json) = trees.get_path_as::<String>(&peer_list_path)
                 && let Ok(peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json)
-                && peer_pubkeys.contains(&peer_pubkey.to_string())
+                && peer_pubkeys.contains(&peer_pubkey.as_ref().to_string())
             {
                 synced_trees.push(tree_id.clone());
             }
@@ -520,9 +564,9 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A vector of peer public keys that sync this tree.
-    pub(super) fn get_tree_peers(&self, tree_root_id: &str) -> Result<Vec<String>> {
+    pub(super) fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
-        let peer_list_path = Self::tree_path(tree_root_id, Some("peer_pubkeys"));
+        let peer_list_path = Self::tree_path(tree_root_id.as_ref(), Some("peer_pubkeys"));
         Ok(trees
             .get_path_as::<String>(&peer_list_path)
             .ok()
@@ -540,15 +584,15 @@ impl<'a> PeerManager<'a> {
     /// True if the tree is synced with the peer, false otherwise.
     pub(super) fn is_tree_synced_with_peer(
         &self,
-        peer_pubkey: &str,
-        tree_root_id: &str,
+        peer_pubkey: impl AsRef<str>,
+        tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
-        let peer_list_path = Self::tree_path(tree_root_id, Some("peer_pubkeys"));
+        let peer_list_path = Self::tree_path(tree_root_id.as_ref(), Some("peer_pubkeys"));
         match trees.get_path_as::<String>(&peer_list_path) {
             Ok(peer_list_json) => {
                 if let Ok(peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json) {
-                    Ok(peer_pubkeys.contains(&peer_pubkey.to_string()))
+                    Ok(peer_pubkeys.contains(&peer_pubkey.as_ref().to_string()))
                 } else {
                     Ok(false)
                 }
@@ -567,19 +611,19 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn add_address(&self, peer_pubkey: &str, address: Address) -> Result<()> {
+    pub(super) fn add_address(&self, peer_pubkey: impl AsRef<str>, address: Address) -> Result<()> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer exists
-        if !peers.contains_path(Self::peer_path(peer_pubkey, None)) {
+        if !peers.contains_path(Self::peer_path(peer_pubkey.as_ref(), None)) {
             return Err(Error::Sync(SyncError::PeerNotFound(
-                peer_pubkey.to_string(),
+                peer_pubkey.as_ref().to_string(),
             )));
         }
 
         // Get current addresses
         let mut all_addresses: Vec<Address> = peers
-            .get_path_as::<String>(&Self::peer_path(peer_pubkey, Some("addresses")))
+            .get_path_as::<String>(&Self::peer_path(peer_pubkey.as_ref(), Some("addresses")))
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_else(Vec::new);
@@ -591,13 +635,16 @@ impl<'a> PeerManager<'a> {
             // Store updated addresses
             let addresses_json = serde_json::to_string(&all_addresses).unwrap_or_default();
             peers.set_path(
-                Self::peer_path(peer_pubkey, Some("addresses")),
+                Self::peer_path(peer_pubkey.as_ref(), Some("addresses")),
                 addresses_json,
             )?;
 
             // Update last_seen timestamp
             let now = chrono::Utc::now().to_rfc3339();
-            peers.set_path(Self::peer_path(peer_pubkey, Some("last_seen")), now)?;
+            peers.set_path(
+                Self::peer_path(peer_pubkey.as_ref(), Some("last_seen")),
+                now,
+            )?;
         }
 
         Ok(())
@@ -611,19 +658,23 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error (true if removed, false if not found).
-    pub(super) fn remove_address(&self, peer_pubkey: &str, address: &Address) -> Result<bool> {
+    pub(super) fn remove_address(
+        &self,
+        peer_pubkey: impl AsRef<str>,
+        address: &Address,
+    ) -> Result<bool> {
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
         // Check if peer exists
-        if !peers.contains_path(Self::peer_path(peer_pubkey, None)) {
+        if !peers.contains_path(Self::peer_path(peer_pubkey.as_ref(), None)) {
             return Err(Error::Sync(SyncError::PeerNotFound(
-                peer_pubkey.to_string(),
+                peer_pubkey.as_ref().to_string(),
             )));
         }
 
         // Get current addresses
         let mut all_addresses: Vec<Address> = peers
-            .get_path_as::<String>(&Self::peer_path(peer_pubkey, Some("addresses")))
+            .get_path_as::<String>(&Self::peer_path(peer_pubkey.as_ref(), Some("addresses")))
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_else(Vec::new);
@@ -636,13 +687,16 @@ impl<'a> PeerManager<'a> {
             // Address was removed, update storage
             let addresses_json = serde_json::to_string(&all_addresses).unwrap_or_default();
             peers.set_path(
-                Self::peer_path(peer_pubkey, Some("addresses")),
+                Self::peer_path(peer_pubkey.as_ref(), Some("addresses")),
                 addresses_json,
             )?;
 
             // Update last_seen timestamp
             let now = chrono::Utc::now().to_rfc3339();
-            peers.set_path(Self::peer_path(peer_pubkey, Some("last_seen")), now)?;
+            peers.set_path(
+                Self::peer_path(peer_pubkey.as_ref(), Some("last_seen")),
+                now,
+            )?;
 
             Ok(true)
         } else {
@@ -660,7 +714,7 @@ impl<'a> PeerManager<'a> {
     /// A vector of addresses matching the criteria.
     pub(super) fn get_addresses(
         &self,
-        peer_pubkey: &str,
+        peer_pubkey: impl AsRef<str>,
         transport_type: Option<&str>,
     ) -> Result<Vec<Address>> {
         if let Some(peer_info) = self.get_peer_info(peer_pubkey)? {
