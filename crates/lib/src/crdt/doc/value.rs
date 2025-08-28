@@ -395,10 +395,12 @@ impl From<List> for Value {
     }
 }
 
-// Note: Import Doc here to avoid circular dependencies
+// Convenience conversion from Doc to Value for ergonomic API usage
+// This allows Doc instances to be used directly in contexts expecting Value,
+// particularly useful in testing and when building nested document structures.
+// The conversion extracts the Doc's root Node and wraps it in a Value::Node.
 impl From<crate::crdt::Doc> for Value {
     fn from(doc: crate::crdt::Doc) -> Self {
-        // Convert Doc to Node by extracting its root
         Value::Node(doc.into())
     }
 }

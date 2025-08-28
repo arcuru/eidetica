@@ -41,7 +41,7 @@ pub enum CRDTError {
 
     /// Document operation failed
     #[error("CRDT document operation failed: {operation} - {reason}")]
-    MapOperationFailed { operation: String, reason: String },
+    DocOperationFailed { operation: String, reason: String },
 
     /// Nested structure operation failed
     #[error("CRDT nested operation failed: {path} - {reason}")]
@@ -88,9 +88,9 @@ impl CRDTError {
         matches!(self, CRDTError::ListOperationFailed { .. })
     }
 
-    /// Check if this error is related to map operations
-    pub fn is_map_error(&self) -> bool {
-        matches!(self, CRDTError::MapOperationFailed { .. })
+    /// Check if this error is related to doc operations
+    pub fn is_doc_error(&self) -> bool {
+        matches!(self, CRDTError::DocOperationFailed { .. })
     }
 
     /// Check if this error is related to nested operations
@@ -112,7 +112,7 @@ impl CRDTError {
     pub fn operation(&self) -> Option<&str> {
         match self {
             CRDTError::ListOperationFailed { operation, .. }
-            | CRDTError::MapOperationFailed { operation, .. } => Some(operation),
+            | CRDTError::DocOperationFailed { operation, .. } => Some(operation),
             _ => None,
         }
     }
@@ -165,7 +165,7 @@ mod tests {
         assert!(!error.is_serialization_error());
         assert!(!error.is_type_error());
         assert!(!error.is_list_operation_error());
-        assert!(!error.is_map_error());
+        assert!(!error.is_doc_error());
         assert!(!error.is_nested_error());
         assert!(!error.is_not_found_error());
 
@@ -204,12 +204,12 @@ mod tests {
         assert!(list_error.is_list_operation_error());
         assert_eq!(list_error.operation(), Some("insert"));
 
-        let map_error = CRDTError::MapOperationFailed {
+        let doc_error = CRDTError::DocOperationFailed {
             operation: "set".to_string(),
             reason: "test".to_string(),
         };
-        assert!(map_error.is_map_error());
-        assert_eq!(map_error.operation(), Some("set"));
+        assert!(doc_error.is_doc_error());
+        assert_eq!(doc_error.operation(), Some("set"));
 
         let nested_error = CRDTError::NestedOperationFailed {
             path: "user.profile".to_string(),
@@ -247,7 +247,7 @@ mod tests {
                 reason: "conflict".to_string(),
             },
             CRDTError::TypeMismatch {
-                expected: "Map".to_string(),
+                expected: "Node".to_string(),
                 actual: "Text".to_string(),
             },
             CRDTError::InvalidPath {

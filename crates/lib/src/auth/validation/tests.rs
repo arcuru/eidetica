@@ -15,7 +15,7 @@ fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
         key_name.to_string(),
         serde_json::to_string(&auth_key).unwrap().into(),
     );
-    settings.set_map("auth", auth_section);
+    settings.set_node("auth", auth_section);
     settings
 }
 
@@ -340,7 +340,7 @@ fn test_complete_delegation_workflow() {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
 
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user").unwrap();
 
@@ -380,7 +380,7 @@ fn test_complete_delegation_workflow() {
         )
         .unwrap();
 
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
     let main_tree = db.new_tree(main_settings, "main_admin").unwrap();
 
     // Test delegation resolution
@@ -461,7 +461,7 @@ fn test_delegated_tree_requires_tips() {
         )
         .unwrap();
 
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
@@ -518,7 +518,7 @@ fn test_nested_delegation_with_permission_clamping() {
             },
         )
         .unwrap();
-    user_settings.set_map("auth", user_auth);
+    user_settings.set_node("auth", user_auth);
     let user_tree = db.new_tree(user_settings, "final_user").unwrap();
     let user_tips = user_tree.get_tips().unwrap();
 
@@ -555,7 +555,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    intermediate_settings.set_map("auth", intermediate_auth);
+    intermediate_settings.set_node("auth", intermediate_auth);
     let intermediate_tree = db
         .new_tree(intermediate_settings, "intermediate_admin")
         .unwrap();
@@ -595,7 +595,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
     let main_tree = db.new_tree(main_settings, "main_admin").unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User

@@ -7,11 +7,11 @@ use crate::subtree::SubTree;
 use crate::subtree::errors::SubtreeError;
 use std::str::FromStr;
 
-/// A document-oriented SubTree providing ergonomic access to Map CRDT data.
+/// A document-oriented SubTree providing ergonomic access to Doc CRDT data.
 ///
-/// It assumes that the SubTree data is a Map CRDT, which allows for nested map structures.
+/// It assumes that the SubTree data is a Doc CRDT, which allows for nested document structures.
 /// This implementation supports string values, as well as deletions via tombstones.
-/// For more complex data structures, consider using the nested capabilities of Map directly.
+/// For more complex data structures, consider using the nested capabilities of Doc directly.
 pub struct DocStore {
     name: String,
     atomic_op: AtomicOp,
@@ -86,7 +86,7 @@ impl DocStore {
             Value::Node(_) => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "Map".to_string(),
+                actual: "Node".to_string(),
             }
             .into()),
             Value::List(_) => Err(SubtreeError::TypeMismatch {
@@ -168,13 +168,13 @@ impl DocStore {
         }
     }
 
-    /// Convenience method to get a Map value.
+    /// Convenience method to get a Node value.
     pub fn get_node(&self, key: impl AsRef<str>) -> Result<Doc> {
         match self.get(key)? {
             Value::Node(node) => Ok(node.into()),
             _ => Err(SubtreeError::TypeMismatch {
                 subtree: self.name.clone(),
-                expected: "Map".to_string(),
+                expected: "Node".to_string(),
                 actual: "Other".to_string(),
             }
             .into()),
@@ -800,7 +800,7 @@ impl DocStore {
         self.atomic_op.update_subtree(&self.name, &serialized)
     }
 
-    /// Retrieves all key-value pairs, merging staged data with historical state.
+    /// Retrieves all key-value pairs as a Doc, merging staged and historical state.
     ///
     /// This method combines the data staged within the current `AtomicOp` with the
     /// fully merged historical state from the backend, providing a complete view
@@ -1047,11 +1047,11 @@ impl DocStore {
                     .into());
                 }
                 _ => {
-                    // Expected a map to continue traversal, but found something else.
+                    // Expected a node to continue traversal, but found something else.
                     return Err(SubtreeError::TypeMismatch {
                         subtree: self.name.clone(),
-                        expected: "Map".to_string(),
-                        actual: "non-map value".to_string(),
+                        expected: "Node".to_string(),
+                        actual: "non-node value".to_string(),
                     }
                     .into());
                 }
@@ -1108,8 +1108,8 @@ impl DocStore {
             } else {
                 return Err(SubtreeError::TypeMismatch {
                     subtree: self.name.clone(),
-                    expected: "Map".to_string(),
-                    actual: "non-map value".to_string(),
+                    expected: "Node".to_string(),
+                    actual: "non-node value".to_string(),
                 }
                 .into());
             }
@@ -1120,7 +1120,7 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        let mut current_map_mut = subtree_data.as_map_mut();
+        let mut current_map_mut = subtree_data.as_node_mut();
 
         // Traverse or create path segments up to the parent of the target key.
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {

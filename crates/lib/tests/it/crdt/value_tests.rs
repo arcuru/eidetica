@@ -1,12 +1,13 @@
 //! Value-specific integration tests
 //!
-//! This module contains tests extracted from the map tests that focus specifically
+//! This module contains tests extracted from the doc tests that focus specifically
 //! on Value enum functionality, including type checking, accessors, merging,
 //! and PartialEq implementations.
 
 use super::helpers::*;
 use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{List, Value, path};
+use eidetica::crdt::doc::{List, Node, Value};
+use eidetica::path;
 
 // ===== VALUE TYPE TESTS =====
 
@@ -45,7 +46,7 @@ fn test_map_value_basic_types() {
 
 #[test]
 fn test_map_value_branch_types() {
-    let map_val = Value::Node(Doc::new().into());
+    let map_val = Value::Node(Node::new());
     let list_val = Value::List(List::new());
 
     assert!(!map_val.is_leaf());
@@ -67,7 +68,7 @@ fn test_map_value_type_names() {
     assert_eq!(Value::Bool(true).type_name(), "bool");
     assert_eq!(Value::Int(42).type_name(), "int");
     assert_eq!(Value::Text("hello".to_string()).type_name(), "text");
-    assert_eq!(Value::Node(Doc::new().into()).type_name(), "node");
+    assert_eq!(Value::Node(Node::new()).type_name(), "node");
     assert_eq!(Value::List(List::new()).type_name(), "list");
     assert_eq!(Value::Deleted.type_name(), "deleted");
 }
@@ -77,7 +78,7 @@ fn test_map_value_accessors() {
     let bool_val = Value::Bool(true);
     let int_val = Value::Int(42);
     let text_val = Value::Text("hello".to_string());
-    let map_val = Value::Node(Doc::new().into());
+    let map_val = Value::Node(Node::new());
     let list_val = Value::List(List::new());
 
     // Test as_bool
@@ -111,7 +112,7 @@ fn test_map_value_from_impls() {
     let from_bool: Value = true.into();
     let from_i64: Value = 42i64.into();
     let from_string: Value = "hello".into();
-    let from_node: Value = Doc::new().into();
+    let from_node: Value = Node::new().into();
     let from_list: Value = List::new().into();
 
     assert_eq!(from_bool.as_bool(), Some(true));

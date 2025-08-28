@@ -248,12 +248,7 @@ impl PathBuf {
 
     /// Returns an iterator over the path components as string slices.
     pub fn components(&self) -> impl Iterator<Item = &str> {
-        if self.inner.is_empty() {
-            // Use a Split iterator that will be empty
-            "".split('.')
-        } else {
-            self.inner.split('.')
-        }
+        self.inner.split('.').filter(|s| !s.is_empty())
     }
 
     /// Returns the number of components in the path.
@@ -332,11 +327,7 @@ impl Path {
 
     /// Returns an iterator over the path components as string slices.
     pub fn components(&self) -> impl Iterator<Item = &str> {
-        if self.inner.is_empty() {
-            "".split('.')
-        } else {
-            self.inner.split('.')
-        }
+        self.inner.split('.').filter(|s| !s.is_empty())
     }
 
     /// Returns the number of components in the path.

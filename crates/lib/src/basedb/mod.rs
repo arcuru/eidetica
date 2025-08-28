@@ -111,7 +111,7 @@ impl BaseDB {
     /// Create a new tree in the database.
     ///
     /// A `Tree` represents a collection of related entries, analogous to a table.
-    /// It is initialized with settings defined by a `Map` CRDT.
+    /// It is initialized with settings defined by a `Doc` CRDT.
     /// All trees must now be created with authentication.
     ///
     /// # Arguments

@@ -155,7 +155,7 @@ fn test_nested_delegation() -> Result<()> {
             },
         )
         .unwrap();
-    user_settings.set_map("auth", user_auth);
+    user_settings.set_node("auth", user_auth);
     let user_tree = db.new_tree(user_settings, "user")?;
 
     // Create org tree (middle level) that delegates to user tree
@@ -189,7 +189,7 @@ fn test_nested_delegation() -> Result<()> {
             },
         )
         .unwrap();
-    org_settings.set_map("auth", org_auth);
+    org_settings.set_node("auth", org_auth);
     let org_tree = db.new_tree(org_settings, "org_admin")?;
 
     // Create main tree (top level) that delegates to org tree
@@ -223,7 +223,7 @@ fn test_nested_delegation() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
     let main_tree = db.new_tree(main_settings, "main_admin")?;
 
     // Test nested delegation: main -> org -> user
@@ -282,7 +282,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
 
     let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
 
@@ -316,7 +316,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
 
     let main_tree = db.new_tree(main_settings, "main_admin")?;
 
@@ -354,7 +354,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             },
         )
         .unwrap();
-    revoked_settings.set_map("auth", revoked_auth);
+    revoked_settings.set_node("auth", revoked_auth);
 
     // We can't easily update the delegated tree state in this test, so we'll validate against
     // the revoked settings directly to test the revocation logic
@@ -397,7 +397,7 @@ fn test_delegation_depth_limits() -> Result<()> {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
     let delegated_tree = db.new_tree(delegated_settings, "user")?;
 
     // Create main tree settings
@@ -430,7 +430,7 @@ fn test_delegation_depth_limits() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
     let main_tree = db.new_tree(main_settings, "admin")?;
 
     // Create a deeply nested delegation that should exceed the limit
@@ -502,7 +502,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
 
     let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
@@ -537,7 +537,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
 
     let main_tree = db.new_tree(main_settings, "main_admin")?;
 
@@ -601,7 +601,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
     let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
@@ -633,7 +633,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
 
     let main_tree = db.new_tree(main_settings, "main_admin")?;
 
@@ -681,7 +681,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
         },
     )
     .unwrap();
-    settings.set_map("auth", auth);
+    settings.set_node("auth", auth);
     let tree = db.new_tree(settings, "admin")?;
     let tips = tree.get_tips()?;
 
@@ -750,7 +750,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
             },
         )
         .unwrap();
-    delegated_settings.set_map("auth", delegated_auth);
+    delegated_settings.set_node("auth", delegated_auth);
     let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
 
     // Fake tip that does not exist
@@ -784,7 +784,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
             },
         )
         .unwrap();
-    main_settings.set_map("auth", main_auth);
+    main_settings.set_node("auth", main_auth);
     let main_tree = db.new_tree(main_settings, "main_admin")?;
 
     let mut validator = AuthValidator::new();

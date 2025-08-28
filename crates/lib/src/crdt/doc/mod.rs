@@ -171,13 +171,8 @@ impl Doc {
         self.root.get_bool(key)
     }
 
-    /// Gets a map value by key
-    pub fn get_map(&self, key: impl AsRef<str>) -> Option<&Node> {
-        self.root.get_node(key)
-    }
-
-    /// Gets a nested document by key (returns Doc instead of Node)
-    pub fn get_node(&self, key: impl AsRef<str>) -> Option<Doc> {
+    /// Gets a nested document by key (returns Doc wrapper)
+    pub fn get_doc(&self, key: impl AsRef<str>) -> Option<Doc> {
         self.root
             .get_node(key)
             .map(|node| Doc::from_node(node.clone()))
@@ -287,14 +282,6 @@ impl Doc {
         }
     }
 
-    /// Gets a map value by path
-    pub fn get_map_at_path(&self, path: impl AsRef<Path>) -> Option<&Node> {
-        match self.get_path(path)? {
-            Value::Node(node) => Some(node),
-            _ => None,
-        }
-    }
-
     /// Gets a list value by path
     pub fn get_list_at_path(&self, path: impl AsRef<Path>) -> Option<&List> {
         match self.get_path(path)? {
@@ -343,7 +330,7 @@ impl Doc {
         self.root.get_path_mut(path)
     }
 
-    /// Sets a value at the given path, creating intermediate maps as needed
+    /// Sets a value at the given path, creating intermediate nodes as needed
     pub fn set_path(
         &mut self,
         path: impl AsRef<Path>,
@@ -420,22 +407,6 @@ impl Doc {
     ///
     /// Most users should prefer the document-level methods instead.
     pub fn as_node_mut(&mut self) -> &mut Node {
-        &mut self.root
-    }
-
-    /// Provides access to the internal structure as Node for advanced use cases
-    ///
-    /// This method provides access to the internal Node structure, maintaining
-    /// backwards compatibility during the migration period.
-    pub fn as_map(&self) -> &Node {
-        &self.root
-    }
-
-    /// Provides mutable access to the internal structure as Node for advanced use cases
-    ///
-    /// This method provides mutable access to the internal Node structure, maintaining
-    /// backwards compatibility during the migration period.
-    pub fn as_map_mut(&mut self) -> &mut Node {
         &mut self.root
     }
 
@@ -520,27 +491,18 @@ impl Doc {
         self.with(key, Value::Text(value.into()))
     }
 
-    /// Builder method to set a nested map
-    pub fn with_map<K, V>(self, key: K, value: V) -> Self
-    where
-        K: Into<String>,
-        V: Into<Node>,
-    {
-        self.with(key, Value::Node(value.into()))
-    }
-
     /// Builder method to set a list value
     pub fn with_list(self, key: impl Into<String>, value: impl Into<List>) -> Self {
         self.with(key, Value::List(value.into()))
     }
 
-    /// Builder method to set a child node (alias for with_map for compatibility)
+    /// Builder method to set a child node
     pub fn with_node<K, V>(self, key: K, value: V) -> Self
     where
         K: Into<String>,
         V: Into<Node>,
     {
-        self.with_map(key, value)
+        self.with(key, Value::Node(value.into()))
     }
 }
 
@@ -583,18 +545,18 @@ impl Doc {
         self
     }
 
-    /// Set a key-value pair where the value is a nested map
-    pub fn set_map<K>(&mut self, key: K, value: impl Into<Node>) -> &mut Self
+    /// Set a key-value pair where the value is a nested node
+    pub fn set_node<K>(&mut self, key: K, value: impl Into<Node>) -> &mut Self
     where
         K: Into<String>,
     {
-        self.root.set_map(key, value.into());
+        self.root.set_node(key, value.into());
         self
     }
 
-    /// Get a mutable reference to a nested map by key
-    pub fn get_map_mut(&mut self, key: &str) -> Option<&mut Node> {
-        self.root.get_map_mut(key)
+    /// Get a mutable reference to a nested node by key
+    pub fn get_node_mut(&mut self, key: &str) -> Option<&mut Node> {
+        self.root.get_node_mut(key)
     }
 
     /// Get a reference to the internal HashMap for advanced access

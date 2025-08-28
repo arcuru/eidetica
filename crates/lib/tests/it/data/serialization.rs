@@ -1,15 +1,15 @@
-//! Tests for CRDT Map serialization and deserialization
+//! Tests for CRDT Doc serialization and deserialization
 //!
-//! This module tests the serialization behavior of Map structures,
-//! including handling of nested maps and tombstones.
+//! This module tests the serialization behavior of Doc structures,
+//! including handling of nested documents and tombstones.
 
 use super::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::{Node, Value};
 
 #[test]
-fn test_map_serialization() {
-    // Test serialization and deserialization of Map
+fn test_doc_serialization() {
+    // Test serialization and deserialization of Doc
     let mut map = eidetica::crdt::Doc::new();
 
     // Add various value types
@@ -17,7 +17,7 @@ fn test_map_serialization() {
 
     let mut nested = eidetica::crdt::Doc::new();
     nested.set_string("inner", "inner_value");
-    map.set_map("map_key", nested);
+    map.set_node("map_key", nested);
 
     // Create a tombstone
     map.remove("deleted_key");
@@ -64,11 +64,11 @@ fn test_serialization_complex_nested_structure() {
 }
 
 #[test]
-fn test_serialization_mixed_map() {
+fn test_serialization_mixed_doc() {
     let mixed_map = create_mixed_map();
 
     // Test roundtrip
-    test_serialization_roundtrip(&mixed_map).expect("Mixed map serialization failed");
+    test_serialization_roundtrip(&mixed_map).expect("Mixed doc serialization failed");
 
     // Verify all types preserved
     let serialized = serde_json::to_string(&mixed_map).expect("Serialization failed");
@@ -88,10 +88,10 @@ fn test_serialization_mixed_map() {
 }
 
 #[test]
-fn test_serialization_empty_map() {
+fn test_serialization_empty_doc() {
     let empty_map = eidetica::crdt::Doc::new();
 
-    test_serialization_roundtrip(empty_map.as_node()).expect("Empty map serialization failed");
+    test_serialization_roundtrip(empty_map.as_node()).expect("Empty doc serialization failed");
 
     let serialized = serde_json::to_string(&empty_map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
@@ -104,14 +104,14 @@ fn test_serialization_empty_map() {
 }
 
 #[test]
-fn test_serialization_tombstone_only_map() {
+fn test_serialization_tombstone_only_doc() {
     let mut tombstone_map = eidetica::crdt::Doc::new();
     tombstone_map.remove("tombstone1");
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);
 
     test_serialization_roundtrip(tombstone_map.as_node())
-        .expect("Tombstone-only map serialization failed");
+        .expect("Tombstone-only doc serialization failed");
 
     let serialized = serde_json::to_string(&tombstone_map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");

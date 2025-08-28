@@ -40,7 +40,7 @@ impl Tree {
     /// and storing it in the backend. All trees must now be created with authentication.
     ///
     /// # Arguments
-    /// * `settings` - A `Map` CRDT containing the initial settings for the tree.
+    /// * `settings` - A `Doc` CRDT containing the initial settings for the tree.
     /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
@@ -82,7 +82,7 @@ impl Tree {
 
             // Prepare final tree settings for the initial commit
             let mut final_tree_settings = initial_settings.clone();
-            final_tree_settings.set_map("auth", auth_settings_handler.as_map().clone());
+            final_tree_settings.set_node("auth", auth_settings_handler.as_doc().clone());
 
             (signing_key_name.to_string(), final_tree_settings)
         };

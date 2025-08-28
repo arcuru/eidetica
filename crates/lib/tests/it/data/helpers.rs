@@ -1,6 +1,6 @@
 //! Helper functions for data module tests
 //!
-//! This module provides utility functions for testing CRDT Map operations,
+//! This module provides utility functions for testing CRDT Doc operations,
 //! value editors, path operations, and merge scenarios.
 
 use eidetica::atomicop::AtomicOp;
@@ -84,9 +84,9 @@ pub fn create_complex_nested_structure() -> Node {
     // Level 3
     let mut level3 = Doc::new();
     level3.set_string("level3_key1", "level3_value1");
-    level2.set_map("level3", level3);
+    level2.set_node("level3", level3);
 
-    root.set_map("level2", level2);
+    root.set_node("level2", level2);
     root.into()
 }
 
@@ -125,7 +125,7 @@ pub fn create_mixed_map() -> Node {
 
     let mut nested = Doc::new();
     nested.set_string("nested_key", "nested_value");
-    map.set_map("map_val", nested);
+    map.set_node("map_val", nested);
 
     // Create a tombstone
     map.remove("deleted_val");
@@ -133,7 +133,7 @@ pub fn create_mixed_map() -> Node {
     map.into()
 }
 
-/// Test serialization roundtrip for a Map
+/// Test serialization roundtrip for a Node
 pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Node = serde_json::from_str(&serialized).expect("Deserialization failed");

@@ -87,7 +87,7 @@ pub fn setup_authenticated_tree(
             .unwrap();
     }
 
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
 
     // Find the first key with Admin permissions for tree creation
     let admin_key = keys
@@ -136,7 +136,7 @@ pub fn setup_complete_auth_environment(
             .unwrap();
     }
 
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
 
     // Use the first admin key as the creator
     let admin_key = keys
@@ -175,7 +175,7 @@ pub fn create_delegated_tree(
             .unwrap();
     }
 
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
     db.new_tree(settings, creator_key)
 }
 
@@ -244,7 +244,7 @@ impl DelegationChain {
                 )
                 .unwrap();
 
-            settings.set_map("auth", auth_settings);
+            settings.set_node("auth", auth_settings);
             let tree = db.new_tree(settings, &key_name)?;
             trees.push(tree);
         }

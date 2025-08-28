@@ -274,7 +274,7 @@ fn test_dict_update_nested_value() {
         l2_map.set_string("deep_key", "deep_value");
 
         let mut new_l1_map = Doc::new();
-        new_l1_map.set_map("level2_map", l2_map);
+        new_l1_map.set_node("level2_map", l2_map);
 
         // Completely replace the previous value at level1
         dict.set_value("level1", new_l1_map.clone())

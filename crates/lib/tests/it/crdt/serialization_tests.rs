@@ -12,7 +12,7 @@ use eidetica::crdt::doc::{List, Node, Value, path};
 // ===== JSON STRING SERIALIZATION TESTS =====
 
 #[test]
-fn test_map_to_json_string_basic() {
+fn test_doc_to_json_string_basic() {
     let mut map = Doc::new();
     map.set("name", "Alice");
     map.set("age", 30);
@@ -30,13 +30,13 @@ fn test_map_to_json_string_basic() {
 }
 
 #[test]
-fn test_map_to_json_string_empty() {
+fn test_doc_to_json_string_empty() {
     let map = Doc::new();
     assert_eq!(map.to_json_string(), "{}");
 }
 
 #[test]
-fn test_map_to_json_string_nested() {
+fn test_doc_to_json_string_nested() {
     let mut inner_map = Doc::new();
     inner_map.set("city", "NYC");
     inner_map.set("zip", 10001);
@@ -226,7 +226,7 @@ fn test_json_round_trip_validation() {
 }
 
 #[test]
-fn test_map_to_json_string_key_ordering() {
+fn test_doc_to_json_string_key_ordering() {
     let mut map = Doc::new();
     map.set("zebra", 1);
     map.set("alpha", 2);
@@ -248,7 +248,7 @@ fn test_map_to_json_string_key_ordering() {
 // ===== SERDE JSON ROUND-TRIP TESTS =====
 
 #[test]
-fn test_serde_json_round_trip_map() {
+fn test_serde_json_round_trip_doc() {
     // Test round-trip using serde JSON serialization/deserialization
     let mut original_map = Doc::new();
     original_map.set("name", "Alice");
@@ -283,8 +283,8 @@ fn test_serde_json_round_trip_map() {
     ); // 95.5 -> 95
 
     // Test nested map
-    let orig_nested = original_map.get_node("address").unwrap();
-    let deser_nested = deserialized_map.get_node("address").unwrap();
+    let orig_nested = original_map.get_doc("address").unwrap();
+    let deser_nested = deserialized_map.get_doc("address").unwrap();
     assert_eq!(orig_nested.get_text("city"), deser_nested.get_text("city"));
     assert_eq!(orig_nested.get_int("zip"), deser_nested.get_int("zip"));
 
@@ -489,7 +489,7 @@ fn test_list_position_preservation_round_trip() {
 // ===== SERIALIZATION BEHAVIOR TESTS =====
 
 #[test]
-fn test_map_list_serialization() {
+fn test_doc_list_serialization() {
     let mut map = Doc::new();
 
     // Add a list element

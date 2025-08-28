@@ -15,15 +15,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Authentication settings view/interface over Map data
+/// Authentication settings view/interface over Doc data
 ///
 /// This provides a convenient interface for working with authentication data
-/// stored in the _settings.auth subtree. The underlying Map CRDT handles
+/// stored in the _settings.auth subtree. The underlying Doc CRDT handles
 /// all merging at the settings level - this is just a view with auth-specific
 /// convenience methods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
-    /// Map data from _settings.auth - this is a view, not the authoritative copy
+    /// Doc data from _settings.auth - this is a view, not the authoritative copy
     inner: Doc,
 }
 
@@ -33,18 +33,18 @@ impl AuthSettings {
         Self { inner: Doc::new() }
     }
 
-    /// Create from existing Map (e.g., from _settings.auth)
-    pub fn from_map(map: Doc) -> Self {
-        Self { inner: map }
+    /// Create from existing Doc (e.g., from _settings.auth)
+    pub fn from_doc(doc: Doc) -> Self {
+        Self { inner: doc }
     }
 
-    /// Get the underlying Map for direct access
-    pub fn as_map(&self) -> &Doc {
+    /// Get the underlying Doc for direct access
+    pub fn as_doc(&self) -> &Doc {
         &self.inner
     }
 
     /// Get mutable access to the underlying Map
-    pub fn as_map_mut(&mut self) -> &mut Doc {
+    pub fn as_doc_mut(&mut self) -> &mut Doc {
         &mut self.inner
     }
 
@@ -303,13 +303,13 @@ mod tests {
         settings1.add_key("KEY_1", key1).unwrap();
         settings2.add_key("KEY_2", key2).unwrap();
 
-        // Test that we can access the underlying Map for merging at higher level
-        let map1 = settings1.as_map().clone();
-        let map2 = settings2.as_map().clone();
+        // Test that we can access the underlying Doc for merging at higher level
+        let map1 = settings1.as_doc().clone();
+        let map2 = settings2.as_doc().clone();
 
         // This would be done at the higher settings level, not here
         let merged_map = map1.merge(&map2).unwrap();
-        let merged_settings = AuthSettings::from_map(merged_map);
+        let merged_settings = AuthSettings::from_doc(merged_map);
 
         // Both keys should be present in the merged view
         assert!(merged_settings.get_key("KEY_1").is_some());

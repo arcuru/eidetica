@@ -24,7 +24,7 @@ pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
     let mut map = Doc::new();
     for (outer_key, inner_pairs) in nested_data {
         let inner_map = create_map_with_values(inner_pairs);
-        map.set_map(*outer_key, inner_map);
+        map.set_node(*outer_key, inner_map);
     }
     map.into()
 }
@@ -130,9 +130,9 @@ pub fn create_complex_nested_structure() -> Map {
     // Level 3
     let mut level3 = Doc::new();
     level3.set_string("level3_key1", "level3_value1");
-    level2.set_map("level3", level3);
+    level2.set_node("level3", level3);
 
-    root.set_map("level2", level2);
+    root.set_node("level2", level2);
     root.into()
 }
 
@@ -153,7 +153,7 @@ pub fn build_complex_merge_data() -> (Map, Map) {
     level1a.set_string("key1", "value1");
     level1a.set_string("to_delete", "will_be_deleted");
     level1a.set_string("to_update", "initial_value");
-    map1.set_map("level1", level1a);
+    map1.set_node("level1", level1a);
     map1.set_string("top_level_key", "top_value");
 
     let mut map2 = Doc::new();
@@ -161,7 +161,7 @@ pub fn build_complex_merge_data() -> (Map, Map) {
     level1b.set_string("key2", "value2");
     level1b.remove("to_delete");
     level1b.set_string("to_update", "updated_value");
-    map2.set_map("level1", level1b);
+    map2.set_node("level1", level1b);
     map2.remove("top_level_key");
     map2.set_string("new_top_key", "new_top_value");
 
@@ -284,7 +284,7 @@ pub fn create_all_value_types() -> Vec<Value> {
         Value::Int(-123),
         Value::Text("test".to_string()),
         Value::Text("".to_string()),
-        Value::Node(Doc::new().into()),
+        Value::Node(Map::new()),
         Value::List(List::new()),
         Value::Deleted,
     ]

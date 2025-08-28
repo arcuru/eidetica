@@ -36,7 +36,7 @@ impl KeyResolver {
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Map settings containing auth configuration
+    /// * `settings` - Document settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,
@@ -90,7 +90,7 @@ impl KeyResolver {
             .get("auth")
             .ok_or_else(|| AuthError::NoAuthConfiguration)?;
 
-        // Extract the auth Map from the Value
+        // Extract the auth Node from the Value
         let auth_nested = match auth_section {
             Value::Node(auth_map) => auth_map,
             _ => {

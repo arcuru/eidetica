@@ -4,13 +4,14 @@
 //! on Map functionality, including basic operations, path operations, iterators,
 //! builder pattern, CRDT merge operations, tombstone handling, and JSON serialization.
 
-use eidetica::crdt::doc::{List, Node, Value, path};
+use eidetica::crdt::doc::{List, Node, Value};
 use eidetica::crdt::{CRDT, Doc};
+use eidetica::path;
 
 // ===== BASIC MAP OPERATIONS =====
 
 #[test]
-fn test_map_basic_operations() {
+fn test_doc_basic_operations() {
     let mut map = Doc::new();
 
     assert!(map.is_empty());
@@ -38,7 +39,7 @@ fn test_map_basic_operations() {
 }
 
 #[test]
-fn test_map_overwrite_values() {
+fn test_doc_overwrite_values() {
     let mut map = Doc::new();
 
     map.set("key", "original");
@@ -50,7 +51,7 @@ fn test_map_overwrite_values() {
 }
 
 #[test]
-fn test_map_remove_operations() {
+fn test_doc_remove_operations() {
     let mut map = Doc::new();
 
     map.set("name", "Alice");
@@ -72,7 +73,7 @@ fn test_map_remove_operations() {
 }
 
 #[test]
-fn test_map_delete_operations() {
+fn test_doc_delete_operations() {
     let mut map = Doc::new();
 
     map.set("name", "Alice");
@@ -90,7 +91,7 @@ fn test_map_delete_operations() {
 }
 
 #[test]
-fn test_map_get_mut() {
+fn test_doc_get_mut() {
     let mut map = Doc::new();
 
     map.set("name", "Alice");
@@ -110,7 +111,7 @@ fn test_map_get_mut() {
 // ===== PATH OPERATIONS =====
 
 #[test]
-fn test_map_path_operations() {
+fn test_doc_path_operations() {
     let mut map = Doc::new();
 
     // Test set_path creating intermediate nodes
@@ -147,7 +148,7 @@ fn test_map_path_operations() {
 }
 
 #[test]
-fn test_map_path_with_lists() {
+fn test_doc_path_with_lists() {
     let mut map = Doc::new();
 
     // Create a node with a list
@@ -164,7 +165,7 @@ fn test_map_path_with_lists() {
 }
 
 #[test]
-fn test_map_path_errors() {
+fn test_doc_path_errors() {
     let mut map = Doc::new();
 
     map.set("scalar", "value");
@@ -173,9 +174,9 @@ fn test_map_path_errors() {
     let result = map.set_path(path!("scalar.nested"), "should_fail");
     assert!(result.is_err());
 
-    // Test empty path - this actually works, it just sets at root level
-    let result2 = map.set_path(path!(""), "value");
-    assert!(result2.is_ok()); // Empty path is treated as root level
+    // Test empty path - should return an error
+    let result2 = map.set_path(path!(), "value");
+    assert!(result2.is_err()); // Empty path is invalid
 
     // Test path with single component
     let result3 = map.set_path(path!("single"), "value");
@@ -186,7 +187,7 @@ fn test_map_path_errors() {
 // ===== ITERATORS =====
 
 #[test]
-fn test_map_iterators() {
+fn test_doc_iterators() {
     let mut map = Doc::new();
 
     map.set("name", "Alice");
@@ -223,7 +224,7 @@ fn test_map_iterators() {
 // ===== BUILDER PATTERN =====
 
 #[test]
-fn test_map_builder_pattern() {
+fn test_doc_builder_pattern() {
     let map = Doc::new()
         .with_text("name", "Alice")
         .with_int("age", 30)
@@ -234,7 +235,7 @@ fn test_map_builder_pattern() {
     assert_eq!(map.get_text("name"), Some("Alice"));
     assert_eq!(map.get_int("age"), Some(30));
     assert_eq!(map.get_bool("active"), Some(true));
-    assert!(map.get_node("profile").is_some());
+    assert!(map.get_doc("profile").is_some());
     assert!(map.get_list("tags").is_some());
 
     // Test nested access
@@ -245,7 +246,7 @@ fn test_map_builder_pattern() {
 }
 
 #[test]
-fn test_map_clear() {
+fn test_doc_clear() {
     let mut map = Doc::new();
 
     map.set("name", "Alice");
@@ -262,7 +263,7 @@ fn test_map_clear() {
 // ===== CRDT MERGE OPERATIONS =====
 
 #[test]
-fn test_map_crdt_merge() {
+fn test_doc_crdt_merge() {
     let mut map1 = Doc::new();
     let mut map2 = Doc::new();
 
@@ -280,7 +281,7 @@ fn test_map_crdt_merge() {
 }
 
 #[test]
-fn test_map_from_iterator() {
+fn test_doc_from_iterator() {
     let pairs = vec![
         ("name".to_string(), Value::Text("Alice".to_string())),
         ("age".to_string(), Value::Int(30)),
@@ -297,7 +298,7 @@ fn test_map_from_iterator() {
 // ===== LIST INTEGRATION TESTS =====
 
 #[test]
-fn test_map_list_serialization() {
+fn test_doc_list_serialization() {
     let mut map = Doc::new();
 
     // Add a list element
@@ -323,7 +324,7 @@ fn test_map_list_serialization() {
 // ===== JSON SERIALIZATION TESTS =====
 
 #[test]
-fn test_map_to_json_string_basic() {
+fn test_doc_to_json_string_basic() {
     let mut map = Doc::new();
     map.set("name", "Alice");
     map.set("age", 30);
@@ -341,13 +342,13 @@ fn test_map_to_json_string_basic() {
 }
 
 #[test]
-fn test_map_to_json_string_empty() {
+fn test_doc_to_json_string_empty() {
     let map = Doc::new();
     assert_eq!(map.to_json_string(), "{}");
 }
 
 #[test]
-fn test_map_to_json_string_nested() {
+fn test_doc_to_json_string_nested() {
     let mut inner_map = Doc::new();
     inner_map.set("city", "NYC");
     inner_map.set("zip", 10001);
@@ -467,7 +468,7 @@ fn test_json_round_trip_validation() {
 }
 
 #[test]
-fn test_map_to_json_string_key_ordering() {
+fn test_doc_to_json_string_key_ordering() {
     let mut map = Doc::new();
     map.set("zebra", 1);
     map.set("alpha", 2);
@@ -524,8 +525,8 @@ fn test_serde_json_round_trip_map() {
     ); // 95.5 -> 95
 
     // Test nested map
-    let orig_nested = original_map.get_node("address").unwrap();
-    let deser_nested = deserialized_map.get_node("address").unwrap();
+    let orig_nested = original_map.get_doc("address").unwrap();
+    let deser_nested = deserialized_map.get_doc("address").unwrap();
     assert_eq!(orig_nested.get_text("city"), deser_nested.get_text("city"));
     assert_eq!(orig_nested.get_int("zip"), deser_nested.get_int("zip"));
 
@@ -610,7 +611,7 @@ fn test_serde_json_round_trip_complex_structure() {
 // ===== TOMBSTONE TESTS =====
 
 #[test]
-fn test_map_is_tombstone_basic() {
+fn test_doc_is_tombstone_basic() {
     let mut map = Doc::new();
 
     // Non-existent keys are not tombstones
@@ -639,7 +640,7 @@ fn test_map_is_tombstone_basic() {
 }
 
 #[test]
-fn test_map_is_tombstone_vs_public_api() {
+fn test_doc_is_tombstone_vs_public_api() {
     let mut map = Doc::new();
     map.set("temp", "value");
 
@@ -658,7 +659,7 @@ fn test_map_is_tombstone_vs_public_api() {
 }
 
 #[test]
-fn test_map_is_tombstone_delete_method() {
+fn test_doc_is_tombstone_delete_method() {
     let mut map = Doc::new();
     map.set("key", "value");
 
@@ -667,14 +668,14 @@ fn test_map_is_tombstone_delete_method() {
     map.delete("key");
     assert!(map.is_tombstone("key"));
 
-    // Delete non-existent key doesn't create tombstone
+    // Delete non-existent key creates tombstone for CRDT consistency
     assert!(!map.is_tombstone("nonexistent"));
     map.delete("nonexistent");
-    assert!(!map.is_tombstone("nonexistent")); // Still not a tombstone
+    assert!(map.is_tombstone("nonexistent")); // Now has a tombstone
 }
 
 #[test]
-fn test_map_is_tombstone_overwrite_behavior() {
+fn test_doc_is_tombstone_overwrite_behavior() {
     let mut map = Doc::new();
     map.set("key", "original");
 
@@ -690,7 +691,7 @@ fn test_map_is_tombstone_overwrite_behavior() {
 }
 
 #[test]
-fn test_map_is_tombstone_nested_structures() {
+fn test_doc_is_tombstone_nested_structures() {
     let mut map = Doc::new();
 
     // Add nested map
@@ -724,7 +725,7 @@ fn test_map_is_tombstone_nested_structures() {
 }
 
 #[test]
-fn test_map_is_tombstone_key_types() {
+fn test_doc_is_tombstone_key_types() {
     let mut map = Doc::new();
 
     // Test with different key types that can be converted to string references

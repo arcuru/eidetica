@@ -207,7 +207,7 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (BaseDB, Tree) {
             },
         )
         .unwrap();
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
     settings.set_string("name", "AuthenticatedTree");
 
     let tree = db

@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// by handling the details of:
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
-/// - Storage within the underlying CRDT (Map)
+/// - Storage within the underlying CRDT (Doc)
 pub struct Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,

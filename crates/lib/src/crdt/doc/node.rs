@@ -310,8 +310,9 @@ impl Node {
         let segments: Vec<_> = path.components().collect();
 
         if segments.is_empty() {
-            // Empty path is a no-op at root level
-            return Ok(None);
+            return Err(CRDTError::InvalidPath {
+                path: "(empty path)".to_string(),
+            });
         }
 
         let mut current = self;
@@ -453,20 +454,9 @@ impl Node {
         }
     }
 
-    /// Deletes a key-value pair, creating a tombstone only if the key existed
+    /// Deletes a key-value pair, creating a tombstone for CRDT semantics
     pub fn delete(&mut self, key: impl Into<String>) -> bool {
-        let key = key.into();
-        let old_value = self.children.get(&key).cloned();
-
-        match old_value {
-            Some(Value::Deleted) => false, // Already deleted
-            Some(_) => {
-                // Only create tombstone if key actually existed
-                self.children.insert(key, Value::Deleted);
-                true
-            }
-            None => false, // Key didn't exist, no tombstone needed
-        }
+        self.remove(key).is_some()
     }
 
     /// Clears all key-value pairs by creating tombstones
@@ -510,7 +500,7 @@ impl Node {
     }
 
     /// Sets a node value for a key
-    pub fn set_map<K>(&mut self, key: K, value: Node) -> Option<Value>
+    pub fn set_node<K>(&mut self, key: K, value: Node) -> Option<Value>
     where
         K: Into<String>,
     {
@@ -518,7 +508,7 @@ impl Node {
     }
 
     /// Gets a mutable reference to a node value by key
-    pub fn get_map_mut(&mut self, key: impl AsRef<str>) -> Option<&mut Node> {
+    pub fn get_node_mut(&mut self, key: impl AsRef<str>) -> Option<&mut Node> {
         match self.get_mut(key)? {
             Value::Node(node) => Some(node),
             _ => None,

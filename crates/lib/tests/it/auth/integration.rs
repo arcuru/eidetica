@@ -160,7 +160,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
             },
         )
         .unwrap();
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
 
     let tree = db
         .new_tree(settings, "KEY1")
@@ -242,7 +242,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
             },
         )
         .unwrap();
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
 
     let tree = db
         .new_tree(settings, "VALID_KEY")
@@ -335,7 +335,7 @@ fn test_validation_pipeline_entry_level_validation() {
         )
         .unwrap();
 
-    settings.set_map("auth", auth_settings);
+    settings.set_node("auth", auth_settings);
     let tree = db
         .new_tree(settings, "ADMIN_KEY")
         .expect("Failed to create tree");
