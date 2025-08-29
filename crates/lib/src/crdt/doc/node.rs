@@ -20,7 +20,7 @@ use super::value::Value;
 ///
 /// `Node` represents the internal tree-like structure where each node can contain
 /// multiple named children. This type is now internal to the CRDT implementation,
-/// with the public API provided through the [`Doc`] type.
+/// with the public API provided through the [`super::Doc`] type.
 ///
 /// # CRDT Behavior
 ///
@@ -32,7 +32,7 @@ use super::value::Value;
 /// # Internal Use Only
 ///
 /// This type is primarily for internal use within the CRDT system. External users
-/// should interact with the [`Doc`] type instead, which provides a cleaner API
+/// should interact with the [`super::Doc`] type instead, which provides a cleaner API
 /// and proper separation of concerns.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Node {

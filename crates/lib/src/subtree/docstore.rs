@@ -626,9 +626,21 @@ impl DocStore {
     /// Sets a value at the given path, creating intermediate nodes as needed
     ///
     /// This method stages a path-based set operation in the AtomicOp transaction.
-    /// The path uses dot notation to navigate nested structures, automatically
-    /// creating intermediate maps where necessary. This operation follows the
-    /// DocStore staging model by working on local staged data.
+    /// The path uses dot notation to navigate and create **nested map structures**.
+    /// Intermediate maps are created automatically where necessary.
+    ///
+    /// # Important: Creates Nested Maps, Not Flat Keys
+    ///
+    /// Using dots in the path creates a **hierarchy of nested maps**, not flat keys with dots.
+    /// For example, `set_path("user.name", "Alice")` creates:
+    /// ```json
+    /// {
+    ///   "user": {
+    ///     "name": "Alice"
+    ///   }
+    /// }
+    /// ```
+    /// NOT: `{ "user.name": "Alice" }`
     ///
     /// # Path Syntax
     ///
@@ -652,10 +664,25 @@ impl DocStore {
     /// store.set_path(path!("user.profile.age"), 30)?;
     /// store.set_path(path!("user.settings.theme"), "dark")?;
     ///
-    /// // Verify the structure was created
+    /// // This creates nested structure:
+    /// // {
+    /// //   "user": {
+    /// //     "profile": { "name": "Alice", "age": 30 },
+    /// //     "settings": { "theme": "dark" }
+    /// //   }
+    /// // }
+    ///
+    /// // Access with get_path methods
     /// assert_eq!(store.get_path_as::<String>(path!("user.profile.name"))?, "Alice");
-    /// assert_eq!(store.get_path_as::<i64>(path!("user.profile.age"))?, 30);
-    /// assert_eq!(store.get_path_as::<String>(path!("user.settings.theme"))?, "dark");
+    ///
+    /// // Or navigate the nested structure manually from get_all()
+    /// let all = store.get_all()?;
+    /// // all.get("user") returns a Node, NOT all.get("user.profile.name")
+    /// if let Some(Value::Node(user)) = all.get("user") {
+    ///     if let Some(Value::Node(profile)) = user.get("profile") {
+    ///         assert_eq!(profile.get("name"), Some(&Value::Text("Alice".to_string())));
+    ///     }
+    /// }
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
@@ -816,15 +843,16 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Tree;
     /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
     /// # let tree: Tree = unimplemented!();
     /// let op = tree.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
-    /// // Using set_path_str creates nested structure
-    /// store.set_path_str("user.name", "Alice")?;
-    /// store.set_path_str("user.age", 30)?;
-    /// store.set_path_str("config.theme", "dark")?;
+    /// // Using set_path creates nested structure
+    /// store.set_path(path!("user.name"), "Alice")?;
+    /// store.set_path(path!("user.age"), 30)?;
+    /// store.set_path(path!("config.theme"), "dark")?;
     ///
     /// let all_data = store.get_all()?;
     ///
@@ -838,13 +866,13 @@ impl DocStore {
     ///     assert_eq!(user_node.get("age"), Some(&Value::Text("30".to_string())));
     /// }
     ///
-    /// // For direct access, use get_path_str() or get_path_as_str() instead:
-    /// assert_eq!(store.get_path_as_str::<String>("user.name")?, "Alice");
+    /// // For direct access, use get_path() or get_path_as() instead:
+    /// assert_eq!(store.get_path_as::<String>(path!("user.name"))?, "Alice");
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
     /// # Returns
-    /// A `Result` containing the merged `Map` data structure.
+    /// A `Result` containing the merged `Doc` data structure with nested maps for path-based data.
     pub fn get_all(&self) -> Result<Doc> {
         // First get the local data directly from the atomic op
         let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);

@@ -6,9 +6,9 @@
 //!
 //! # Core Types
 //!
-//! - [`Doc`] - The main CRDT document type for user interactions
-//! - [`Value`] - The value type for nested structures  
-//! - [`List`] - An ordered collection with rational number positioning
+//! - [`doc::Doc`] - The main CRDT document type for user interactions
+//! - [`doc::Value`] - The value type for nested structures  
+//! - [`doc::List`] - An ordered collection with rational number positioning
 //! - [`doc::list::Position`] - Rational number-based positions for stable list ordering
 //!
 //! # Traits
