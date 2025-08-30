@@ -40,9 +40,9 @@ let db = BaseDB::new(Box::new(database));
 db.add_private_key("my_key")?;
 
 // Create a tree to store data
-let mut doc = Doc::new();
-doc.set("name", "my_tree");
-let tree = db.new_tree(doc, "my_key")?;
+let mut settings = Doc::new();
+settings.set("name", "my_tree");
+let tree = db.new_tree(settings, "my_key")?;
 ```
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:

@@ -1,21 +1,24 @@
 # BaseDB
 
-Primary database implementation managing trees and storage backends.
+## Purpose and Architecture
 
-## Core Functions
+BaseDB acts as the orchestration layer between application code and the underlying storage systems. It manages multiple independent Trees (analogous to databases), handles cryptographic authentication, and coordinates with pluggable storage backends.
 
-- Tree creation and loading
-- Private key management for authentication
-- Backend database coordination
+Each BaseDB instance maintains a unique device identity through an automatically-generated Ed25519 keypair, enabling secure multi-device synchronization.
 
-## Authentication Requirement
+## Key Responsibilities
 
-All operations require authentication keys.
+**Tree Management**: Creates and provides access to Trees, each representing an independent history of data entries.
 
-## Integration
+**Authentication Infrastructure**: Manages Ed25519 private keys for signing operations and validating permissions. All operations require authenticated access.
 
-**Entry Management**: Coordinates entry creation and storage across trees
+**Backend Coordination**: Interfaces with pluggable storage backends (currently just InMemory) while abstracting storage details from higher-level code.
 
-**Authentication**: Manages private keys and validates operations
+**Device Identity**: Automatically maintains device-specific cryptographic identity for sync operations.
 
-**Backend Storage**: Coordinates with storage backends for persistence
+## Design Principles
+
+- **Authentication-First**: Every operation requires cryptographic validation
+- **Pluggable Storage**: Storage backends can be swapped without affecting application logic
+- **Multi-Tree**: Supports multiple independent data collections within a single instance
+- **Sync-Ready**: Built-in device identity and hooks for distributed synchronization

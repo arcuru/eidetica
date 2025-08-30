@@ -1,290 +1,182 @@
 # Authentication Guide
 
-This guide explains how to work with Eidetica's mandatory authentication system. All entries in Eidetica must be cryptographically signed with Ed25519 keys.
+How to use Eidetica's authentication system for securing your data.
 
-## Overview
+## Quick Start
 
-Eidetica implements mandatory authentication for all database operations:
-
-- Every entry must be signed with a valid Ed25519 private key
-- Keys are managed in the tree configuration
-- Permission levels control what operations each key can perform
-- All authentication data is tracked in the immutable history
-
-## Key Concepts
-
-### Authentication Keys
-
-Each key in Eidetica consists of:
-
-- **Key ID**: A unique identifier for the key (e.g., "LAPTOP_KEY", "SERVER_KEY")
-- **Public Key**: Ed25519 public key in format `ed25519:<base64>`
-- **Permissions**: Access level (Admin, Write, or Read)
-- **Status**: Active or Revoked
-
-### Permission Levels
-
-```rust
-// Permission hierarchy with integrated priority
-enum Permission {
-    Admin(u32),  // Full access, can manage other keys
-    Write(u32),  // Read/write data, cannot modify settings
-    Read,        // Read-only access
-}
-```
-
-Lower priority numbers indicate higher administrative authority. Priority 0 is typically the root admin.
-
-## Working with Authentication
-
-### Initial Setup
-
-When creating a new database, you must add at least one authentication key:
+Every Eidetica database requires authentication. Here's the minimal setup:
 
 ```rust
 use eidetica::{BaseDB, backend::database::InMemory};
+use eidetica::crdt::Doc;
 
 // Create database
 let database = InMemory::new();
 let db = BaseDB::new(Box::new(database));
 
-// Add your first authentication key
-// This generates a new Ed25519 keypair and stores it
-db.add_private_key("ADMIN_KEY")?;
+// Add an authentication key (generates Ed25519 keypair)
+db.add_private_key("my_key")?;
 
-// List available keys
-let keys = db.list_private_keys();
-println!("Available keys: {:?}", keys);
-```
+// Create a tree using that key
+let mut settings = Doc::new();
+settings.set("name", "my_tree");
+let tree = db.new_tree(settings, "my_key")?;
 
-### Creating an Authenticated Tree
-
-All trees require authentication from creation:
-
-```rust
-use eidetica::crdt::Doc;
-
-// Create tree settings
-let mut doc = Doc::new();
-doc.set("name", "my_data");
-
-// Create tree with authentication
-// The key will be used to sign the root entry
-let tree = db.new_tree(doc, "ADMIN_KEY")?;
-```
-
-### Performing Authenticated Operations
-
-All operations are automatically authenticated using the tree's default key:
-
-```rust
-use eidetica::subtree::DocStore;
-
-// Start an operation (uses tree's default authentication key)
+// All operations are now authenticated
 let op = tree.new_operation()?;
-
-// Make changes
-let store = op.get_subtree::<DocStore>("config")?;
-store.set("api_url", "https://api.example.com")?;
-
-// Commit (automatically signs with the tree's key)
-let entry_id = op.commit()?;
+// ... make changes ...
+op.commit()?;  // Automatically signed
 ```
 
-### Managing Authentication Keys
+## Key Concepts
 
-To manage keys within a tree, you need Admin permissions:
+**Mandatory Authentication**: Every entry must be signed - no exceptions.
+
+**Permission Levels**:
+
+- **Admin**: Can modify settings and manage keys
+- **Write**: Can read and write data
+- **Read**: Can only read data
+
+**Key Storage**: Private keys are stored in BaseDB, public keys in tree settings.
+
+## Common Tasks
+
+### Adding Users
+
+Give other users access to your tree:
 
 ```rust
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 
-// Start an admin operation
 let op = tree.new_operation()?;
+let auth = op.auth_settings()?;
 
-// Get the auth settings interface
-let auth_settings = op.auth_settings()?;
-
-// Add a new write-access key
-let new_key = AuthKey {
-    key: "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk".to_string(),
+// Add a user with write access
+let user_key = AuthKey {
+    key: "ed25519:USER_PUBLIC_KEY_HERE".to_string(),
     permissions: Permission::Write(10),
     status: KeyStatus::Active,
 };
-auth_settings.add_key("WRITER_KEY", new_key)?;
-
-// Update an existing key's status
-if let Some(mut key) = auth_settings.get_key("OLD_KEY")? {
-    key.status = KeyStatus::Revoked;
-    auth_settings.update_key("OLD_KEY", key)?;
-}
+auth.add_key("alice", user_key)?;
 
 op.commit()?;
 ```
 
-### Public Read Access
+### Making Data Public
 
-To make a tree publicly readable, add a wildcard key:
+Allow anyone to read your tree:
 
 ```rust
 let op = tree.new_operation()?;
-let auth_settings = op.auth_settings()?;
+let auth = op.auth_settings()?;
 
-// Add wildcard key for public read access
+// Wildcard key for public read access
 let public_key = AuthKey {
     key: "*".to_string(),
     permissions: Permission::Read,
     status: KeyStatus::Active,
 };
-auth_settings.add_key("*", public_key)?;
+auth.add_key("*", public_key)?;
 
 op.commit()?;
 ```
 
-## Key Management Best Practices
+### Revoking Access
 
-### Priority System
-
-When setting up administrative keys, use priority levels to create a recovery hierarchy:
-
-```rust
-// Root admin - highest priority
-let root_admin = AuthKey {
-    key: "ed25519:ROOT_KEY_PUBLIC_KEY".to_string(),
-    permissions: Permission::Admin(0),  // Priority 0
-    status: KeyStatus::Active,
-};
-
-// Regular admin - lower priority
-let regular_admin = AuthKey {
-    key: "ed25519:ADMIN_KEY_PUBLIC_KEY".to_string(),
-    permissions: Permission::Admin(10),  // Priority 10
-    status: KeyStatus::Active,
-};
-
-// The root admin can modify the regular admin's key,
-// but not vice versa
-```
-
-### Key Revocation
-
-To revoke a compromised key:
+Remove a user's access:
 
 ```rust
 let op = tree.new_operation()?;
-let auth_settings = op.auth_settings()?;
+let auth = op.auth_settings()?;
 
-// Revoke the compromised key
-if let Some(mut key) = auth_settings.get_key("COMPROMISED_KEY")? {
+// Revoke the key
+if let Some(mut key) = auth.get_key("alice")? {
     key.status = KeyStatus::Revoked;
-    auth_settings.update_key("COMPROMISED_KEY", key)?;
+    auth.update_key("alice", key)?;
 }
 
 op.commit()?;
 ```
 
-Revoked keys:
+Note: Historical entries created by revoked keys remain valid.
 
-- Cannot create new entries
-- Historical entries remain valid
-- Content is preserved during merges
-
-### Storing Private Keys
-
-Eidetica stores private keys in the BaseDB instance. For production use:
-
-1. Use separate key management for different environments
-2. Regularly rotate keys for enhanced security
-3. Keep backups of critical admin keys
-4. Consider using hardware security modules for key storage
-
-## Authentication in Distributed Systems
-
-### Conflict Resolution
-
-When authentication settings conflict during merges, Eidetica uses Last Write Wins (LWW) based on the DAG structure:
-
-- Priority does NOT affect merge conflict resolution
-- The most recent change (by DAG ordering) takes precedence
-- All changes are preserved in history
-
-### Network Partitions
-
-During network partitions:
-
-- Each partition can continue operations with valid keys
-- Authentication changes merge deterministically on reconnection
-- Revoked keys are eventually consistent across the network
-
-## Example: Multi-User Application
-
-Here's a complete example showing authentication in a multi-user context:
+## Multi-User Setup Example
 
 ```rust
-use eidetica::{BaseDB, Tree, backend::database::InMemory};
-use eidetica::auth::{AuthKey, Permission, KeyStatus};
-use eidetica::crdt::Doc;
+// Initial setup with admin hierarchy
+let op = tree.new_operation()?;
+let auth = op.auth_settings()?;
 
-fn setup_multi_user_app() -> Result<Tree> {
-    // Create database with admin key
-    let database = InMemory::new();
-    let db = BaseDB::new(Box::new(database));
-    db.add_private_key("SUPER_ADMIN")?;
+// Super admin (priority 0 - highest)
+auth.add_key("super_admin", AuthKey {
+    key: "ed25519:SUPER_ADMIN_KEY".to_string(),
+    permissions: Permission::Admin(0),
+    status: KeyStatus::Active,
+})?;
 
-    // Create application tree
-    let mut doc = Doc::new();
-    doc.set("name", "multi_user_app");
-    let tree = db.new_tree(doc, "SUPER_ADMIN")?;
+// Department admin (priority 10)
+auth.add_key("dept_admin", AuthKey {
+    key: "ed25519:DEPT_ADMIN_KEY".to_string(),
+    permissions: Permission::Admin(10),
+    status: KeyStatus::Active,
+})?;
 
-    // Set up authentication hierarchy
-    let op = tree.new_operation()?;
-    let auth_settings = op.auth_settings()?;
+// Regular users (priority 100)
+auth.add_key("user1", AuthKey {
+    key: "ed25519:USER1_KEY".to_string(),
+    permissions: Permission::Write(100),
+    status: KeyStatus::Active,
+})?;
 
-    // Add department admin
-    let dept_admin = AuthKey {
-        key: "ed25519:DEPT_ADMIN_PUBLIC_KEY".to_string(),
-        permissions: Permission::Admin(10),
-        status: KeyStatus::Active,
-    };
-    auth_settings.add_key("DEPT_ADMIN", dept_admin)?;
-
-    // Add regular users
-    let user1 = AuthKey {
-        key: "ed25519:USER1_PUBLIC_KEY".to_string(),
-        permissions: Permission::Write(100),
-        status: KeyStatus::Active,
-    };
-    auth_settings.add_key("USER1", user1)?;
-
-    // Add read-only auditor
-    let auditor = AuthKey {
-        key: "ed25519:AUDITOR_PUBLIC_KEY".to_string(),
-        permissions: Permission::Read,
-        status: KeyStatus::Active,
-    };
-    auth_settings.add_key("AUDITOR", auditor)?;
-
-    op.commit()?;
-
-    Ok(tree)
-}
+op.commit()?;
 ```
 
-## Security Considerations
+## Key Management Tips
 
-1. **Key Compromise**: If an admin key is compromised, use a higher-priority key to revoke it
-2. **Audit Trail**: All authentication changes are recorded in the immutable history
-3. **Network Security**: Use secure channels for key distribution
-4. **Key Rotation**: Implement regular key rotation policies
+1. **Use descriptive key names**: "alice_laptop", "build_server", etc.
+2. **Set up admin hierarchy**: Lower priority numbers = higher authority
+3. **Regular key rotation**: Periodically update keys for security
+4. **Backup admin keys**: Keep secure copies of critical admin keys
 
-## Advanced Features
+## Advanced: Cross-Tree Authentication
 
-The following advanced features are fully implemented:
+Trees can delegate authentication to other trees:
 
-- **Delegated Trees**: ✅ Reference other trees for authentication
-- **Permission Bounds**: ✅ Constrain delegated permissions with clamping
-- **Cross-Tree Authentication**: ✅ Share authentication across projects
-- **Delegation Depth Limits**: ✅ Prevent circular delegation (MAX_DELEGATION_DEPTH=10)
+```rust
+// In main tree, delegate to a user's personal tree
+let op = main_tree.new_operation()?;
+let auth = op.auth_settings()?;
 
-### Future Enhancements
+// Reference another tree for authentication
+auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
+    tree_root: "USER_TREE_ROOT_ID".to_string(),
+    max_permission: Permission::Write(15),
+    min_permission: Some(Permission::Read),
+})?;
 
-- **Advanced Key Status**: Ignore and Banned statuses for more granular control
+op.commit()?;
+```
+
+This allows users to manage their own keys in their personal trees while accessing your tree with appropriate permissions.
+
+## Troubleshooting
+
+**"Authentication failed"**: Check that:
+
+- The key exists in tree settings
+- The key status is Active (not Revoked)
+- The key has sufficient permissions for the operation
+
+**"Cannot modify key"**: Admin operations require:
+
+- Admin-level permissions
+- Equal or higher priority than the target key
+
+**Network partitions**: Authentication changes merge automatically using Last-Write-Wins. The most recent change takes precedence.
+
+## See Also
+
+- [Core Concepts](core_concepts.md) - Understanding Trees and Entries
+- [Getting Started](getting_started.md) - Basic database setup
+- [Authentication Details](../internal/core_components/authentication.md) - Technical implementation

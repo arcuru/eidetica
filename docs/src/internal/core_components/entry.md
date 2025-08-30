@@ -1,59 +1,75 @@
 # Entry
 
-Fundamental immutable data unit in Eidetica's Merkle-DAG structure.
+The fundamental building block of Eidetica's data model, representing an immutable, cryptographically-signed unit of data within the Merkle-DAG structure.
 
-## Core Structure
+## Conceptual Role
 
-**Tree Node**: Contains root ID, parent references, data, and optional metadata
+Entries serve as the atomic units of both data storage and version history in Eidetica. They combine the functions of:
 
-**Subtrees**: Vector of named subtrees (like tables), each with independent parents and data
+- **Data Container**: Holding actual application data and metadata
+- **Version Node**: Linking to parent entries to form a history DAG
+- **Authentication Unit**: Cryptographically signed to ensure integrity and authorization
+- **Content-Addressable Object**: Uniquely identified by their content hash for deduplication and verification
 
-**Authentication**: Signature information including key ID and cryptographic signature
+## Structural Organization
 
-**Content-Addressable ID**: Unique hex-encoded SHA-256 hash of entry content ensuring integrity
+**Main Tree Data**: Each entry contains data for its parent Tree, stored as serialized CRDT structures that can be merged with concurrent changes.
 
-## ID Generation
+**Subtree Partitioning**: Entries can contain multiple named subtrees (like DocStore, Table, YDoc), each with independent parent linkage and merge semantics.
 
-**Deterministic**: Based on canonical JSON serialization of entry data
+**Parent References**: Entries link to previous entries, creating a directed acyclic graph that represents the evolution of data over time.
 
-**Canonical Form**: Parents and subtrees sorted alphabetically before hashing
+**Authentication Envelope**: Every entry includes signature information that proves authorization and ensures tamper-detection.
 
-**SHA-256 Hash**: Content hash formatted as hexadecimal string
+## Identity and Integrity
 
-**Thread Safe**: Simple string type for efficient sharing
+**Content-Addressable Identity**: Each entry's ID is a SHA-256 hash of its canonical content, making entries globally unique and enabling efficient deduplication.
 
-## Entry Construction
+**Deterministic Hashing**: IDs are computed from a canonical JSON representation, ensuring identical entries produce identical IDs across different systems.
 
-**EntryBuilder**: Constructs entries with proper parent linkage and authentication
+**Immutability Guarantee**: Once created, entries cannot be modified, ensuring the integrity of the historical record and cryptographic signatures.
 
-**Immutable**: Once created, entries cannot be modified
+## Design Benefits
 
-**Parent References**: Links to current tips form DAG structure
+**Distributed Synchronization**: Content-addressable IDs enable efficient sync protocols where systems can identify missing or conflicting entries.
 
-## Data Storage
+**Cryptographic Verification**: Signed entries provide strong guarantees about data authenticity and integrity.
 
-**RawData**: Serialized string data (typically JSON)
+**Granular History**: The DAG structure enables sophisticated queries like "show me all changes since timestamp X" or "merge these two concurrent branches".
 
-**CRDT Integration**: Higher-level CRDT types serialize to/from RawData
+**Efficient Storage**: Identical entries are automatically deduplicated, and metadata can be stored separately from bulk data.
 
-**Metadata**: Optional non-merged data for operational efficiency
+## Data Structure Example
 
-## Authentication Integration
+An Entry contains the following core data structure:
 
-**Mandatory Signing**: All entries require authentication information
+```rust
+struct Entry {
+    // Main tree node containing root ID, parent references, and metadata
+    tree: TreeNode {
+        root: ID,                    // Root entry ID of the tree
+        parents: Vec<ID>,           // Parent entries in main tree history
+        metadata: Option<RawData>,  // Optional metadata (not merged)
+        data: RawData,             // Serialized CRDT data for main tree
+    },
 
-**SigInfo**: Contains key reference and signature
+    // Named subtrees with independent histories
+    subtrees: Vec<SubTreeNode> {
+        name: String,              // Subtree name (e.g., "users", "posts")
+        parents: Vec<ID>,          // Parent entries specific to this subtree
+        data: RawData,            // Serialized CRDT data for this subtree
+    },
 
-**Canonical Signing**: Signature computed over entry without signature field
+    // Authentication and signature information
+    sig: SigInfo {
+        sig: Option<String>,       // Base64-encoded Ed25519 signature
+        key_ref: String,          // Reference to signing key
+    },
+}
 
-**Validation**: Every entry validated against authentication configuration
+// Where:
+type RawData = String;            // JSON-serialized CRDT structures
+type ID = String;                // SHA-256 content hash (hex-encoded)
+```
 
-## Merkle-DAG Properties
-
-**Parent Links**: References to previous entries form directed acyclic graph
-
-**Content Integrity**: Hash-based IDs ensure tamper detection
-
-**Immutability**: Entries never change after creation
-
-**Efficient Verification**: Sparse checkout possible with metadata references
+This structure enables each Entry to participate in multiple independent histories simultaneously - the main tree history plus any number of named subtree histories.
