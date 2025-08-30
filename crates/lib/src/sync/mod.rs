@@ -188,15 +188,6 @@ impl Sync {
             })
     }
 
-    /// Set the device ID (primarily for testing).
-    /// Note: This is deprecated - device ID is now the public key and cannot be set directly.
-    #[cfg(test)]
-    #[deprecated(note = "Device ID is now the public key and cannot be set directly")]
-    pub fn set_device_id(&mut self, _device_id: impl Into<String>) -> Result<()> {
-        // No-op: device ID is now the public key
-        Ok(())
-    }
-
     // === Peer Management Methods ===
 
     /// Register a new remote peer in the sync network.
@@ -212,9 +203,14 @@ impl Sync {
         pubkey: impl Into<String>,
         display_name: Option<&str>,
     ) -> Result<()> {
+        let pubkey_str = pubkey.into();
+
+        // Store in sync tree via PeerManager
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).register_peer(pubkey, display_name)?;
+        PeerManager::new(&op).register_peer(&pubkey_str, display_name)?;
         op.commit()?;
+
+        // Background sync will read peer info directly from sync tree when needed
         Ok(())
     }
 
@@ -432,9 +428,14 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         address: Address,
     ) -> Result<()> {
+        let peer_pubkey_str = peer_pubkey.as_ref();
+
+        // Update sync tree via PeerManager
         let op = self.sync_tree.new_operation()?;
-        PeerManager::new(&op).add_address(peer_pubkey.as_ref(), address)?;
+        PeerManager::new(&op).add_address(peer_pubkey_str, address)?;
         op.commit()?;
+
+        // Background sync will read updated peer info directly from sync tree when needed
         Ok(())
     }
 
@@ -534,7 +535,8 @@ impl Sync {
 
     /// Enable Iroh transport for peer-to-peer network communication.
     ///
-    /// This initializes the Iroh transport layer and starts the background sync engine.
+    /// This initializes the Iroh transport layer with production defaults (n0's relay servers)
+    /// and starts the background sync engine.
     pub fn enable_iroh_transport(&mut self) -> Result<()> {
         let transport = IrohTransport::new()?;
         self.start_background_sync(Box::new(transport))?;
@@ -542,18 +544,30 @@ impl Sync {
         Ok(())
     }
 
+    /// Enable Iroh transport with custom configuration.
+    ///
+    /// This allows specifying custom relay modes, discovery options, etc.
+    /// Use IrohTransport::builder() to create a configured transport.
+    pub fn enable_iroh_transport_with_config(&mut self, transport: IrohTransport) -> Result<()> {
+        self.start_background_sync(Box::new(transport))?;
+        self.transport_enabled = true;
+        Ok(())
+    }
+
     /// Start the background sync engine with the given transport
     fn start_background_sync(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        let sync_tree_id = self.sync_tree.root_id().clone();
+
         // If we're in an async context, spawn directly
         if tokio::runtime::Handle::try_current().is_ok() {
-            self.command_tx = BackgroundSync::start(transport, self.backend.clone());
+            self.command_tx = BackgroundSync::start(transport, self.backend.clone(), sync_tree_id);
         } else {
             // If not in async context, create a runtime to spawn the background task
             let rt = tokio::runtime::Runtime::new()
                 .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
 
             let _guard = rt.enter();
-            self.command_tx = BackgroundSync::start(transport, self.backend.clone());
+            self.command_tx = BackgroundSync::start(transport, self.backend.clone(), sync_tree_id);
 
             // Keep the runtime alive by detaching it
             std::mem::forget(rt);
@@ -689,7 +703,7 @@ impl Sync {
 
         if !entries_to_send.is_empty() {
             // Step 7: Send our entries that peer is missing
-            self.send_entries_to_peer_legacy(peer_pubkey, address, entries_to_send)
+            self.send_entries_to_peer(peer_pubkey, entries_to_send)
                 .await?;
         }
 
@@ -844,101 +858,6 @@ impl Sync {
         Ok(entries_to_send)
     }
 
-    /// Check if an entry has already been sent to a specific peer.
-    ///
-    /// This is a basic duplicate prevention mechanism that tracks what
-    /// entries we've attempted to sync with each peer.
-    fn has_been_sent_to_peer(
-        &self,
-        entry_id: &crate::entry::ID,
-        peer_pubkey: &str,
-    ) -> Result<bool> {
-        use crate::subtree::DocStore;
-
-        // Use sync tree DocStore to track sent entries per peer
-        let key = format!("sent_entries.{peer_pubkey}.{entry_id}");
-
-        // Get read-only access to sync state
-        let sync_state: DocStore = self.sync_tree.get_subtree_viewer("sync_state")?;
-
-        match sync_state.get_string(&key) {
-            Ok(_) => Ok(true),   // Entry found, has been sent
-            Err(_) => Ok(false), // Entry not found or error, hasn't been sent
-        }
-    }
-
-    /// Mark an entry as sent to a specific peer.
-    ///
-    /// This updates our sync state to record that we've successfully
-    /// sent an entry to a peer, helping avoid duplicate sends.
-    fn mark_sent_to_peer(&self, entry_id: &crate::entry::ID, peer_pubkey: &str) -> Result<()> {
-        use crate::subtree::DocStore;
-
-        // Store sync state in the sync tree with timestamp
-        let key = format!("sent_entries.{peer_pubkey}.{entry_id}");
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let sync_data = format!(r#"{{"timestamp": {timestamp}, "peer": "{peer_pubkey}"}}"#);
-
-        // Store the sync state using DocStore subtree
-        let op = self.sync_tree.new_operation()?;
-        let sync_state: DocStore = op.get_subtree("sync_state")?;
-        sync_state.set_string(&key, sync_data)?;
-        op.commit()?;
-
-        Ok(())
-    }
-
-    /// Send entries to a specific peer (legacy method).
-    async fn send_entries_to_peer_legacy(
-        &self,
-        peer_pubkey: &str,
-        address: &Address,
-        entries: Vec<Entry>,
-    ) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        // Filter out entries we've already sent to this peer
-        let mut filtered_entries = Vec::new();
-        for entry in &entries {
-            if !self.has_been_sent_to_peer(&entry.id(), peer_pubkey)? {
-                filtered_entries.push(entry.clone());
-            }
-        }
-
-        if filtered_entries.is_empty() {
-            return Ok(());
-        }
-
-        let request = SyncRequest::SendEntries(filtered_entries.clone());
-
-        let response = self.send_request_async(&request, address).await?;
-
-        match response {
-            SyncResponse::Ack | SyncResponse::Count(_) => {
-                // Mark entries as successfully sent
-                for entry in &filtered_entries {
-                    self.mark_sent_to_peer(&entry.id(), peer_pubkey)?;
-                }
-                Ok(())
-            }
-            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
-                "Peer {peer_pubkey} returned error for SendEntries: {msg}"
-            ))
-            .into()),
-            _ => Err(SyncError::UnexpectedResponse {
-                expected: "Ack or Count",
-                actual: format!("{response:?}"),
-            }
-            .into()),
-        }
-    }
-
     /// Send a batch of entries to a sync peer (async version).
     ///
     /// # Arguments
@@ -992,17 +911,26 @@ impl Sync {
         }
     }
 
-    /// Send entries to a peer by public key using the background sync engine.
+    /// Send specific entries to a peer via the background sync engine.
     ///
-    /// This is the new preferred method that uses the background sync engine
-    /// instead of directly accessing the transport.
+    /// This method queues entries for direct transmission without duplicate filtering.
+    /// The caller is responsible for determining which entries should be sent.
+    ///
+    /// # Duplicate Prevention Architecture
+    ///
+    /// Eidetica uses **smart duplicate prevention** in the background sync engine:
+    /// - **Tree sync** (`SyncWithPeer` command): Uses tip comparison for semantic filtering
+    /// - **Direct send** (this method): Trusts caller to provide appropriate entries
+    ///
+    /// For automatic duplicate prevention, use tree-based sync relationships instead
+    /// of calling this method directly.
     ///
     /// # Arguments
     /// * `peer_pubkey` - The public key of the peer to send to
-    /// * `entries` - The entries to send
+    /// * `entries` - The specific entries to send (no filtering applied)
     ///
     /// # Returns
-    /// A Result indicating whether the command was successfully queued.
+    /// A Result indicating whether the command was successfully queued for background processing.
     pub async fn send_entries_to_peer(&self, peer_pubkey: &str, entries: Vec<Entry>) -> Result<()> {
         self.command_tx
             .send(SyncCommand::SendEntries {
@@ -1043,26 +971,6 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-    }
-
-    /// Test helper: Check if an entry has been sent to a peer.
-    #[cfg(test)]
-    pub fn test_has_been_sent_to_peer(
-        &self,
-        entry_id: &crate::entry::ID,
-        peer_pubkey: &str,
-    ) -> Result<bool> {
-        self.has_been_sent_to_peer(entry_id, peer_pubkey)
-    }
-
-    /// Test helper: Mark an entry as sent to a peer.
-    #[cfg(test)]
-    pub fn test_mark_sent_to_peer(
-        &self,
-        entry_id: &crate::entry::ID,
-        peer_pubkey: &str,
-    ) -> Result<()> {
-        self.mark_sent_to_peer(entry_id, peer_pubkey)
     }
 
     /// Test helper: Find entries to send to a peer.

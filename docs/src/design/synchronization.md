@@ -45,7 +45,7 @@ The sync system builds on Merkle DAG and CRDT principles:
 **Rationale:**
 
 - **Clean architecture**: Eliminates circular dependencies
-- **Ownership clarity**: Background thread owns all sync state
+- **Ownership clarity**: Background thread owns transport state
 - **Non-blocking**: Commands sent via channels don't block operations
 - **Flexibility**: Fire-and-forget or request-response patterns
 
@@ -53,15 +53,16 @@ The sync system builds on Merkle DAG and CRDT principles:
 
 The sync system uses a thin frontend that sends commands to a background thread:
 
-- Frontend handles API and tree management
-- Background owns transport and all sync state
-- Commands processed immediately on receipt
+- Frontend handles API and peer/relationship management in sync tree
+- Background owns transport and handles network operations
+- Both components access sync tree directly for peer data
+- Commands used only for operations requiring background processing
 - Failed operations added to retry queue
 
 **Trade-offs:**
 
 - ✅ No circular dependencies or complex locking
-- ✅ Clear ownership model (background owns everything)
+- ✅ Clear ownership model (transport in background, data in sync tree)
 - ✅ Works in both async and sync contexts
 - ✅ Graceful startup/shutdown handling
 - ❌ All sync operations serialized through single thread
@@ -203,27 +204,36 @@ pub struct IrohTransport {
 
 ### 5. Persistent State Management
 
-**Decision:** Separate persistent state from transient queue
+**Decision:** All peer and relationship state stored persistently in sync tree
 
 **Architecture:**
 
 ```text
-In-Memory (Transient):
-├── sync_queue: HashMap<PeerID, Vec<PendingSyncEntry>>
-
-Persistent (Durable):
+Sync Tree (Persistent):
+├── peers/{peer_pubkey} -> PeerInfo (addresses, status, metadata)
+├── relationships/{peer}/{tree} -> SyncRelationship
 ├── sync_state/cursors/{peer}/{tree} -> SyncCursor
 ├── sync_state/metadata/{peer} -> SyncMetadata
-├── sync_state/history/{sync_id} -> SyncHistoryEntry
-└── peers/{peer} -> PeerInfo
+└── sync_state/history/{sync_id} -> SyncHistoryEntry
+
+BackgroundSync (Transient):
+├── retry_queue: Vec<RetryEntry> (failed sends pending retry)
+└── sync_tree_id: ID (reference to sync tree for peer lookups)
 ```
+
+**Design:**
+
+- All peer data is stored in the sync tree via PeerManager
+- BackgroundSync reads peer information on-demand when needed
+- Frontend writes peer/relationship changes directly to sync tree
+- Single source of truth in persistent storage
 
 **Rationale:**
 
-- **Performance**: Fast operations on transient data
-- **Durability**: Critical state survives restarts
-- **Separation**: Different access patterns and lifecycles
-- **Recovery**: Resume sync after failures
+- **Durability**: All critical state survives restarts
+- **Consistency**: Single source of truth in sync tree
+- **Recovery**: Full state recovery after failures
+- **Simplicity**: No duplicate state management
 
 ## Architecture Deep Dive
 
@@ -244,9 +254,9 @@ graph LR
     subgraph "BackgroundSync Thread"
         E --> F[BackgroundSync]
         F --> G[Transport Layer]
-        G --> H[HTTP/Iroh]
+        G --> H[HTTP/Iroh/Custom]
         F --> I[Retry Queue]
-        F --> J[Peer State]
+        F -.->|reads| ST[Sync Tree]
     end
 
     subgraph "State Management"
@@ -353,6 +363,37 @@ queue.cleanup_failed_entries(max_retries)?;
 // Metrics for monitoring
 let stats = queue.get_sync_statistics()?;
 ```
+
+### Transport Layer Design
+
+#### Iroh Transport Configuration
+
+**Design Decision:** Builder pattern for transport configuration
+
+The Iroh transport uses a builder pattern to support different deployment scenarios:
+
+**RelayMode Options:**
+
+- **Default**: Production deployments use n0's global relay infrastructure
+- **Staging**: Testing against n0's staging infrastructure
+- **Disabled**: Local testing without internet dependency
+- **Custom**: Enterprise deployments with private relay servers
+
+**Rationale:**
+
+- **Flexibility**: Different environments need different configurations
+- **Performance**: Local tests run faster without relay overhead
+- **Privacy**: Enterprises can run private relay infrastructure
+- **Simplicity**: Defaults work for most users without configuration
+
+**Address Serialization:**
+
+The Iroh transport serializes NodeAddr information as JSON containing:
+
+- Node ID (cryptographic identity)
+- Direct socket addresses (for P2P connectivity)
+
+This allows the same `get_server_address()` interface to work for both HTTP (returns socket address) and Iroh (returns rich connectivity info).
 
 ### Security Design
 

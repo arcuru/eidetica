@@ -647,3 +647,212 @@ async fn test_sync_protocol_implementation() {
     // Clean up
     sync2.stop_server_async().await.unwrap();
 }
+
+#[tokio::test]
+async fn test_iroh_sync_end_to_end_no_relays() {
+    // This test demonstrates full end-to-end Iroh P2P sync between two nodes
+    // using direct connections without relay servers for fast local testing
+
+    use eidetica::sync::transports::iroh::IrohTransport;
+    use iroh::RelayMode;
+
+    let (_base_db1, mut sync1) = helpers::setup();
+    let (base_db2, mut sync2) = helpers::setup();
+
+    // Enable Iroh transport for both with relays disabled for local testing
+    let transport1 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
+    let transport2 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
+
+    sync1.enable_iroh_transport_with_config(transport1).unwrap();
+    sync2.enable_iroh_transport_with_config(transport2).unwrap();
+
+    // Start servers (Iroh ignores the bind address and uses its own addressing)
+    sync2.start_server_async("ignored").await.unwrap();
+    sync1.start_server_async("ignored").await.unwrap();
+
+    // Give endpoints time to initialize and discover direct addresses
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Get device public keys for peer registration
+    let sync1_pubkey = sync1.get_device_public_key().unwrap();
+    let sync2_pubkey = sync2.get_device_public_key().unwrap();
+
+    // Get server addresses (now containing full NodeAddr info with direct addresses)
+    // This uses the same pattern as HTTP transport but returns serialized NodeAddr info
+    let server_addr1 = sync1.get_server_address_async().await.unwrap();
+    let server_addr2 = sync2.get_server_address_async().await.unwrap();
+
+    println!("Node 1 address info: {server_addr1}");
+    println!("Node 2 address info: {server_addr2}");
+
+    // Create addresses using the serialized NodeAddr - the transport will parse this
+    let server_address1 = Address::iroh(&server_addr1);
+    let server_address2 = Address::iroh(&server_addr2);
+
+    // Register peers with each other
+    sync1
+        .register_peer(&sync2_pubkey, Some("iroh_peer2"))
+        .unwrap();
+    sync1
+        .add_peer_address(&sync2_pubkey, server_address2.clone())
+        .unwrap();
+
+    sync2
+        .register_peer(&sync1_pubkey, Some("iroh_peer1"))
+        .unwrap();
+    sync2
+        .add_peer_address(&sync1_pubkey, server_address1.clone())
+        .unwrap();
+
+    // Verify peer registration worked
+    let peer_info = sync1.get_peer_info(&sync2_pubkey).unwrap().unwrap();
+    assert_eq!(peer_info.display_name, Some("iroh_peer2".to_string()));
+    assert!(peer_info.has_transport("iroh"));
+
+    // Create some test entries to sync
+    let mut entries = Vec::new();
+    for i in 0..3 {
+        let entry = create_entry_with_parents(&format!("iroh_test_tree_{i}"), vec![]);
+        entries.push(entry.clone());
+    }
+    let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
+
+    // Test sending entries from sync1 to sync2 using Iroh P2P transport
+    println!(
+        "Attempting to send {} entries via Iroh transport...",
+        entries.len()
+    );
+    let result = sync1.send_entries_async(&entries, &server_address2).await;
+
+    if let Err(ref e) = result {
+        println!("Send error: {e:?}");
+        println!("Node 1 address info: {server_addr1}");
+        println!("Node 2 address info: {server_addr2}");
+    }
+
+    assert!(
+        result.is_ok(),
+        "Should be able to send entries via Iroh P2P transport: {:?}",
+        result.err()
+    );
+
+    // Give time for async processing
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Verify entries were actually stored in database 2
+    for entry_id in &entry_ids {
+        assert!(
+            base_db2.backend().get(entry_id).is_ok(),
+            "Entry {entry_id} should exist in database 2 after Iroh sync"
+        );
+    }
+
+    println!(
+        "✅ Successfully synced {} entries via Iroh P2P transport!",
+        entries.len()
+    );
+
+    // Clean up
+    sync1.stop_server_async().await.unwrap();
+    sync2.stop_server_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_transport_production_defaults() {
+    // This test verifies that the default transport configuration
+    // uses production relay settings (n0's servers)
+
+    use eidetica::sync::transports::iroh::IrohTransport;
+    use iroh::RelayMode;
+
+    let (_base_db, mut sync) = helpers::setup();
+
+    // Test 1: Default constructor uses production relays
+    sync.enable_iroh_transport().unwrap();
+    sync.start_server_async("ignored").await.unwrap();
+
+    // Just verify it starts without error - we can't test actual relay connectivity
+    // without internet access in CI, but this ensures the configuration is valid
+    assert!(sync.get_server_address_async().await.is_ok());
+    sync.stop_server_async().await.unwrap();
+
+    // Test 2: Builder with explicit Default mode
+    let (_base_db2, mut sync2) = helpers::setup();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Default)
+        .build()
+        .unwrap();
+
+    sync2.enable_iroh_transport_with_config(transport).unwrap();
+    sync2.start_server_async("ignored").await.unwrap();
+    assert!(sync2.get_server_address_async().await.is_ok());
+    sync2.stop_server_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_transport_staging_mode() {
+    // This test verifies that staging mode can be configured
+    // (useful for testing against n0's staging infrastructure)
+
+    use eidetica::sync::transports::iroh::IrohTransport;
+    use iroh::RelayMode;
+
+    let (_base_db, mut sync) = helpers::setup();
+
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Staging)
+        .build()
+        .unwrap();
+
+    sync.enable_iroh_transport_with_config(transport).unwrap();
+    sync.start_server_async("ignored").await.unwrap();
+
+    // Just verify it starts without error
+    assert!(sync.get_server_address_async().await.is_ok());
+    sync.stop_server_async().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_iroh_transport_custom_relay_config() {
+    // This test demonstrates how to configure custom relay servers
+    // (e.g., for local testing with iroh-relay --dev)
+
+    use eidetica::sync::transports::iroh::IrohTransport;
+    use iroh::{RelayMap, RelayMode, RelayNode, RelayUrl};
+
+    let (_base_db, mut sync) = helpers::setup();
+
+    // Create a custom relay map pointing to a local relay server
+    // (In real usage, you'd run: iroh-relay --dev)
+    let relay_url: RelayUrl = "http://localhost:3340".parse().unwrap();
+    let relay_node = RelayNode {
+        url: relay_url,
+        quic: None, // No QUIC for local HTTP-only relay
+    };
+    let relay_map = RelayMap::from_iter([relay_node]);
+
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Custom(relay_map))
+        .build()
+        .unwrap();
+
+    sync.enable_iroh_transport_with_config(transport).unwrap();
+
+    // Note: This will fail to actually start because no relay is running
+    // but it demonstrates the configuration pattern
+    let result = sync.start_server_async("ignored").await;
+
+    // We expect this to fail since no local relay is running
+    // In a real integration test, you'd run iroh-relay --dev first
+    if result.is_ok() {
+        sync.stop_server_async().await.unwrap();
+    }
+
+    println!("Custom relay configuration test completed (expected to fail without running relay)");
+}

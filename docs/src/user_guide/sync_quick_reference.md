@@ -65,6 +65,10 @@ db.sync_mut()?.register_peer(peer_key, Some("Alice's Device"))?;
 // Add addresses
 db.sync_mut()?.add_peer_address(peer_key, Address::http("192.168.1.100:8080")?)?;
 db.sync_mut()?.add_peer_address(peer_key, Address::iroh("iroh://peer_id")?)?;
+
+// Note: Registration does NOT immediately connect to the peer
+// Connection happens lazily during next sync operation or periodic sync (5 min)
+// Use connect_to_peer() for immediate connection if needed
 ```
 
 ### Peer Status Management
@@ -290,11 +294,26 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 ### Production Setup
 
 ```rust,ignore
-// Use Iroh for production deployments
+// Use Iroh for production deployments (defaults to n0's relay servers)
 db.sync_mut()?.enable_iroh_transport()?;
 
-// Iroh provides NAT traversal and P2P capabilities
-let addr = Address::iroh("iroh://peer_id@relay.example.com")?;
+// Or configure for specific environments:
+use iroh::RelayMode;
+use eidetica::sync::transports::iroh::IrohTransport;
+
+// Custom relay server (e.g., enterprise deployment)
+let relay_url: iroh::RelayUrl = "https://relay.example.com".parse()?;
+let relay_node = iroh::RelayNode {
+    url: relay_url,
+    quic: Some(Default::default()),
+};
+let transport = IrohTransport::builder()
+    .relay_mode(RelayMode::Custom(iroh::RelayMap::from_iter([relay_node])))
+    .build()?;
+db.sync_mut()?.enable_iroh_transport_with_config(transport)?;
+
+// Connect to peers
+let addr = Address::iroh(peer_node_id)?;
 let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 // Sync happens automatically:
@@ -322,7 +341,45 @@ let peer = db2.sync_mut()?.connect_to_peer(&addr).await?;
 
 ## Testing Patterns
 
-### Mock Peer Setup
+### Testing with Iroh (No Relays)
+
+```rust,ignore
+#[tokio::test]
+async fn test_iroh_sync_local() -> Result<()> {
+    use iroh::RelayMode;
+    use eidetica::sync::transports::iroh::IrohTransport;
+
+    // Configure Iroh for local testing (no relay servers)
+    let transport1 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()?;
+    let transport2 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()?;
+
+    // Setup databases with local Iroh transport
+    let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    db1.sync_mut()?.enable_iroh_transport_with_config(transport1)?;
+    db1.sync_mut()?.start_server("ignored")?; // Iroh manages its own addresses
+
+    let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    db2.sync_mut()?.enable_iroh_transport_with_config(transport2)?;
+    db2.sync_mut()?.start_server("ignored")?;
+
+    // Get the serialized NodeAddr (includes direct addresses)
+    let addr1 = db1.sync()?.get_server_address()?;
+    let addr2 = db2.sync()?.get_server_address()?;
+
+    // Connect peers using full NodeAddr info
+    let peer1 = db2.sync_mut()?.connect_to_peer(&Address::iroh(&addr1)).await?;
+    let peer2 = db1.sync_mut()?.connect_to_peer(&Address::iroh(&addr2)).await?;
+
+    // Now they can sync directly via P2P
+    Ok(())
+}
+```
+
+### Mock Peer Setup (HTTP)
 
 ```rust,ignore
 #[tokio::test]

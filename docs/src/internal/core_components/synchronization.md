@@ -38,10 +38,10 @@ graph TB
     subgraph "BackgroundSync Engine"
         CMDTX --> BGSYNC[BackgroundSync Thread]
         BGSYNC --> TRANSPORT[Transport Layer]
-        BGSYNC --> PEERS[Peer State]
         BGSYNC --> RETRY[Retry Queue]
-        BGSYNC --> RELATIONSHIPS[Sync Relationships]
         BGSYNC --> TIMERS[Periodic Timers]
+        BGSYNC -.->|reads| SYNCTREE[Sync Tree]
+        BGSYNC -.->|reads| PEERMGR[PeerManager]
     end
 
     subgraph "Sync State Management"
@@ -97,20 +97,19 @@ pub struct Sync {
 
 ### 2. BackgroundSync Engine (`sync/background.rs`)
 
-The `BackgroundSync` struct **owns all sync state** and handles operations in a single background thread:
+The `BackgroundSync` struct handles all sync operations in a single background thread and **accesses peer state directly from the sync tree**:
 
 ```rust,ignore
 pub struct BackgroundSync {
-    // Core components - owns everything
+    // Core components
     transport: Box<dyn SyncTransport>,
     backend: Arc<dyn Database>,
 
+    // Reference to sync tree for peer/relationship management
+    sync_tree_id: ID,
+
     // Server state
     server_address: Option<String>,
-
-    // State management - simple, not Arc/RwLock
-    peers: HashMap<String, PeerInfo>,
-    relationships: HashMap<String, SyncRelationship>,
 
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
@@ -120,6 +119,13 @@ pub struct BackgroundSync {
 }
 ```
 
+BackgroundSync accesses peer and relationship data directly from the sync tree:
+
+- All peer data is stored persistently in the sync tree via `PeerManager`
+- Peer information is read on-demand when needed for sync operations
+- Peer data automatically survives application restarts
+- Single source of truth eliminates state synchronization issues
+
 **Command types:**
 
 ```rust,ignore
@@ -128,25 +134,18 @@ pub enum SyncCommand {
     SendEntries { peer: String, entries: Vec<Entry> },
     QueueEntry { peer: String, entry_id: ID, tree_id: ID },
 
-    // Peer management
-    AddPeer { peer: PeerInfo },
-    RemovePeer { pubkey: String },
-
-    // Relationship management
-    CreateRelationship { peer_pubkey: String, tree_id: ID },
-    RemoveRelationship { peer_pubkey: String, tree_id: ID },
+    // Sync control
+    SyncWithPeer { peer: String },
+    Shutdown,
 
     // Server operations (with response channels)
     StartServer { addr: String, response: oneshot::Sender<Result<()>> },
     StopServer { response: oneshot::Sender<Result<()>> },
+    GetServerAddress { response: oneshot::Sender<Result<String>> },
 
-    // Peer operations
+    // Peer connection operations
     ConnectToPeer { address: Address, response: oneshot::Sender<Result<String>> },
     SendRequest { address: Address, request: SyncRequest, response: oneshot::Sender<Result<SyncResponse>> },
-
-    // Control
-    SyncWithPeer { peer: String },
-    Shutdown,
 }
 ```
 
@@ -176,15 +175,29 @@ self.transport.start_server(addr, handler).await?;
 
 This enables the transport layer to process incoming sync requests and store received entries.
 
-### 3. Command Pattern Benefits
+### 3. Command Pattern Architecture
 
-The command pattern architecture eliminates circular dependencies and provides:
+The command pattern provides clean separation between the frontend and background sync engine:
 
-- **Clean separation**: Frontend and background have distinct responsibilities
-- **Async handling**: All sync operations happen asynchronously
-- **Fire-and-forget**: Most operations don't need response handling
-- **Request-response**: Operations needing responses use oneshot channels
-- **Graceful shutdown**: Clean startup/shutdown in both async and sync contexts
+**Command categories:**
+
+- **Entry operations**: `SendEntries`, `QueueEntry` - Handle network I/O for entry transmission
+- **Server management**: `StartServer`, `StopServer`, `GetServerAddress` - Manage transport server state
+- **Network operations**: `ConnectToPeer`, `SendRequest` - Perform async network operations
+- **Control**: `SyncWithPeer`, `Shutdown` - Coordinate background sync operations
+
+**Data access pattern:**
+
+- **Peer and relationship data**: Written directly to sync tree by frontend, read on-demand by background
+- **Network operations**: Handled via commands to maintain async boundaries
+- **Transport state**: Owned and managed by background sync engine
+
+This architecture:
+
+- **Eliminates circular dependencies**: Clear ownership boundaries
+- **Maintains async separation**: Network operations stay in background thread
+- **Enables direct data access**: Both components access sync tree directly for peer data
+- **Provides clean shutdown**: Graceful handling in both async and sync contexts
 
 ### 4. Change Detection Hooks (`sync/hooks.rs`)
 
@@ -356,7 +369,143 @@ The background thread processes commands immediately upon receipt:
 
 Failed operations are automatically added to the retry queue with exponential backoff timing.
 
-### 3. Handshake Protocol
+### 3. Smart Duplicate Prevention
+
+Eidetica implements **semantic duplicate prevention** through Merkle-CRDT tip comparison, eliminating the need for simple "sent entry" tracking.
+
+#### How It Works
+
+**Tree Synchronization Process:**
+
+1. **Tip Exchange**: Both peers share their current tree tips (frontier entries)
+2. **Gap Analysis**: Compare local and remote tips to identify missing entries
+3. **Smart Filtering**: Only send entries the peer doesn't have (based on DAG analysis)
+4. **Ancestor Inclusion**: Automatically include necessary parent entries
+
+```rust,ignore
+// Background sync's smart duplicate prevention
+async fn sync_tree_with_peer(&self, peer_pubkey: &str, tree_id: &ID, address: &Address) -> Result<()> {
+    // Step 1: Get our tips for this tree
+    let our_tips = self.backend.get_tips(tree_id)?;
+
+    // Step 2: Get peer's tips via network request
+    let their_tips = self.get_peer_tips(tree_id, address).await?;
+
+    // Step 3: Smart filtering - only send what they're missing
+    let entries_to_send = self.find_entries_to_send(&our_tips, &their_tips)?;
+    if !entries_to_send.is_empty() {
+        self.transport.send_entries(address, &entries_to_send).await?;
+    }
+
+    // Step 4: Fetch what we're missing from them
+    let missing_entries = self.find_missing_entries(&our_tips, &their_tips)?;
+    if !missing_entries.is_empty() {
+        let entries = self.fetch_entries_from_peer(address, &missing_entries).await?;
+        self.store_received_entries(entries).await?;
+    }
+}
+```
+
+**Benefits over Simple Tracking:**
+
+| Approach                | Duplicate Prevention      | Correctness         | Network Efficiency             |
+| ----------------------- | ------------------------- | ------------------- | ------------------------------ |
+| **Tip-Based (Current)** | ✅ Semantic understanding | ✅ Always correct   | ✅ Optimal - only sends needed |
+| **Simple Tracking**     | ❌ Can get out of sync    | ❌ May miss updates | ❌ May send unnecessary data   |
+
+#### Merkle-CRDT Synchronization Algorithm
+
+**Phase 1: Tip Discovery**
+
+```mermaid
+sequenceDiagram
+    participant A as Peer A
+    participant B as Peer B
+
+    A->>B: GetTips(tree_id)
+    B->>A: TipsResponse([tip1, tip2, ...])
+
+    Note over A: Compare tips to identify gaps
+    A->>A: find_entries_to_send(our_tips, their_tips)
+    A->>A: find_missing_entries(our_tips, their_tips)
+```
+
+**Phase 2: Gap Analysis**
+
+The `find_entries_to_send` method performs sophisticated DAG analysis:
+
+```rust,ignore
+fn find_entries_to_send(&self, our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
+    // Find tips that peer doesn't have
+    let tips_to_send: Vec<ID> = our_tips
+        .iter()
+        .filter(|tip_id| !their_tips.contains(tip_id))
+        .cloned()
+        .collect();
+
+    if tips_to_send.is_empty() {
+        return Ok(Vec::new()); // Peer already has everything
+    }
+
+    // Use DAG traversal to collect all necessary ancestors
+    self.collect_ancestors_to_send(&tips_to_send, their_tips)
+}
+```
+
+**Phase 3: Efficient Transfer**
+
+Only entries that are genuinely missing are transferred:
+
+- **No duplicates**: Tips comparison guarantees no redundant sends
+- **Complete data**: DAG traversal ensures all dependencies included
+- **Bidirectional**: Both peers send and receive simultaneously
+- **Incremental**: Only new changes since last sync
+
+#### Integration with Command Pattern
+
+The smart duplicate prevention integrates seamlessly with the command architecture:
+
+**Direct Entry Sends:**
+
+```rust,ignore
+// Via SendEntries command - caller determines what to send
+self.command_tx.send(SyncCommand::SendEntries {
+    peer: peer_pubkey.to_string(),
+    entries // No filtering - trust caller
+}).await?;
+```
+
+**Tree Synchronization:**
+
+```rust,ignore
+// Via SyncWithPeer command - background sync determines what to send
+self.command_tx.send(SyncCommand::SyncWithPeer {
+    peer: peer_pubkey.to_string()
+}).await?;
+// Background sync performs tip comparison and smart filtering
+```
+
+#### Performance Characteristics
+
+**Network Efficiency:**
+
+- **O(tip_count)** network requests for tip discovery
+- **O(missing_entries)** data transfer (minimal)
+- **Zero redundancy** in steady state
+
+**Computational Complexity:**
+
+- **O(n log n)** tip comparison where n = tip count
+- **O(m)** DAG traversal where m = missing entries
+- **Constant memory** per sync operation
+
+**State Requirements:**
+
+- **No persistent tracking** of individual sends needed
+- **Stateless operation** - each sync is independent
+- **Self-correcting** - any missed entries caught in next sync
+
+### 4. Handshake Protocol
 
 Peer connection establishment:
 
@@ -420,6 +569,128 @@ sequenceDiagram
 - Tokio-based event loop
 - Non-blocking transport operations
 - Works in both async and sync contexts
+
+## Connection Management
+
+### Lazy Connection Establishment
+
+Eidetica uses a **lazy connection strategy** where connections are established on-demand rather than immediately when peers are registered:
+
+**Key Design Principles:**
+
+1. **No Persistent Connections**: Connections are not maintained between sync operations
+2. **Transport-Layer Handling**: Connection establishment is delegated to the transport layer
+3. **Automatic Discovery**: Background sync periodically discovers and syncs with all registered peers
+4. **On-Demand Establishment**: Connections are created when sync operations occur
+
+**Connection Lifecycle:**
+
+```mermaid
+graph LR
+    subgraph "Peer Registration"
+        REG[register_peer] --> STORE[Store in Sync Tree]
+    end
+
+    subgraph "Discovery & Connection"
+        TIMER[Periodic Timer<br/>Every 5 min] --> SCAN[Scan Active Peers<br/>from Sync Tree]
+        SCAN --> SYNC[sync_with_peer]
+        SYNC --> CONN[Transport Establishes<br/>Connection On-Demand]
+        CONN --> XFER[Transfer Data]
+        XFER --> CLOSE[Connection Closed]
+    end
+
+    subgraph "Manual Connection"
+        API[connect_to_peer API] --> HANDSHAKE[Perform Handshake]
+        HANDSHAKE --> STORE2[Store Peer Info]
+    end
+```
+
+**Benefits of Lazy Connection:**
+
+- **Resource Efficient**: No idle connections consuming resources
+- **Resilient**: Network issues don't affect registered peer state
+- **Scalable**: Can handle many peers without connection overhead
+- **Self-Healing**: Failed connections automatically retried on next sync cycle
+
+**Connection Triggers:**
+
+1. **Periodic Sync** (every 5 minutes):
+
+   - BackgroundSync scans all active peers from sync tree
+   - Attempts to sync with each peer's registered trees
+   - Connections established as needed during sync
+
+2. **Manual Sync Commands**:
+
+   - `SyncWithPeer` command triggers immediate connection
+   - `SendEntries` command establishes connection for data transfer
+
+3. **Explicit Connection**:
+   - `connect_to_peer()` API for manual connection establishment
+   - Performs handshake and stores peer information
+
+**No Alert on Registration:**
+
+When `register_peer()` or `add_peer_address()` is called:
+
+- Peer information is stored in the sync tree
+- No command is sent to BackgroundSync
+- No immediate connection attempt is made
+- Peer will be discovered in next periodic sync cycle (within 5 minutes)
+
+This design ensures that peer registration is a lightweight operation that doesn't block or trigger network activity.
+
+## Transport Implementations
+
+### Iroh Transport
+
+The Iroh transport provides peer-to-peer connectivity using QUIC with automatic NAT traversal.
+
+**Key Components:**
+
+- **Relay Servers**: Intermediary servers that help establish P2P connections
+- **Hole Punching**: Direct connection establishment through NATs (~90% success rate)
+- **NodeAddr**: Contains node ID and direct socket addresses for connectivity
+- **QUIC Protocol**: Provides reliable, encrypted communication
+
+**Configuration via Builder Pattern:**
+
+The `IrohTransportBuilder` allows configuring:
+
+- `RelayMode`: Controls relay server usage
+  - `Default`: Uses n0's production relay servers
+  - `Staging`: Uses n0's staging infrastructure
+  - `Disabled`: Direct P2P only (for local testing)
+  - `Custom(RelayMap)`: User-provided relay servers
+- `enable_local_discovery`: mDNS for local network discovery (future feature)
+
+**Address Serialization:**
+
+When `get_server_address()` is called, Iroh returns a JSON-serialized `NodeAddrInfo` containing:
+
+- `node_id`: The peer's cryptographic identity
+- `direct_addresses`: Socket addresses where the peer can be reached
+
+This allows peers to connect using either relay servers or direct connections, whichever succeeds first.
+
+**Connection Flow:**
+
+1. Endpoint initialization with configured relay mode
+2. Relay servers help peers discover each other
+3. Attempt direct connection via hole punching
+4. Fall back to relay if direct connection fails
+5. Upgrade to direct connection when possible
+
+### HTTP Transport
+
+The HTTP transport provides traditional client-server connectivity using REST endpoints.
+
+**Features:**
+
+- Simple JSON API at `/api/v0`
+- Axum server with Tokio runtime
+- Request/response pattern
+- No special NAT traversal needed
 
 ## Architecture Benefits
 

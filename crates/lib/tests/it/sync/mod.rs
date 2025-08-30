@@ -12,6 +12,7 @@ mod device_id_tests;
 pub mod helpers;
 mod http_transport_tests;
 mod integration_tests;
+mod iroh_e2e_test;
 mod iroh_transport_tests;
 mod peer_management_tests;
 // mod queue_flush_tests; // Uses old queue API

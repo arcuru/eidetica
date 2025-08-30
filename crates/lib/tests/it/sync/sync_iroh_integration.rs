@@ -15,10 +15,11 @@ async fn test_sync_iroh_transport_integration() {
     // Now server operations should work
     sync.start_server_async("ignored").await.unwrap();
 
-    // Get the server address (should be node ID)
+    // Get the server address (should be JSON with node info)
     let server_addr = sync.get_server_address_async().await.unwrap();
     assert!(!server_addr.is_empty());
-    assert!(server_addr.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(server_addr.contains("node_id"));
+    assert!(server_addr.contains("direct_addresses"));
 
     // Stop the server
     sync.stop_server_async().await.unwrap();
@@ -56,8 +57,8 @@ async fn test_sync_transport_switching() {
     sync.start_server_async("ignored").await.unwrap();
 
     let iroh_addr = sync.get_server_address_async().await.unwrap();
-    assert!(!iroh_addr.contains(":")); // Node ID format, no port
-    assert!(iroh_addr.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(iroh_addr.contains("node_id")); // JSON format with node info
+    assert!(iroh_addr.contains("direct_addresses")); // Contains connectivity info
 
     sync.stop_server_async().await.unwrap();
 }

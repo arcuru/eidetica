@@ -147,9 +147,13 @@ async fn test_iroh_transport_p2p_addressing() {
     // Addresses should be different
     assert_ne!(addr1, addr2);
 
-    // Both should be valid node ID format (hex string)
-    assert!(addr1.chars().all(|c| c.is_ascii_hexdigit()));
-    assert!(addr2.chars().all(|c| c.is_ascii_hexdigit()));
+    // Both should be valid JSON format containing node_id and direct_addresses
+    assert!(
+        addr1.starts_with("{") && addr1.contains("node_id") && addr1.contains("direct_addresses")
+    );
+    assert!(
+        addr2.starts_with("{") && addr2.contains("node_id") && addr2.contains("direct_addresses")
+    );
 
     // Clean up
     transport1.stop_server().await.unwrap();

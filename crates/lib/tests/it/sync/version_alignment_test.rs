@@ -26,9 +26,9 @@ async fn test_version_alignment() {
     // HTTP should be using v0 endpoint
     assert!(http_addr.starts_with("127.0.0.1:"));
 
-    // Iroh should be using node ID (different format but both v0 semantically)
-    assert!(!iroh_addr.contains(":")); // Node ID format, not IP:port
-    assert!(iroh_addr.chars().all(|c| c.is_ascii_hexdigit()));
+    // Iroh should be using JSON format with node_id and direct_addresses (v0 semantically)
+    assert!(iroh_addr.contains("node_id")); // JSON format with node info
+    assert!(iroh_addr.contains("direct_addresses")); // Contains connectivity info
 
     // Both should be ready for v0 API calls
     // (The actual API calls are tested in other test files)

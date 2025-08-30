@@ -4,7 +4,6 @@
 //! in a single background thread, removing circular dependency issues and providing
 //! automatic retry, periodic sync, and reconnection handling.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, oneshot};
@@ -13,6 +12,7 @@ use tokio::time::interval;
 use super::DEVICE_KEY_NAME;
 use super::error::SyncError;
 use super::handler::SyncHandlerImpl;
+use super::peer_manager::PeerManager;
 use super::peer_types::{Address, PeerInfo};
 use super::protocol::{
     GetEntriesRequest, GetTipsRequest, HandshakeRequest, PROTOCOL_VERSION, SyncRequest,
@@ -20,6 +20,7 @@ use super::protocol::{
 };
 use super::transports::SyncTransport;
 use crate::Result;
+use crate::Tree;
 use crate::auth::crypto::{format_public_key, generate_challenge, verify_challenge_response};
 use crate::backend::Database;
 use crate::entry::{Entry, ID};
@@ -35,14 +36,6 @@ pub enum SyncCommand {
         entry_id: ID,
         tree_id: ID,
     },
-    /// Add a new peer to the sync network
-    AddPeer { peer: PeerInfo },
-    /// Remove a peer from sync network
-    RemovePeer { pubkey: String },
-    /// Create a sync relationship for a tree with a peer
-    CreateRelationship { peer_pubkey: String, tree_id: ID },
-    /// Remove sync relationship
-    RemoveRelationship { peer_pubkey: String, tree_id: ID },
     /// Trigger immediate sync with a peer
     SyncWithPeer { peer: String },
     /// Shutdown the background engine
@@ -88,25 +81,15 @@ struct RetryEntry {
     last_attempt: SystemTime,
 }
 
-/// Sync relationship tracking which trees sync with which peers
-#[derive(Debug, Clone)]
-pub struct SyncRelationship {
-    pub peer_pubkey: String,
-    pub tree_id: ID,
-}
-
 /// Background sync engine that owns all sync state and handles operations
 pub struct BackgroundSync {
     // Core components - owns everything
     transport: Box<dyn SyncTransport>,
     backend: Arc<dyn Database>,
+    sync_tree_id: ID,
 
     // Server state
     server_address: Option<String>,
-
-    // State management - simple, not Arc/RwLock
-    peers: HashMap<String, PeerInfo>,
-    relationships: HashMap<String, SyncRelationship>, // key: "tree_id:peer_pubkey"
 
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
@@ -120,15 +103,15 @@ impl BackgroundSync {
     pub fn start(
         transport: Box<dyn SyncTransport>,
         backend: Arc<dyn Database>,
+        sync_tree_id: ID,
     ) -> mpsc::Sender<SyncCommand> {
         let (tx, rx) = mpsc::channel(100);
 
         let background = Self {
             transport,
             backend,
+            sync_tree_id,
             server_address: None,
-            peers: HashMap::new(),
-            relationships: HashMap::new(),
             retry_queue: Vec::new(),
             command_rx: rx,
         };
@@ -144,6 +127,13 @@ impl BackgroundSync {
             });
         }
         tx
+    }
+
+    /// Get the sync tree for accessing peer data
+    fn get_sync_tree(&self) -> Result<Tree> {
+        let mut sync_tree = Tree::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
+        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
+        Ok(sync_tree)
     }
 
     /// Main event loop that handles all sync operations
@@ -163,6 +153,7 @@ impl BackgroundSync {
                 // Handle commands from frontend
                 Some(cmd) = self.command_rx.recv() => {
                     if let Err(e) = self.handle_command(cmd).await {
+                        // Log errors but continue running - background sync should be resilient
                         eprintln!("Background sync command error: {e}");
                     }
                 }
@@ -184,7 +175,7 @@ impl BackgroundSync {
 
                 // Channel closed, shutdown
                 else => {
-                    println!("Background sync shutting down - command channel closed");
+                    // Normal shutdown when channel closes
                     break;
                 }
             }
@@ -213,46 +204,15 @@ impl BackgroundSync {
                         }
                     }
                     Err(e) => {
+                        // Log error but continue with other entries
                         eprintln!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
                     }
                 }
             }
 
-            SyncCommand::AddPeer { peer } => {
-                self.peers.insert(peer.pubkey.clone(), peer);
-            }
-
-            SyncCommand::RemovePeer { pubkey } => {
-                self.peers.remove(&pubkey);
-                // Also remove any relationships with this peer
-                self.relationships
-                    .retain(|_, rel| rel.peer_pubkey != pubkey);
-            }
-
-            SyncCommand::CreateRelationship {
-                peer_pubkey,
-                tree_id,
-            } => {
-                let key = format!("{tree_id}:{peer_pubkey}");
-                self.relationships.insert(
-                    key,
-                    SyncRelationship {
-                        peer_pubkey,
-                        tree_id,
-                    },
-                );
-            }
-
-            SyncCommand::RemoveRelationship {
-                peer_pubkey,
-                tree_id,
-            } => {
-                let key = format!("{tree_id}:{peer_pubkey}");
-                self.relationships.remove(&key);
-            }
-
             SyncCommand::SyncWithPeer { peer } => {
                 if let Err(e) = self.sync_with_peer(&peer).await {
+                    // Log sync failure but don't crash the background engine
                     eprintln!("Failed to sync with peer {peer}: {e}");
                 }
             }
@@ -287,27 +247,47 @@ impl BackgroundSync {
             }
 
             SyncCommand::Shutdown => {
-                println!("Background sync received shutdown command");
+                // Shutdown command received - exit cleanly
                 return Err(SyncError::Network("Shutdown requested".to_string()).into());
             }
         }
         Ok(())
     }
 
-    /// Send entries to a specific peer
+    /// Send specific entries to a peer without duplicate filtering.
+    ///
+    /// This method performs direct entry transmission and is used by:
+    /// - `SendEntries` commands from the frontend (caller handles filtering)
+    /// - `sync_tree_with_peer()` after smart duplicate prevention analysis
+    ///
+    /// # Design Note
+    ///
+    /// This method does NOT perform duplicate prevention - that responsibility
+    /// lies with the caller. The background sync's smart duplicate prevention
+    /// happens in `sync_tree_with_peer()` via tip comparison, while direct
+    /// `SendEntries` commands trust the caller to send appropriate entries.
+    ///
+    /// # Error Handling
+    ///
+    /// Failed sends are automatically added to the retry queue with exponential backoff.
     async fn send_to_peer(&self, peer: &str, entries: Vec<Entry>) -> Result<()> {
-        let peer_info = self
-            .peers
-            .get(peer)
-            .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
+        // Get peer address from sync tree (extract and drop operation before await)
+        let address = {
+            let sync_tree = self.get_sync_tree()?;
+            let op = sync_tree.new_operation()?;
+            let peer_info = PeerManager::new(&op)
+                .get_peer_info(peer)?
+                .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
-        let address = peer_info
-            .addresses
-            .first()
-            .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
+            peer_info
+                .addresses
+                .first()
+                .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?
+                .clone()
+        }; // Operation is dropped here
 
         let request = SyncRequest::SendEntries(entries);
-        let response = self.transport.send_request(address, &request).await?;
+        let response = self.transport.send_request(&address, &request).await?;
 
         match response {
             crate::sync::protocol::SyncResponse::Ack
@@ -326,6 +306,7 @@ impl BackgroundSync {
 
     /// Add failed send to retry queue
     fn add_to_retry_queue(&mut self, peer: String, entries: Vec<Entry>, error: crate::Error) {
+        // Log send failure and add to retry queue
         eprintln!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
             peer,
@@ -357,13 +338,11 @@ impl BackgroundSync {
                         // Max 10 attempts
                         still_failed.push(entry);
                     } else {
+                        // Max retries exceeded - give up on this batch
                         eprintln!("Giving up on sending to {} after 10 attempts", entry.peer);
                     }
                 } else {
-                    println!(
-                        "Successfully retried send to {} on attempt {}",
-                        entry.peer, entry.attempts
-                    );
+                    // Successfully retried after failure
                 }
             } else {
                 // Not ready for retry yet
@@ -376,51 +355,87 @@ impl BackgroundSync {
 
     /// Perform periodic sync with all active peers
     async fn periodic_sync_all_peers(&self) {
-        println!("Starting periodic sync with all peers");
-        for (peer_pubkey, peer_info) in &self.peers {
+        // Periodic sync triggered
+
+        // Get all peers from sync tree
+        let peers = match self.get_sync_tree() {
+            Ok(sync_tree) => match sync_tree.new_operation() {
+                Ok(op) => match PeerManager::new(&op).list_peers() {
+                    Ok(peers) => {
+                        // Extract peer list and drop the operation before awaiting
+                        peers
+                    }
+                    Err(_) => {
+                        // Skip sync if we can't list peers
+                        return;
+                    }
+                },
+                Err(_) => {
+                    // Skip sync if we can't create operation
+                    return;
+                }
+            },
+            Err(_) => {
+                // Skip sync if we can't get sync tree
+                return;
+            }
+        };
+
+        // Now sync with peers (operation is dropped, so no Send issues)
+        for peer_info in peers {
             if peer_info.status == crate::sync::peer_types::PeerStatus::Active
-                && let Err(e) = self.sync_with_peer(peer_pubkey).await
+                && let Err(e) = self.sync_with_peer(&peer_info.pubkey).await
             {
-                eprintln!("Periodic sync failed with {peer_pubkey}: {e}");
+                // Log individual peer sync failure but continue with others
+                eprintln!("Periodic sync failed with {}: {e}", peer_info.pubkey);
             }
         }
     }
 
     /// Sync with a specific peer (bidirectional)
     async fn sync_with_peer(&self, peer_pubkey: &str) -> Result<()> {
-        let peer_info = self
-            .peers
-            .get(peer_pubkey)
-            .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+        // Get peer info and tree list from sync tree (extract and drop operation before await)
+        let (address, sync_trees) = {
+            let sync_tree = self.get_sync_tree()?;
+            let op = sync_tree.new_operation()?;
+            let peer_manager = PeerManager::new(&op);
 
-        let address = peer_info
-            .addresses
-            .first()
-            .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
+            let peer_info = peer_manager
+                .get_peer_info(peer_pubkey)?
+                .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
 
-        // Find all trees that sync with this peer
-        let sync_trees: Vec<&ID> = self
-            .relationships
-            .values()
-            .filter(|rel| rel.peer_pubkey == peer_pubkey)
-            .map(|rel| &rel.tree_id)
-            .collect();
+            let address = peer_info
+                .addresses
+                .first()
+                .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?
+                .clone();
+
+            // Find all trees that sync with this peer from sync tree
+            let sync_trees = peer_manager.get_peer_trees(peer_pubkey)?;
+
+            (address, sync_trees)
+        }; // Operation is dropped here
 
         if sync_trees.is_empty() {
             return Ok(()); // No trees to sync
         }
 
-        println!(
+        // Debug: log tree sync operation
+        #[cfg(debug_assertions)]
+        eprintln!(
             "Syncing {} trees with peer {}",
             sync_trees.len(),
             peer_pubkey
         );
 
-        for tree_id in sync_trees {
+        for tree_id_str in sync_trees {
+            // Convert string ID to entry ID
+            let tree_id = ID::from(tree_id_str.as_str());
             if let Err(e) = self
-                .sync_tree_with_peer(peer_pubkey, tree_id, address)
+                .sync_tree_with_peer(peer_pubkey, &tree_id, &address)
                 .await
             {
+                // Log tree sync failure but continue with other trees
                 eprintln!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
             }
         }
@@ -428,7 +443,31 @@ impl BackgroundSync {
         Ok(())
     }
 
-    /// Sync a specific tree with a peer
+    /// Sync a specific tree with a peer using smart duplicate prevention.
+    ///
+    /// This method implements Eidetica's core synchronization algorithm based on
+    /// Merkle-CRDT tip comparison. It eliminates duplicate sends by understanding
+    /// the semantic state of both peers' trees.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. **Tip Exchange**: Get local tips and request peer's tips
+    /// 2. **Gap Analysis**: Compare tips to identify missing entries on both sides
+    /// 3. **Smart Transfer**: Only send/receive entries that are genuinely missing
+    /// 4. **DAG Completion**: Include all necessary ancestor entries
+    ///
+    /// # Benefits
+    ///
+    /// - **No duplicates**: Tips comparison guarantees no redundant network transfers
+    /// - **Complete data**: DAG traversal ensures all dependencies are satisfied
+    /// - **Bidirectional**: Both peers sync simultaneously for efficiency
+    /// - **Self-correcting**: Any missed entries are caught in subsequent syncs
+    ///
+    /// # Performance
+    ///
+    /// - **O(tip_count)** network requests for discovery
+    /// - **O(missing_entries)** data transfer (optimal)
+    /// - **Stateless**: No persistent tracking of individual sends needed
     async fn sync_tree_with_peer(
         &self,
         _peer_pubkey: &str,
@@ -496,7 +535,36 @@ impl BackgroundSync {
         super::utils::collect_ancestors_to_send(self.backend.as_ref(), entry_ids, their_tips)
     }
 
-    /// Find entries we have that peer doesn't (including all necessary ancestors)
+    /// Find entries we have that peer doesn't have, implementing smart duplicate prevention.
+    ///
+    /// This is the core of Eidetica's semantic duplicate prevention algorithm.
+    /// Instead of tracking individual "sent" entries, it compares tree tips to
+    /// determine exactly what the peer is missing.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. **Tip Filtering**: Find tips in our set that peer doesn't have
+    /// 2. **DAG Traversal**: Collect all ancestor entries needed for completeness
+    /// 3. **Dependency Resolution**: Ensure all parent relationships are satisfied
+    ///
+    /// # Why This Works
+    ///
+    /// In a Merkle-CRDT, tips represent the "frontier" of knowledge. If a peer
+    /// has tip X, they transitively have all ancestors of X. By comparing tips,
+    /// we can perfectly determine what data is missing without any persistent tracking.
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// Our tips:    [E, F]     Peer tips: [D]
+    ///
+    /// A -> B -> C -> D
+    ///      |         
+    ///      v         
+    ///      E -> F    
+    ///
+    /// Peer is missing: [B, E, F] (B is needed as ancestor of E)
+    /// ```
     fn find_entries_to_send(&self, our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
         // Find tips that peer doesn't have
         let tips_to_send: Vec<ID> = our_tips
@@ -720,20 +788,24 @@ impl BackgroundSync {
                     }
                 }
 
-                // Create peer info
-                let peer_info = PeerInfo::new(
+                // Create peer info (store in sync tree instead of using it directly)
+                let _peer_info = PeerInfo::new(
                     &handshake_resp.public_key,
                     handshake_resp.display_name.as_deref(),
                 );
 
-                // Add peer to our state
-                self.peers
-                    .insert(handshake_resp.public_key.clone(), peer_info);
+                // Add peer to sync tree
+                let sync_tree = self.get_sync_tree()?;
+                let op = sync_tree.new_operation()?;
+                let peer_manager = PeerManager::new(&op);
 
-                println!(
-                    "Successfully connected to peer {}",
-                    handshake_resp.public_key
-                );
+                peer_manager.register_peer(
+                    &handshake_resp.public_key,
+                    handshake_resp.display_name.as_deref(),
+                )?;
+                op.commit()?;
+
+                // Successfully connected to peer
                 Ok(handshake_resp.public_key)
             }
             SyncResponse::Error(msg) => Err(SyncError::HandshakeFailed(msg).into()),

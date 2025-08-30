@@ -100,13 +100,69 @@ let peer_key = sync.connect_to_peer(&addr).await?;
 Iroh provides direct peer-to-peer connectivity with NAT traversal:
 
 ```rust,ignore
-// Enable Iroh transport (includes built-in NAT traversal)
+// Enable Iroh transport with production defaults (uses n0's relay servers)
 sync.enable_iroh_transport()?;
 
-// Connect using Iroh addresses
-let addr = Address::iroh("iroh://peer_id@relay.example.com")?;
+// Or configure for specific environments:
+use iroh::RelayMode;
+use eidetica::sync::transports::iroh::IrohTransport;
+
+// For local testing without internet (fast, no relays)
+let transport = IrohTransport::builder()
+    .relay_mode(RelayMode::Disabled)
+    .build()?;
+sync.enable_iroh_transport_with_config(transport)?;
+
+// For staging/testing environments
+let transport = IrohTransport::builder()
+    .relay_mode(RelayMode::Staging)
+    .build()?;
+sync.enable_iroh_transport_with_config(transport)?;
+
+// For enterprise deployments with custom relay servers
+use iroh::{RelayMap, RelayNode, RelayUrl};
+
+let relay_url: RelayUrl = "https://relay.example.com".parse()?;
+let relay_node = RelayNode {
+    url: relay_url,
+    quic: Some(Default::default()), // Enable QUIC for better performance
+};
+let transport = IrohTransport::builder()
+    .relay_mode(RelayMode::Custom(RelayMap::from_iter([relay_node])))
+    .build()?;
+sync.enable_iroh_transport_with_config(transport)?;
+
+// Start the Iroh server (binds to its own ports)
+sync.start_server("ignored")?; // Iroh manages its own addressing
+
+// Get the server address for sharing with peers
+let my_address = sync.get_server_address()?;
+// This returns a JSON string containing:
+// - node_id: Your cryptographic node identity
+// - direct_addresses: Socket addresses where you can be reached
+
+// Connect to a peer using their address
+let addr = Address::iroh(&peer_address_json)?;
+let peer_key = sync.connect_to_peer(&addr).await?;
+
+// Or if you only have the node ID (will use relays to discover)
+let addr = Address::iroh(peer_node_id)?;
 let peer_key = sync.connect_to_peer(&addr).await?;
 ```
+
+**Relay Modes:**
+
+- `RelayMode::Default` - Production n0 relay servers (default, recommended for most users)
+- `RelayMode::Disabled` - Direct P2P only, no relays (for local testing, requires direct connectivity)
+- `RelayMode::Staging` - n0's staging relay servers (for testing against staging infrastructure)
+- `RelayMode::Custom(RelayMap)` - Your own relay servers (for enterprise/private deployments)
+
+**How Iroh Connectivity Works:**
+
+1. Peers discover each other through relay servers or direct addresses
+2. Attempt direct connection via NAT hole-punching (~90% success rate)
+3. Fall back to relay if direct connection fails
+4. Automatically upgrade to direct connection when possible
 
 ## Sync Configuration
 

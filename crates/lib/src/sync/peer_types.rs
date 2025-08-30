@@ -43,9 +43,17 @@ impl Address {
         Self::new("http", address)
     }
 
-    /// Create an Iroh address
+    /// Create an Iroh address from a node ID string
     pub fn iroh(node_id: impl Into<String>) -> Self {
         Self::new("iroh", node_id)
+    }
+
+    /// Create an Iroh address from a NodeAddr (requires iroh dependency)
+    pub fn from_node_addr(node_addr: &iroh::NodeAddr) -> Self {
+        // Serialize the NodeAddr to a string format that can be parsed later
+        // For now, we'll just use the NodeId as the address since that's what our
+        // current send_request method expects
+        Self::new("iroh", node_addr.node_id.to_string())
     }
 }
 
