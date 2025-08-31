@@ -3,6 +3,7 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
+use crate::auth::crypto::format_public_key;
 use crate::{Result, crdt::Doc, entry::Entry, subtree::DocStore, tree::Tree};
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ pub mod peer_types;
 pub mod protocol;
 pub mod state;
 pub mod transports;
+pub mod utils;
 
 pub use error::SyncError;
 pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
@@ -166,8 +168,6 @@ impl Sync {
     /// # Returns
     /// The device's public key in ed25519:base64 format.
     pub fn get_device_public_key(&self) -> Result<String> {
-        use crate::auth::crypto::format_public_key;
-
         let signing_key = self.get_device_signing_key()?;
         let verifying_key = signing_key.verifying_key();
         Ok(format_public_key(&verifying_key))

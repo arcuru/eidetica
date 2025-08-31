@@ -8,6 +8,7 @@ use super::protocol::{
     GetEntriesRequest, GetEntriesResponse, GetTipsRequest, GetTipsResponse, HandshakeRequest,
     HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse,
 };
+use crate::auth::crypto::{create_challenge_response, format_public_key, generate_challenge};
 use crate::backend::Database;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -107,21 +108,12 @@ impl SyncHandlerImpl {
         };
 
         // Generate device ID and public key from signing key
-        let public_key = {
-            use crate::auth::crypto::format_public_key;
-            let verifying_key = signing_key.verifying_key();
-            format_public_key(&verifying_key)
-        };
+        let verifying_key = signing_key.verifying_key();
+        let public_key = format_public_key(&verifying_key);
         let device_id = public_key.clone(); // Device ID is the public key
 
         // Sign the challenge with our device key to prove identity
-        let challenge_response = {
-            use crate::auth::crypto::sign_data;
-            use base64ct::{Base64, Encoding};
-
-            let signature = sign_data(&request.challenge, &signing_key);
-            Base64::decode_vec(&signature).unwrap_or_default()
-        };
+        let challenge_response = create_challenge_response(&request.challenge, &signing_key);
 
         // Generate a new challenge for mutual authentication
         let new_challenge = generate_challenge();
@@ -168,13 +160,4 @@ impl SyncHandlerImpl {
 
         SyncResponse::Entries(GetEntriesResponse { entries })
     }
-}
-
-/// Generate random challenge bytes for authentication.
-fn generate_challenge() -> Vec<u8> {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let mut challenge = vec![0u8; 32];
-    rng.fill(&mut challenge[..]);
-    challenge
 }

@@ -20,6 +20,7 @@ use super::protocol::{
 };
 use super::transports::SyncTransport;
 use crate::Result;
+use crate::auth::crypto::{format_public_key, generate_challenge, verify_challenge_response};
 use crate::backend::Database;
 use crate::entry::{Entry, ID};
 
@@ -487,106 +488,12 @@ impl BackgroundSync {
     /// Find entries we don't have locally (including all ancestors)
     fn find_missing_entries(&self, _our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<ID>> {
         // Use DAG traversal to find all missing entries including ancestors
-        self.collect_missing_ancestors(their_tips)
-    }
-
-    /// Collect all missing ancestors for given entry IDs using DAG traversal
-    fn collect_missing_ancestors(&self, entry_ids: &[ID]) -> Result<Vec<ID>> {
-        use std::collections::{HashSet, VecDeque};
-
-        let mut missing = Vec::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-
-        // Start with the given entry IDs
-        for id in entry_ids {
-            queue.push_back(id.clone());
-        }
-
-        while let Some(entry_id) = queue.pop_front() {
-            if visited.contains(&entry_id) {
-                continue;
-            }
-            visited.insert(entry_id.clone());
-
-            match self.backend.get(&entry_id) {
-                Ok(entry) => {
-                    // We have this entry, but we need to check its parents
-                    if let Ok(parents) = entry.parents() {
-                        for parent_id in parents {
-                            if !visited.contains(&parent_id) {
-                                queue.push_back(parent_id);
-                            }
-                        }
-                    }
-                }
-                Err(e) if e.is_not_found() => {
-                    // We don't have this entry - mark as missing
-                    missing.push(entry_id);
-                    // Note: We can't traverse parents of missing entries
-                    // The peer will need to send parent info separately
-                }
-                Err(e) => {
-                    return Err(SyncError::BackendError(format!(
-                        "Failed to check for entry {entry_id}: {e}"
-                    ))
-                    .into());
-                }
-            }
-        }
-
-        Ok(missing)
+        super::utils::collect_missing_ancestors(self.backend.as_ref(), their_tips)
     }
 
     /// Collect ancestors that need to be sent with the given entries
     fn collect_ancestors_to_send(&self, entry_ids: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
-        use std::collections::{HashMap, HashSet, VecDeque};
-
-        let mut entries_to_send = HashMap::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-        let their_tips_set: HashSet<&ID> = their_tips.iter().collect();
-
-        // Start with the given entry IDs
-        for id in entry_ids {
-            queue.push_back(id.clone());
-        }
-
-        while let Some(entry_id) = queue.pop_front() {
-            if visited.contains(&entry_id) || their_tips_set.contains(&entry_id) {
-                continue; // Skip already visited or entries peer already has
-            }
-            visited.insert(entry_id.clone());
-
-            match self.backend.get(&entry_id) {
-                Ok(entry) => {
-                    entries_to_send.insert(entry_id.clone(), entry.clone());
-
-                    // Add parents to queue if peer might not have them
-                    if let Ok(parents) = entry.parents() {
-                        for parent_id in parents {
-                            if !their_tips_set.contains(&parent_id) && !visited.contains(&parent_id)
-                            {
-                                queue.push_back(parent_id);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(SyncError::BackendError(format!(
-                        "Failed to get entry {entry_id} to send: {e}"
-                    ))
-                    .into());
-                }
-            }
-        }
-
-        // Return entries without height sorting for now
-        // Height-based ordering should be done by the sync_tree_with_peer method
-        // when it has the tree context needed for height calculation
-        let entries: Vec<Entry> = entries_to_send.into_values().collect();
-
-        Ok(entries)
+        super::utils::collect_ancestors_to_send(self.backend.as_ref(), entry_ids, their_tips)
     }
 
     /// Find entries we have that peer doesn't (including all necessary ancestors)
@@ -749,22 +656,18 @@ impl BackgroundSync {
     /// Connect to a peer and perform handshake
     async fn connect_to_peer(&mut self, address: &Address) -> Result<String> {
         // Generate challenge for authentication
-        let challenge = self.generate_challenge();
+        let challenge = generate_challenge();
 
         // Get our device info from backend
         let device_id = "background_sync_device".to_string(); // TODO: Get actual device ID
-        let public_key = {
-            use crate::auth::crypto::format_public_key;
-
-            if let Some(signing_key) = self.backend.get_private_key(DEVICE_KEY_NAME)? {
-                let verifying_key = signing_key.verifying_key();
-                format_public_key(&verifying_key)
-            } else {
-                return Err(SyncError::DeviceKeyNotFound {
-                    key_name: DEVICE_KEY_NAME.to_string(),
-                }
-                .into());
+        let public_key = if let Some(signing_key) = self.backend.get_private_key(DEVICE_KEY_NAME)? {
+            let verifying_key = signing_key.verifying_key();
+            format_public_key(&verifying_key)
+        } else {
+            return Err(SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
             }
+            .into());
         };
 
         // Create handshake request
@@ -793,19 +696,11 @@ impl BackgroundSync {
                 }
 
                 // Verify the server's signature on our challenge
-                let verification_result = {
-                    use crate::auth::crypto::{parse_public_key, verify_signature};
-                    use base64ct::{Base64, Encoding};
-
-                    match parse_public_key(&handshake_resp.public_key) {
-                        Ok(verifying_key) => {
-                            let signature_b64 =
-                                Base64::encode_string(&handshake_resp.challenge_response);
-                            verify_signature(&challenge, &signature_b64, &verifying_key)
-                        }
-                        Err(_) => Ok(false), // Invalid public key format
-                    }
-                };
+                let verification_result = verify_challenge_response(
+                    &challenge,
+                    &handshake_resp.challenge_response,
+                    &handshake_resp.public_key,
+                );
 
                 match verification_result {
                     Ok(true) => {
@@ -853,14 +748,5 @@ impl BackgroundSync {
         request: &SyncRequest,
     ) -> Result<SyncResponse> {
         self.transport.send_request(address, request).await
-    }
-
-    /// Generate random challenge bytes for authentication
-    fn generate_challenge(&self) -> Vec<u8> {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let mut challenge = vec![0u8; 32];
-        rng.fill(&mut challenge[..]);
-        challenge
     }
 }

@@ -4,6 +4,7 @@
 //! the in-memory database state to/from JSON files.
 
 use super::{InMemory, TreeHeightsCache, TreeTipsCache};
+use crate::auth::crypto::ED25519_PRIVATE_KEY_SIZE;
 use crate::backend::VerificationStatus;
 use crate::backend::errors::DatabaseError;
 use crate::entry::{Entry, ID};
@@ -21,9 +22,9 @@ struct SerializableDatabase {
     entries: HashMap<ID, Entry>,
     #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
-    /// Private keys stored as 32-byte arrays for serialization
+    /// Private keys stored as ED25519_PRIVATE_KEY_SIZE-byte arrays for serialization
     #[serde(default)]
-    private_keys_bytes: HashMap<String, [u8; 32]>,
+    private_keys_bytes: HashMap<String, [u8; ED25519_PRIVATE_KEY_SIZE]>,
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
     cache: HashMap<String, String>,
