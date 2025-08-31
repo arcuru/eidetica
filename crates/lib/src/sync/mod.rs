@@ -554,8 +554,26 @@ impl Sync {
         Ok(())
     }
 
+    /// Add a transport with a pre-created transport instance.
+    ///
+    /// This is useful for testing and advanced configuration scenarios.
+    /// Eventually we will support multiple concurrent transports.
+    pub fn add_transport(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        self.start_background_sync(transport)?;
+        self.transport_enabled = true;
+        Ok(())
+    }
+
     /// Start the background sync engine with the given transport
     fn start_background_sync(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        if self.transport_enabled {
+            return Err(SyncError::ServerAlreadyRunning {
+                // This is a placeholder until the backend supports multiple transports simultaneously.
+                address: "background sync".to_string(),
+            }
+            .into());
+        }
+
         let sync_tree_id = self.sync_tree.root_id().clone();
 
         // If we're in an async context, spawn directly

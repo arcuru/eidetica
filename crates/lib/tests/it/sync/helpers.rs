@@ -1,11 +1,15 @@
 //! Helper functions for Sync testing
 //!
 //! This module provides utilities for testing Sync functionality including
-//! setup operations, common test patterns, and assertion helpers.
+//! setup operations, common test patterns, transport factories, and assertion helpers.
 
 use eidetica::sync::handler::{SyncHandler, SyncHandlerImpl};
-use eidetica::{basedb::BaseDB, sync::Sync};
+use eidetica::sync::peer_types::Address;
+use eidetica::sync::transports::iroh::IrohTransport;
+use eidetica::{Result, basedb::BaseDB, sync::Sync};
+use iroh::RelayMode;
 use std::sync::Arc;
+use std::time::Duration;
 
 // ===== SETUP HELPERS =====
 
@@ -79,5 +83,96 @@ pub fn set_multiple_settings(sync: &mut Sync, settings: &[(&str, &str)]) {
 pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
     for (key, expected_value) in expected {
         assert_setting(sync, key, expected_value);
+    }
+}
+
+// ===== TRANSPORT TESTING HELPERS =====
+
+/// Factory trait for setting up transport testing
+///
+/// This trait allows tests to work generically across different transport implementations
+/// by abstracting transport creation, addressing, and configuration details.
+///
+/// # Examples
+///
+/// ```rust
+/// use crate::sync::helpers::{TransportFactory, HttpTransportFactory};
+///
+/// async fn test_sync_with_any_transport<F: TransportFactory>(factory: F) {
+///     let (db1, db2) = setup_databases().await?;
+///     let sync1 = factory.create_sync(db1.backend().clone())?;
+///     // ... rest of test
+/// }
+///
+/// #[tokio::test]
+/// async fn test_http_sync() {
+///     test_sync_with_any_transport(HttpTransportFactory).await.unwrap();
+/// }
+/// ```
+pub trait TransportFactory: Send + std::marker::Sync {
+    /// Create a sync instance with this transport enabled
+    fn create_sync(&self, backend: std::sync::Arc<dyn eidetica::backend::Database>)
+    -> Result<Sync>;
+
+    /// Get the expected address format for this transport
+    fn create_address(&self, server_addr: &str) -> Address;
+
+    /// Get a display name for this transport type
+    fn transport_name(&self) -> &'static str;
+
+    /// Get appropriate wait time for this transport type during tests
+    fn sync_wait_time(&self) -> Duration {
+        if self.transport_name().contains("Iroh") {
+            Duration::from_millis(3000) // Iroh needs more time for P2P connections
+        } else {
+            Duration::from_millis(1000) // HTTP is faster
+        }
+    }
+}
+
+/// Factory for HTTP transport instances
+pub struct HttpTransportFactory;
+
+impl TransportFactory for HttpTransportFactory {
+    fn create_sync(
+        &self,
+        backend: std::sync::Arc<dyn eidetica::backend::Database>,
+    ) -> Result<Sync> {
+        let mut sync = Sync::new(backend)?;
+        sync.enable_http_transport()?;
+        Ok(sync)
+    }
+
+    fn create_address(&self, server_addr: &str) -> Address {
+        Address::http(server_addr)
+    }
+
+    fn transport_name(&self) -> &'static str {
+        "HTTP"
+    }
+}
+
+/// Factory for Iroh transport instances (relay disabled for fast local testing)
+pub struct IrohTransportFactory;
+
+impl TransportFactory for IrohTransportFactory {
+    fn create_sync(
+        &self,
+        backend: std::sync::Arc<dyn eidetica::backend::Database>,
+    ) -> Result<Sync> {
+        let mut sync = Sync::new(backend)?;
+        let transport = IrohTransport::builder()
+            .relay_mode(RelayMode::Disabled)
+            .build()?;
+        sync.add_transport(Box::new(transport))?;
+        Ok(sync)
+    }
+
+    fn create_address(&self, server_addr: &str) -> Address {
+        Address::iroh(server_addr)
+    }
+
+    fn transport_name(&self) -> &'static str {
+        "Iroh (No Relays)"
     }
 }

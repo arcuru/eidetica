@@ -18,6 +18,7 @@ mod peer_management_tests;
 // mod queue_flush_tests; // Uses old queue API
 mod sync_iroh_integration;
 mod sync_protocol_tests;
+mod transport_conformance;
 mod transport_integration_tests;
 mod unified_message_handling_tests;
 mod version_alignment_test;

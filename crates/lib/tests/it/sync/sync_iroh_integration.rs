@@ -39,30 +39,6 @@ fn test_sync_iroh_transport_blocking_interface() {
     sync.stop_server().unwrap();
 }
 
-#[tokio::test]
-async fn test_sync_transport_switching() {
-    let (_base_db, mut sync) = helpers::setup();
-
-    // Start with HTTP transport
-    sync.enable_http_transport().unwrap();
-    sync.start_server_async("127.0.0.1:0").await.unwrap();
-
-    let http_addr = sync.get_server_address_async().await.unwrap();
-    assert!(http_addr.contains(":"));
-
-    sync.stop_server_async().await.unwrap();
-
-    // Switch to Iroh transport
-    sync.enable_iroh_transport().unwrap();
-    sync.start_server_async("ignored").await.unwrap();
-
-    let iroh_addr = sync.get_server_address_async().await.unwrap();
-    assert!(iroh_addr.contains("node_id")); // JSON format with node info
-    assert!(iroh_addr.contains("direct_addresses")); // Contains connectivity info
-
-    sync.stop_server_async().await.unwrap();
-}
-
 #[test]
 fn test_sync_iroh_settings_persistence() {
     let rt = tokio::runtime::Runtime::new().unwrap();
