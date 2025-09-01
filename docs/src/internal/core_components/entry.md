@@ -43,7 +43,7 @@ Entries serve as the atomic units of both data storage and version history in Ei
 
 An Entry contains the following core data structure:
 
-```rust
+```rust,ignore
 struct Entry {
     // Main tree node containing root ID, parent references, and metadata
     tree: TreeNode {

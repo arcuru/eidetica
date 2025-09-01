@@ -75,7 +75,7 @@ graph TB
 
 The main `Sync` struct is now a **thin frontend** that communicates with a background sync engine:
 
-```rust
+```rust,ignore
 pub struct Sync {
     /// Communication channel to the background sync engine
     command_tx: mpsc::Sender<SyncCommand>,
@@ -99,7 +99,7 @@ pub struct Sync {
 
 The `BackgroundSync` struct **owns all sync state** and handles operations in a single background thread:
 
-```rust
+```rust,ignore
 pub struct BackgroundSync {
     // Core components - owns everything
     transport: Box<dyn SyncTransport>,
@@ -122,7 +122,7 @@ pub struct BackgroundSync {
 
 **Command types:**
 
-```rust
+```rust,ignore
 pub enum SyncCommand {
     // Entry operations
     SendEntries { peer: String, entries: Vec<Entry> },
@@ -165,7 +165,7 @@ All operations are non-blocking and handled concurrently within the single backg
 
 When starting a server, BackgroundSync creates a `SyncHandlerImpl` with database access:
 
-```rust
+```rust,ignore
 // Inside handle_start_server()
 let handler = Arc::new(SyncHandlerImpl::new(
     self.backend.clone(),
@@ -190,7 +190,7 @@ The command pattern architecture eliminates circular dependencies and provides:
 
 The hook system automatically detects when entries need synchronization:
 
-```rust
+```rust,ignore
 pub trait SyncHook: Send + Sync {
     fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
 }
@@ -216,7 +216,7 @@ The hook implementation is per-peer, allowing targeted synchronization. Commands
 
 The `PeerManager` handles peer registration and relationship management:
 
-```rust
+```rust,ignore
 impl PeerManager {
     /// Register a new peer
     pub fn register_peer(&self, pubkey: &str, display_name: Option<&str>) -> Result<()>;
@@ -239,7 +239,7 @@ impl PeerManager {
 
 Persistent state tracking for synchronization progress:
 
-```rust
+```rust,ignore
 pub struct SyncCursor {
     pub peer_pubkey: String,
     pub tree_id: ID,
@@ -259,7 +259,7 @@ pub struct SyncMetadata {
 
 **Storage organization:**
 
-```
+```text
 sync_state/
 ├── cursors/{peer_pubkey}/{tree_id}     -> SyncCursor
 ├── metadata/{peer_pubkey}              -> SyncMetadata
@@ -270,7 +270,7 @@ sync_state/
 
 Modular transport system supporting multiple protocols with **SyncHandler architecture**:
 
-```rust
+```rust,ignore
 pub trait SyncTransport: Send + Sync {
     /// Start server with handler for processing requests
     async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
@@ -287,7 +287,7 @@ pub trait SyncTransport: Send + Sync {
 
 The transport layer uses a callback-based handler pattern to enable database access:
 
-```rust
+```rust,ignore
 pub trait SyncHandler: Send + Sync {
     /// Handle incoming sync requests with database access
     async fn handle_request(&self, request: &SyncRequest) -> SyncResponse;

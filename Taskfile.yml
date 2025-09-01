@@ -52,6 +52,7 @@ tasks:
     cmds:
       - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
       - cargo test --doc --workspace --all-features --quiet
+      - task: book:test
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --quiet
@@ -77,6 +78,22 @@ tasks:
     cmds:
       - cd examples/todo && cargo build --all-targets --all-features --quiet
       - cd examples/todo && cargo clippy --all-targets --all-features --quiet -- -D warnings
+  book:
+    desc: Build the mdbook documentation
+    cmds:
+      - mdbook build docs
+  book:serve:
+    desc: Serve the mdbook documentation locally
+    cmds:
+      - mdbook serve docs --open
+  book:test:
+    desc: Test code examples in the mdbook
+    cmds:
+      - RUST_LOG=warn mdbook test docs
+  book:clean:
+    desc: Clean the mdbook build directory
+    cmds:
+      - mdbook clean docs
   bench:
     desc: Run benchmarks and open HTML report
     aliases: [benchmark]

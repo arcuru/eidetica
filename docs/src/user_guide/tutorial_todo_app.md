@@ -14,7 +14,7 @@ The `BaseDB` is your main entry point to interacting with an Eidetica database i
 
 In the Todo example, we initialize or load the database using an `InMemory` database, which can be persisted to a file:
 
-```rust
+```rust,ignore
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
@@ -62,7 +62,7 @@ A `Tree` is a primary organizational unit within a `BaseDB`. Think of it somewha
 
 The Todo example uses a single Tree named "todo":
 
-```rust
+```rust,ignore
 use eidetica::basedb::BaseDB;
 use eidetica::Tree;
 use anyhow::Result;
@@ -109,7 +109,7 @@ All modifications to a `Tree`'s data happen within an `Operation`. Operations en
 
 Every operation is automatically authenticated using the tree's default signing key. This ensures that all changes are cryptographically verified and traceable.
 
-```rust
+```rust,ignore
 use eidetica::Tree;
 use anyhow::Result;
 
@@ -139,7 +139,7 @@ Read-only access also typically uses an `Operation` to ensure a consistent view 
 
 The Todo example uses a `Table` to store `Todo` structs:
 
-```rust
+```rust,ignore
 use eidetica::{Tree, Error};
 use eidetica::subtree::Table;
 use serde::{Deserialize, Serialize};
@@ -194,7 +194,7 @@ fn list_todos(tree: &Tree) -> Result<()> {
 
 Eidetica leverages the `serde` framework for data serialization. Any data structure you want to store needs to implement `serde::Serialize` and `serde::Deserialize`. This allows you to store complex Rust types directly.
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)] // Serde traits
 pub struct Todo {
     pub title: String,
@@ -208,7 +208,7 @@ pub struct Todo {
 
 The Todo example also demonstrates the use of `YDoc` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
 
-```rust
+```rust,ignore
 use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map, Transact};
 

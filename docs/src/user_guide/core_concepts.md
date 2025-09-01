@@ -36,7 +36,7 @@ This approach allows for:
 
 Eidetica organizes data in a layered architecture:
 
-```
+```text
 +-----------------------+
 | User Application      |
 +-----------------------+

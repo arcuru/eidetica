@@ -34,7 +34,7 @@ Key characteristics of Trees:
 
 You interact with Trees through Operations:
 
-```rust
+```rust,ignore
 // Create a new operation
 let op = tree.new_operation()?;
 
@@ -57,7 +57,7 @@ When you commit an operation, Eidetica:
 
 Each Tree maintains its settings as a key-value store in a special "settings" subtree:
 
-```rust
+```rust,ignore
 // Get the settings subtree
 let settings = tree.get_settings()?;
 
@@ -77,7 +77,7 @@ Common settings include:
 
 Trees in Eidetica maintain a concept of "tips" - the latest entries in the tree's history:
 
-```rust
+```rust,ignore
 // Get the current tip entries
 let tips = tree.get_tips()?;
 ```

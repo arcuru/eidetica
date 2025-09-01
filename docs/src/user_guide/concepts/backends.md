@@ -26,7 +26,7 @@ The `InMemory` database is currently the primary storage implementation:
 
 Example usage:
 
-```rust
+```rust,ignore
 // Create a new in-memory database
 use eidetica::backend::database::InMemory;
 let database = InMemory::new();

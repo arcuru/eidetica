@@ -10,7 +10,7 @@ This document describes how Eidetica stores, retrieves, and tracks settings in t
 
 Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constants.rs`):
 
-```rust
+```rust,ignore
 // Settings structure in _settings subtree
 {
     "auth": {
@@ -34,7 +34,7 @@ Settings are stored in the `_settings` subtree (constant `SETTINGS` in `constant
 
 `AtomicOp::get_settings()` provides unified access to settings:
 
-```rust
+```rust,ignore
 pub fn get_settings(&self) -> Result<Doc> {
     // Get historical settings from the tree
     let mut historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
@@ -58,7 +58,7 @@ The method combines:
 
 Every entry includes metadata tracking settings state:
 
-```rust
+```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EntryMetadata {
     /// Tips of the _settings subtree at the time this entry was created
@@ -78,7 +78,7 @@ struct EntryMetadata {
 
 ### Entry Structure
 
-```rust
+```rust,ignore
 pub struct Entry {
     tree: TreeNode,              // Main tree node with metadata
     subtrees: Vec<SubTreeNode>,  // Named subtrees including _settings
@@ -88,7 +88,7 @@ pub struct Entry {
 
 ### TreeNode Structure
 
-```rust
+```rust,ignore
 struct TreeNode {
     pub root: ID,                   // Root entry ID of the tree
     pub parents: Vec<ID>,           // Parent entry IDs in main tree history
@@ -100,7 +100,7 @@ struct TreeNode {
 
 ### SubTreeNode Structure
 
-```rust
+```rust,ignore
 struct SubTreeNode {
     pub name: String,        // Subtree name (e.g., "_settings")
     pub parents: Vec<ID>,    // Parent entries in subtree history
@@ -114,7 +114,7 @@ Authentication configuration is stored in `_settings.auth`:
 
 ### AuthSettings Structure
 
-```rust
+```rust,ignore
 pub struct AuthSettings {
     inner: Doc,  // Wraps Doc data from _settings.auth
 }
@@ -138,7 +138,7 @@ pub struct AuthSettings {
 
 ### Reading Settings
 
-```rust
+```rust,ignore
 // In an AtomicOp context
 let settings = op.get_settings()?;
 
@@ -150,7 +150,7 @@ if let Some(Value::Map(auth_map)) = settings.get("auth") {
 
 ### Modifying Settings
 
-```rust
+```rust,ignore
 // Get a DocStore handle for the _settings subtree
 let mut settings_store = op.get_subtree::<DocStore>("_settings")?;
 

@@ -18,7 +18,7 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 
 ### 1. Enable Sync on Your Database
 
-```rust
+```rust,ignore
 use eidetica::{BaseDB, backend::InMemory};
 
 // Create a database with sync enabled
@@ -31,7 +31,7 @@ db.add_private_key("device_key")?;
 
 ### 2. Enable a Transport Protocol
 
-```rust
+```rust,ignore
 // Enable HTTP transport
 db.sync_mut()?.enable_http_transport()?;
 
@@ -41,7 +41,7 @@ db.sync_mut()?.start_server("127.0.0.1:8080")?;
 
 ### 3. Connect to a Remote Peer
 
-```rust
+```rust,ignore
 use eidetica::sync::{Address, peer_types::PeerStatus};
 
 // Create an address for the remote peer
@@ -56,7 +56,7 @@ db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
 
 ### 4. Set Up Tree Synchronization
 
-```rust
+```rust,ignore
 // Create a tree to sync
 let tree = db.new_tree(Doc::new(), "device_key")?;
 let tree_id = tree.root_id().to_string();
@@ -69,7 +69,7 @@ db.sync_mut()?.add_tree_sync(&peer_pubkey, &tree_id)?;
 
 Once configured, any changes to the tree will automatically be queued for synchronization:
 
-```rust
+```rust,ignore
 // Make changes to the tree - these will be auto-synced
 let op = tree.new_operation()?;
 let store = op.get_subtree::<DocStore>("data")?;
@@ -83,7 +83,7 @@ op.commit()?; // This triggers sync queue entry
 
 The HTTP transport uses REST APIs for synchronization:
 
-```rust
+```rust,ignore
 // Enable HTTP transport
 sync.enable_http_transport()?;
 
@@ -99,7 +99,7 @@ let peer_key = sync.connect_to_peer(&addr).await?;
 
 Iroh provides direct peer-to-peer connectivity with NAT traversal:
 
-```rust
+```rust,ignore
 // Enable Iroh transport (includes built-in NAT traversal)
 sync.enable_iroh_transport()?;
 
@@ -114,7 +114,7 @@ let peer_key = sync.connect_to_peer(&addr).await?;
 
 The sync system automatically starts a background thread when transport is enabled:
 
-```rust
+```rust,ignore
 // The BackgroundSync engine starts automatically when you enable transport
 sync.enable_http_transport()?;  // This starts the background thread
 
@@ -129,7 +129,7 @@ sync.enable_http_transport()?;  // This starts the background thread
 
 Once configured, the system handles everything automatically:
 
-```rust
+```rust,ignore
 // When you commit changes, they're sent immediately
 let op = tree.new_operation()?;
 op.commit()?;  // Sync hook sends command to background thread
@@ -146,7 +146,7 @@ op.commit()?;  // Sync hook sends command to background thread
 
 ### Registering Peers
 
-```rust
+```rust,ignore
 // Register a peer manually
 sync.register_peer("ed25519:abc123...", Some("Alice's Device"))?;
 
@@ -157,7 +157,7 @@ sync.add_peer_address(&peer_key, Address::iroh("iroh://peer_id@relay")?)?;
 
 ### Peer Status Management
 
-```rust
+```rust,ignore
 use eidetica::sync::peer_types::PeerStatus;
 
 // Activate peer for syncing
@@ -174,7 +174,7 @@ if let Some(peer_info) = sync.get_peer_info(&peer_key)? {
 
 ### Tree Sync Relationships
 
-```rust
+```rust,ignore
 // Add tree to sync relationship
 sync.add_tree_sync(&peer_key, &tree_id)?;
 
@@ -194,7 +194,7 @@ sync.remove_tree_sync(&peer_key, &tree_id)?;
 
 All sync operations use Ed25519 digital signatures:
 
-```rust
+```rust,ignore
 // The sync system automatically uses your device key for authentication
 // Add additional keys if needed
 db.add_private_key("backup_key")?;
@@ -207,7 +207,7 @@ tree.set_default_auth_key("backup_key");
 
 During handshake, peers exchange and verify public keys:
 
-```rust
+```rust,ignore
 // The connect_to_peer method automatically:
 // 1. Exchanges public keys
 // 2. Verifies signatures
@@ -221,7 +221,7 @@ let verified_peer_key = sync.connect_to_peer(&addr).await?;
 
 The BackgroundSync engine handles all operations automatically:
 
-```rust
+```rust,ignore
 // Entries are synced immediately when committed
 // No manual queue management needed
 
@@ -238,7 +238,7 @@ let server_addr = sync.get_server_address()?;
 
 ### Sync State Tracking
 
-```rust
+```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
 // Get sync state for a tree-peer relationship
@@ -256,7 +256,7 @@ println!("Success rate: {:.2}%", metadata.sync_success_rate() * 100.0);
 
 The sync system provides detailed error reporting:
 
-```rust
+```rust,ignore
 use eidetica::sync::SyncError;
 
 match sync.connect_to_peer(&addr).await {
@@ -305,7 +305,7 @@ Store device keys securely and use different keys for different purposes when ap
 
 You can implement custom sync hooks to extend the sync system:
 
-```rust
+```rust,ignore
 use eidetica::sync::hooks::{SyncHook, SyncHookContext};
 
 struct CustomSyncHook;
@@ -323,7 +323,7 @@ impl SyncHook for CustomSyncHook {
 
 You can run multiple sync-enabled databases in the same process:
 
-```rust
+```rust,ignore
 // Database 1
 let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
 db1.sync_mut()?.enable_http_transport()?;

@@ -39,7 +39,7 @@ Eidetica revolves around a few key components working together:
 
 ## Basic Usage Pattern (Conceptual Code)
 
-```rust
+```rust,ignore
 use eidetica::{BaseDB, Tree, Error};
 use eidetica::backend::database::InMemory;
 use eidetica::subtree::{DocStore, Table};

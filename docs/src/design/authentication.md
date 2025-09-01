@@ -679,7 +679,7 @@ The current system uses entry metadata to reference settings tips. With authenti
 
 Authentication configuration is stored in `_settings.auth` as a Doc CRDT:
 
-```rust
+```rust,ignore
 // Key storage structure
 AuthKey {
     pubkey: String,           // Ed25519 public key

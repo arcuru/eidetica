@@ -6,7 +6,7 @@ _Assumes basic setup like `use eidetica::{BaseDB, Tree, Error, ...};` and error 
 
 ## 1. Initializing the Database (`BaseDB`)
 
-```rust
+```rust,ignore
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ if db_path.exists() {
 
 ## 2. Creating or Loading a Tree
 
-```rust
+```rust,ignore
 use eidetica::crdt::Doc;
 
 let db: BaseDB = /* obtained from step 1 */;
@@ -63,7 +63,7 @@ println!("Using Tree with root ID: {}", tree.root_id());
 
 ## 3. Writing Data (DocStore Example)
 
-```rust
+```rust,ignore
 use eidetica::subtree::DocStore;
 
 let tree: Tree = /* obtained from step 2 */;
@@ -93,7 +93,7 @@ println!("DocStore changes committed in entry: {}", entry_id);
 
 ## 4. Writing Data (Table Example)
 
-```rust
+```rust,ignore
 use eidetica::subtree::Table;
 use serde::{Serialize, Deserialize};
 
@@ -142,7 +142,7 @@ println!("Table changes committed in entry: {}", entry_id);
 
 ## 5. Reading Data (DocStore Viewer)
 
-```rust
+```rust,ignore
 use eidetica::subtree::DocStore;
 
 let tree: Tree = /* obtained from step 2 */;
@@ -168,7 +168,7 @@ match config_viewer.get("retry_count") {
 
 ## 6. Reading Data (Table Viewer)
 
-```rust
+```rust,ignore
 use eidetica::subtree::Table;
 // Assume Task struct from example 4
 
@@ -202,7 +202,7 @@ match tasks_viewer.iter() {
 
 ## 7. Working with Nested Data (ValueEditor)
 
-```rust
+```rust,ignore
 use eidetica::subtree::{DocStore, Value};
 
 let tree: Tree = /* obtained from step 2 */;
@@ -320,7 +320,7 @@ if let Ok(user_data) = viewer_store.get("user123") {
 
 The `YDoc` subtree provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
 
-```rust
+```rust,ignore
 use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
 
@@ -429,7 +429,7 @@ prefs_read_store.with_doc(|doc| {
 
 ## 9. Saving the Database (InMemory)
 
-```rust
+```rust,ignore
 use eidetica::backend::database::InMemory;
 use std::path::PathBuf;
 

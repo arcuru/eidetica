@@ -6,7 +6,7 @@ How to use Eidetica's authentication system for securing your data.
 
 Every Eidetica database requires authentication. Here's the minimal setup:
 
-```rust
+```rust,ignore
 use eidetica::{BaseDB, backend::database::InMemory};
 use eidetica::crdt::Doc;
 
@@ -46,7 +46,7 @@ op.commit()?;  // Automatically signed
 
 Give other users access to your tree:
 
-```rust
+```rust,ignore
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 
 let op = tree.new_operation()?;
@@ -67,7 +67,7 @@ op.commit()?;
 
 Allow anyone to read your tree:
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let auth = op.auth_settings()?;
 
@@ -86,7 +86,7 @@ op.commit()?;
 
 Remove a user's access:
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let auth = op.auth_settings()?;
 
@@ -103,7 +103,7 @@ Note: Historical entries created by revoked keys remain valid.
 
 ## Multi-User Setup Example
 
-```rust
+```rust,ignore
 // Initial setup with admin hierarchy
 let op = tree.new_operation()?;
 let auth = op.auth_settings()?;
@@ -143,7 +143,7 @@ op.commit()?;
 
 Trees can delegate authentication to other trees:
 
-```rust
+```rust,ignore
 // In main tree, delegate to a user's personal tree
 let op = main_tree.new_operation()?;
 let auth = op.auth_settings()?;

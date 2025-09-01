@@ -20,7 +20,7 @@ DocStore is a publicly available subtree type that provides a document-oriented 
 
 When using `set_path()` with dot-separated paths, DocStore creates **nested map structures**, not flat keys with dots:
 
-```rust
+```rust,ignore
 // This code:
 docstore.set_path("user.profile.name", "Alice")?;
 
@@ -41,7 +41,7 @@ docstore.set_path("user.profile.name", "Alice")?;
 
 When using `get_all()` to retrieve all data, you get the nested structure and must navigate it accordingly:
 
-```rust
+```rust,ignore
 let all_data = docstore.get_all()?;
 
 // Wrong way - looking for a flat key with dots
@@ -89,7 +89,7 @@ if let Some(Value::Node(user_node)) = all_data.get("user") {
 
 ### Application Configuration
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let config = op.get_subtree::<DocStore>("app_config")?;
 
@@ -106,7 +106,7 @@ op.commit()?;
 
 DocStore is used internally for sync state tracking in the sync module:
 
-```rust
+```rust,ignore
 // Creating nested sync state structure
 let sync_state = op.get_subtree::<DocStore>("sync_state")?;
 
@@ -147,7 +147,7 @@ The most common mistake is expecting `set_path("a.b.c", value)` to create a flat
 
 When using `get_all()`, remember that the returned Map contains the nested structure, not flat keys:
 
-```rust
+```rust,ignore
 // After: docstore.set_path("config.server.port", "8080")
 
 let all = docstore.get_all()?;

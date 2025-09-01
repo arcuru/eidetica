@@ -39,7 +39,7 @@ The `DocStore` subtree provides a document-oriented interface for storing and re
 
 #### Basic Usage
 
-```rust
+```rust,ignore
 // Get a DocStore subtree
 let op = tree.new_operation()?;
 let store = op.get_subtree::<DocStore>("app_data")?;
@@ -64,7 +64,7 @@ op.commit()?;
 
 When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not flat keys with dots:
 
-```rust
+```rust,ignore
 // This code:
 store.set_path("user.profile.name", "Bob")?;
 
@@ -92,7 +92,7 @@ Use cases for `DocStore`:
 
 The `Table<T>` subtree manages collections of serializable items, similar to a table in a database:
 
-```rust
+```rust,ignore
 // Define a struct for your data
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
@@ -144,7 +144,7 @@ Use cases for `Table`:
 
 The `YDoc` subtree provides integration with Y-CRDT (Yjs) for real-time collaborative editing. This requires the "y-crdt" feature:
 
-```rust
+```rust,ignore
 // Enable in Cargo.toml: eidetica = { features = ["y-crdt"] }
 use eidetica::subtree::YDoc;
 use eidetica::y_crdt::{Map, Text, Transact};
@@ -199,7 +199,7 @@ Each Subtree implementation in Eidetica:
 
 The `SubTree` trait defines the minimal interface:
 
-```rust
+```rust,ignore
 pub trait SubTree: Sized {
     fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self>;
     fn name(&self) -> &str;

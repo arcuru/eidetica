@@ -26,7 +26,7 @@ To start using Eidetica, you need to:
 
 Here's a simple example:
 
-```rust
+```rust,ignore
 use eidetica::backend::database::InMemory;
 use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
@@ -47,7 +47,7 @@ let tree = db.new_tree(settings, "my_key")?;
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
 
-```rust
+```rust,ignore
 // Save the database to a file
 let path = PathBuf::from("my_database.json");
 let database_guard = db.backend().lock().unwrap();
@@ -58,7 +58,7 @@ if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
 
 You can load a previously saved database:
 
-```rust
+```rust,ignore
 let path = PathBuf::from("my_database.json");
 let database = InMemory::load_from_file(&path)?;
 let db = BaseDB::new(Box::new(database));
@@ -78,7 +78,7 @@ Eidetica uses **Subtrees** to organize data within a tree. One common subtree ty
 
 Any data you store must be serializable with `serde`:
 
-```rust
+```rust,ignore
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ All operations in Eidetica happen within an atomic **Operation**:
 
 **Inserting Data:**
 
-```rust
+```rust,ignore
 // Start an authenticated operation
 let op = tree.new_operation()?;
 
@@ -111,7 +111,7 @@ op.commit()?;
 
 **Reading Data:**
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
@@ -130,7 +130,7 @@ for result in people.iter()? {
 
 **Updating Data:**
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 
@@ -145,7 +145,7 @@ op.commit()?;
 
 **Deleting Data:**
 
-```rust
+```rust,ignore
 let op = tree.new_operation()?;
 let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
 

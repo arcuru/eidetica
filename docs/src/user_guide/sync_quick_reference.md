@@ -6,7 +6,7 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 
 ### Basic Sync Setup
 
-```rust
+```rust,ignore
 use eidetica::{BaseDB, backend::InMemory};
 
 // Create database with sync enabled
@@ -23,7 +23,7 @@ db.sync_mut()?.start_server("127.0.0.1:8080")?;
 
 ### Understanding BackgroundSync
 
-```rust
+```rust,ignore
 // The BackgroundSync engine starts automatically with transport
 db.sync_mut()?.enable_http_transport()?; // Starts background thread
 
@@ -40,7 +40,7 @@ db.sync_mut()?.enable_http_transport()?; // Starts background thread
 
 ### Connect to Remote Peer
 
-```rust
+```rust,ignore
 use eidetica::sync::{Address, peer_types::PeerStatus};
 
 // HTTP connection
@@ -57,7 +57,7 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Active)?;
 
 ### Manual Peer Registration
 
-```rust
+```rust,ignore
 // Register peer manually
 let peer_key = "ed25519:abc123...";
 db.sync_mut()?.register_peer(peer_key, Some("Alice's Device"))?;
@@ -69,7 +69,7 @@ db.sync_mut()?.add_peer_address(peer_key, Address::iroh("iroh://peer_id")?)?;
 
 ### Peer Status Management
 
-```rust
+```rust,ignore
 // List all peers
 let peers = db.sync()?.list_peers()?;
 for peer in peers {
@@ -94,7 +94,7 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 
 ### Setup Tree Sync Relationships
 
-```rust
+```rust,ignore
 // Create tree
 let tree = db.new_tree(Doc::new(), "device_key")?;
 let tree_id = tree.root_id().to_string();
@@ -111,7 +111,7 @@ let peers = db.sync()?.get_tree_peers(&tree_id)?;
 
 ### Remove Sync Relationships
 
-```rust
+```rust,ignore
 // Remove tree from sync with peer
 db.sync_mut()?.remove_tree_sync(&peer_key, &tree_id)?;
 
@@ -123,7 +123,7 @@ db.sync_mut()?.remove_peer(&peer_key)?;
 
 ### Basic Data Changes
 
-```rust
+```rust,ignore
 use eidetica::subtree::DocStore;
 
 // Any tree operation automatically triggers sync
@@ -140,7 +140,7 @@ op.commit()?; // Entries queued for sync to all configured peers
 
 ### Bulk Operations
 
-```rust
+```rust,ignore
 // Multiple operations in single commit
 let op = tree.new_operation()?;
 let store = op.get_subtree::<DocStore>("data")?;
@@ -157,7 +157,7 @@ op.commit()?;
 
 ### Server Control
 
-```rust
+```rust,ignore
 // Start/stop sync server
 let sync = db.sync_mut()?;
 sync.start_server("127.0.0.1:8080")?;
@@ -174,7 +174,7 @@ sync.stop_server()?;
 
 ### Sync State Tracking
 
-```rust
+```rust,ignore
 // Get sync state manager
 let op = db.sync()?.sync_tree().new_operation()?;
 let state_manager = SyncStateManager::new(&op);
@@ -196,7 +196,7 @@ if let Some(meta) = metadata {
 
 ### Sync State Tracking
 
-```rust
+```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
 // Get sync tree operation
@@ -225,7 +225,7 @@ for entry in history {
 
 ### Common Error Patterns
 
-```rust
+```rust,ignore
 use eidetica::sync::SyncError;
 
 // Connection errors
@@ -254,7 +254,7 @@ match sync.connect_to_peer(&addr).await {
 
 ### Monitoring Sync Health
 
-```rust
+```rust,ignore
 // Check server status
 if !sync.is_server_running() {
     eprintln!("Warning: Sync server not running");
@@ -276,7 +276,7 @@ for peer in peers {
 
 ### Development Setup
 
-```rust
+```rust,ignore
 // Fast, responsive sync for development
 // Enable HTTP transport for easy debugging
 db.sync_mut()?.enable_http_transport()?;
@@ -289,7 +289,7 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ### Production Setup
 
-```rust
+```rust,ignore
 // Use Iroh for production deployments
 db.sync_mut()?.enable_iroh_transport()?;
 
@@ -305,7 +305,7 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ### Multi-Database Setup
 
-```rust
+```rust,ignore
 // Run multiple sync-enabled databases
 let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
 db1.sync_mut()?.enable_http_transport()?;
@@ -324,7 +324,7 @@ let peer = db2.sync_mut()?.connect_to_peer(&addr).await?;
 
 ### Mock Peer Setup
 
-```rust
+```rust,ignore
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer

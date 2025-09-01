@@ -79,7 +79,7 @@ The sync system uses a thin frontend that sends commands to a background thread:
 
 **Architecture:**
 
-```rust
+```rust,ignore
 // Hook trait for extensibility
 trait SyncHook {
     fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
@@ -114,7 +114,7 @@ impl AtomicOp {
 
 **Core Interface:**
 
-```rust
+```rust,ignore
 pub trait SyncTransport: Send + Sync {
     /// Start server with handler for processing sync requests
     async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
@@ -142,7 +142,7 @@ pub trait SyncHandler: Send + Sync {
 
 #### HTTP Transport
 
-```rust
+```rust,ignore
 pub struct HttpTransport {
     client: reqwest::Client,
     server: Option<HttpServer>,
@@ -172,7 +172,7 @@ pub struct HttpTransport {
 
 #### Iroh P2P Transport
 
-```rust
+```rust,ignore
 pub struct IrohTransport {
     endpoint: Option<Endpoint>,
     server_state: ServerState,
@@ -207,7 +207,7 @@ pub struct IrohTransport {
 
 **Architecture:**
 
-```
+```text
 In-Memory (Transient):
 ├── sync_queue: HashMap<PeerID, Vec<PendingSyncEntry>>
 
@@ -264,7 +264,7 @@ graph LR
 
 #### 1. Entry Commit Flow
 
-```
+```text
 1. Application calls tree.new_operation().commit()
 2. AtomicOp stores entry in backend
 3. AtomicOp executes sync hooks
@@ -277,7 +277,7 @@ graph LR
 
 #### 2. Peer Connection Flow
 
-```
+```text
 1. Application calls sync.connect_to_peer(address)
 2. Sync creates HandshakeRequest with device info
 3. Transport sends handshake to peer
@@ -289,7 +289,7 @@ graph LR
 
 #### 3. Sync Relationship Flow
 
-```
+```text
 1. Application calls sync.add_tree_sync(peer_id, tree_id)
 2. PeerManager stores relationship in sync tree
 3. Future commits to tree trigger sync hooks
@@ -343,7 +343,7 @@ The BackgroundSync engine processes commands sent from the frontend:
 
 **Recovery mechanisms:**
 
-```rust
+```rust,ignore
 // Automatic retry tracking
 entry.mark_attempted(Some(error.to_string()));
 
@@ -395,7 +395,7 @@ let stats = queue.get_sync_statistics()?;
 
 **Handshake Protocol:**
 
-```
+```text
 A -> B: HandshakeRequest {
     device_id: string,
     public_key: ed25519_pubkey,
@@ -462,7 +462,7 @@ B -> A: verify(A.public_key, signature, challenge)
 
 #### Queue Configuration
 
-```rust
+```rust,ignore
 pub struct SyncQueueConfig {
     pub max_queue_size: usize,      // Size-based flush trigger
     pub max_queue_age_secs: u64,    // Age-based flush trigger
@@ -479,7 +479,7 @@ pub struct SyncQueueConfig {
 
 #### Worker Configuration
 
-```rust
+```rust,ignore
 pub struct SyncFlushConfig {
     pub check_interval_secs: u64,   // How often to check for flushes
     pub enabled: bool,              // Enable/disable background worker
