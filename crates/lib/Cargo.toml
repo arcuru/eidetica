@@ -27,7 +27,6 @@ uuid = { workspace = true, features = ["serde"] }
 yrs = { workspace = true, optional = true }
 tokio = { workspace = true }
 axum = { workspace = true }
-tower = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
 iroh = { workspace = true }
