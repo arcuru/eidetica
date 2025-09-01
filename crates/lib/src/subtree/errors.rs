@@ -8,7 +8,7 @@ use thiserror::Error;
 /// Generic error types for subtree operations.
 ///
 /// This enum provides fundamental error variants that apply to any subtree implementation.
-/// Specific subtree types (Dict, Table, etc.) should define their own error types
+/// Specific subtree types (DocStore, Table, etc.) should define their own error types
 /// for implementation-specific errors and convert them to SubtreeError when needed.
 #[non_exhaustive]
 #[derive(Debug, Error)]

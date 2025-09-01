@@ -12,7 +12,7 @@
 //! * **BaseDB (`basedb::BaseDB`)**: The main database struct that manages trees and interacts with a backend.
 //! * **CRDTs (`crdt::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
 //! * **SubTrees (`subtree::SubTree`)**: Named data structures within a tree that provide specialized data access patterns:
-//!     * **Dict (`subtree::Dict`)**: A key-value store within a tree.
+//!     * **DocStore (`subtree::DocStore`)**: A document-oriented store for structured data with path-based operations.
 //!     * **Table (`subtree::Table`)**: A record-oriented store with automatic primary key generation, similar to a database table.
 //!     * **YDoc (`subtree::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
