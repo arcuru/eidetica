@@ -42,3 +42,7 @@ harness = false
 [[bench]]
 name = "backend_benchmarks"
 harness = false
+
+[[bench]]
+name = "iroh_benchmarks"
+harness = false
