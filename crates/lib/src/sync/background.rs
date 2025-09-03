@@ -24,6 +24,7 @@ use crate::Tree;
 use crate::auth::crypto::{format_public_key, generate_challenge, verify_challenge_response};
 use crate::backend::Database;
 use crate::entry::{Entry, ID};
+use tracing::{Instrument, debug, info, info_span, trace};
 
 /// Commands that can be sent to the background sync engine
 #[derive(Debug)]
@@ -136,50 +137,56 @@ impl BackgroundSync {
         Ok(sync_tree)
     }
 
-    /// Main event loop that handles all sync operations
+    /// Main event loop that handles all sync operations  
     async fn run(mut self) {
-        // Set up timers
-        let mut periodic_sync = interval(Duration::from_secs(300)); // 5 minutes
-        let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
-        let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
+        async move {
+            info!("Starting background sync engine");
+            // Set up timers
+            let mut periodic_sync = interval(Duration::from_secs(300)); // 5 minutes
+            let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
+            let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
 
-        // Skip initial tick to avoid immediate execution
-        periodic_sync.tick().await;
-        retry_check.tick().await;
-        connection_check.tick().await;
+            // Skip initial tick to avoid immediate execution
+            periodic_sync.tick().await;
+            retry_check.tick().await;
+            connection_check.tick().await;
 
-        loop {
-            tokio::select! {
-                // Handle commands from frontend
-                Some(cmd) = self.command_rx.recv() => {
-                    if let Err(e) = self.handle_command(cmd).await {
-                        // Log errors but continue running - background sync should be resilient
-                        tracing::error!("Background sync command error: {e}");
+            loop {
+                tokio::select! {
+                    // Handle commands from frontend
+                    Some(cmd) = self.command_rx.recv() => {
+                        if let Err(e) = self.handle_command(cmd).await {
+                            // Log errors but continue running - background sync should be resilient
+                            tracing::error!("Background sync command error: {e}");
+                        }
                     }
-                }
 
-                // Periodic sync with all peers
-                _ = periodic_sync.tick() => {
-                    self.periodic_sync_all_peers().await;
-                }
+                    // Periodic sync with all peers
+                    _ = periodic_sync.tick() => {
+                        self.periodic_sync_all_peers().await;
+                    }
 
-                // Process retry queue
-                _ = retry_check.tick() => {
-                    self.process_retry_queue().await;
-                }
+                    // Process retry queue
+                    _ = retry_check.tick() => {
+                        self.process_retry_queue().await;
+                    }
 
-                // Check and reconnect disconnected peers
-                _ = connection_check.tick() => {
-                    self.check_peer_connections().await;
-                }
+                    // Check and reconnect disconnected peers
+                    _ = connection_check.tick() => {
+                        self.check_peer_connections().await;
+                    }
 
-                // Channel closed, shutdown
-                else => {
-                    // Normal shutdown when channel closes
-                    break;
+                    // Channel closed, shutdown
+                    else => {
+                        // Normal shutdown when channel closes
+                        info!("Background sync engine shutting down");
+                        break;
+                    }
                 }
             }
         }
+        .instrument(info_span!("background_sync"))
+        .await
     }
 
     /// Handle a single command from the frontend
@@ -394,53 +401,55 @@ impl BackgroundSync {
 
     /// Sync with a specific peer (bidirectional)
     async fn sync_with_peer(&self, peer_pubkey: &str) -> Result<()> {
-        // Get peer info and tree list from sync tree (extract and drop operation before await)
-        let (address, sync_trees) = {
-            let sync_tree = self.get_sync_tree()?;
-            let op = sync_tree.new_operation()?;
-            let peer_manager = PeerManager::new(&op);
+        async move {
+            info!(peer = %peer_pubkey, "Starting peer synchronization");
 
-            let peer_info = peer_manager
-                .get_peer_info(peer_pubkey)?
-                .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+            // Get peer info and tree list from sync tree (extract and drop operation before await)
+            let (address, sync_trees) = {
+                let sync_tree = self.get_sync_tree()?;
+                let op = sync_tree.new_operation()?;
+                let peer_manager = PeerManager::new(&op);
 
-            let address = peer_info
-                .addresses
-                .first()
-                .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?
-                .clone();
+                let peer_info = peer_manager
+                    .get_peer_info(peer_pubkey)?
+                    .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
 
-            // Find all trees that sync with this peer from sync tree
-            let sync_trees = peer_manager.get_peer_trees(peer_pubkey)?;
+                let address = peer_info
+                    .addresses
+                    .first()
+                    .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?
+                    .clone();
 
-            (address, sync_trees)
-        }; // Operation is dropped here
+                // Find all trees that sync with this peer from sync tree
+                let sync_trees = peer_manager.get_peer_trees(peer_pubkey)?;
 
-        if sync_trees.is_empty() {
-            return Ok(()); // No trees to sync
-        }
+                (address, sync_trees)
+            }; // Operation is dropped here
 
-        // Debug: log tree sync operation
-        #[cfg(debug_assertions)]
-        tracing::debug!(
-            "Syncing {} trees with peer {}",
-            sync_trees.len(),
-            peer_pubkey
-        );
-
-        for tree_id_str in sync_trees {
-            // Convert string ID to entry ID
-            let tree_id = ID::from(tree_id_str.as_str());
-            if let Err(e) = self
-                .sync_tree_with_peer(peer_pubkey, &tree_id, &address)
-                .await
-            {
-                // Log tree sync failure but continue with other trees
-                tracing::error!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
+            if sync_trees.is_empty() {
+                debug!(peer = %peer_pubkey, "No trees configured for sync with peer");
+                return Ok(()); // No trees to sync
             }
-        }
 
-        Ok(())
+            info!(peer = %peer_pubkey, tree_count = sync_trees.len(), "Synchronizing trees with peer");
+
+            for tree_id_str in sync_trees {
+                // Convert string ID to entry ID
+                let tree_id = ID::from(tree_id_str.as_str());
+                if let Err(e) = self
+                    .sync_tree_with_peer(peer_pubkey, &tree_id, &address)
+                    .await
+                {
+                    // Log tree sync failure but continue with other trees
+                    tracing::error!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
+                }
+            }
+
+            info!(peer = %peer_pubkey, "Completed peer synchronization");
+            Ok(())
+        }
+        .instrument(info_span!("sync_with_peer", peer = %peer_pubkey))
+        .await
     }
 
     /// Sync a specific tree with a peer using smart duplicate prevention.
@@ -470,10 +479,12 @@ impl BackgroundSync {
     /// - **Stateless**: No persistent tracking of individual sends needed
     async fn sync_tree_with_peer(
         &self,
-        _peer_pubkey: &str,
+        peer_pubkey: &str,
         tree_id: &ID,
         address: &Address,
     ) -> Result<()> {
+        async move {
+            trace!(peer = %peer_pubkey, tree = %tree_id, "Starting tree synchronization");
         // Step 1: Get our tips for this tree
         let our_tips = self
             .backend
@@ -486,6 +497,7 @@ impl BackgroundSync {
         // Step 3: Find what we're missing and fetch it
         let missing_entries = self.find_missing_entries(&our_tips, &their_tips)?;
         if !missing_entries.is_empty() {
+            debug!(peer = %peer_pubkey, tree = %tree_id, missing_count = missing_entries.len(), "Fetching missing entries from peer");
             let entries = self
                 .fetch_entries_from_peer(address, &missing_entries)
                 .await?;
@@ -495,12 +507,17 @@ impl BackgroundSync {
         // Step 4: Find what they're missing and send it
         let entries_to_send = self.find_entries_to_send(&our_tips, &their_tips)?;
         if !entries_to_send.is_empty() {
+            debug!(peer = %peer_pubkey, tree = %tree_id, send_count = entries_to_send.len(), "Sending entries to peer");
             self.transport
                 .send_entries(address, &entries_to_send)
                 .await?;
         }
 
+        trace!(peer = %peer_pubkey, tree = %tree_id, "Completed tree synchronization");
         Ok(())
+        }
+        .instrument(info_span!("sync_tree", peer = %peer_pubkey, tree = %tree_id))
+        .await
     }
 
     /// Get tips from a peer for a tree

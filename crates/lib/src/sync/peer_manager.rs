@@ -9,6 +9,7 @@ use crate::atomicop::AtomicOp;
 use crate::crdt::doc::path;
 use crate::subtree::DocStore;
 use crate::{Error, Result};
+use tracing::{debug, info, warn};
 
 /// Private constants for peer management subtree names
 pub(super) const PEERS_SUBTREE: &str = "peers"; // Maps peer pubkey -> PeerInfo
@@ -45,8 +46,11 @@ impl<'a> PeerManager<'a> {
         let peer_info = PeerInfo::new(&pubkey, display_name);
         let peers = self.op.get_subtree::<DocStore>(PEERS_SUBTREE)?;
 
+        debug!(peer = %pubkey, display_name = ?display_name, "Registering new peer");
+
         // Check if peer already exists using path-based check
         if peers.contains_path(path!(&pubkey as &str)) {
+            warn!(peer = %pubkey, "Attempted to register peer that already exists");
             return Err(Error::Sync(SyncError::PeerAlreadyExists(pubkey.clone())));
         }
 
@@ -78,6 +82,7 @@ impl<'a> PeerManager<'a> {
             peers.set_path(path!(&pubkey as &str, "addresses"), addresses_json)?;
         }
 
+        info!(peer = %pubkey, display_name = ?display_name, "Successfully registered new peer");
         Ok(())
     }
 
@@ -163,6 +168,7 @@ impl<'a> PeerManager<'a> {
             peers.set_path(path!(pubkey.as_ref(), "addresses"), addresses_json)?;
         }
 
+        debug!(peer = %pubkey.as_ref(), "Successfully updated peer information");
         Ok(())
     }
 
@@ -421,6 +427,8 @@ impl<'a> PeerManager<'a> {
                 path!(tree_root_id.as_ref(), "tree_id"),
                 tree_root_id.as_ref().to_string(),
             )?;
+        } else {
+            debug!(peer = %peer_pubkey.as_ref(), tree = %tree_root_id.as_ref(), "Peer already syncing with tree");
         }
 
         Ok(())
@@ -439,6 +447,7 @@ impl<'a> PeerManager<'a> {
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
+        info!(peer = %peer_pubkey.as_ref(), tree = %tree_root_id.as_ref(), "Removing tree sync relationship");
         let trees = self.op.get_subtree::<DocStore>(TREES_SUBTREE)?;
 
         // Get existing peer list for this tree
