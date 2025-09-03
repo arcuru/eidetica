@@ -908,7 +908,7 @@ impl AtomicOp {
 
             // Execute hooks - failures are logged but don't fail the commit
             if let Err(e) = hooks.execute_hooks(&context) {
-                eprintln!("Sync hook execution failed (commit succeeded): {e}");
+                tracing::error!("Sync hook execution failed (commit succeeded): {e}");
             }
         }
 

@@ -79,7 +79,7 @@ impl SyncHookCollection {
 
         for hook in &self.hooks {
             if let Err(e) = hook.on_entry_committed(context) {
-                eprintln!("Sync hook failed: {e}");
+                tracing::error!("Sync hook failed: {e}");
                 if first_error.is_none() {
                     first_error = Some(e);
                 }
@@ -141,9 +141,10 @@ impl SyncHook for SyncHookImpl {
 
         if let Err(e) = self.command_tx.try_send(command) {
             // Log error but don't fail the commit
-            eprintln!(
+            tracing::error!(
                 "Failed to queue entry for sync with peer {}: {}",
-                self.peer_pubkey, e
+                self.peer_pubkey,
+                e
             );
         }
 
@@ -172,7 +173,7 @@ mod tests {
 
     impl SyncHook for TestHook {
         fn on_entry_committed(&self, _context: &SyncHookContext) -> Result<()> {
-            println!("Hook {} executed", self.name);
+            tracing::debug!("Hook {} executed", self.name);
             if self.should_fail {
                 Err(crate::Error::Sync(crate::sync::SyncError::Network(
                     format!("Hook {} intentionally failed", self.name),

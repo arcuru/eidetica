@@ -16,3 +16,5 @@ path = "src/main.rs"
 [dependencies]
 eidetica = { path = "../lib" }
 signal-hook = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

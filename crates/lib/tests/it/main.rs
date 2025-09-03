@@ -15,6 +15,18 @@
  * - tree: Tests for the Tree struct and related functionality
  */
 
+use tracing_subscriber::EnvFilter;
+
+#[ctor::ctor]
+fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 mod atomicop;
 mod auth;
 mod backend;

@@ -154,7 +154,7 @@ impl BackgroundSync {
                 Some(cmd) = self.command_rx.recv() => {
                     if let Err(e) = self.handle_command(cmd).await {
                         // Log errors but continue running - background sync should be resilient
-                        eprintln!("Background sync command error: {e}");
+                        tracing::error!("Background sync command error: {e}");
                     }
                 }
 
@@ -205,7 +205,7 @@ impl BackgroundSync {
                     }
                     Err(e) => {
                         // Log error but continue with other entries
-                        eprintln!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
+                        tracing::warn!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
                     }
                 }
             }
@@ -213,7 +213,7 @@ impl BackgroundSync {
             SyncCommand::SyncWithPeer { peer } => {
                 if let Err(e) = self.sync_with_peer(&peer).await {
                     // Log sync failure but don't crash the background engine
-                    eprintln!("Failed to sync with peer {peer}: {e}");
+                    tracing::error!("Failed to sync with peer {peer}: {e}");
                 }
             }
 
@@ -307,7 +307,7 @@ impl BackgroundSync {
     /// Add failed send to retry queue
     fn add_to_retry_queue(&mut self, peer: String, entries: Vec<Entry>, error: crate::Error) {
         // Log send failure and add to retry queue
-        eprintln!("Failed to send to {peer}: {error}. Adding to retry queue.");
+        tracing::warn!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
             peer,
             entries,
@@ -339,7 +339,7 @@ impl BackgroundSync {
                         still_failed.push(entry);
                     } else {
                         // Max retries exceeded - give up on this batch
-                        eprintln!("Giving up on sending to {} after 10 attempts", entry.peer);
+                        tracing::error!("Giving up on sending to {} after 10 attempts", entry.peer);
                     }
                 } else {
                     // Successfully retried after failure
@@ -387,7 +387,7 @@ impl BackgroundSync {
                 && let Err(e) = self.sync_with_peer(&peer_info.pubkey).await
             {
                 // Log individual peer sync failure but continue with others
-                eprintln!("Periodic sync failed with {}: {e}", peer_info.pubkey);
+                tracing::error!("Periodic sync failed with {}: {e}", peer_info.pubkey);
             }
         }
     }
@@ -422,7 +422,7 @@ impl BackgroundSync {
 
         // Debug: log tree sync operation
         #[cfg(debug_assertions)]
-        eprintln!(
+        tracing::debug!(
             "Syncing {} trees with peer {}",
             sync_trees.len(),
             peer_pubkey
@@ -436,7 +436,7 @@ impl BackgroundSync {
                 .await
             {
                 // Log tree sync failure but continue with other trees
-                eprintln!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
+                tracing::error!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
             }
         }
 
@@ -691,7 +691,7 @@ impl BackgroundSync {
         match self.transport.get_server_address() {
             Ok(server_addr) => {
                 self.server_address = Some(server_addr);
-                println!("Sync server started on {addr}");
+                tracing::info!("Sync server started on {addr}");
                 Ok(())
             }
             Err(e) => {
@@ -710,7 +710,7 @@ impl BackgroundSync {
 
         self.transport.stop_server().await?;
         self.server_address = None;
-        println!("Sync server stopped");
+        tracing::info!("Sync server stopped");
         Ok(())
     }
 

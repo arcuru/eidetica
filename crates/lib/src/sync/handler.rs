@@ -61,7 +61,7 @@ impl SyncHandler for SyncHandlerImpl {
             SyncRequest::SendEntries(entries) => {
                 // Process and store the received entries
                 let count = entries.len();
-                println!("Received {count} entries for synchronization");
+                tracing::info!("Received {count} entries for synchronization");
 
                 // Store entries in the backend as unverified (from sync)
                 let mut stored_count = 0usize;
@@ -71,7 +71,7 @@ impl SyncHandler for SyncHandlerImpl {
                             stored_count += 1;
                         }
                         Err(e) => {
-                            println!("Failed to store entry {}: {}", entry.id(), e);
+                            tracing::error!("Failed to store entry {}: {}", entry.id(), e);
                             // Continue processing other entries rather than failing completely
                         }
                     }

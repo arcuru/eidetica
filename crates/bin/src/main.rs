@@ -7,24 +7,42 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing_subscriber::EnvFilter;
 
 const DB_FILE: &str = "eidetica.json";
 
 // Helper function to save the database
 fn save_database(db: &BaseDB) {
+    tracing::info!("Saving database to {DB_FILE}...");
     println!("Saving database to {DB_FILE}...");
     let backend_any = db.backend().as_any();
     if let Some(in_memory_backend) = backend_any.downcast_ref::<InMemory>() {
         match in_memory_backend.save_to_file(DB_FILE) {
-            Ok(_) => println!("Database saved successfully."),
-            Err(e) => println!("Failed to save database: {e:?}"),
+            Ok(_) => {
+                tracing::info!("Database saved successfully.");
+                println!("Database saved successfully.");
+            }
+            Err(e) => {
+                tracing::error!("Failed to save database: {e:?}");
+                println!("Failed to save database: {e:?}");
+            }
         }
     } else {
+        tracing::error!("Failed to downcast database to InMemory for saving.");
         println!("Failed to downcast database to InMemory for saving.");
     }
 }
 
 fn main() -> io::Result<()> {
+    // Initialize tracing subscriber with environment filter
+    // Uses RUST_LOG environment variable to control log level
+    // Example: RUST_LOG=info cargo run
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
+        )
+        .init();
+
     // Set up signal handling
     // term_signal is a flag that is set to true when a termination signal is received
     let term_signal = Arc::new(AtomicBool::new(false));
@@ -42,10 +60,12 @@ fn main() -> io::Result<()> {
     // Create or load the in-memory backend
     let backend: Box<dyn eidetica::backend::Database> = match InMemory::load_from_file(DB_FILE) {
         Ok(backend) => {
+            tracing::info!("Loaded database from {DB_FILE}");
             println!("Loaded database from {DB_FILE}");
             Box::new(backend)
         }
         Err(e) => {
+            tracing::warn!("Failed to load database: {e:?}. Creating a new one.");
             println!("Failed to load database: {e:?}. Creating a new one.");
             Box::new(InMemory::new())
         }
@@ -69,10 +89,16 @@ fn main() -> io::Result<()> {
             for tree in loaded_trees {
                 match tree.get_name() {
                     Ok(name) => {
+                        tracing::info!("Restored tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Restored tree '{}' with root ID: {}", name, tree.root_id());
                         trees.insert(name.clone(), tree);
                     }
                     Err(e) => {
+                        tracing::warn!(
+                            "Failed to get name for tree with root {}: {:?}",
+                            tree.root_id(),
+                            e
+                        );
                         println!(
                             "Warning: Failed to get name for tree with root {}: {:?}",
                             tree.root_id(),
@@ -83,6 +109,7 @@ fn main() -> io::Result<()> {
             }
         }
         Err(e) => {
+            tracing::error!("Error loading trees from database: {e:?}");
             println!("Error loading trees from database: {e:?}");
         }
     }
@@ -138,10 +165,14 @@ fn main() -> io::Result<()> {
 
                 match db.new_tree_default(DEFAULT_CLI_KEY) {
                     Ok(tree) => {
+                        tracing::info!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         trees.insert(name.to_string(), tree);
                     }
-                    Err(e) => println!("Error creating tree: {e:?}"),
+                    Err(e) => {
+                        tracing::error!("Error creating tree: {e:?}");
+                        println!("Error creating tree: {e:?}");
+                    }
                 }
             }
             "list-trees" => {
@@ -209,6 +240,7 @@ fn main() -> io::Result<()> {
     // Save the database automatically on exit, unless exit-no-save was used
     if save_on_exit {
         save_database(&db);
+        tracing::info!("Exiting Eidetica REPL");
         println!("Exiting Eidetica REPL");
     }
 

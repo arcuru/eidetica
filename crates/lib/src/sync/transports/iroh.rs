@@ -346,7 +346,7 @@ impl IrohTransport {
         let buffer: Vec<u8> = match recv_stream.read_to_end(1024 * 1024).await {
             Ok(buffer) => buffer,
             Err(e) => {
-                eprintln!("Failed to read stream: {e}");
+                tracing::error!("Failed to read stream: {e}");
                 return;
             }
         };
@@ -355,7 +355,7 @@ impl IrohTransport {
         let request: SyncRequest = match JsonHandler::deserialize_request(&buffer) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Failed to deserialize request: {e}");
+                tracing::error!("Failed to deserialize request: {e}");
                 return;
             }
         };
@@ -367,15 +367,15 @@ impl IrohTransport {
         match JsonHandler::serialize_response(&response) {
             Ok(response_bytes) => {
                 if let Err(e) = send_stream.write_all(&response_bytes).await {
-                    eprintln!("Failed to write response: {e}");
+                    tracing::error!("Failed to write response: {e}");
                     return;
                 }
                 if let Err(e) = send_stream.finish() {
-                    eprintln!("Failed to finish stream: {e}");
+                    tracing::error!("Failed to finish stream: {e}");
                 }
             }
             Err(e) => {
-                eprintln!("Failed to serialize response: {e}");
+                tracing::error!("Failed to serialize response: {e}");
             }
         }
     }

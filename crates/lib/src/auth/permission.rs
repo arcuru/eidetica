@@ -40,8 +40,8 @@ use crate::auth::types::{Permission, PermissionBounds};
 pub fn clamp_permission(delegated_permission: Permission, bounds: &PermissionBounds) -> Permission {
     // Validate bounds first
     if !validate_permission_bounds(bounds) {
-        eprintln!(
-            "Warning: Invalid permission bounds detected (min > max). Applying only max bound as fallback."
+        tracing::warn!(
+            "Invalid permission bounds detected (min > max). Applying only max bound as fallback."
         );
         // For invalid bounds, apply only the max bound (safer fallback)
         if delegated_permission > bounds.max {
