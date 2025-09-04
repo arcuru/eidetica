@@ -17,19 +17,19 @@ fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
 
 // Helper function to setup sync engines for benchmarking
 async fn setup_iroh_sync_pair() -> (
-    Arc<eidetica::basedb::BaseDB>,
+    Arc<eidetica::Instance>,
     eidetica::sync::Sync,
-    Arc<eidetica::basedb::BaseDB>,
+    Arc<eidetica::Instance>,
     eidetica::sync::Sync,
     Address,
 ) {
     use eidetica::backend::database::InMemory;
-    use eidetica::basedb::BaseDB;
+    use eidetica::Instance;
     use eidetica::sync::Sync;
 
     // Create databases
-    let base_db1 = Arc::new(BaseDB::new(Box::new(InMemory::new())));
-    let base_db2 = Arc::new(BaseDB::new(Box::new(InMemory::new())));
+    let base_db1 = Arc::new(Instance::new(Box::new(InMemory::new())));
+    let base_db2 = Arc::new(Instance::new(Box::new(InMemory::new())));
 
     // Create sync engines
     let mut sync1 = Sync::new(base_db1.backend().clone()).unwrap();

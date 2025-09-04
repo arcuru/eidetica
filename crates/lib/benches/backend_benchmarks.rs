@@ -1,13 +1,13 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use eidetica::backend::{Database, database::InMemory};
-use eidetica::basedb::BaseDB;
+use eidetica::backend::{BackendDB, database::InMemory};
+use eidetica::Instance;
 use eidetica::entry::ID;
 use eidetica::subtree::DocStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
-fn setup_tree() -> eidetica::Tree {
+fn setup_tree() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
     db.new_tree_default("BENCH_KEY")
@@ -15,7 +15,7 @@ fn setup_tree() -> eidetica::Tree {
 }
 
 /// Create a linear chain of entries for testing LCA performance
-fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<ID> {
+fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
@@ -33,7 +33,7 @@ fn create_linear_chain(tree: &eidetica::Tree, length: usize) -> Vec<ID> {
 }
 
 /// Create a diamond pattern for testing merge scenarios
-fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
+fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
     // Create root A
     let op_a = tree.new_operation().expect("Failed to create op");
     let kv_a = op_a
@@ -67,7 +67,7 @@ fn create_diamond_pattern(tree: &eidetica::Tree) -> (Vec<ID>, ID) {
 
 /// Create multiple branches for testing tips performance
 fn create_branching_tree(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     num_branches: usize,
     entries_per_branch: usize,
 ) -> Vec<Vec<ID>> {
@@ -108,7 +108,7 @@ fn create_branching_tree(
 }
 
 /// Create a large tree with specified structure
-fn create_large_tree(tree: &eidetica::Tree, num_entries: usize, structure: &str) -> Vec<ID> {
+fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &str) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     match structure {

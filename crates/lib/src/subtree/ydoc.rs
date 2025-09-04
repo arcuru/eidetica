@@ -21,10 +21,10 @@
 //! This module is only available when the "y-crdt" feature is enabled.
 
 use crate::Result;
-use crate::atomicop::AtomicOp;
+use crate::Store;
+use crate::Transaction;
 use crate::crdt::{CRDT, Data};
-use crate::subtree::SubTree;
-use crate::subtree::errors::SubtreeError;
+use crate::subtree::errors::StoreError;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use thiserror::Error;
@@ -47,9 +47,9 @@ pub enum YDocError {
     Merge { reason: String },
 }
 
-impl From<YDocError> for SubtreeError {
+impl From<YDocError> for StoreError {
     fn from(err: YDocError) -> Self {
-        SubtreeError::ImplementationError {
+        StoreError::ImplementationError {
             subtree: "YDoc".to_string(),
             reason: err.to_string(),
         }
@@ -89,13 +89,13 @@ impl CRDT for YrsBinary {
         // Apply self's update if not empty
         if !self.data.is_empty() {
             let update = Update::decode_v1(&self.data).map_err(|e| {
-                SubtreeError::from(YDocError::InvalidData {
+                StoreError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update (self): {e}"),
                 })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YDocError::Merge {
+                StoreError::from(YDocError::Merge {
                     reason: format!("Failed to apply Y-CRDT update (self): {e}"),
                 })
             })?;
@@ -104,13 +104,13 @@ impl CRDT for YrsBinary {
         // Apply other's update if not empty
         if !other.data.is_empty() {
             let other_update = Update::decode_v1(&other.data).map_err(|e| {
-                SubtreeError::from(YDocError::InvalidData {
+                StoreError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update (other): {e}"),
                 })
             })?;
             let mut txn = doc.transact_mut();
             txn.apply_update(other_update).map_err(|e| {
-                SubtreeError::from(YDocError::Merge {
+                StoreError::from(YDocError::Merge {
                     reason: format!("Failed to apply Y-CRDT update (other): {e}"),
                 })
             })?;
@@ -195,14 +195,14 @@ pub struct YDoc {
     /// The name identifier for this subtree within the atomic operation
     name: String,
     /// Reference to the atomic operation for backend data access
-    atomic_op: AtomicOp,
+    atomic_op: Transaction,
     /// Cached backend data to avoid expensive get_full_state() calls
     /// This contains the merged historical state as Y-CRDT binary data
     cached_backend_data: RefCell<Option<YrsBinary>>,
 }
 
-impl SubTree for YDoc {
-    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
+impl Store for YDoc {
+    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.into(),
             atomic_op: op.clone(),
@@ -244,14 +244,14 @@ impl YDoc {
 
         if !local_data.is_empty() {
             let local_update = Update::decode_v1(local_data.as_bytes()).map_err(|e| {
-                SubtreeError::from(YDocError::InvalidData {
+                StoreError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode local Y-CRDT update: {e}"),
                 })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(local_update).map_err(|e| {
-                SubtreeError::from(YDocError::Operation {
+                StoreError::from(YDocError::Operation {
                     operation: "apply_local_update".to_string(),
                     reason: format!("Failed to apply local Y-CRDT update: {e}"),
                 })
@@ -357,7 +357,7 @@ impl YDoc {
     pub fn apply_update(&self, update_data: &[u8]) -> Result<()> {
         let doc = self.doc()?;
         let update = Update::decode_v1(update_data).map_err(|e| {
-            SubtreeError::from(YDocError::InvalidData {
+            StoreError::from(YDocError::InvalidData {
                 reason: format!("Failed to decode Y-CRDT update: {e}"),
             })
         })?;
@@ -365,7 +365,7 @@ impl YDoc {
         {
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YDocError::Operation {
+                StoreError::from(YDocError::Operation {
                     operation: "apply_update".to_string(),
                     reason: format!("Failed to apply Y-CRDT update: {e}"),
                 })
@@ -508,13 +508,13 @@ impl YDoc {
         // Construct a temporary document to extract the state vector
         let temp_doc = Doc::new();
         let backend_update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-            SubtreeError::from(YDocError::InvalidData {
+            StoreError::from(YDocError::InvalidData {
                 reason: format!("Failed to decode backend Y-CRDT update: {e}"),
             })
         })?;
         let mut temp_txn = temp_doc.transact_mut();
         temp_txn.apply_update(backend_update).map_err(|e| {
-            SubtreeError::from(YDocError::Operation {
+            StoreError::from(YDocError::Operation {
                 operation: "get_initial_state_vector".to_string(),
                 reason: format!("Failed to apply backend Y-CRDT update: {e}"),
             })
@@ -549,14 +549,14 @@ impl YDoc {
         let doc = Doc::new();
         if !backend_data.is_empty() {
             let update = Update::decode_v1(backend_data.as_bytes()).map_err(|e| {
-                SubtreeError::from(YDocError::InvalidData {
+                StoreError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode Y-CRDT update: {e}"),
                 })
             })?;
 
             let mut txn = doc.transact_mut();
             txn.apply_update(update).map_err(|e| {
-                SubtreeError::from(YDocError::Operation {
+                StoreError::from(YDocError::Operation {
                     operation: "get_initial_doc".to_string(),
                     reason: format!("Failed to apply Y-CRDT update from backend: {e}"),
                 })

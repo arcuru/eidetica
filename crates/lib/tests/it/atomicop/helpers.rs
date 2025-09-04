@@ -7,13 +7,13 @@ use crate::helpers::*;
 use eidetica::crdt::doc::Value;
 use eidetica::crdt::{Doc, doc::node::Node as Map};
 use eidetica::entry::ID;
-use eidetica::subtree::{DocStore, SubTree};
+use eidetica::subtree::{DocStore, Store};
 
 // ===== BASIC OPERATION HELPERS =====
 
 /// Create and commit a simple operation with one Doc subtree
 pub fn create_simple_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     key: &str,
     value: &str,
@@ -26,7 +26,7 @@ pub fn create_simple_operation(
 
 /// Create an operation with multiple subtrees and data
 pub fn create_multi_subtree_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_data: &[(&str, &[(&str, &str)])],
 ) -> ID {
     let operation = tree.new_operation().unwrap();
@@ -42,7 +42,7 @@ pub fn create_multi_subtree_operation(
 }
 
 /// Setup a tree with initial data across multiple subtrees
-pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetica::Tree {
+pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetica::Database {
     let tree = setup_tree();
     create_multi_subtree_operation(&tree, subtree_data);
     tree
@@ -51,7 +51,7 @@ pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetic
 // ===== CUSTOM TIPS HELPERS =====
 
 /// Create a diamond pattern: base -> (left, right) -> merge
-pub fn create_diamond_pattern(tree: &eidetica::Tree) -> DiamondIds {
+pub fn create_diamond_pattern(tree: &eidetica::Database) -> DiamondIds {
     // Create base
     let base_op = tree.new_operation().unwrap();
     let base_store = base_op.get_subtree::<DocStore>("data").unwrap();
@@ -89,7 +89,7 @@ pub struct DiamondIds {
 }
 
 /// Create a merge operation from diamond pattern
-pub fn create_merge_from_diamond(tree: &eidetica::Tree, diamond: &DiamondIds) -> ID {
+pub fn create_merge_from_diamond(tree: &eidetica::Database, diamond: &DiamondIds) -> ID {
     let merge_op = tree
         .new_operation_with_tips([diamond.left.clone(), diamond.right.clone()])
         .unwrap();
@@ -131,7 +131,11 @@ pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
 // ===== TOMBSTONE AND DELETE HELPERS =====
 
 /// Create operation that deletes a key and verify tombstone behavior
-pub fn test_delete_operation(tree: &eidetica::Tree, subtree_name: &str, key_to_delete: &str) -> ID {
+pub fn test_delete_operation(
+    tree: &eidetica::Database,
+    subtree_name: &str,
+    key_to_delete: &str,
+) -> ID {
     let op = tree.new_operation().unwrap();
     let dict = DocStore::new(&op, subtree_name).unwrap();
     dict.delete(key_to_delete).unwrap();
@@ -175,7 +179,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
 }
 
 /// Setup operation with nested Map values
-pub fn create_operation_with_nested_data(tree: &eidetica::Tree) -> ID {
+pub fn create_operation_with_nested_data(tree: &eidetica::Database) -> ID {
     let op = tree.new_operation().unwrap();
     let store = DocStore::new(&op, "data").unwrap();
 
@@ -216,7 +220,7 @@ pub fn assert_nested_data(
 // ===== PATH FINDING HELPERS =====
 
 /// Create complex LCA scenario for path finding tests
-pub fn create_lca_test_scenario(tree: &eidetica::Tree) -> LcaTestIds {
+pub fn create_lca_test_scenario(tree: &eidetica::Database) -> LcaTestIds {
     // Create LCA
     let lca_op = tree.new_operation().unwrap();
     let lca_store = lca_op.get_subtree::<DocStore>("data").unwrap();
@@ -266,7 +270,11 @@ pub struct LcaTestIds {
 }
 
 /// Verify that LCA path finding includes all expected data
-pub fn assert_lca_path_completeness(tree: &eidetica::Tree, tips: &[ID], expected_keys: &[&str]) {
+pub fn assert_lca_path_completeness(
+    tree: &eidetica::Database,
+    tips: &[ID],
+    expected_keys: &[&str],
+) {
     let op = tree.new_operation_with_tips(tips).unwrap();
     let store = op.get_subtree::<DocStore>("data").unwrap();
     let state = store.get_all().unwrap();
@@ -282,7 +290,7 @@ pub fn assert_lca_path_completeness(tree: &eidetica::Tree, tips: &[ID], expected
 // ===== OPERATION LIFECYCLE HELPERS =====
 
 /// Test deterministic operation ordering
-pub fn test_deterministic_operations(tree: &eidetica::Tree, tips: &[ID], iterations: usize) {
+pub fn test_deterministic_operations(tree: &eidetica::Database, tips: &[ID], iterations: usize) {
     let mut results = Vec::new();
 
     for _i in 0..iterations {

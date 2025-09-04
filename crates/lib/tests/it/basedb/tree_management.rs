@@ -6,7 +6,7 @@
 use super::helpers::*;
 use crate::helpers::setup_db_with_key;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 
 const TEST_KEY: &str = "test_key";
 
@@ -22,7 +22,7 @@ fn test_all_trees() {
     let tree2 = create_tree_with_settings(&db, TEST_KEY, "Tree2", "1.0");
     let root_id2 = tree2.root_id().clone();
 
-    let trees: Vec<eidetica::Tree> = db.all_trees().expect("Failed to get all trees");
+    let trees: Vec<eidetica::Database> = db.all_trees().expect("Failed to get all trees");
     assert_trees_count(&trees, 2);
 
     let expected_ids = vec![root_id1, root_id2];
@@ -56,7 +56,7 @@ fn test_find_tree() {
 fn test_find_tree_edge_cases() {
     // Test: Find when no trees exist
     let empty_backend = Box::new(InMemory::new());
-    let empty_db = BaseDB::new(empty_backend);
+    let empty_db = Instance::new(empty_backend);
     test_tree_not_found_error(&empty_db, "AnyName");
 
     // Test: Database with trees but none matching

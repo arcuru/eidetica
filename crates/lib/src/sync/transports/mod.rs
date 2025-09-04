@@ -4,8 +4,8 @@
 //! implementations must implement, allowing the sync module to
 //! work over various protocols (HTTP, Iroh, Bluetooth, etc.).
 
+use crate::Entry;
 use crate::Result;
-use crate::entry::Entry;
 use crate::sync::handler::SyncHandler;
 use crate::sync::peer_types::Address;
 use crate::sync::protocol::{SyncRequest, SyncResponse};

@@ -1,5 +1,5 @@
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::sync::{
     Address, Sync,
     protocol::{SyncRequest, SyncResponse},
@@ -10,7 +10,7 @@ use eidetica::sync::{
 /// by directly testing the shared handler function.
 #[tokio::test]
 async fn test_unified_message_handling() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     // Create test entries
     let single_entry = Entry::builder("test_root")
@@ -24,7 +24,7 @@ async fn test_unified_message_handling() {
         .build();
 
     // Create a Sync instance for testing
-    let db = BaseDB::new(Box::new(InMemory::new()));
+    let db = Instance::new(Box::new(InMemory::new()));
     db.add_private_key("_device_key")
         .expect("Failed to add device key");
     let sync = Sync::new(db.backend().clone()).unwrap();
@@ -85,7 +85,7 @@ async fn test_unified_message_handling() {
 /// Test that the new HTTP v0 endpoint format works with JSON requests
 #[tokio::test]
 async fn test_http_v0_json_endpoint() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let mut transport = HttpTransport::new().unwrap();
 

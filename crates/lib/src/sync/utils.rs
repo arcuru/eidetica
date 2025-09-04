@@ -4,7 +4,7 @@
 //! specific to the synchronization protocol.
 
 use crate::Result;
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::entry::{Entry, ID};
 use crate::sync::error::SyncError;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// let missing = collect_missing_ancestors(&backend, &missing_ids)?;
 /// // Returns IDs of entries that need to be fetched from peer
 /// ```
-pub fn collect_missing_ancestors(backend: &dyn Database, entry_ids: &[ID]) -> Result<Vec<ID>> {
+pub fn collect_missing_ancestors(backend: &dyn BackendDB, entry_ids: &[ID]) -> Result<Vec<ID>> {
     let mut missing = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -112,7 +112,7 @@ pub fn collect_missing_ancestors(backend: &dyn Database, entry_ids: &[ID]) -> Re
 /// // Returns entries that peer needs, excluding what they already have
 /// ```
 pub fn collect_ancestors_to_send(
-    backend: &dyn Database,
+    backend: &dyn BackendDB,
     entry_ids: &[ID],
     their_tips: &[ID],
 ) -> Result<Vec<Entry>> {
@@ -165,8 +165,8 @@ pub fn collect_ancestors_to_send(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Entry;
     use crate::backend::database::InMemory;
-    use crate::entry::Entry;
     use std::sync::Arc;
 
     fn create_test_backend() -> Arc<InMemory> {

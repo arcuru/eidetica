@@ -1,10 +1,10 @@
 use crate::Result;
-use crate::atomicop::AtomicOp;
+use crate::Store;
+use crate::Transaction;
 use crate::crdt::doc::{List, Node, Value};
 use crate::crdt::doc::{Path, PathBuf, PathError};
 use crate::crdt::{CRDT, Doc};
-use crate::subtree::SubTree;
-use crate::subtree::errors::SubtreeError;
+use crate::subtree::errors::StoreError;
 use std::str::FromStr;
 
 /// A document-oriented SubTree providing ergonomic access to Doc CRDT data.
@@ -14,11 +14,11 @@ use std::str::FromStr;
 /// For more complex data structures, consider using the nested capabilities of Doc directly.
 pub struct DocStore {
     name: String,
-    atomic_op: AtomicOp,
+    atomic_op: Transaction,
 }
 
-impl SubTree for DocStore {
-    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
+impl Store for DocStore {
+    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.into(),
             atomic_op: op.clone(),
@@ -61,7 +61,7 @@ impl DocStore {
         // Get the value
         match data.get(key) {
             Some(value) => Ok(value.clone()),
-            None => Err(SubtreeError::KeyNotFound {
+            None => Err(StoreError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key.to_string(),
             }
@@ -83,24 +83,24 @@ impl DocStore {
         let key_ref = key.as_ref();
         match self.get(key_ref)? {
             Value::Text(value) => Ok(value),
-            Value::Node(_) => Err(SubtreeError::TypeMismatch {
+            Value::Node(_) => Err(StoreError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Node".to_string(),
             }
             .into()),
-            Value::List(_) => Err(SubtreeError::TypeMismatch {
+            Value::List(_) => Err(StoreError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "list".to_string(),
             }
             .into()),
-            Value::Deleted => Err(SubtreeError::KeyNotFound {
+            Value::Deleted => Err(StoreError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key_ref.to_string(),
             }
             .into()),
-            _ => Err(SubtreeError::TypeMismatch {
+            _ => Err(StoreError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Other".to_string(),
@@ -159,7 +159,7 @@ impl DocStore {
     pub fn get_list(&self, key: impl AsRef<str>) -> Result<List> {
         match self.get(key)? {
             Value::List(list) => Ok(list),
-            _ => Err(SubtreeError::TypeMismatch {
+            _ => Err(StoreError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "list".to_string(),
                 actual: "Other".to_string(),
@@ -172,7 +172,7 @@ impl DocStore {
     pub fn get_node(&self, key: impl AsRef<str>) -> Result<Doc> {
         match self.get(key)? {
             Value::Node(node) => Ok(node.into()),
-            _ => Err(SubtreeError::TypeMismatch {
+            _ => Err(StoreError::TypeMismatch {
                 subtree: self.name.clone(),
                 expected: "Node".to_string(),
                 actual: "Other".to_string(),
@@ -258,7 +258,7 @@ impl DocStore {
         // Get the path from the full state
         match data.get_path(&path) {
             Some(value) => Ok(value.clone()),
-            None => Err(SubtreeError::KeyNotFound {
+            None => Err(StoreError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: path.as_ref().as_str().to_string(),
             }
@@ -1051,7 +1051,7 @@ impl DocStore {
                         current_value_view = next_value.clone();
                     }
                     None => {
-                        return Err(SubtreeError::KeyNotFound {
+                        return Err(StoreError::KeyNotFound {
                             subtree: self.name.clone(),
                             key: path_slice
                                 .iter()
@@ -1064,7 +1064,7 @@ impl DocStore {
                 },
                 Value::Deleted => {
                     // A tombstone encountered in the path means the path doesn't lead to a value.
-                    return Err(SubtreeError::KeyNotFound {
+                    return Err(StoreError::KeyNotFound {
                         subtree: self.name.clone(),
                         key: path_slice
                             .iter()
@@ -1076,7 +1076,7 @@ impl DocStore {
                 }
                 _ => {
                     // Expected a node to continue traversal, but found something else.
-                    return Err(SubtreeError::TypeMismatch {
+                    return Err(StoreError::TypeMismatch {
                         subtree: self.name.clone(),
                         expected: "Node".to_string(),
                         actual: "non-node value".to_string(),
@@ -1088,7 +1088,7 @@ impl DocStore {
 
         // Check if the final resolved value is a tombstone.
         match current_value_view {
-            Value::Deleted => Err(SubtreeError::KeyNotFound {
+            Value::Deleted => Err(StoreError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: path_slice
                     .iter()
@@ -1134,7 +1134,7 @@ impl DocStore {
                 let serialized_data = serde_json::to_string(&node)?;
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
-                return Err(SubtreeError::TypeMismatch {
+                return Err(StoreError::TypeMismatch {
                     subtree: self.name.clone(),
                     expected: "Node".to_string(),
                     actual: "non-node value".to_string(),
@@ -1177,7 +1177,7 @@ impl DocStore {
         } else {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
-            return Err(SubtreeError::InvalidOperation {
+            return Err(StoreError::InvalidOperation {
                 subtree: self.name.clone(),
                 operation: "set_at_path".to_string(),
                 reason: "Path became empty unexpectedly".to_string(),

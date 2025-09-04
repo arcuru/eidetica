@@ -3,7 +3,7 @@
 use super::{InMemory, TreeHeightsCache};
 use crate::Result;
 use crate::backend::VerificationStatus;
-use crate::backend::errors::DatabaseError;
+use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 
 /// Retrieves an entry by ID from the internal `HashMap`.
@@ -13,7 +13,7 @@ pub(crate) fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
     entries
         .get(id)
         .cloned()
-        .ok_or_else(|| DatabaseError::EntryNotFound { id: id.clone() }.into())
+        .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() }.into())
 }
 
 /// Stores an entry in the database with the specified verification status.

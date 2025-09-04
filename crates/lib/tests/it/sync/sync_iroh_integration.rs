@@ -79,7 +79,7 @@ fn test_sync_iroh_settings_persistence() {
 
 #[tokio::test]
 async fn test_send_entries_iroh() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     // Create server instance
     let (_base_db1, mut sync_server) = helpers::setup();

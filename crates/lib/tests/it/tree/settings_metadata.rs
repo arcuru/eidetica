@@ -4,7 +4,7 @@
 //! settings tips tracking, metadata propagation, and historical validation.
 
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 
@@ -12,7 +12,7 @@ use eidetica::crdt::doc::Value;
 fn test_settings_tips_in_metadata() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Add a test key
     let key_id = "test_key";
@@ -102,7 +102,7 @@ fn test_settings_tips_in_metadata() {
 fn test_entry_get_settings_from_subtree() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Add a test key
     let key_id = "test_key";
@@ -147,7 +147,7 @@ fn test_entry_get_settings_from_subtree() {
 fn test_settings_tips_propagation() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Add a test key
     let key_id = "test_key";
@@ -187,7 +187,7 @@ fn test_settings_tips_propagation() {
     let entry3 = tree.get_entry(&entry3_id).unwrap();
 
     // Parse settings tips from metadata
-    let parse_tips = |entry: &eidetica::entry::Entry| -> Vec<String> {
+    let parse_tips = |entry: &eidetica::Entry| -> Vec<String> {
         if let Some(metadata_str) = entry.metadata()
             && let Ok(metadata_obj) = serde_json::from_str::<serde_json::Value>(metadata_str)
             && let Some(tips_array) = metadata_obj.get("settings_tips")
@@ -229,7 +229,7 @@ fn test_settings_tips_propagation() {
 fn test_settings_metadata_with_complex_operations() {
     // Test settings metadata handling with complex operations
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
     let key_id = "complex_key";
     db.add_private_key(key_id).unwrap();
 
@@ -329,7 +329,7 @@ fn test_settings_metadata_with_complex_operations() {
 fn test_settings_metadata_with_branching() {
     // Test settings metadata with branching scenarios
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
     let key_id = "branch_key";
     db.add_private_key(key_id).unwrap();
 
@@ -408,7 +408,7 @@ fn test_settings_metadata_with_branching() {
 fn test_metadata_consistency_across_operations() {
     // Test that metadata is consistently tracked across different operation types
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
     let key_id = "consistency_key";
     db.add_private_key(key_id).unwrap();
 
@@ -446,7 +446,7 @@ fn test_metadata_consistency_across_operations() {
     );
 
     // Parse and compare settings tips
-    let get_settings_tips = |entry: &eidetica::entry::Entry| -> Vec<String> {
+    let get_settings_tips = |entry: &eidetica::Entry| -> Vec<String> {
         let metadata_str = entry.metadata().unwrap();
         let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
         metadata_obj

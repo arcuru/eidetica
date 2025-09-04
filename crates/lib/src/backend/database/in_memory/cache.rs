@@ -5,7 +5,7 @@
 
 use super::InMemory;
 use crate::Result;
-use crate::backend::errors::DatabaseError;
+use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -213,11 +213,12 @@ fn calculate_heights_original(
     let mut processed_nodes_count = 0;
     while let Some(current_id) = queue.pop_front() {
         processed_nodes_count += 1;
-        let current_height = *heights.get(&current_id).ok_or_else(|| {
-            DatabaseError::HeightCalculationCorruption {
-                reason: format!("Height missing for node {current_id}"),
-            }
-        })?;
+        let current_height =
+            *heights
+                .get(&current_id)
+                .ok_or_else(|| BackendError::HeightCalculationCorruption {
+                    reason: format!("Height missing for node {current_id}"),
+                })?;
 
         // Process children within the context
         if let Some(children) = children_map.get(&current_id) {
@@ -242,14 +243,14 @@ fn calculate_heights_original(
                         }
                     } else {
                         // This indicates an issue: degree already 0 but node is being processed as child.
-                        return Err(DatabaseError::HeightCalculationCorruption {
+                        return Err(BackendError::HeightCalculationCorruption {
                             reason: format!("Negative in-degree detected for child {child_id}"),
                         }
                         .into());
                     }
                 } else {
                     // This indicates an inconsistency: child_id was in children_map but not in_degree map
-                    return Err(DatabaseError::HeightCalculationCorruption {
+                    return Err(BackendError::HeightCalculationCorruption {
                         reason: format!("In-degree missing for child {child_id}"),
                     }
                     .into());

@@ -32,7 +32,7 @@ pub struct SimpleRecord {
 
 /// Create and commit a basic Doc operation with key-value data
 pub fn create_dict_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
@@ -48,7 +48,7 @@ pub fn create_dict_operation(
 
 /// Create Doc operation with nested Map values
 pub fn create_dict_with_nested_map(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
@@ -67,7 +67,7 @@ pub fn create_dict_with_nested_map(
 
 /// Create Doc operation with List values
 pub fn create_dict_with_list(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     list_items: &[&str],
 ) -> eidetica::entry::ID {
@@ -85,7 +85,7 @@ pub fn create_dict_with_list(
 
 /// Test multiple Doc operations across commits
 pub fn test_dict_persistence(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
 ) -> Vec<eidetica::entry::ID> {
     let mut entry_ids = Vec::new();
@@ -115,7 +115,7 @@ pub fn test_dict_persistence(
 
 /// Verify Doc has expected key-value pairs using viewer
 pub fn assert_dict_viewer_data(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
@@ -126,7 +126,11 @@ pub fn assert_dict_viewer_data(
 }
 
 /// Verify Doc viewer shows correct number of entries
-pub fn assert_dict_viewer_count(tree: &eidetica::Tree, subtree_name: &str, expected_count: usize) {
+pub fn assert_dict_viewer_count(
+    tree: &eidetica::Database,
+    subtree_name: &str,
+    expected_count: usize,
+) {
     let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
     let all_data = viewer.get_all().unwrap();
     assert_eq!(all_data.as_hashmap().len(), expected_count);
@@ -134,7 +138,7 @@ pub fn assert_dict_viewer_count(tree: &eidetica::Tree, subtree_name: &str, expec
 
 /// Verify Doc viewer List operations
 pub fn assert_dict_list_data(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     list_key: &str,
     expected_items: &[&str],
@@ -168,7 +172,7 @@ pub fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&s
 #[cfg(feature = "y-crdt")]
 /// Create YDoc operation with text content
 pub fn create_ydoc_text_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     text_content: &str,
 ) -> eidetica::entry::ID {
@@ -189,7 +193,7 @@ pub fn create_ydoc_text_operation(
 #[cfg(feature = "y-crdt")]
 /// Create YDoc operation with map data
 pub fn create_ydoc_map_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     map_data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
@@ -211,7 +215,10 @@ pub fn create_ydoc_map_operation(
 
 #[cfg(feature = "y-crdt")]
 /// Test incremental YDoc updates and verify diff sizes
-pub fn test_ydoc_incremental_updates(tree: &eidetica::Tree, subtree_name: &str) -> (usize, usize) {
+pub fn test_ydoc_incremental_updates(
+    tree: &eidetica::Database,
+    subtree_name: &str,
+) -> (usize, usize) {
     // Large initial content
     let op1 = tree.new_operation().unwrap();
     let first_diff_size = {
@@ -253,7 +260,11 @@ pub fn test_ydoc_incremental_updates(tree: &eidetica::Tree, subtree_name: &str) 
 
 #[cfg(feature = "y-crdt")]
 /// Verify YDoc text content using viewer
-pub fn assert_ydoc_text_content(tree: &eidetica::Tree, subtree_name: &str, expected_text: &str) {
+pub fn assert_ydoc_text_content(
+    tree: &eidetica::Database,
+    subtree_name: &str,
+    expected_text: &str,
+) {
     let viewer = tree.get_subtree_viewer::<YDoc>(subtree_name).unwrap();
     viewer
         .with_doc(|doc| {
@@ -269,7 +280,7 @@ pub fn assert_ydoc_text_content(tree: &eidetica::Tree, subtree_name: &str, expec
 #[cfg(feature = "y-crdt")]
 /// Verify YDoc map content using viewer
 pub fn assert_ydoc_map_content(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
@@ -307,7 +318,7 @@ pub fn create_external_ydoc_update(content: &str) -> Vec<u8> {
 
 /// Create and commit a Table operation with TestRecord data
 pub fn create_table_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     records: &[TestRecord],
 ) -> Vec<String> {
@@ -326,7 +337,7 @@ pub fn create_table_operation(
 
 /// Create Table operation with SimpleRecord data
 pub fn create_simple_table_operation(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     values: &[i32],
 ) -> Vec<String> {
@@ -346,7 +357,7 @@ pub fn create_simple_table_operation(
 
 /// Test Table multi-operation workflow
 pub fn test_table_multi_operations(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
 ) -> (String, String, String) {
     // Op 1: Insert initial records
@@ -401,7 +412,7 @@ pub fn test_table_multi_operations(
 
 /// Verify Table record using viewer
 pub fn assert_table_record(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     key: &str,
     expected_record: &TestRecord,
@@ -415,7 +426,7 @@ pub fn assert_table_record(
 
 /// Verify Table search results
 pub fn assert_table_search_count<F>(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
     predicate: F,
     expected_count: usize,
@@ -472,7 +483,7 @@ pub fn create_test_records() -> Vec<TestRecord> {
 
 /// Test concurrent Table modifications with merging
 pub fn test_table_concurrent_modifications(
-    tree: &eidetica::Tree,
+    tree: &eidetica::Database,
     subtree_name: &str,
 ) -> (String, TestRecord) {
     // Create base entry

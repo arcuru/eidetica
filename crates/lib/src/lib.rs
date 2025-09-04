@@ -28,8 +28,12 @@ pub mod subtree;
 pub mod sync;
 pub mod tree;
 
-/// Re-export the `Tree` struct for easier access.
-pub use tree::Tree;
+/// Re-export fundamental types for easier access.
+pub use atomicop::Transaction;
+pub use basedb::Instance;
+pub use entry::Entry;
+pub use subtree::Store;
+pub use tree::Database;
 
 /// Y-CRDT types re-exported for convenience when the "y-crdt" feature is enabled.
 ///
@@ -58,11 +62,11 @@ pub enum Error {
 
     /// Structured database errors from the backend module
     #[error(transparent)]
-    Backend(backend::DatabaseError),
+    Backend(backend::BackendError),
 
     /// Structured base database errors from the basedb module
     #[error(transparent)]
-    Base(basedb::BaseError),
+    Instance(basedb::InstanceError),
 
     /// Structured CRDT errors from the crdt module
     #[error(transparent)]
@@ -70,11 +74,11 @@ pub enum Error {
 
     /// Structured subtree errors from the subtree module
     #[error(transparent)]
-    Subtree(subtree::SubtreeError),
+    Store(subtree::StoreError),
 
     /// Structured atomic operation errors from the atomicop module
     #[error(transparent)]
-    AtomicOp(atomicop::AtomicOpError),
+    Transaction(atomicop::TransactionError),
 
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
@@ -93,10 +97,10 @@ impl Error {
         match self {
             Error::Auth(_) => "auth",
             Error::Backend(_) => "backend",
-            Error::Base(_) => "basedb",
+            Error::Instance(_) => "basedb",
             Error::CRDT(_) => "crdt",
-            Error::Subtree(_) => "subtree",
-            Error::AtomicOp(_) => "atomicop",
+            Error::Store(_) => "subtree",
+            Error::Transaction(_) => "atomicop",
             Error::Sync(_) => "sync",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
@@ -108,9 +112,9 @@ impl Error {
         match self {
             Error::Auth(auth_err) => auth_err.is_key_not_found(),
             Error::Backend(backend_err) => backend_err.is_not_found(),
-            Error::Base(base_err) => base_err.is_not_found(),
+            Error::Instance(base_err) => base_err.is_not_found(),
             Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
-            Error::Subtree(subtree_err) => subtree_err.is_not_found(),
+            Error::Store(subtree_err) => subtree_err.is_not_found(),
             Error::Sync(sync_err) => sync_err.is_not_found(),
             _ => false,
         }
@@ -120,7 +124,7 @@ impl Error {
     pub fn is_permission_denied(&self) -> bool {
         match self {
             Error::Auth(auth_err) => auth_err.is_permission_denied(),
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_authentication_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -128,7 +132,7 @@ impl Error {
     /// Check if this error indicates a conflict (already exists).
     pub fn is_conflict(&self) -> bool {
         match self {
-            Error::Base(base_err) => base_err.is_already_exists(),
+            Error::Instance(base_err) => base_err.is_already_exists(),
             _ => false,
         }
     }
@@ -137,8 +141,8 @@ impl Error {
     pub fn is_authentication_error(&self) -> bool {
         match self {
             Error::Auth(_) => true,
-            Error::Base(base_err) => base_err.is_authentication_error(),
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_authentication_error(),
+            Error::Instance(base_err) => base_err.is_authentication_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -167,15 +171,15 @@ impl Error {
 
     /// Check if this error is base database-related.
     pub fn is_base_database_error(&self) -> bool {
-        matches!(self, Error::Base(_))
+        matches!(self, Error::Instance(_))
     }
 
     /// Check if this error is validation-related.
     pub fn is_validation_error(&self) -> bool {
         match self {
-            Error::Base(base_err) => base_err.is_validation_error(),
+            Error::Instance(base_err) => base_err.is_validation_error(),
             Error::Backend(backend_err) => backend_err.is_logical_error(),
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_validation_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_validation_error(),
             _ => false,
         }
     }
@@ -183,9 +187,9 @@ impl Error {
     /// Check if this error is operation-related.
     pub fn is_operation_error(&self) -> bool {
         match self {
-            Error::Base(base_err) => base_err.is_operation_error(),
-            Error::Subtree(subtree_err) => subtree_err.is_operation_error(),
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_validation_error(),
+            Error::Instance(base_err) => base_err.is_operation_error(),
+            Error::Store(subtree_err) => subtree_err.is_operation_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_validation_error(),
             _ => false,
         }
     }
@@ -193,7 +197,7 @@ impl Error {
     /// Check if this error is type-related.
     pub fn is_type_error(&self) -> bool {
         match self {
-            Error::Subtree(subtree_err) => subtree_err.is_type_error(),
+            Error::Store(subtree_err) => subtree_err.is_type_error(),
             _ => false,
         }
     }
@@ -229,13 +233,13 @@ impl Error {
 
     /// Check if this error is subtree-related.
     pub fn is_subtree_error(&self) -> bool {
-        matches!(self, Error::Subtree(_))
+        matches!(self, Error::Store(_))
     }
 
     /// Check if this error is a subtree serialization failure.
     pub fn is_subtree_serialization_error(&self) -> bool {
         match self {
-            Error::Subtree(subtree_err) => subtree_err.is_serialization_error(),
+            Error::Store(subtree_err) => subtree_err.is_serialization_error(),
             _ => false,
         }
     }
@@ -243,7 +247,7 @@ impl Error {
     /// Check if this error is a subtree type mismatch.
     pub fn is_subtree_type_error(&self) -> bool {
         match self {
-            Error::Subtree(subtree_err) => subtree_err.is_type_error(),
+            Error::Store(subtree_err) => subtree_err.is_type_error(),
             _ => false,
         }
     }
@@ -251,7 +255,7 @@ impl Error {
     /// Check if this error indicates an operation was already committed.
     pub fn is_already_committed(&self) -> bool {
         match self {
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_already_committed(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_already_committed(),
             _ => false,
         }
     }
@@ -259,7 +263,7 @@ impl Error {
     /// Check if this error is related to entry operations.
     pub fn is_entry_error(&self) -> bool {
         match self {
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_entry_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_entry_error(),
             _ => false,
         }
     }
@@ -267,7 +271,7 @@ impl Error {
     /// Check if this error is related to concurrency issues.
     pub fn is_concurrency_error(&self) -> bool {
         match self {
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_concurrency_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_concurrency_error(),
             _ => false,
         }
     }
@@ -275,7 +279,7 @@ impl Error {
     /// Check if this error indicates a timeout.
     pub fn is_timeout_error(&self) -> bool {
         match self {
-            Error::AtomicOp(atomicop_err) => atomicop_err.is_timeout_error(),
+            Error::Transaction(atomicop_err) => atomicop_err.is_timeout_error(),
             _ => false,
         }
     }

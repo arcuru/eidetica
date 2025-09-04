@@ -3,13 +3,13 @@
 //! This module provides the main entry point for validating entries
 //! and the AuthValidator struct that coordinates all validation operations.
 
+use crate::Entry;
 use crate::Result;
 use crate::auth::crypto::verify_entry_signature;
 use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
-use crate::entry::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -42,7 +42,7 @@ impl AuthValidator {
         &mut self,
         entry: &Entry,
         settings_state: &Doc,
-        backend: Option<&Arc<dyn Database>>,
+        backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key name and no signature
@@ -95,7 +95,7 @@ impl AuthValidator {
         &mut self,
         sig_key: &SigKey,
         settings: &Doc,
-        backend: Option<&Arc<dyn Database>>,
+        backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver.resolve_sig_key(sig_key, settings, backend)

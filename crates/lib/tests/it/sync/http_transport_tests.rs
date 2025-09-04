@@ -55,7 +55,7 @@ async fn test_http_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_http_transport_client_server_communication() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let mut server_transport = HttpTransport::new().unwrap();
     let client_transport = HttpTransport::new().unwrap();
@@ -116,7 +116,7 @@ async fn test_http_transport_client_server_communication() {
 
 #[tokio::test]
 async fn test_http_transport_connection_refused() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let transport = HttpTransport::new().unwrap();
 

@@ -1,12 +1,12 @@
 //! Tests for authentication validation
 
 use super::entry::AuthValidator;
+use crate::Entry;
 use crate::auth::crypto::{format_public_key, generate_keypair, sign_entry};
 use crate::auth::types::{
     AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey,
 };
 use crate::crdt::Doc;
-use crate::entry::Entry;
 
 fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
     let mut settings = Doc::new();
@@ -315,13 +315,13 @@ fn test_basic_delegated_tree_resolution() {
 
 #[test]
 fn test_complete_delegation_workflow() {
+    use crate::Instance;
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
     use crate::backend::database::InMemory;
-    use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Create keys for both main and delegated trees
     let main_key = db.add_private_key("main_admin").unwrap();
@@ -413,13 +413,13 @@ fn test_complete_delegation_workflow() {
 
 #[test]
 fn test_delegated_tree_requires_tips() {
+    use crate::Instance;
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
     use crate::backend::database::InMemory;
-    use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Create keys for both main and delegated trees
     let main_key = db.add_private_key("main_admin").unwrap();
@@ -492,13 +492,13 @@ fn test_delegated_tree_requires_tips() {
 
 #[test]
 fn test_nested_delegation_with_permission_clamping() {
+    use crate::Instance;
     use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
     use crate::backend::database::InMemory;
-    use crate::basedb::BaseDB;
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Create keys for main tree, intermediate delegated tree, and final user tree
     let main_key = db.add_private_key("main_admin").unwrap();

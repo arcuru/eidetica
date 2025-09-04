@@ -75,7 +75,7 @@ async fn test_iroh_transport_get_server_address() {
 
 #[tokio::test]
 async fn test_iroh_transport_send_request_no_endpoint() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let transport = IrohTransport::new().unwrap();
 

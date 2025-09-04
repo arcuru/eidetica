@@ -81,7 +81,7 @@ async fn test_transport_interface_consistency() {
 /// Test error handling consistency across transports
 #[tokio::test]
 async fn test_transport_error_handling_consistency() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let http_transport = HttpTransport::new().unwrap();
     let iroh_transport = IrohTransport::new().unwrap();

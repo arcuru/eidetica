@@ -155,7 +155,7 @@ impl SyncHook for SyncHookImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::Entry;
+    use crate::Entry;
 
     struct TestHook {
         name: String,

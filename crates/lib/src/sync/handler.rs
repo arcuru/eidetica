@@ -9,7 +9,7 @@ use super::protocol::{
     HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse,
 };
 use crate::auth::crypto::{create_challenge_response, format_public_key, generate_challenge};
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
@@ -36,7 +36,7 @@ pub trait SyncHandler: Send + std::marker::Sync {
 
 /// Default implementation of SyncHandler with database backend access.
 pub struct SyncHandlerImpl {
-    backend: Arc<dyn Database>,
+    backend: Arc<dyn BackendDB>,
     device_key_name: String,
 }
 
@@ -46,7 +46,7 @@ impl SyncHandlerImpl {
     /// # Arguments
     /// * `backend` - Database backend for storing and retrieving entries
     /// * `device_key_name` - Name of the device signing key
-    pub fn new(backend: Arc<dyn Database>, device_key_name: impl Into<String>) -> Self {
+    pub fn new(backend: Arc<dyn BackendDB>, device_key_name: impl Into<String>) -> Self {
         Self {
             backend,
             device_key_name: device_key_name.into(),

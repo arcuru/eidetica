@@ -3,6 +3,7 @@
 //! This module handles the complex logic of resolving delegation paths,
 //! including multi-tree traversal and permission clamping.
 
+use crate::Database;
 use crate::Result;
 use crate::auth::crypto::parse_public_key;
 use crate::auth::errors::AuthError;
@@ -10,11 +11,10 @@ use crate::auth::permission::clamp_permission;
 use crate::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
 };
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::ID;
-use crate::tree::Tree;
 use std::sync::Arc;
 
 /// Delegation resolver for handling complex delegation paths
@@ -34,7 +34,7 @@ impl DelegationResolver {
         &mut self,
         steps: &[DelegationStep],
         settings: &Doc,
-        backend: &Arc<dyn Database>,
+        backend: &Arc<dyn BackendDB>,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
         if steps.is_empty() {
@@ -87,7 +87,7 @@ impl DelegationResolver {
                 // Load the delegated tree
                 let root_id = delegated_tree_ref.tree.root.clone();
                 let delegated_tree =
-                    Tree::new_from_id(root_id.clone(), Arc::clone(&current_backend)).map_err(
+                    Database::new_from_id(root_id.clone(), Arc::clone(&current_backend)).map_err(
                         |e| AuthError::DelegatedTreeLoadFailed {
                             tree_id: root_id.to_string(),
                             source: Box::new(e),
@@ -202,7 +202,7 @@ impl DelegationResolver {
         &self,
         claimed_tips: &[ID],
         current_tips: &[ID],
-        backend: &Arc<dyn Database>,
+        backend: &Arc<dyn BackendDB>,
     ) -> Result<bool> {
         // Fast path: If no current tips, accept any claimed tips (first entry in tree)
         if current_tips.is_empty() {

@@ -22,15 +22,15 @@ async fn test_sync_queue_operations() -> Result<()> {
     assert_eq!(queue.total_entries(), 0, "Queue should start empty");
 
     // Test adding entries directly to queue
-    let entry_id1 = eidetica::entry::Entry::builder("entry1".to_string())
+    let entry_id1 = eidetica::Entry::builder("entry1".to_string())
         .build()
         .id()
         .clone();
-    let entry_id2 = eidetica::entry::Entry::builder("entry2".to_string())
+    let entry_id2 = eidetica::Entry::builder("entry2".to_string())
         .build()
         .id()
         .clone();
-    let tree_id = eidetica::entry::Entry::builder("test_tree".to_string())
+    let tree_id = eidetica::Entry::builder("test_tree".to_string())
         .build()
         .id()
         .clone();
@@ -79,11 +79,11 @@ async fn test_flush_worker_processes_queue() -> Result<()> {
     // Add entries directly to queue to test flushing
     let queue = sync.sync_queue();
     for i in 0..3 {
-        let entry_id = eidetica::entry::Entry::builder(format!("entry_{i}"))
+        let entry_id = eidetica::Entry::builder(format!("entry_{i}"))
             .build()
             .id()
             .clone();
-        let tree_id_obj = eidetica::entry::Entry::builder("test_tree".to_string())
+        let tree_id_obj = eidetica::Entry::builder("test_tree".to_string())
             .build()
             .id()
             .clone();
@@ -159,11 +159,11 @@ async fn test_queue_with_peer_management() -> Result<()> {
 
     // Test queue operations
     let queue = sync.sync_queue();
-    let entry_id = eidetica::entry::Entry::builder("entry1".to_string())
+    let entry_id = eidetica::Entry::builder("entry1".to_string())
         .build()
         .id()
         .clone();
-    let tree_id = eidetica::entry::Entry::builder("test_tree".to_string())
+    let tree_id = eidetica::Entry::builder("test_tree".to_string())
         .build()
         .id()
         .clone();
@@ -213,11 +213,11 @@ async fn test_queue_size_triggers_flush() -> Result<()> {
 
     // Add entries to reach the limit
     for i in 0..max_size {
-        let entry_id = eidetica::entry::Entry::builder(format!("entry_{i}"))
+        let entry_id = eidetica::Entry::builder(format!("entry_{i}"))
             .build()
             .id()
             .clone();
-        let tree_id = eidetica::entry::Entry::builder("test_tree".to_string())
+        let tree_id = eidetica::Entry::builder("test_tree".to_string())
             .build()
             .id()
             .clone();

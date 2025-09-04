@@ -4,9 +4,9 @@
 //! database operations, tree management, settings configuration, and basic operations.
 
 use crate::helpers::setup_db_with_key;
-use eidetica::Tree;
+use eidetica::Database;
+use eidetica::Instance;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
 use eidetica::subtree::DocStore;
@@ -14,20 +14,20 @@ use eidetica::subtree::DocStore;
 // ===== DATABASE SETUP HELPERS =====
 
 /// Create a simple BaseDB without authentication
-pub fn setup_simple_db() -> BaseDB {
+pub fn setup_simple_db() -> Instance {
     let backend = Box::new(InMemory::new());
-    BaseDB::new(backend)
+    Instance::new(backend)
 }
 
 // ===== TREE CREATION HELPERS =====
 
 /// Create tree with initial settings
 pub fn create_tree_with_settings(
-    db: &BaseDB,
+    db: &Instance,
     key_name: &str,
     tree_name: &str,
     version: &str,
-) -> Tree {
+) -> Database {
     let tree = db
         .new_tree_default(key_name)
         .expect("Failed to create tree");
@@ -51,7 +51,7 @@ pub fn create_tree_with_settings(
 }
 
 /// Create multiple trees with different names for testing
-pub fn create_multiple_named_trees(db: &BaseDB, key_name: &str, names: &[&str]) -> Vec<Tree> {
+pub fn create_multiple_named_trees(db: &Instance, key_name: &str, names: &[&str]) -> Vec<Database> {
     let mut trees = Vec::new();
 
     for name in names {
@@ -64,11 +64,11 @@ pub fn create_multiple_named_trees(db: &BaseDB, key_name: &str, names: &[&str]) 
 
 /// Create tree with basic data in a custom subtree
 pub fn create_tree_with_data(
-    db: &BaseDB,
+    db: &Instance,
     key_name: &str,
     subtree_name: &str,
     data: &[(&str, &str)],
-) -> Tree {
+) -> Database {
     let tree = db
         .new_tree_default(key_name)
         .expect("Failed to create tree");
@@ -91,7 +91,7 @@ pub fn create_tree_with_data(
 // ===== TREE MANAGEMENT HELPERS =====
 
 /// Test tree loading workflow
-pub fn test_tree_load_workflow(db: &BaseDB, key_name: &str) -> (ID, Tree) {
+pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) {
     // Create initial tree
     let tree = db
         .new_tree_default(key_name)
@@ -108,7 +108,7 @@ pub fn test_tree_load_workflow(db: &BaseDB, key_name: &str) -> (ID, Tree) {
 }
 
 /// Create trees for find testing (with various naming scenarios)
-pub fn setup_trees_for_find_testing(db: &BaseDB, key_name: &str) -> Vec<Tree> {
+pub fn setup_trees_for_find_testing(db: &Instance, key_name: &str) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Tree 1: No name
@@ -135,7 +135,7 @@ pub fn setup_trees_for_find_testing(db: &BaseDB, key_name: &str) -> Vec<Tree> {
 // ===== SETTINGS OPERATION HELPERS =====
 
 /// Set multiple settings in a tree
-pub fn set_tree_settings(tree: &Tree, settings_data: &[(&str, &str)]) -> ID {
+pub fn set_tree_settings(tree: &Database, settings_data: &[(&str, &str)]) -> ID {
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
@@ -150,7 +150,7 @@ pub fn set_tree_settings(tree: &Tree, settings_data: &[(&str, &str)]) -> ID {
 }
 
 /// Update tree metadata (name, version, description)
-pub fn update_tree_metadata(tree: &Tree, name: &str, version: &str, description: &str) -> ID {
+pub fn update_tree_metadata(tree: &Database, name: &str, version: &str, description: &str) -> ID {
     let metadata = &[
         ("name", name),
         ("version", version),
@@ -163,7 +163,7 @@ pub fn update_tree_metadata(tree: &Tree, name: &str, version: &str, description:
 
 /// Perform basic subtree operations
 pub fn perform_basic_subtree_operations(
-    tree: &Tree,
+    tree: &Database,
     subtree_name: &str,
     operations: &[(&str, &str)],
 ) -> ID {
@@ -181,13 +181,13 @@ pub fn perform_basic_subtree_operations(
 }
 
 /// Create user profile data in a tree
-pub fn create_user_profile(tree: &Tree, user_id: &str, name: &str, email: &str) -> ID {
+pub fn create_user_profile(tree: &Database, user_id: &str, name: &str, email: &str) -> ID {
     let user_data = &[("user_id", user_id), ("name", name), ("email", email)];
     perform_basic_subtree_operations(tree, "user_data", user_data)
 }
 
 /// Create application configuration in a tree
-pub fn create_app_config(tree: &Tree, app_name: &str, config_data: &[(&str, &str)]) -> ID {
+pub fn create_app_config(tree: &Database, app_name: &str, config_data: &[(&str, &str)]) -> ID {
     let mut all_config = vec![("app_name", app_name)];
     all_config.extend_from_slice(config_data);
     perform_basic_subtree_operations(tree, "app_config", &all_config)
@@ -196,7 +196,7 @@ pub fn create_app_config(tree: &Tree, app_name: &str, config_data: &[(&str, &str
 // ===== VERIFICATION HELPERS =====
 
 /// Verify tree has expected settings
-pub fn assert_tree_settings(tree: &Tree, expected_settings: &[(&str, &str)]) {
+pub fn assert_tree_settings(tree: &Database, expected_settings: &[(&str, &str)]) {
     let settings_viewer = tree
         .get_subtree_viewer::<DocStore>(SETTINGS)
         .expect("Failed to get settings viewer");
@@ -210,7 +210,7 @@ pub fn assert_tree_settings(tree: &Tree, expected_settings: &[(&str, &str)]) {
 }
 
 /// Verify tree data in specific subtree
-pub fn assert_tree_data(tree: &Tree, subtree_name: &str, expected_data: &[(&str, &str)]) {
+pub fn assert_tree_data(tree: &Database, subtree_name: &str, expected_data: &[(&str, &str)]) {
     let data_viewer = tree
         .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get data viewer");
@@ -224,13 +224,13 @@ pub fn assert_tree_data(tree: &Tree, subtree_name: &str, expected_data: &[(&str,
 }
 
 /// Verify tree has expected name
-pub fn assert_tree_name(tree: &Tree, expected_name: &str) {
+pub fn assert_tree_name(tree: &Database, expected_name: &str) {
     let actual_name = tree.get_name().expect("Failed to get tree name");
     assert_eq!(actual_name, expected_name, "Tree name mismatch");
 }
 
 /// Verify trees collection contains expected IDs
-pub fn assert_trees_contain_ids(trees: &[Tree], expected_ids: &[ID]) {
+pub fn assert_trees_contain_ids(trees: &[Database], expected_ids: &[ID]) {
     let found_ids: Vec<ID> = trees.iter().map(|t| t.root_id().clone()).collect();
     for expected_id in expected_ids {
         assert!(
@@ -241,12 +241,12 @@ pub fn assert_trees_contain_ids(trees: &[Tree], expected_ids: &[ID]) {
 }
 
 /// Verify trees collection has expected count
-pub fn assert_trees_count(trees: &[Tree], expected_count: usize) {
+pub fn assert_trees_count(trees: &[Database], expected_count: usize) {
     assert_eq!(trees.len(), expected_count, "Trees count mismatch");
 }
 
 /// Verify tree names in a collection
-pub fn assert_tree_names_in_collection(trees: &[Tree], expected_names: &[&str]) {
+pub fn assert_tree_names_in_collection(trees: &[Database], expected_names: &[&str]) {
     let tree_names: Vec<String> = trees.iter().filter_map(|t| t.get_name().ok()).collect();
 
     for expected_name in expected_names {
@@ -260,11 +260,13 @@ pub fn assert_tree_names_in_collection(trees: &[Tree], expected_names: &[&str]) 
 // ===== ERROR TESTING HELPERS =====
 
 /// Test tree not found scenarios
-pub fn test_tree_not_found_error(db: &BaseDB, non_existent_name: &str) {
+pub fn test_tree_not_found_error(db: &Instance, non_existent_name: &str) {
     let result = db.find_tree(non_existent_name);
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(eidetica::Error::Base(eidetica::basedb::BaseError::TreeNotFound { name })) = result {
+    if let Err(eidetica::Error::Instance(eidetica::basedb::InstanceError::TreeNotFound { name })) =
+        result
+    {
         assert_eq!(name, non_existent_name);
     } else {
         panic!("Expected TreeNotFound error, got an unexpected result");
@@ -272,7 +274,7 @@ pub fn test_tree_not_found_error(db: &BaseDB, non_existent_name: &str) {
 }
 
 /// Test database operations with various error conditions
-pub fn test_database_error_conditions(db: &BaseDB) {
+pub fn test_database_error_conditions(db: &Instance) {
     // Test with empty database
     let all_trees_result = db.all_trees();
     assert!(
@@ -287,7 +289,7 @@ pub fn test_database_error_conditions(db: &BaseDB) {
 // ===== INTEGRATION HELPERS =====
 
 /// Complete workflow: create DB, add trees, perform operations, verify results
-pub fn test_complete_basedb_workflow(key_name: &str) -> (BaseDB, Vec<Tree>) {
+pub fn test_complete_basedb_workflow(key_name: &str) -> (Instance, Vec<Database>) {
     let db = setup_db_with_key(key_name);
 
     // Create trees with different configurations
@@ -307,7 +309,7 @@ pub fn test_complete_basedb_workflow(key_name: &str) -> (BaseDB, Vec<Tree>) {
 }
 
 /// Test concurrent tree operations
-pub fn test_concurrent_tree_operations(db: &BaseDB, key_name: &str) -> Vec<Tree> {
+pub fn test_concurrent_tree_operations(db: &Instance, key_name: &str) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Create multiple trees rapidly

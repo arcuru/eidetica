@@ -4,6 +4,7 @@
 //! proper parent-child ordering during synchronization.
 
 use super::helpers;
+use eidetica::Database;
 use eidetica::entry::{Entry, ID};
 use eidetica::subtree::DocStore;
 use eidetica::sync::{
@@ -11,7 +12,6 @@ use eidetica::sync::{
     protocol::{SyncRequest, SyncResponse},
     transports::{SyncTransport, http::HttpTransport},
 };
-use eidetica::tree::Tree;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -486,7 +486,7 @@ async fn test_sync_protocol_implementation() {
     // Create a tree with data in database 1
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
-    let tree1 = Tree::new(settings, base_db1.backend().clone(), "_device_key").unwrap();
+    let tree1 = Database::new(settings, base_db1.backend().clone(), "_device_key").unwrap();
     let tree_root_id = tree1.root_id().clone();
 
     // Get the root entry to verify it exists

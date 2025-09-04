@@ -13,7 +13,7 @@ use eidetica::auth::types::{
 };
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
@@ -136,7 +136,7 @@ fn test_nested_delegation() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     let main_admin_key = db.add_private_key("main_admin")?;
     let org_admin_key = db.add_private_key("org_admin")?;
@@ -264,7 +264,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     let main_admin_key = db.add_private_key("main_admin")?;
     let delegated_user_key = db.add_private_key("delegated_user")?;
@@ -378,7 +378,7 @@ fn test_delegation_depth_limits() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Create a deeply nested delegation chain that exceeds the limit
     let admin_key = db.add_private_key("admin")?;
@@ -472,7 +472,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Keys
     let main_admin_key = db.add_private_key("main_admin")?;
@@ -571,7 +571,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Keys
     let main_admin_key = db.add_private_key("main_admin")?;
@@ -666,7 +666,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Setup simple tree with direct key
     let admin_key = db.add_private_key("admin")?;
@@ -721,7 +721,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Keys and delegated tree setup
     let main_admin_key = db.add_private_key("main_admin")?;

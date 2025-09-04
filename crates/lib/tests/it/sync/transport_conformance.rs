@@ -6,21 +6,21 @@
 use std::time::Duration;
 use tokio::time::sleep;
 
+use eidetica::Instance;
 use eidetica::Result;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
 
 /// Set up two BaseDB instances with private keys
-async fn setup_databases() -> Result<(BaseDB, BaseDB)> {
+async fn setup_databases() -> Result<(Instance, Instance)> {
     let db1 = {
-        let db = BaseDB::new(Box::new(InMemory::new()));
+        let db = Instance::new(Box::new(InMemory::new()));
         db.add_private_key("device_key")?;
         db
     };
     let db2 = {
-        let db = BaseDB::new(Box::new(InMemory::new()));
+        let db = Instance::new(Box::new(InMemory::new()));
         db.add_private_key("device_key")?;
         db
     };
@@ -30,8 +30,8 @@ async fn setup_databases() -> Result<(BaseDB, BaseDB)> {
 /// Set up sync instances with servers and peer connections
 async fn setup_sync_with_peers<F>(
     factory: &F,
-    db1: &BaseDB,
-    db2: &BaseDB,
+    db1: &Instance,
+    db2: &Instance,
 ) -> Result<(eidetica::sync::Sync, eidetica::sync::Sync, String, String)>
 where
     F: TransportFactory,
@@ -79,13 +79,13 @@ where
 
 /// Set up trees with bidirectional sync hooks
 fn setup_sync_hooks(
-    db1: &BaseDB,
-    db2: &BaseDB,
+    db1: &Instance,
+    db2: &Instance,
     sync1: &eidetica::sync::Sync,
     sync2: &eidetica::sync::Sync,
     peer1_pubkey: &str,
     peer2_pubkey: &str,
-) -> Result<(eidetica::tree::Tree, eidetica::tree::Tree)> {
+) -> Result<(eidetica::Database, eidetica::Database)> {
     use eidetica::sync::hooks::SyncHookCollection;
 
     let mut tree1 = db1.new_tree_default("device_key")?;

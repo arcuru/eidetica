@@ -1,5 +1,5 @@
 use super::helpers::*;
-use eidetica::entry::Entry;
+use eidetica::Entry;
 
 #[test]
 fn test_entry_add_subtree() {

@@ -6,7 +6,7 @@
 
 use super::InMemory;
 use crate::Result;
-use crate::backend::errors::DatabaseError;
+use crate::backend::errors::BackendError;
 use crate::entry::ID;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -36,7 +36,7 @@ pub(crate) fn build_path_from_root(
     // Build path by following parents back to root
     loop {
         if visited.contains(&current) {
-            return Err(DatabaseError::CycleDetected { entry_id: current }.into());
+            return Err(BackendError::CycleDetected { entry_id: current }.into());
         }
         visited.insert(current.clone());
         path.push(current.clone());
@@ -197,7 +197,7 @@ pub(crate) fn get_sorted_subtree_parents(
     let entries = backend.entries.read().unwrap();
     let entry = entries
         .get(entry_id)
-        .ok_or_else(|| DatabaseError::EntryNotFound {
+        .ok_or_else(|| BackendError::EntryNotFound {
             id: entry_id.clone(),
         })?;
 
@@ -244,7 +244,7 @@ pub(crate) fn find_lca(
     entry_ids: &[ID],
 ) -> Result<ID> {
     if entry_ids.is_empty() {
-        return Err(DatabaseError::EmptyEntryList {
+        return Err(BackendError::EmptyEntryList {
             operation: "LCA".to_string(),
         }
         .into());
@@ -259,7 +259,7 @@ pub(crate) fn find_lca(
         match super::storage::get(backend, entry_id) {
             Ok(entry) => {
                 if !entry.in_tree(tree) {
-                    return Err(DatabaseError::EntryNotInTree {
+                    return Err(BackendError::EntryNotInTree {
                         entry_id: entry_id.clone(),
                         tree_id: tree.clone(),
                     }
@@ -267,7 +267,7 @@ pub(crate) fn find_lca(
                 }
             }
             Err(_) => {
-                return Err(DatabaseError::EntryNotFound {
+                return Err(BackendError::EntryNotFound {
                     id: entry_id.clone(),
                 }
                 .into());
@@ -324,7 +324,7 @@ pub(crate) fn find_lca(
         }
     }
 
-    Err(DatabaseError::NoCommonAncestor {
+    Err(BackendError::NoCommonAncestor {
         entry_ids: entry_ids.to_vec(),
     }
     .into())

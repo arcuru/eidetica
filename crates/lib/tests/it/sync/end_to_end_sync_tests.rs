@@ -4,7 +4,7 @@
 //! through background processing and peer synchronization.
 
 use super::helpers;
-use eidetica::entry::Entry;
+use eidetica::Entry;
 use eidetica::sync::Address;
 use std::time::Duration;
 

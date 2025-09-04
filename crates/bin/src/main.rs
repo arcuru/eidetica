@@ -1,7 +1,7 @@
-use eidetica::Tree;
+use eidetica::Database;
+use eidetica::Entry;
+use eidetica::Instance;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
-use eidetica::entry::Entry;
 use signal_hook::flag as signal_flag;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 const DB_FILE: &str = "eidetica.json";
 
 // Helper function to save the database
-fn save_database(db: &BaseDB) {
+fn save_database(db: &Instance) {
     tracing::info!("Saving database to {DB_FILE}...");
     println!("Saving database to {DB_FILE}...");
     let backend_any = db.backend().as_any();
@@ -58,7 +58,7 @@ fn main() -> io::Result<()> {
     print_help();
 
     // Create or load the in-memory backend
-    let backend: Box<dyn eidetica::backend::Database> = match InMemory::load_from_file(DB_FILE) {
+    let backend: Box<dyn eidetica::backend::BackendDB> = match InMemory::load_from_file(DB_FILE) {
         Ok(backend) => {
             tracing::info!("Loaded database from {DB_FILE}");
             println!("Loaded database from {DB_FILE}");
@@ -71,8 +71,8 @@ fn main() -> io::Result<()> {
         }
     };
 
-    // Initialize BaseDB with the loaded or new backend
-    let db = BaseDB::new(backend);
+    // Initialize Instance with the loaded or new backend
+    let db = Instance::new(backend);
 
     // Add a default key for CLI operations (all entries must now be authenticated)
     const DEFAULT_CLI_KEY: &str = "cli_default_key";
@@ -81,9 +81,9 @@ fn main() -> io::Result<()> {
     }
 
     // Store trees by name
-    let mut trees: HashMap<String, Tree> = HashMap::new();
+    let mut trees: HashMap<String, Database> = HashMap::new();
 
-    // Restore trees using the new BaseDB.all_trees method
+    // Restore trees using the new Instance.all_trees method
     match db.all_trees() {
         Ok(loaded_trees) => {
             for tree in loaded_trees {
@@ -179,7 +179,7 @@ fn main() -> io::Result<()> {
                 if trees.is_empty() {
                     println!("No trees created yet");
                 } else {
-                    println!("Trees:");
+                    println!("Databases:");
                     for (name, tree) in &trees {
                         println!("  {} (root: {})", name, tree.root_id());
                     }

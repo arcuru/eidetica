@@ -16,7 +16,7 @@ use thiserror::Error;
 /// - Helper methods like `is_*()` provide stable APIs
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum BaseError {
+pub enum InstanceError {
     /// Tree not found by name.
     #[error("Tree not found: {name}")]
     TreeNotFound {
@@ -153,32 +153,32 @@ pub enum BaseError {
     },
 }
 
-impl BaseError {
+impl InstanceError {
     /// Check if this error indicates a resource was not found.
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            BaseError::TreeNotFound { .. }
-                | BaseError::EntryNotFound { .. }
-                | BaseError::SigningKeyNotFound { .. }
+            InstanceError::TreeNotFound { .. }
+                | InstanceError::EntryNotFound { .. }
+                | InstanceError::SigningKeyNotFound { .. }
         )
     }
 
     /// Check if this error indicates a resource already exists.
     pub fn is_already_exists(&self) -> bool {
-        matches!(self, BaseError::TreeAlreadyExists { .. })
+        matches!(self, InstanceError::TreeAlreadyExists { .. })
     }
 
     /// Check if this error is authentication-related.
     pub fn is_authentication_error(&self) -> bool {
         matches!(
             self,
-            BaseError::AuthenticationRequired
-                | BaseError::NoAuthConfiguration
-                | BaseError::AuthenticationValidationFailed { .. }
-                | BaseError::InsufficientPermissions
-                | BaseError::SignatureVerificationFailed
-                | BaseError::SigningKeyNotFound { .. }
+            InstanceError::AuthenticationRequired
+                | InstanceError::NoAuthConfiguration
+                | InstanceError::AuthenticationValidationFailed { .. }
+                | InstanceError::InsufficientPermissions
+                | InstanceError::SignatureVerificationFailed
+                | InstanceError::SigningKeyNotFound { .. }
         )
     }
 
@@ -186,9 +186,9 @@ impl BaseError {
     pub fn is_operation_error(&self) -> bool {
         matches!(
             self,
-            BaseError::OperationAlreadyCommitted
-                | BaseError::EmptyTipsNotAllowed
-                | BaseError::InvalidOperation { .. }
+            InstanceError::OperationAlreadyCommitted
+                | InstanceError::EmptyTipsNotAllowed
+                | InstanceError::InvalidOperation { .. }
         )
     }
 
@@ -196,26 +196,26 @@ impl BaseError {
     pub fn is_validation_error(&self) -> bool {
         matches!(
             self,
-            BaseError::EntryNotInTree { .. }
-                | BaseError::InvalidTip { .. }
-                | BaseError::InvalidDataType { .. }
-                | BaseError::InvalidTreeConfiguration { .. }
-                | BaseError::SettingsValidationFailed { .. }
-                | BaseError::EntryValidationFailed { .. }
+            InstanceError::EntryNotInTree { .. }
+                | InstanceError::InvalidTip { .. }
+                | InstanceError::InvalidDataType { .. }
+                | InstanceError::InvalidTreeConfiguration { .. }
+                | InstanceError::SettingsValidationFailed { .. }
+                | InstanceError::EntryValidationFailed { .. }
         )
     }
 
     /// Check if this error indicates corruption or inconsistency.
     pub fn is_corruption_error(&self) -> bool {
-        matches!(self, BaseError::TreeStateCorruption { .. })
+        matches!(self, InstanceError::TreeStateCorruption { .. })
     }
 
     /// Get the entry ID if this error is about a specific entry.
     pub fn entry_id(&self) -> Option<&ID> {
         match self {
-            BaseError::EntryNotFound { entry_id }
-            | BaseError::EntryNotInTree { entry_id, .. }
-            | BaseError::InvalidTip {
+            InstanceError::EntryNotFound { entry_id }
+            | InstanceError::EntryNotInTree { entry_id, .. }
+            | InstanceError::InvalidTip {
                 tip_id: entry_id, ..
             } => Some(entry_id),
             _ => None,
@@ -225,9 +225,8 @@ impl BaseError {
     /// Get the tree ID if this error is about a specific tree.
     pub fn tree_id(&self) -> Option<&ID> {
         match self {
-            BaseError::EntryNotInTree { tree_id, .. } | BaseError::InvalidTip { tree_id, .. } => {
-                Some(tree_id)
-            }
+            InstanceError::EntryNotInTree { tree_id, .. }
+            | InstanceError::InvalidTip { tree_id, .. } => Some(tree_id),
             _ => None,
         }
     }
@@ -235,17 +234,19 @@ impl BaseError {
     /// Get the tree name if this error is about a named tree.
     pub fn tree_name(&self) -> Option<&str> {
         match self {
-            BaseError::TreeNotFound { name } | BaseError::TreeAlreadyExists { name } => Some(name),
+            InstanceError::TreeNotFound { name } | InstanceError::TreeAlreadyExists { name } => {
+                Some(name)
+            }
             _ => None,
         }
     }
 }
 
 // Conversion from BaseError to the main Error type
-impl From<BaseError> for crate::Error {
-    fn from(err: BaseError) -> Self {
+impl From<InstanceError> for crate::Error {
+    fn from(err: InstanceError) -> Self {
         // Use the new structured Base variant
-        crate::Error::Base(err)
+        crate::Error::Instance(err)
     }
 }
 
@@ -255,37 +256,37 @@ mod tests {
 
     #[test]
     fn test_error_helpers() {
-        let err = BaseError::TreeNotFound {
+        let err = InstanceError::TreeNotFound {
             name: "test-tree".to_string(),
         };
         assert!(err.is_not_found());
         assert_eq!(err.tree_name(), Some("test-tree"));
 
-        let err = BaseError::TreeAlreadyExists {
+        let err = InstanceError::TreeAlreadyExists {
             name: "existing-tree".to_string(),
         };
         assert!(err.is_already_exists());
         assert_eq!(err.tree_name(), Some("existing-tree"));
 
-        let err = BaseError::EntryNotFound {
+        let err = InstanceError::EntryNotFound {
             entry_id: ID::from("test-entry"),
         };
         assert!(err.is_not_found());
         assert_eq!(err.entry_id(), Some(&ID::from("test-entry")));
 
-        let err = BaseError::AuthenticationRequired;
+        let err = InstanceError::AuthenticationRequired;
         assert!(err.is_authentication_error());
 
-        let err = BaseError::OperationAlreadyCommitted;
+        let err = InstanceError::OperationAlreadyCommitted;
         assert!(err.is_operation_error());
 
-        let err = BaseError::InvalidDataType {
+        let err = InstanceError::InvalidDataType {
             expected: "string".to_string(),
             actual: "number".to_string(),
         };
         assert!(err.is_validation_error());
 
-        let err = BaseError::TreeStateCorruption {
+        let err = InstanceError::TreeStateCorruption {
             reason: "test".to_string(),
         };
         assert!(err.is_corruption_error());
@@ -293,12 +294,14 @@ mod tests {
 
     #[test]
     fn test_error_conversion() {
-        let base_err = BaseError::TreeNotFound {
+        let base_err = InstanceError::TreeNotFound {
             name: "test".to_string(),
         };
         let err: crate::Error = base_err.into();
         match err {
-            crate::Error::Base(BaseError::TreeNotFound { name }) => assert_eq!(name, "test"),
+            crate::Error::Instance(InstanceError::TreeNotFound { name }) => {
+                assert_eq!(name, "test")
+            }
             _ => panic!("Unexpected error variant"),
         }
     }

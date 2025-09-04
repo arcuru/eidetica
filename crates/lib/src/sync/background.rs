@@ -19,10 +19,10 @@ use super::protocol::{
     SyncResponse,
 };
 use super::transports::SyncTransport;
+use crate::Database;
 use crate::Result;
-use crate::Tree;
 use crate::auth::crypto::{format_public_key, generate_challenge, verify_challenge_response};
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::entry::{Entry, ID};
 use tracing::{Instrument, debug, info, info_span, trace};
 
@@ -86,7 +86,7 @@ struct RetryEntry {
 pub struct BackgroundSync {
     // Core components - owns everything
     transport: Box<dyn SyncTransport>,
-    backend: Arc<dyn Database>,
+    backend: Arc<dyn BackendDB>,
     sync_tree_id: ID,
 
     // Server state
@@ -103,7 +103,7 @@ impl BackgroundSync {
     /// Start the background sync engine and return a command sender
     pub fn start(
         transport: Box<dyn SyncTransport>,
-        backend: Arc<dyn Database>,
+        backend: Arc<dyn BackendDB>,
         sync_tree_id: ID,
     ) -> mpsc::Sender<SyncCommand> {
         let (tx, rx) = mpsc::channel(100);
@@ -131,8 +131,8 @@ impl BackgroundSync {
     }
 
     /// Get the sync tree for accessing peer data
-    fn get_sync_tree(&self) -> Result<Tree> {
-        let mut sync_tree = Tree::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
+    fn get_sync_tree(&self) -> Result<Database> {
+        let mut sync_tree = Database::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
         sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
         Ok(sync_tree)
     }

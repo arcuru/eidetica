@@ -1,6 +1,8 @@
 pub mod errors;
 
+use crate::Database;
 use crate::Result;
+use crate::Store;
 use crate::auth::crypto::sign_entry;
 use crate::auth::types::{Operation, SigInfo, SigKey};
 use crate::auth::validation::AuthValidator;
@@ -10,16 +12,14 @@ use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
 use crate::subtree::DocStore;
-use crate::subtree::SubTree;
 use crate::sync::hooks::{SyncHookCollection, SyncHookContext};
-use crate::tree::Tree;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-pub use errors::AtomicOpError;
+pub use errors::TransactionError;
 
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,18 +48,18 @@ struct EntryMetadata {
 ///
 /// `AtomicOp` instances are typically created via `Tree::new_operation()`.
 #[derive(Clone)]
-pub struct AtomicOp {
+pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
     /// The tree this operation belongs to
-    tree: Tree,
+    tree: Database,
     /// Optional authentication key ID for signing entries
     auth_key_name: Option<String>,
     /// Optional sync hooks to execute after successful commit
     sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
-impl AtomicOp {
+impl Transaction {
     /// Creates a new atomic operation for a specific `Tree` with custom parent tips.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
@@ -75,14 +75,14 @@ impl AtomicOp {
     ///
     /// # Returns
     /// A `Result<Self>` containing the new operation or an error if tips are empty or invalid.
-    pub(crate) fn new_with_tips(tree: &Tree, tips: &[ID]) -> Result<Self> {
+    pub(crate) fn new_with_tips(tree: &Database, tips: &[ID]) -> Result<Self> {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the tree root exists in backend
             let root_exists = tree.backend().get(tree.root_id()).is_ok();
 
             if root_exists {
-                return Err(AtomicOpError::EmptyTipsNotAllowed.into());
+                return Err(TransactionError::EmptyTipsNotAllowed.into());
             }
             // If root doesn't exist, this is valid (creating the root entry)
         }
@@ -91,7 +91,7 @@ impl AtomicOp {
         for tip_id in tips {
             let entry = tree.backend().get(tip_id)?;
             if !entry.in_tree(tree.root_id()) {
-                return Err(AtomicOpError::InvalidTip {
+                return Err(TransactionError::InvalidTip {
                     tip_id: tip_id.to_string(),
                 }
                 .into());
@@ -220,7 +220,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::OperationAlreadyCommitted)?;
         builder.set_root_mut(root.into());
         Ok(())
     }
@@ -251,7 +251,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::OperationAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
@@ -291,14 +291,14 @@ impl AtomicOp {
     /// A `Result<T>` containing the `SubTree` handle.
     pub fn get_subtree<T>(&self, subtree_name: impl Into<String>) -> Result<T>
     where
-        T: SubTree,
+        T: Store,
     {
         let subtree_name = subtree_name.into();
         {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref
                 .as_mut()
-                .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+                .ok_or(TransactionError::OperationAlreadyCommitted)?;
 
             // If we haven't cached the tips for this subtree yet, get them now
             let subtrees = builder.subtrees();
@@ -361,7 +361,7 @@ impl AtomicOp {
         let builder_ref = self.entry_builder.borrow();
         let builder = builder_ref
             .as_ref()
-            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::OperationAlreadyCommitted)?;
 
         if let Ok(data) = builder.data(subtree_name) {
             if data.trim().is_empty() {
@@ -369,7 +369,7 @@ impl AtomicOp {
                 Ok(T::default())
             } else {
                 serde_json::from_str(data).map_err(|e| {
-                    AtomicOpError::SubtreeDeserializationFailed {
+                    TransactionError::SubtreeDeserializationFailed {
                         subtree: subtree_name.to_string(),
                         reason: e.to_string(),
                     }
@@ -411,7 +411,7 @@ impl AtomicOp {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::OperationAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
@@ -672,7 +672,7 @@ impl AtomicOp {
             let builder_cell = self.entry_builder.borrow();
             let builder = builder_cell
                 .as_ref()
-                .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+                .ok_or(TransactionError::OperationAlreadyCommitted)?;
             builder.subtrees().contains(&SETTINGS.to_string())
         };
 
@@ -702,7 +702,7 @@ impl AtomicOp {
         let builder_cell = self.entry_builder.borrow_mut();
         let builder_from_cell = builder_cell
             .as_ref()
-            .ok_or(AtomicOpError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::OperationAlreadyCommitted)?;
 
         // Clone the builder since we can't easily take ownership from RefCell<Option<>>
         let mut builder = builder_from_cell.clone();
@@ -746,7 +746,7 @@ impl AtomicOp {
             let signing_key = self.tree.backend().get_private_key(key_name)?;
 
             if signing_key.is_none() {
-                return Err(AtomicOpError::SigningKeyNotFound {
+                return Err(TransactionError::SigningKeyNotFound {
                     key_name: key_name.clone(),
                 }
                 .into());
@@ -796,7 +796,7 @@ impl AtomicOp {
             signing_key
         } else {
             // No authentication key configured
-            return Err(AtomicOpError::AuthenticationRequired.into());
+            return Err(TransactionError::AuthenticationRequired.into());
         };
 
         // Remove empty subtrees and build the final immutable Entry
@@ -847,7 +847,7 @@ impl AtomicOp {
                         if has_permission {
                             crate::backend::VerificationStatus::Verified
                         } else {
-                            return Err(AtomicOpError::InsufficientPermissions.into());
+                            return Err(TransactionError::InsufficientPermissions.into());
                         }
                     }
                     _ => {
@@ -864,23 +864,23 @@ impl AtomicOp {
                                         // Allow it since it's setting up authentication
                                         crate::backend::VerificationStatus::Verified
                                     } else {
-                                        return Err(AtomicOpError::NoAuthConfiguration.into());
+                                        return Err(TransactionError::NoAuthConfiguration.into());
                                     }
                                 } else {
-                                    return Err(AtomicOpError::NoAuthConfiguration.into());
+                                    return Err(TransactionError::NoAuthConfiguration.into());
                                 }
                             } else {
-                                return Err(AtomicOpError::NoAuthConfiguration.into());
+                                return Err(TransactionError::NoAuthConfiguration.into());
                             }
                         } else {
-                            return Err(AtomicOpError::NoAuthConfiguration.into());
+                            return Err(TransactionError::NoAuthConfiguration.into());
                         }
                     }
                 }
             }
             Ok(false) => {
                 // Signature verification failed
-                return Err(AtomicOpError::SignatureVerificationFailed.into());
+                return Err(TransactionError::SignatureVerificationFailed.into());
             }
             Err(e) => {
                 // Authentication validation error

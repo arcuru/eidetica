@@ -1,8 +1,8 @@
 use crate::Result;
-use crate::atomicop::AtomicOp;
+use crate::Store;
+use crate::Transaction;
 use crate::crdt::{CRDT, Doc};
-use crate::subtree::SubTree;
-use crate::subtree::errors::SubtreeError;
+use crate::subtree::errors::StoreError;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use uuid::Uuid;
@@ -30,15 +30,15 @@ where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
     name: String,
-    atomic_op: AtomicOp,
+    atomic_op: Transaction,
     phantom: PhantomData<T>,
 }
 
-impl<T> SubTree for Table<T>
+impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
-    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self> {
+    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
             name: subtree_name.into(),
             atomic_op: op.clone(),
@@ -82,7 +82,7 @@ where
             && let Some(value) = map_value.as_text()
         {
             return serde_json::from_str(value).map_err(|e| {
-                SubtreeError::DeserializationFailed {
+                StoreError::DeserializationFailed {
                     subtree: self.name.clone(),
                     reason: format!("Failed to deserialize record for key '{key}': {e}"),
                 }
@@ -96,13 +96,13 @@ where
         // Get the value
         match data.get(key).and_then(|v| v.as_text()) {
             Some(value) => serde_json::from_str(value).map_err(|e| {
-                SubtreeError::DeserializationFailed {
+                StoreError::DeserializationFailed {
                     subtree: self.name.clone(),
                     reason: format!("Failed to deserialize record for key '{key}': {e}"),
                 }
                 .into()
             }),
-            None => Err(SubtreeError::KeyNotFound {
+            None => Err(StoreError::KeyNotFound {
                 subtree: self.name.clone(),
                 key: key.to_string(),
             }
@@ -137,7 +137,7 @@ where
 
         // Serialize the row
         let serialized_row =
-            serde_json::to_string(&row).map_err(|e| SubtreeError::SerializationFailed {
+            serde_json::to_string(&row).map_err(|e| StoreError::SerializationFailed {
                 subtree: self.name.clone(),
                 reason: format!("Failed to serialize record: {e}"),
             })?;
@@ -147,7 +147,7 @@ where
 
         // Serialize and update the atomic op
         let serialized_data =
-            serde_json::to_string(&data).map_err(|e| SubtreeError::SerializationFailed {
+            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
                 subtree: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
@@ -182,7 +182,7 @@ where
 
         // Serialize the row
         let serialized_row =
-            serde_json::to_string(&row).map_err(|e| SubtreeError::SerializationFailed {
+            serde_json::to_string(&row).map_err(|e| StoreError::SerializationFailed {
                 subtree: self.name.clone(),
                 reason: format!("Failed to serialize record for key '{key_str}': {e}"),
             })?;
@@ -192,7 +192,7 @@ where
 
         // Serialize and update the atomic op
         let serialized_data =
-            serde_json::to_string(&data).map_err(|e| SubtreeError::SerializationFailed {
+            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
                 subtree: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
@@ -229,14 +229,13 @@ where
             // Skip non-text values
             if let Some(value) = map_value.as_text() {
                 // Deserialize the row
-                let row: T = serde_json::from_str(value).map_err(|e| {
-                    SubtreeError::DeserializationFailed {
+                let row: T =
+                    serde_json::from_str(value).map_err(|e| StoreError::DeserializationFailed {
                         subtree: self.name.clone(),
                         reason: format!(
                             "Failed to deserialize record for key '{key}' during search: {e}"
                         ),
-                    }
-                })?;
+                    })?;
 
                 // Check if the row matches the query
                 if query(&row) {

@@ -3,33 +3,33 @@
 //! This module provides utility functions for testing CRDT Doc operations,
 //! value editors, path operations, and merge scenarios.
 
-use eidetica::atomicop::AtomicOp;
+use eidetica::Database;
+use eidetica::Instance;
+use eidetica::Transaction;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::{Node, Value};
 use eidetica::subtree::DocStore;
-use eidetica::tree::Tree;
 
 // ===== BASIC SETUP HELPERS =====
 
 /// Create a database with a test key and return both DB and tree
-pub fn setup_db_and_tree() -> eidetica::Result<(BaseDB, Tree)> {
-    let db = BaseDB::new(Box::new(InMemory::new()));
+pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
+    let db = Instance::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
     let tree = db.new_tree_default("test_key")?;
     Ok((db, tree))
 }
 
 /// Setup a Doc subtree for testing
-pub fn setup_dict_subtree(op: &AtomicOp, subtree_name: &str) -> eidetica::Result<DocStore> {
+pub fn setup_dict_subtree(op: &Transaction, subtree_name: &str) -> eidetica::Result<DocStore> {
     op.get_subtree::<DocStore>(subtree_name)
 }
 
 /// Create a complete test environment with DB, tree, operation, and Doc
 pub fn setup_complete_test_env(
     subtree_name: &str,
-) -> eidetica::Result<(BaseDB, Tree, AtomicOp, DocStore)> {
+) -> eidetica::Result<(Instance, Database, Transaction, DocStore)> {
     let (db, tree) = setup_db_and_tree()?;
     let op = tree.new_operation()?;
     let dict = setup_dict_subtree(&op, subtree_name)?;
@@ -179,7 +179,7 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
-pub fn setup_path_test_dict(op: &AtomicOp) -> eidetica::Result<DocStore> {
+pub fn setup_path_test_dict(op: &Transaction) -> eidetica::Result<DocStore> {
     setup_dict_subtree(op, "path_test_store")
 }
 

@@ -4,7 +4,7 @@
 //! for authenticating entries in the database.
 
 use super::errors::AuthError;
-use crate::entry::Entry;
+use crate::Entry;
 use base64ct::{Base64, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand;
@@ -281,7 +281,7 @@ mod tests {
         let (signing_key, verifying_key) = generate_keypair();
 
         // Create a test entry with auth info but no signature
-        let mut entry = crate::entry::Entry::builder("root123").build();
+        let mut entry = Entry::builder("root123").build();
 
         // Set auth ID without signature
         entry.sig = crate::auth::types::SigInfo {

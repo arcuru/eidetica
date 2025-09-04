@@ -1,4 +1,4 @@
-use eidetica::entry::Entry;
+use eidetica::Entry;
 
 /// Create a simple test entry with the given root
 pub fn create_entry(root: &str) -> Entry {

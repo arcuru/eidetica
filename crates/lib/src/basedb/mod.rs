@@ -4,13 +4,13 @@
 //! `BaseDB` manages multiple `Tree` instances and interacts with the storage `Database`.
 //! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
 
+use crate::Database;
 use crate::Result;
 use crate::auth::crypto::{format_public_key, generate_keypair};
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::crdt::Doc;
 use crate::entry::ID;
 use crate::sync::Sync;
-use crate::tree::Tree;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub mod errors;
 
 // Re-export main types for easier access
-pub use errors::BaseError;
+pub use errors::InstanceError;
 
 /// Private constants for device identity management
 const DEVICE_KEY_NAME: &str = "_device_key";
@@ -32,17 +32,17 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 ///
 /// Each BaseDB instance has a unique device identity represented by an Ed25519 keypair.
 /// The public key serves as the device ID for sync operations.
-pub struct BaseDB {
+pub struct Instance {
     /// The database storage used by the database.
-    backend: Arc<dyn Database>,
+    backend: Arc<dyn BackendDB>,
     /// Synchronization module for this database instance.
     sync: Option<Sync>,
     // Blob storage will be separate, maybe even just an extension
     // storage: IPFS;
 }
 
-impl BaseDB {
-    pub fn new(backend: Box<dyn Database>) -> Self {
+impl Instance {
+    pub fn new(backend: Box<dyn BackendDB>) -> Self {
         let db = Self {
             backend: Arc::from(backend),
             sync: None,
@@ -56,7 +56,7 @@ impl BaseDB {
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn Database> {
+    pub fn backend(&self) -> &Arc<dyn BackendDB> {
         &self.backend
     }
 
@@ -120,8 +120,8 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Tree> {
-        let tree = Tree::new(settings, Arc::clone(&self.backend), signing_key_name)?;
+    pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Database> {
+        let tree = Database::new(settings, Arc::clone(&self.backend), signing_key_name)?;
         Ok(self.configure_tree_sync_hooks(tree))
     }
 
@@ -133,7 +133,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Tree` or an error.
-    pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Tree> {
+    pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
         let mut settings = Doc::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
@@ -159,13 +159,13 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing the loaded `Tree` or an error if the root ID is not found.
-    pub fn load_tree(&self, root_id: &ID) -> Result<Tree> {
+    pub fn load_tree(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
         self.backend.get(root_id)?;
 
         // Create a tree object with the given root_id
-        let tree = Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+        let tree = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
         Ok(self.configure_tree_sync_hooks(tree))
     }
 
@@ -176,12 +176,12 @@ impl BaseDB {
     ///
     /// # Returns
     /// A `Result` containing a vector of all `Tree` instances or an error.
-    pub fn all_trees(&self) -> Result<Vec<Tree>> {
+    pub fn all_trees(&self) -> Result<Vec<Database>> {
         let root_ids = self.backend.all_roots()?;
         let mut trees = Vec::new();
 
         for root_id in root_ids {
-            let tree = Tree::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+            let tree = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
             trees.push(self.configure_tree_sync_hooks(tree));
         }
 
@@ -202,7 +202,7 @@ impl BaseDB {
     ///
     /// # Errors
     /// Returns `BaseError::TreeNotFound` if no trees with the specified name are found.
-    pub fn find_tree(&self, name: impl AsRef<str>) -> Result<Vec<Tree>> {
+    pub fn find_tree(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
         let all_trees = self.all_trees()?;
         let mut matching_trees = Vec::new();
@@ -218,7 +218,7 @@ impl BaseDB {
         }
 
         if matching_trees.is_empty() {
-            Err(BaseError::TreeNotFound {
+            Err(InstanceError::TreeNotFound {
                 name: name.to_string(),
             }
             .into())
@@ -405,7 +405,7 @@ impl BaseDB {
     ///
     /// # Returns
     /// The tree with sync hooks configured if sync is enabled
-    fn configure_tree_sync_hooks(&self, tree: Tree) -> Tree {
+    fn configure_tree_sync_hooks(&self, tree: Database) -> Database {
         // TODO: Implement tree sync hooks for the new BackgroundSync architecture
         // The new architecture requires per-peer hooks rather than a collection
         // For now, sync hooks need to be set up manually per peer

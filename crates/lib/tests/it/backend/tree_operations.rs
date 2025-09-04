@@ -1,5 +1,5 @@
 use super::helpers::*;
-use eidetica::backend::{Database, database::InMemory};
+use eidetica::backend::{BackendDB, database::InMemory};
 use eidetica::entry::{Entry, ID};
 
 #[test]

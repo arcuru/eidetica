@@ -77,7 +77,7 @@ struct SubTreeNode {
 /// # Example
 ///
 /// ```
-/// # use eidetica::entry::Entry;
+/// # use eidetica::Entry;
 ///
 /// // Create a new entry using Entry::builder()
 /// let entry = Entry::builder("tree_root")
@@ -207,7 +207,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or_else(|| {
-                crate::subtree::SubtreeError::KeyNotFound {
+                crate::subtree::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -229,7 +229,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::subtree::SubtreeError::KeyNotFound {
+                crate::subtree::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -289,7 +289,7 @@ impl Entry {
 /// The builder provides two patterns for construction:
 /// 1. Ownership chaining: Each method returns `self` for chained calls.
 ///    ```
-///    # use eidetica::entry::Entry;
+///    # use eidetica::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
 ///    let entry = Entry::builder(root_id)
@@ -300,7 +300,7 @@ impl Entry {
 ///
 /// 2. Mutable reference: Methods ending in `_mut` modify the builder in place.
 ///    ```
-///    # use eidetica::entry::Entry;
+///    # use eidetica::Entry;
 ///    # let root_id = "root_id".to_string();
 ///    # let data = "data".to_string();
 ///    let mut builder = Entry::builder(root_id);
@@ -312,7 +312,7 @@ impl Entry {
 /// # Example
 ///
 /// ```
-/// use eidetica::entry::Entry;
+/// use eidetica::Entry;
 ///
 /// // Create a builder for a regular entry
 /// let entry = Entry::builder("root_id")
@@ -407,7 +407,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or_else(|| {
-                crate::subtree::SubtreeError::KeyNotFound {
+                crate::subtree::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -429,7 +429,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::subtree::SubtreeError::KeyNotFound {
+                crate::subtree::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }

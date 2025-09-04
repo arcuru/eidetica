@@ -4,9 +4,9 @@
 //! core operations, API methods, merging algorithms, and settings management.
 
 use crate::helpers::*;
-use eidetica::Tree;
+use eidetica::Database;
 use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
@@ -15,7 +15,7 @@ use eidetica::subtree::DocStore;
 // ===== OPERATION HELPERS =====
 
 /// Create operation and add data to specific subtree
-pub fn add_data_to_subtree(tree: &Tree, subtree_name: &str, data: &[(&str, &str)]) -> ID {
+pub fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let store = op
@@ -30,7 +30,7 @@ pub fn add_data_to_subtree(tree: &Tree, subtree_name: &str, data: &[(&str, &str)
 
 /// Create authenticated operation and add data
 pub fn add_authenticated_data(
-    tree: &Tree,
+    tree: &Database,
     key_name: &str,
     subtree_name: &str,
     data: &[(&str, &str)],
@@ -51,7 +51,7 @@ pub fn add_authenticated_data(
 
 /// Create branch from specific entry
 pub fn create_branch_from_entry(
-    tree: &Tree,
+    tree: &Database,
     entry_id: &ID,
     subtree_name: &str,
     data: &[(&str, &str)],
@@ -73,7 +73,7 @@ pub fn create_branch_from_entry(
 // ===== VERIFICATION HELPERS =====
 
 /// Verify tree contains expected data in subtree
-pub fn assert_subtree_data(tree: &Tree, subtree_name: &str, expected: &[(&str, &str)]) {
+pub fn assert_subtree_data(tree: &Database, subtree_name: &str, expected: &[(&str, &str)]) {
     let viewer = tree
         .get_subtree_viewer::<DocStore>(subtree_name)
         .expect("Failed to get subtree viewer");
@@ -87,7 +87,7 @@ pub fn assert_subtree_data(tree: &Tree, subtree_name: &str, expected: &[(&str, &
 }
 
 /// Verify entry has expected authentication properties
-pub fn assert_entry_authentication(tree: &Tree, entry_id: &ID, expected_key: &str) {
+pub fn assert_entry_authentication(tree: &Database, entry_id: &ID, expected_key: &str) {
     let entry = tree.get_entry(entry_id).expect("Failed to get entry");
     let sig_info = &entry.sig;
 
@@ -104,7 +104,7 @@ pub fn assert_entry_authentication(tree: &Tree, entry_id: &ID, expected_key: &st
 }
 
 /// Verify entry parent relationships
-pub fn assert_entry_parents(tree: &Tree, entry_id: &ID, expected_parents: &[ID]) {
+pub fn assert_entry_parents(tree: &Database, entry_id: &ID, expected_parents: &[ID]) {
     let backend = tree.backend();
     let entry = backend.get(entry_id).expect("Failed to get entry");
     let actual_parents = entry.parents().expect("Failed to get parents");
@@ -124,7 +124,7 @@ pub fn assert_entry_parents(tree: &Tree, entry_id: &ID, expected_parents: &[ID])
 }
 
 /// Verify entry exists and belongs to tree
-pub fn assert_entry_belongs_to_tree(tree: &Tree, entry_id: &ID) {
+pub fn assert_entry_belongs_to_tree(tree: &Database, entry_id: &ID) {
     let result = tree.get_entry(entry_id);
     assert!(result.is_ok(), "Entry {entry_id} should exist in tree");
 }
@@ -132,7 +132,7 @@ pub fn assert_entry_belongs_to_tree(tree: &Tree, entry_id: &ID) {
 // ===== COMPLEX SCENARIO HELPERS =====
 
 /// Create diamond pattern for testing complex merges
-pub fn create_diamond_pattern(tree: &Tree, base_data: &[(&str, &str)]) -> (ID, ID, ID, ID) {
+pub fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)]) -> (ID, ID, ID, ID) {
     // Create base entry (A)
     let base_id = add_data_to_subtree(tree, "data", base_data);
 
@@ -171,7 +171,7 @@ pub fn create_diamond_pattern(tree: &Tree, base_data: &[(&str, &str)]) -> (ID, I
 }
 
 /// Create linear chain of entries
-pub fn create_linear_chain(tree: &Tree, subtree_name: &str, chain_length: usize) -> Vec<ID> {
+pub fn create_linear_chain(tree: &Database, subtree_name: &str, chain_length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     for i in 0..chain_length {
@@ -190,7 +190,7 @@ pub fn create_linear_chain(tree: &Tree, subtree_name: &str, chain_length: usize)
 }
 
 /// Create tree with authentication setup for testing
-pub fn setup_tree_with_auth_config(key_name: &str) -> (BaseDB, Tree) {
+pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
     let db = setup_db();
     let public_key = db.add_private_key(key_name).expect("Failed to add key");
 
@@ -221,7 +221,7 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (BaseDB, Tree) {
 // ===== PERFORMANCE TESTING HELPERS =====
 
 /// Create deep chain for performance testing
-pub fn create_deep_chain_for_performance(tree: &Tree, depth: usize) -> Vec<ID> {
+pub fn create_deep_chain_for_performance(tree: &Database, depth: usize) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     for i in 0..depth {
@@ -236,7 +236,7 @@ pub fn create_deep_chain_for_performance(tree: &Tree, depth: usize) -> Vec<ID> {
 }
 
 /// Verify performance characteristics of deep operations
-pub fn assert_deep_operations_performance(tree: &Tree, depth: usize) {
+pub fn assert_deep_operations_performance(tree: &Database, depth: usize) {
     // Create deep chain
     let _entry_ids = create_deep_chain_for_performance(tree, depth);
 
@@ -267,7 +267,7 @@ pub fn assert_deep_operations_performance(tree: &Tree, depth: usize) {
 // ===== CONSISTENCY TESTING HELPERS =====
 
 /// Verify deterministic behavior across multiple reads
-pub fn assert_deterministic_reads(tree: &Tree, subtree_name: &str, read_count: usize) {
+pub fn assert_deterministic_reads(tree: &Database, subtree_name: &str, read_count: usize) {
     let mut results = Vec::new();
 
     for _ in 0..read_count {
@@ -288,7 +288,7 @@ pub fn assert_deterministic_reads(tree: &Tree, subtree_name: &str, read_count: u
 }
 
 /// Verify caching consistency
-pub fn assert_caching_consistency(tree: &Tree, subtree_name: &str) {
+pub fn assert_caching_consistency(tree: &Database, subtree_name: &str) {
     // Force cache clear
     tree.backend()
         .clear_crdt_cache()

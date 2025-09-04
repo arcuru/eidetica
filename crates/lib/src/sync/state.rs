@@ -4,7 +4,7 @@
 //! between peers, including sync cursors, metadata, and history.
 
 use crate::Result;
-use crate::atomicop::AtomicOp;
+use crate::Transaction;
 use crate::crdt::doc::{Value, path};
 use crate::entry::ID;
 use crate::subtree::DocStore;
@@ -221,12 +221,12 @@ impl SyncHistoryEntry {
 /// Manages sync state persistence in the sync tree.
 pub struct SyncStateManager<'a> {
     /// The atomic operation for modifying the sync tree
-    op: &'a AtomicOp,
+    op: &'a Transaction,
 }
 
 impl<'a> SyncStateManager<'a> {
     /// Create a new sync state manager.
-    pub fn new(op: &'a AtomicOp) -> Self {
+    pub fn new(op: &'a Transaction) -> Self {
         Self { op }
     }
 
@@ -241,7 +241,7 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&cursor_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                crate::Error::Subtree(crate::subtree::SubtreeError::SerializationFailed {
+                crate::Error::Store(crate::subtree::StoreError::SerializationFailed {
                     subtree: "sync_state".to_string(),
                     reason: format!("Invalid cursor JSON: {e}"),
                 })
@@ -272,7 +272,7 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&metadata_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                crate::Error::Subtree(crate::subtree::SubtreeError::SerializationFailed {
+                crate::Error::Store(crate::subtree::StoreError::SerializationFailed {
                     subtree: "sync_state".to_string(),
                     reason: format!("Invalid metadata JSON: {e}"),
                 })
@@ -407,9 +407,9 @@ impl<'a> SyncStateManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Entry;
+    use crate::Instance;
     use crate::backend::database::InMemory;
-    use crate::basedb::BaseDB;
-    use crate::entry::Entry;
 
     #[test]
     fn test_sync_cursor() {
@@ -452,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn test_sync_state_manager() {
         let backend = InMemory::new();
-        let db = BaseDB::new(Box::new(backend)).with_sync().unwrap();
+        let db = Instance::new(Box::new(backend)).with_sync().unwrap();
 
         // Add a private key for authentication
         db.add_private_key("test_key").unwrap();

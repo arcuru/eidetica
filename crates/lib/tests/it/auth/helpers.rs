@@ -1,4 +1,6 @@
 use ed25519_dalek::VerifyingKey;
+use eidetica::Database;
+use eidetica::Instance;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{
     AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds, SigKey,
@@ -6,11 +8,9 @@ use eidetica::auth::types::{
 };
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
 use eidetica::crdt::Doc;
 use eidetica::entry::ID;
 use eidetica::subtree::DocStore;
-use eidetica::tree::Tree;
 
 // Helper functions for auth testing
 //
@@ -20,19 +20,19 @@ use eidetica::tree::Tree;
 // ===== BASIC SETUP HELPERS =====
 
 /// Create a database with a single test key
-pub fn setup_db() -> BaseDB {
-    BaseDB::new(Box::new(InMemory::new()))
+pub fn setup_db() -> Instance {
+    Instance::new(Box::new(InMemory::new()))
 }
 
 /// Create a database with a pre-added test key
-pub fn setup_db_with_key(key_name: &str) -> BaseDB {
+pub fn setup_db_with_key(key_name: &str) -> Instance {
     let db = setup_db();
     let _ = db.add_private_key(key_name).expect("Failed to add key");
     db
 }
 
 /// Create a database and tree with a test key
-pub fn setup_db_and_tree_with_key(key_name: &str) -> (BaseDB, Tree) {
+pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
         .new_tree(Doc::new(), key_name)
@@ -52,9 +52,9 @@ pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> Aut
 /// Create a DB with keys pre-configured for testing
 pub fn setup_test_db_with_keys(
     keys: &[(&str, Permission, KeyStatus)],
-) -> (BaseDB, Vec<VerifyingKey>) {
+) -> (Instance, Vec<VerifyingKey>) {
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     let mut public_keys = Vec::new();
     for (key_name, _permission, _status) in keys {
@@ -67,10 +67,10 @@ pub fn setup_test_db_with_keys(
 
 /// Create a tree with auth settings pre-configured
 pub fn setup_authenticated_tree(
-    db: &BaseDB,
+    db: &Instance,
     keys: &[(&str, Permission, KeyStatus)],
     public_keys: &[VerifyingKey],
-) -> Tree {
+) -> Database {
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();
 
@@ -107,7 +107,7 @@ pub fn setup_authenticated_tree(
 /// Create a complete authentication environment with multiple keys and permission levels
 pub fn setup_complete_auth_environment(
     keys: &[(&str, Permission, KeyStatus)],
-) -> (BaseDB, Tree, Vec<VerifyingKey>) {
+) -> (Instance, Database, Vec<VerifyingKey>) {
     let db = setup_db();
     let mut public_keys = Vec::new();
 
@@ -154,10 +154,10 @@ pub fn setup_complete_auth_environment(
 
 /// Create a delegated tree with specified keys and permissions
 pub fn create_delegated_tree(
-    db: &BaseDB,
+    db: &Instance,
     keys: &[(&str, Permission, KeyStatus)],
     creator_key: &str,
-) -> eidetica::Result<Tree> {
+) -> eidetica::Result<Database> {
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();
 
@@ -181,7 +181,7 @@ pub fn create_delegated_tree(
 
 /// Create delegation reference for a tree
 pub fn create_delegation_ref(
-    tree: &Tree,
+    tree: &Database,
     max_permission: Permission,
     min_permission: Option<Permission>,
 ) -> eidetica::Result<DelegatedTreeRef> {
@@ -214,8 +214,8 @@ pub fn create_delegation_path(steps: &[(&str, Option<Vec<ID>>)]) -> SigKey {
 /// Create nested delegation chain for testing complex scenarios
 pub struct DelegationChain {
     #[allow(dead_code)]
-    pub db: BaseDB,
-    pub trees: Vec<Tree>,
+    pub db: Instance,
+    pub trees: Vec<Database>,
     pub keys: Vec<String>,
 }
 
@@ -275,7 +275,12 @@ impl DelegationChain {
 // ===== ASSERTION HELPERS =====
 
 /// Test that an operation succeeds
-pub fn test_operation_succeeds(tree: &Tree, key_name: &str, subtree_name: &str, test_name: &str) {
+pub fn test_operation_succeeds(
+    tree: &Database,
+    key_name: &str,
+    subtree_name: &str,
+    test_name: &str,
+) {
     let op = tree
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
@@ -289,7 +294,7 @@ pub fn test_operation_succeeds(tree: &Tree, key_name: &str, subtree_name: &str, 
 }
 
 /// Test that an operation fails
-pub fn test_operation_fails(tree: &Tree, key_name: &str, subtree_name: &str, test_name: &str) {
+pub fn test_operation_fails(tree: &Database, key_name: &str, subtree_name: &str, test_name: &str) {
     let op = tree
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
@@ -307,7 +312,7 @@ pub fn assert_permission_resolution(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     settings: &Doc,
-    backend: Option<&std::sync::Arc<dyn eidetica::backend::Database>>,
+    backend: Option<&std::sync::Arc<dyn eidetica::backend::BackendDB>>,
     expected_permission: Permission,
     expected_status: KeyStatus,
 ) {
@@ -330,7 +335,7 @@ pub fn assert_permission_resolution_fails(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     settings: &Doc,
-    backend: Option<&std::sync::Arc<dyn eidetica::backend::Database>>,
+    backend: Option<&std::sync::Arc<dyn eidetica::backend::BackendDB>>,
     expected_error_pattern: &str,
 ) {
     let result = validator.resolve_sig_key(sig_key, settings, backend);
@@ -348,7 +353,7 @@ pub fn assert_permission_resolution_fails(
 
 /// Test operation permissions for a specific key and subtree
 pub fn assert_operation_permissions(
-    tree: &Tree,
+    tree: &Database,
     key_name: &str,
     subtree_name: &str,
     should_succeed: bool,

@@ -16,7 +16,7 @@ use thiserror::Error;
 /// - Helper methods like `is_*()` provide stable APIs
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum DatabaseError {
+pub enum BackendError {
     /// Entry not found by ID.
     #[error("Entry not found: {id}")]
     EntryNotFound {
@@ -146,14 +146,14 @@ pub enum DatabaseError {
     },
 }
 
-impl DatabaseError {
+impl BackendError {
     /// Check if this error indicates a resource was not found.
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            DatabaseError::EntryNotFound { .. }
-                | DatabaseError::VerificationStatusNotFound { .. }
-                | DatabaseError::PrivateKeyNotFound { .. }
+            BackendError::EntryNotFound { .. }
+                | BackendError::VerificationStatusNotFound { .. }
+                | BackendError::PrivateKeyNotFound { .. }
         )
     }
 
@@ -161,10 +161,10 @@ impl DatabaseError {
     pub fn is_integrity_error(&self) -> bool {
         matches!(
             self,
-            DatabaseError::CycleDetected { .. }
-                | DatabaseError::HeightCalculationCorruption { .. }
-                | DatabaseError::TreeIntegrityViolation { .. }
-                | DatabaseError::StateInconsistency { .. }
+            BackendError::CycleDetected { .. }
+                | BackendError::HeightCalculationCorruption { .. }
+                | BackendError::TreeIntegrityViolation { .. }
+                | BackendError::StateInconsistency { .. }
         )
     }
 
@@ -172,9 +172,9 @@ impl DatabaseError {
     pub fn is_io_error(&self) -> bool {
         matches!(
             self,
-            DatabaseError::FileIo { .. }
-                | DatabaseError::SerializationFailed { .. }
-                | DatabaseError::DeserializationFailed { .. }
+            BackendError::FileIo { .. }
+                | BackendError::SerializationFailed { .. }
+                | BackendError::DeserializationFailed { .. }
         )
     }
 
@@ -182,7 +182,7 @@ impl DatabaseError {
     pub fn is_cache_error(&self) -> bool {
         matches!(
             self,
-            DatabaseError::CrdtCacheError { .. } | DatabaseError::CacheError { .. }
+            BackendError::CrdtCacheError { .. } | BackendError::CacheError { .. }
         )
     }
 
@@ -190,21 +190,21 @@ impl DatabaseError {
     pub fn is_logical_error(&self) -> bool {
         matches!(
             self,
-            DatabaseError::EntryNotInTree { .. }
-                | DatabaseError::EntryNotInSubtree { .. }
-                | DatabaseError::NoCommonAncestor { .. }
-                | DatabaseError::EmptyEntryList { .. }
+            BackendError::EntryNotInTree { .. }
+                | BackendError::EntryNotInSubtree { .. }
+                | BackendError::NoCommonAncestor { .. }
+                | BackendError::EmptyEntryList { .. }
         )
     }
 
     /// Get the entry ID if this error is about a specific entry.
     pub fn entry_id(&self) -> Option<&ID> {
         match self {
-            DatabaseError::EntryNotFound { id }
-            | DatabaseError::VerificationStatusNotFound { id }
-            | DatabaseError::CycleDetected { entry_id: id }
-            | DatabaseError::EntryNotInTree { entry_id: id, .. }
-            | DatabaseError::EntryNotInSubtree { entry_id: id, .. } => Some(id),
+            BackendError::EntryNotFound { id }
+            | BackendError::VerificationStatusNotFound { id }
+            | BackendError::CycleDetected { entry_id: id }
+            | BackendError::EntryNotInTree { entry_id: id, .. }
+            | BackendError::EntryNotInSubtree { entry_id: id, .. } => Some(id),
             _ => None,
         }
     }
@@ -212,17 +212,17 @@ impl DatabaseError {
     /// Get the tree ID if this error is about a specific tree.
     pub fn tree_id(&self) -> Option<String> {
         match self {
-            DatabaseError::EntryNotInTree { tree_id, .. }
-            | DatabaseError::EntryNotInSubtree { tree_id, .. } => Some(tree_id.to_string()),
-            DatabaseError::InvalidTreeReference { tree_id } => Some(tree_id.clone()),
+            BackendError::EntryNotInTree { tree_id, .. }
+            | BackendError::EntryNotInSubtree { tree_id, .. } => Some(tree_id.to_string()),
+            BackendError::InvalidTreeReference { tree_id } => Some(tree_id.clone()),
             _ => None,
         }
     }
 }
 
 // Conversion from DatabaseError to the main Error type
-impl From<DatabaseError> for crate::Error {
-    fn from(err: DatabaseError) -> Self {
+impl From<BackendError> for crate::Error {
+    fn from(err: BackendError) -> Self {
         // Use the new structured Backend variant
         crate::Error::Backend(err)
     }
@@ -234,29 +234,29 @@ mod tests {
 
     #[test]
     fn test_error_helpers() {
-        let err = DatabaseError::EntryNotFound {
+        let err = BackendError::EntryNotFound {
             id: ID::from("test-entry"),
         };
         assert!(err.is_not_found());
         assert_eq!(err.entry_id(), Some(&ID::from("test-entry")));
 
-        let err = DatabaseError::CycleDetected {
+        let err = BackendError::CycleDetected {
             entry_id: ID::from("cycle-entry"),
         };
         assert!(err.is_integrity_error());
         assert_eq!(err.entry_id(), Some(&ID::from("cycle-entry")));
 
-        let err = DatabaseError::FileIo {
+        let err = BackendError::FileIo {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "test"),
         };
         assert!(err.is_io_error());
 
-        let err = DatabaseError::CacheError {
+        let err = BackendError::CacheError {
             reason: "test".to_string(),
         };
         assert!(err.is_cache_error());
 
-        let err = DatabaseError::EmptyEntryList {
+        let err = BackendError::EmptyEntryList {
             operation: "test".to_string(),
         };
         assert!(err.is_logical_error());
@@ -264,12 +264,12 @@ mod tests {
 
     #[test]
     fn test_error_conversion() {
-        let db_err = DatabaseError::EntryNotFound {
+        let db_err = BackendError::EntryNotFound {
             id: ID::from("test"),
         };
         let err: crate::Error = db_err.into();
         match err {
-            crate::Error::Backend(DatabaseError::EntryNotFound { id }) => {
+            crate::Error::Backend(BackendError::EntryNotFound { id }) => {
                 assert_eq!(id.to_string(), "test")
             }
             _ => panic!("Unexpected error variant"),

@@ -3,7 +3,7 @@ use eidetica::sync::Address;
 
 #[tokio::test]
 async fn test_sync_with_http_transport() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let (_base_db, mut sync) = setup();
 
@@ -32,7 +32,7 @@ async fn test_sync_with_http_transport() {
 
 #[tokio::test]
 async fn test_multiple_sync_instances_communication() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     // Create two separate sync instances
     let (_base_db1, mut sync_server) = setup();
@@ -65,7 +65,7 @@ async fn test_multiple_sync_instances_communication() {
 
 #[tokio::test]
 async fn test_send_entries_http() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     // Create two separate sync instances
     let (_base_db1, mut sync_server) = setup();
@@ -103,7 +103,7 @@ async fn test_send_entries_http() {
 
 #[test]
 fn test_sync_without_transport_enabled() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let (_base_db, sync) = setup();
 
@@ -138,7 +138,7 @@ fn test_sync_server_without_transport_enabled() {
 
 #[test]
 fn test_sync_connect_to_invalid_address() {
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
 
     let (_base_db, mut sync) = setup();
     sync.enable_http_transport().unwrap();

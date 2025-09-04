@@ -16,7 +16,7 @@ pub mod database;
 pub mod errors;
 
 // Re-export main types for easier access
-pub use errors::DatabaseError;
+pub use errors::BackendError;
 
 /// Verification status for entries in the backend.
 ///
@@ -63,7 +63,7 @@ pub enum VerificationStatus {
 /// the entry has been authenticated by the higher-level authentication system.
 /// The database itself does not perform verification - it only stores the status
 /// set by the calling code (typically Tree/Operation implementations).
-pub trait Database: Send + Sync + Any {
+pub trait BackendDB: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

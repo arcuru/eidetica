@@ -5,7 +5,7 @@
 
 use super::error::SyncError;
 use super::peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
-use crate::atomicop::AtomicOp;
+use crate::Transaction;
 use crate::crdt::doc::path;
 use crate::subtree::DocStore;
 use crate::{Error, Result};
@@ -20,12 +20,12 @@ pub(super) const TREES_SUBTREE: &str = "trees"; // Maps tree ID -> list of peer 
 /// This struct manages all peer-related operations for the sync module,
 /// operating on an AtomicOp to stage changes.
 pub(super) struct PeerManager<'a> {
-    op: &'a AtomicOp,
+    op: &'a Transaction,
 }
 
 impl<'a> PeerManager<'a> {
     /// Create a new PeerManager that operates on the given AtomicOp.
-    pub(super) fn new(op: &'a AtomicOp) -> Self {
+    pub(super) fn new(op: &'a Transaction) -> Self {
         Self { op }
     }
 

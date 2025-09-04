@@ -50,7 +50,7 @@ async fn test_http_v0_endpoint_format() {
     let addr = transport.get_server_address().unwrap();
 
     // Test that the v0 endpoint is accessible
-    use eidetica::entry::Entry;
+    use eidetica::Entry;
     use eidetica::sync::protocol::SyncRequest;
 
     let client = reqwest::Client::new();

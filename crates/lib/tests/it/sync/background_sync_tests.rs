@@ -4,7 +4,7 @@
 //! flush worker, and lifecycle management.
 
 use super::helpers;
-use eidetica::entry::Entry;
+use eidetica::Entry;
 use eidetica::sync::scheduler::SyncSchedulerConfig;
 use std::time::Duration;
 

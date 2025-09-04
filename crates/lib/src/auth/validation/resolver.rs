@@ -7,7 +7,7 @@ use crate::Result;
 use crate::auth::crypto::parse_public_key;
 use crate::auth::errors::AuthError;
 use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
-use crate::backend::Database;
+use crate::backend::BackendDB;
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ impl KeyResolver {
         &mut self,
         sig_key: &SigKey,
         settings: &Doc,
-        backend: Option<&Arc<dyn Database>>,
+        backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<ResolvedAuth> {
         // Note: We don't cache results here because auth settings can change
         // and cached results could become stale (e.g., revoked keys, updated permissions).
@@ -59,7 +59,7 @@ impl KeyResolver {
         &mut self,
         sig_key: &SigKey,
         settings: &Doc,
-        backend: Option<&Arc<dyn Database>>,
+        backend: Option<&Arc<dyn BackendDB>>,
         depth: usize,
     ) -> Result<ResolvedAuth> {
         // Prevent infinite recursion and overly deep delegation chains

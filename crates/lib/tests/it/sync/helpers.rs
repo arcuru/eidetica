@@ -6,7 +6,7 @@
 use eidetica::sync::handler::{SyncHandler, SyncHandlerImpl};
 use eidetica::sync::peer_types::Address;
 use eidetica::sync::transports::iroh::IrohTransport;
-use eidetica::{Result, basedb::BaseDB, sync::Sync};
+use eidetica::{Result, Instance, sync::Sync};
 use iroh::RelayMode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,19 +14,19 @@ use std::time::Duration;
 // ===== SETUP HELPERS =====
 
 /// Create a BaseDB Arc with authentication key
-pub fn setup_db() -> Arc<BaseDB> {
+pub fn setup_db() -> Arc<Instance> {
     Arc::new(crate::helpers::setup_db())
 }
 
 /// Create a new Sync instance with standard setup
-pub fn setup() -> (Arc<BaseDB>, Sync) {
+pub fn setup() -> (Arc<Instance>, Sync) {
     let base_db = setup_db();
     let sync = Sync::new(Arc::clone(base_db.backend())).expect("Failed to create Sync");
     (base_db, sync)
 }
 
 /// Create BaseDB with initialized sync module
-pub fn setup_basedb_with_initialized() -> BaseDB {
+pub fn setup_basedb_with_initialized() -> Instance {
     let base_db = crate::helpers::setup_db();
     base_db.with_sync().expect("Failed to initialize sync")
 }
@@ -111,8 +111,10 @@ pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
 /// ```
 pub trait TransportFactory: Send + std::marker::Sync {
     /// Create a sync instance with this transport enabled
-    fn create_sync(&self, backend: std::sync::Arc<dyn eidetica::backend::Database>)
-    -> Result<Sync>;
+    fn create_sync(
+        &self,
+        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
+    ) -> Result<Sync>;
 
     /// Get the expected address format for this transport
     fn create_address(&self, server_addr: &str) -> Address;
@@ -136,7 +138,7 @@ pub struct HttpTransportFactory;
 impl TransportFactory for HttpTransportFactory {
     fn create_sync(
         &self,
-        backend: std::sync::Arc<dyn eidetica::backend::Database>,
+        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
     ) -> Result<Sync> {
         let mut sync = Sync::new(backend)?;
         sync.enable_http_transport()?;
@@ -158,7 +160,7 @@ pub struct IrohTransportFactory;
 impl TransportFactory for IrohTransportFactory {
     fn create_sync(
         &self,
-        backend: std::sync::Arc<dyn eidetica::backend::Database>,
+        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
     ) -> Result<Sync> {
         let mut sync = Sync::new(backend)?;
         let transport = IrohTransport::builder()

@@ -5,14 +5,14 @@
 //! the history and relationships between entries, interfacing with a backend storage system.
 
 use crate::Result;
-use crate::atomicop::AtomicOp;
-use crate::backend::Database;
-use crate::basedb::errors::BaseError;
+use crate::Transaction;
+use crate::backend::BackendDB;
+use crate::basedb::errors::InstanceError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::{Entry, ID};
-use crate::subtree::{DocStore, SubTree};
+use crate::subtree::{DocStore, Store};
 
 use crate::auth::crypto::format_public_key;
 use crate::auth::settings::AuthSettings;
@@ -27,16 +27,16 @@ use std::sync::Arc;
 /// Each `Tree` is identified by the ID of its root `Entry` and manages the history of data
 /// associated with that root. It interacts with the underlying `Backend` for storage.
 #[derive(Clone)]
-pub struct Tree {
+pub struct Database {
     root: ID,
-    backend: Arc<dyn Database>,
+    backend: Arc<dyn BackendDB>,
     /// Default authentication key name for operations on this tree
     default_auth_key: Option<String>,
     /// Optional sync hooks to execute after successful commits
     sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
-impl Tree {
+impl Database {
     /// Creates a new `Tree` instance.
     ///
     /// Initializes the tree by creating a root `Entry` containing the provided settings
@@ -51,7 +51,7 @@ impl Tree {
     /// A `Result` containing the new `Tree` instance or an error.
     pub fn new(
         initial_settings: Doc,
-        backend: Arc<dyn Database>,
+        backend: Arc<dyn BackendDB>,
         signing_key_name: impl AsRef<str>,
     ) -> Result<Self> {
         let signing_key_name = signing_key_name.as_ref();
@@ -65,7 +65,7 @@ impl Tree {
             // No auth config provided - bootstrap auth configuration with the provided key
             // Verify the key exists first
             let _private_key = backend.get_private_key(signing_key_name)?.ok_or_else(|| {
-                BaseError::SigningKeyNotFound {
+                InstanceError::SigningKeyNotFound {
                     key_name: signing_key_name.to_string(),
                 }
             })?;
@@ -101,7 +101,7 @@ impl Tree {
                 .collect::<String>()
         );
 
-        let temp_tree_for_bootstrap = Tree {
+        let temp_tree_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
             default_auth_key: Some(super_user_key_name.clone()),
@@ -142,7 +142,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result` containing the new `Tree` instance or an error.
-    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn Database>) -> Result<Self> {
+    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn BackendDB>) -> Result<Self> {
         Ok(Self {
             root: id,
             backend,
@@ -164,11 +164,11 @@ impl Tree {
     /// ```rust
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::Instance;
     /// # use eidetica::crdt::Doc;
     /// # fn example() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = BaseDB::new(backend);
+    /// # let db = Instance::new(backend);
     /// # db.add_private_key("test_key")?;
     /// # let mut tree = db.new_tree(Doc::new(), "test_key")?;
     /// tree.set_default_auth_key("my_key");                    // &str
@@ -223,7 +223,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new authenticated operation
-    pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<AtomicOp> {
+    pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<Transaction> {
         let op = self.new_operation()?;
         Ok(op.with_auth(key_name.as_ref()))
     }
@@ -234,7 +234,7 @@ impl Tree {
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn Database> {
+    pub fn backend(&self) -> &Arc<dyn BackendDB> {
         &self.backend
     }
 
@@ -270,7 +270,7 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new atomic operation
-    pub fn new_operation(&self) -> Result<AtomicOp> {
+    pub fn new_operation(&self) -> Result<Transaction> {
         let tips = self.get_tips()?;
         self.new_operation_with_tips(&tips)
     }
@@ -286,8 +286,8 @@ impl Tree {
     ///
     /// # Returns
     /// A `Result<AtomicOp>` containing the new atomic operation
-    pub fn new_operation_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<AtomicOp> {
-        let mut op = AtomicOp::new_with_tips(self, tips.as_ref())?;
+    pub fn new_operation_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
+        let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
 
         // Set default authentication if configured
         if let Some(ref key_name) = self.default_auth_key {
@@ -321,7 +321,7 @@ impl Tree {
     /// expose the AtomicOp.
     pub fn get_subtree_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
-        T: SubTree,
+        T: Store,
     {
         let op = self.new_operation()?;
         T::new(&op, name)
@@ -364,12 +364,12 @@ impl Tree {
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
-    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = BaseDB::new(backend);
+    /// # let db = Instance::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_tree(Doc::new(), "TEST_KEY")?;
     /// # let op = tree.new_operation()?;
@@ -387,7 +387,7 @@ impl Tree {
 
         // Check if the entry belongs to this tree
         if !entry.in_tree(&self.root) {
-            return Err(BaseError::EntryNotInTree {
+            return Err(InstanceError::EntryNotInTree {
                 entry_id: id,
                 tree_id: self.root.clone(),
             }
@@ -415,12 +415,12 @@ impl Tree {
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
-    /// # use eidetica::basedb::BaseDB;
+    /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = BaseDB::new(backend);
+    /// # let db = Instance::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_tree(Doc::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
@@ -442,7 +442,7 @@ impl Tree {
 
             // Check if the entry belongs to this tree
             if !entry.in_tree(&self.root) {
-                return Err(BaseError::EntryNotInTree {
+                return Err(InstanceError::EntryNotInTree {
                     entry_id: id,
                     tree_id: self.root.clone(),
                 }

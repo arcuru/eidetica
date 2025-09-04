@@ -1,4 +1,4 @@
-use eidetica::backend::{Database, VerificationStatus, database::InMemory};
+use eidetica::backend::{BackendDB, VerificationStatus, database::InMemory};
 use eidetica::entry::{Entry, ID};
 
 #[test]

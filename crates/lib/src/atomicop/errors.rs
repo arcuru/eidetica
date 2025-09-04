@@ -14,7 +14,7 @@ use thiserror::Error;
 /// data staging.
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum AtomicOpError {
+pub enum TransactionError {
     /// Operation has already been committed and cannot be used again
     #[error("Operation has already been committed")]
     OperationAlreadyCommitted,
@@ -96,22 +96,22 @@ pub enum AtomicOpError {
     SubtreeOperationFailed { subtree: String, reason: String },
 }
 
-impl AtomicOpError {
+impl TransactionError {
     /// Check if this error indicates the operation was already committed
     pub fn is_already_committed(&self) -> bool {
-        matches!(self, AtomicOpError::OperationAlreadyCommitted)
+        matches!(self, TransactionError::OperationAlreadyCommitted)
     }
 
     /// Check if this error is authentication-related
     pub fn is_authentication_error(&self) -> bool {
         matches!(
             self,
-            AtomicOpError::SigningKeyNotFound { .. }
-                | AtomicOpError::AuthenticationRequired
-                | AtomicOpError::NoAuthConfiguration
-                | AtomicOpError::InsufficientPermissions
-                | AtomicOpError::SignatureVerificationFailed
-                | AtomicOpError::EntrySigningFailed { .. }
+            TransactionError::SigningKeyNotFound { .. }
+                | TransactionError::AuthenticationRequired
+                | TransactionError::NoAuthConfiguration
+                | TransactionError::InsufficientPermissions
+                | TransactionError::SignatureVerificationFailed
+                | TransactionError::EntrySigningFailed { .. }
         )
     }
 
@@ -119,9 +119,9 @@ impl AtomicOpError {
     pub fn is_entry_error(&self) -> bool {
         matches!(
             self,
-            AtomicOpError::EntryConstructionFailed { .. }
-                | AtomicOpError::EntrySigningFailed { .. }
-                | AtomicOpError::SignatureVerificationFailed
+            TransactionError::EntryConstructionFailed { .. }
+                | TransactionError::EntrySigningFailed { .. }
+                | TransactionError::SignatureVerificationFailed
         )
     }
 
@@ -129,44 +129,44 @@ impl AtomicOpError {
     pub fn is_subtree_error(&self) -> bool {
         matches!(
             self,
-            AtomicOpError::SubtreeSerializationFailed { .. }
-                | AtomicOpError::SubtreeDeserializationFailed { .. }
-                | AtomicOpError::SubtreeOperationFailed { .. }
+            TransactionError::SubtreeSerializationFailed { .. }
+                | TransactionError::SubtreeDeserializationFailed { .. }
+                | TransactionError::SubtreeOperationFailed { .. }
         )
     }
 
     /// Check if this error is related to backend operations
     pub fn is_backend_error(&self) -> bool {
-        matches!(self, AtomicOpError::BackendOperationFailed { .. })
+        matches!(self, TransactionError::BackendOperationFailed { .. })
     }
 
     /// Check if this error is related to validation
     pub fn is_validation_error(&self) -> bool {
         matches!(
             self,
-            AtomicOpError::TreeStateValidationFailed { .. }
-                | AtomicOpError::InvalidTip { .. }
-                | AtomicOpError::EmptyTipsNotAllowed
-                | AtomicOpError::InvalidOperationState { .. }
+            TransactionError::TreeStateValidationFailed { .. }
+                | TransactionError::InvalidTip { .. }
+                | TransactionError::EmptyTipsNotAllowed
+                | TransactionError::InvalidOperationState { .. }
         )
     }
 
     /// Check if this error indicates a concurrency issue
     pub fn is_concurrency_error(&self) -> bool {
-        matches!(self, AtomicOpError::ConcurrentModification)
+        matches!(self, TransactionError::ConcurrentModification)
     }
 
     /// Check if this error indicates a timeout
     pub fn is_timeout_error(&self) -> bool {
-        matches!(self, AtomicOpError::OperationTimeout { .. })
+        matches!(self, TransactionError::OperationTimeout { .. })
     }
 
     /// Get the subtree name if this is a subtree-related error
     pub fn subtree_name(&self) -> Option<&str> {
         match self {
-            AtomicOpError::SubtreeSerializationFailed { subtree, .. }
-            | AtomicOpError::SubtreeDeserializationFailed { subtree, .. }
-            | AtomicOpError::SubtreeOperationFailed { subtree, .. } => Some(subtree),
+            TransactionError::SubtreeSerializationFailed { subtree, .. }
+            | TransactionError::SubtreeDeserializationFailed { subtree, .. }
+            | TransactionError::SubtreeOperationFailed { subtree, .. } => Some(subtree),
             _ => None,
         }
     }
@@ -174,17 +174,17 @@ impl AtomicOpError {
     /// Get the key name if this is an authentication-related error
     pub fn key_name(&self) -> Option<&str> {
         match self {
-            AtomicOpError::SigningKeyNotFound { key_name }
-            | AtomicOpError::EntrySigningFailed { key_name, .. } => Some(key_name),
+            TransactionError::SigningKeyNotFound { key_name }
+            | TransactionError::EntrySigningFailed { key_name, .. } => Some(key_name),
             _ => None,
         }
     }
 }
 
 // Conversion from AtomicOpError to the main Error type
-impl From<AtomicOpError> for crate::Error {
-    fn from(err: AtomicOpError) -> Self {
-        crate::Error::AtomicOp(err)
+impl From<TransactionError> for crate::Error {
+    fn from(err: TransactionError) -> Self {
+        crate::Error::Transaction(err)
     }
 }
 
@@ -195,19 +195,19 @@ mod tests {
     #[test]
     fn test_error_classification() {
         // Test authentication errors
-        let auth_err = AtomicOpError::AuthenticationRequired;
+        let auth_err = TransactionError::AuthenticationRequired;
         assert!(auth_err.is_authentication_error());
         assert!(!auth_err.is_entry_error());
 
         // Test entry errors
-        let entry_err = AtomicOpError::EntryConstructionFailed {
+        let entry_err = TransactionError::EntryConstructionFailed {
             reason: "test".to_owned(),
         };
         assert!(entry_err.is_entry_error());
         assert!(!entry_err.is_authentication_error());
 
         // Test subtree errors
-        let subtree_err = AtomicOpError::SubtreeSerializationFailed {
+        let subtree_err = TransactionError::SubtreeSerializationFailed {
             subtree: "test_subtree".to_owned(),
             reason: "test".to_owned(),
         };
@@ -215,38 +215,38 @@ mod tests {
         assert_eq!(subtree_err.subtree_name(), Some("test_subtree"));
 
         // Test validation errors
-        let validation_err = AtomicOpError::EmptyTipsNotAllowed;
+        let validation_err = TransactionError::EmptyTipsNotAllowed;
         assert!(validation_err.is_validation_error());
         assert!(!validation_err.is_backend_error());
     }
 
     #[test]
     fn test_already_committed() {
-        let err = AtomicOpError::OperationAlreadyCommitted;
+        let err = TransactionError::OperationAlreadyCommitted;
         assert!(err.is_already_committed());
     }
 
     #[test]
     fn test_key_name_extraction() {
-        let err = AtomicOpError::SigningKeyNotFound {
+        let err = TransactionError::SigningKeyNotFound {
             key_name: "test_key".to_owned(),
         };
         assert_eq!(err.key_name(), Some("test_key"));
 
-        let other_err = AtomicOpError::AuthenticationRequired;
+        let other_err = TransactionError::AuthenticationRequired;
         assert_eq!(other_err.key_name(), None);
     }
 
     #[test]
     fn test_timeout_error() {
-        let err = AtomicOpError::OperationTimeout { duration_ms: 5000 };
+        let err = TransactionError::OperationTimeout { duration_ms: 5000 };
         assert!(err.is_timeout_error());
         assert!(!err.is_authentication_error());
     }
 
     #[test]
     fn test_concurrency_error() {
-        let err = AtomicOpError::ConcurrentModification;
+        let err = TransactionError::ConcurrentModification;
         assert!(err.is_concurrency_error());
         assert!(!err.is_validation_error());
     }

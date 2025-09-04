@@ -1,12 +1,12 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::subtree::DocStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
-fn setup_tree() -> eidetica::Tree {
+fn setup_tree() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
     db.new_tree_default("BENCH_KEY")
@@ -15,7 +15,7 @@ fn setup_tree() -> eidetica::Tree {
 
 /// Creates a tree pre-populated with the specified number of key-value entries
 /// Each entry has format "key_N" -> "value_N" where N is the entry index
-fn setup_tree_with_entries(entry_count: usize) -> eidetica::Tree {
+fn setup_tree_with_entries(entry_count: usize) -> eidetica::Database {
     let tree = setup_tree();
 
     for i in 0..entry_count {
@@ -184,7 +184,7 @@ fn bench_tree_operations(c: &mut Criterion) {
     group.bench_function("create_tree", |b| {
         b.iter(|| {
             let backend = Box::new(InMemory::new());
-            let db = BaseDB::new(backend);
+            let db = Instance::new(backend);
             db.add_private_key("BENCH_KEY")
                 .expect("Failed to add benchmark key");
             black_box(

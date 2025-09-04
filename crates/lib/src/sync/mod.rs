@@ -4,7 +4,7 @@
 //! storing its configuration in a dedicated tree within the database.
 
 use crate::auth::crypto::format_public_key;
-use crate::{Result, crdt::Doc, entry::Entry, subtree::DocStore, tree::Tree};
+use crate::{Database, Entry, Result, crdt::Doc, subtree::DocStore};
 use std::sync::Arc;
 
 pub mod background;
@@ -44,9 +44,9 @@ pub struct Sync {
     /// Communication channel to the background sync engine
     command_tx: mpsc::Sender<SyncCommand>,
     /// The backend for read operations and tree management
-    backend: Arc<dyn crate::backend::Database>,
+    backend: Arc<dyn crate::backend::BackendDB>,
     /// The tree containing synchronization settings
-    sync_tree: Tree,
+    sync_tree: Database,
     /// Track if transport has been enabled
     transport_enabled: bool,
 }
@@ -59,12 +59,12 @@ impl Sync {
     ///
     /// # Returns
     /// A new Sync instance with its own settings tree.
-    pub fn new(backend: Arc<dyn crate::backend::Database>) -> Result<Self> {
+    pub fn new(backend: Arc<dyn crate::backend::BackendDB>) -> Result<Self> {
         let mut sync_settings = Doc::new();
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
-        let mut sync_tree = Tree::new(sync_settings, Arc::clone(&backend), DEVICE_KEY_NAME)?;
+        let mut sync_tree = Database::new(sync_settings, Arc::clone(&backend), DEVICE_KEY_NAME)?;
 
         // Set the default authentication key so all operations use the device key
         sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
@@ -90,10 +90,10 @@ impl Sync {
     /// # Returns
     /// A Sync instance loaded from the existing tree.
     pub fn load(
-        backend: Arc<dyn crate::backend::Database>,
+        backend: Arc<dyn crate::backend::BackendDB>,
         sync_tree_root_id: &crate::entry::ID,
     ) -> Result<Self> {
-        let mut sync_tree = Tree::new_from_id(sync_tree_root_id.clone(), Arc::clone(&backend))?;
+        let mut sync_tree = Database::new_from_id(sync_tree_root_id.clone(), Arc::clone(&backend))?;
 
         // Set the default authentication key so all operations use the device key
         sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
@@ -147,12 +147,12 @@ impl Sync {
     }
 
     /// Get a reference to the underlying backend.
-    pub fn backend(&self) -> &Arc<dyn crate::backend::Database> {
+    pub fn backend(&self) -> &Arc<dyn crate::backend::BackendDB> {
         &self.backend
     }
 
     /// Get a reference to the sync settings tree.
-    pub fn sync_tree(&self) -> &Tree {
+    pub fn sync_tree(&self) -> &Database {
         &self.sync_tree
     }
 

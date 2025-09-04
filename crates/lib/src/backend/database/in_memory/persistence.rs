@@ -6,7 +6,7 @@
 use super::{InMemory, TreeHeightsCache, TreeTipsCache};
 use crate::auth::crypto::ED25519_PRIVATE_KEY_SIZE;
 use crate::backend::VerificationStatus;
-use crate::backend::errors::DatabaseError;
+use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 use crate::{Error, Result};
 use ed25519_dalek::SigningKey;
@@ -102,8 +102,8 @@ impl<'de> Deserialize<'de> for InMemory {
 /// A `Result` indicating success or an I/O or serialization error.
 pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
     let json = serde_json::to_string_pretty(backend)
-        .map_err(|e| -> Error { DatabaseError::SerializationFailed { source: e }.into() })?;
-    fs::write(path, json).map_err(|e| -> Error { DatabaseError::FileIo { source: e }.into() })
+        .map_err(|e| -> Error { BackendError::SerializationFailed { source: e }.into() })?;
+    fs::write(path, json).map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
 }
 
 /// Loads the database state from a specified JSON file.
@@ -121,9 +121,9 @@ pub(crate) fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
     }
 
     let json = fs::read_to_string(path)
-        .map_err(|e| -> Error { DatabaseError::FileIo { source: e }.into() })?;
+        .map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })?;
     let database: InMemory = serde_json::from_str(&json)
-        .map_err(|e| -> Error { DatabaseError::DeserializationFailed { source: e }.into() })?;
+        .map_err(|e| -> Error { BackendError::DeserializationFailed { source: e }.into() })?;
 
     Ok(database)
 }

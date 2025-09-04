@@ -1,8 +1,8 @@
 use crate::Result;
-use crate::atomicop::AtomicOp;
+use crate::Transaction;
 
 mod errors;
-pub use errors::SubtreeError;
+pub use errors::StoreError;
 
 mod docstore;
 pub use docstore::DocStore;
@@ -24,7 +24,7 @@ pub use ydoc::{YDoc, YrsBinary};
 /// Users typically interact with `SubTree` implementations obtained either via:
 /// 1. `Tree::get_subtree_viewer`: For read-only access to the current merged state.
 /// 2. `AtomicOp::get_subtree`: For staging modifications within an atomic operation.
-pub trait SubTree: Sized {
+pub trait Store: Sized {
     /// Creates a new `SubTree` handle associated with a specific atomic operation.
     ///
     /// This constructor is typically called internally by `AtomicOp::get_subtree` or
@@ -35,7 +35,7 @@ pub trait SubTree: Sized {
     /// # Arguments
     /// * `op` - The `AtomicOp` this `SubTree` instance will read from and potentially write to.
     /// * `subtree_name` - The name identifying this specific data partition within the `Tree`.
-    fn new(op: &AtomicOp, subtree_name: impl Into<String>) -> Result<Self>;
+    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self>;
 
     /// Returns the name of this subtree.
     fn name(&self) -> &str;

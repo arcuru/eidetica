@@ -10,8 +10,8 @@ mod storage;
 mod traversal;
 
 use crate::Result;
-use crate::backend::errors::DatabaseError;
-use crate::backend::{Database, VerificationStatus};
+use crate::backend::errors::BackendError;
+use crate::backend::{BackendDB, VerificationStatus};
 use crate::entry::{Entry, ID};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,7 @@ impl Default for InMemory {
     }
 }
 
-impl Database for InMemory {
+impl BackendDB for InMemory {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments
@@ -186,7 +186,7 @@ impl Database for InMemory {
         entries
             .get(id)
             .cloned()
-            .ok_or_else(|| DatabaseError::EntryNotFound { id: id.clone() }.into())
+            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() }.into())
     }
 
     /// Gets the verification status of an entry.
@@ -201,7 +201,7 @@ impl Database for InMemory {
         verification_status_map
             .get(id)
             .copied()
-            .ok_or_else(|| DatabaseError::VerificationStatusNotFound { id: id.clone() }.into())
+            .ok_or_else(|| BackendError::VerificationStatusNotFound { id: id.clone() }.into())
     }
 
     fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
@@ -229,7 +229,7 @@ impl Database for InMemory {
             verification_status_map.insert(id.clone(), verification_status);
             Ok(())
         } else {
-            Err(DatabaseError::EntryNotFound { id: id.clone() }.into())
+            Err(BackendError::EntryNotFound { id: id.clone() }.into())
         }
     }
 
