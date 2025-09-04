@@ -23,7 +23,7 @@ fn test_table_basic_crud_operations() {
     // Test CRUD operations within an operation
     let op = tree.new_operation().expect("Failed to start operation");
     let table = op
-        .get_subtree::<Table<TestRecord>>("test_records")
+        .get_store::<Table<TestRecord>>("test_records")
         .expect("Failed to get Table");
 
     // Test get (should see existing record)
@@ -80,7 +80,7 @@ fn test_table_multiple_records() {
 
     // Verify all records persist after commit
     let viewer = tree
-        .get_subtree_viewer::<Table<SimpleRecord>>("simple_records")
+        .get_store_viewer::<Table<SimpleRecord>>("simple_records")
         .expect("Failed to get Table viewer");
 
     for (i, key) in inserted_keys.iter().enumerate() {
@@ -121,7 +121,7 @@ fn test_table_search_functionality() {
 
     // Test search after commit with detailed verification
     let viewer = tree
-        .get_subtree_viewer::<Table<TestRecord>>("search_records")
+        .get_store_viewer::<Table<TestRecord>>("search_records")
         .expect("Failed to get Table viewer");
 
     let age_30_results = viewer
@@ -144,7 +144,7 @@ fn test_table_uuid_generation() {
 
     // Verify all records are retrievable with their unique keys
     let viewer = tree
-        .get_subtree_viewer::<Table<SimpleRecord>>("uuid_test")
+        .get_store_viewer::<Table<SimpleRecord>>("uuid_test")
         .expect("Failed to get Table viewer");
 
     for key in &generated_keys {
@@ -162,7 +162,7 @@ fn test_table_multiple_operations() {
 
     // Verify final state
     let viewer = tree
-        .get_subtree_viewer::<Table<TestRecord>>("multi_op_test")
+        .get_store_viewer::<Table<TestRecord>>("multi_op_test")
         .expect("Failed to get Table viewer");
 
     // Check updated record
@@ -197,7 +197,7 @@ fn test_table_empty_search() {
 
     {
         let table = op
-            .get_subtree::<Table<SimpleRecord>>("empty_search_test")
+            .get_store::<Table<SimpleRecord>>("empty_search_test")
             .expect("Failed to get Table");
 
         // Search in empty store
@@ -211,7 +211,7 @@ fn test_table_empty_search() {
 
     // Search in empty store after commit
     let viewer = tree
-        .get_subtree_viewer::<Table<SimpleRecord>>("empty_search_test")
+        .get_store_viewer::<Table<SimpleRecord>>("empty_search_test")
         .expect("Failed to get Table viewer");
 
     let results = viewer
@@ -226,7 +226,7 @@ fn test_empty_table_behavior() {
 
     // Test empty Table behavior
     let table_viewer = tree
-        .get_subtree_viewer::<Table<TestRecord>>("empty_table")
+        .get_store_viewer::<Table<TestRecord>>("empty_table")
         .expect("Failed to get empty Table viewer");
 
     let empty_search = table_viewer
@@ -239,14 +239,14 @@ fn test_empty_table_behavior() {
 fn test_table_with_authenticated_tree() {
     let db = setup_db_with_key("table_auth_key");
     let tree = db
-        .new_tree_default("table_auth_key")
+        .new_database_default("table_auth_key")
         .expect("Failed to create authenticated tree");
 
     let op = tree.new_operation().expect("Failed to start operation");
 
     let primary_key = {
         let table = op
-            .get_subtree::<Table<TestRecord>>("auth_records")
+            .get_store::<Table<TestRecord>>("auth_records")
             .expect("Failed to get Table");
 
         let record = TestRecord {

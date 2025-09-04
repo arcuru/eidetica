@@ -22,20 +22,20 @@ pub fn setup_simple_db() -> Instance {
 // ===== TREE CREATION HELPERS =====
 
 /// Create tree with initial settings
-pub fn create_tree_with_settings(
+pub fn create_database_with_settings(
     db: &Instance,
     key_name: &str,
     tree_name: &str,
     version: &str,
 ) -> Database {
     let tree = db
-        .new_tree_default(key_name)
+        .new_database_default(key_name)
         .expect("Failed to create tree");
 
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<DocStore>(SETTINGS)
+            .get_store::<DocStore>(SETTINGS)
             .expect("Failed to get settings subtree");
 
         settings
@@ -55,7 +55,7 @@ pub fn create_multiple_named_trees(db: &Instance, key_name: &str, names: &[&str]
     let mut trees = Vec::new();
 
     for name in names {
-        let tree = create_tree_with_settings(db, key_name, name, "1.0");
+        let tree = create_database_with_settings(db, key_name, name, "1.0");
         trees.push(tree);
     }
 
@@ -70,13 +70,13 @@ pub fn create_tree_with_data(
     data: &[(&str, &str)],
 ) -> Database {
     let tree = db
-        .new_tree_default(key_name)
+        .new_database_default(key_name)
         .expect("Failed to create tree");
 
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let data_store = op
-            .get_subtree::<DocStore>(subtree_name)
+            .get_store::<DocStore>(subtree_name)
             .expect("Failed to get data subtree");
 
         for (key, value) in data {
@@ -94,7 +94,7 @@ pub fn create_tree_with_data(
 pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) {
     // Create initial tree
     let tree = db
-        .new_tree_default(key_name)
+        .new_database_default(key_name)
         .expect("Failed to create tree");
     let root_id = tree.root_id().clone();
 
@@ -102,7 +102,7 @@ pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) 
     drop(tree);
 
     // Load tree from ID
-    let loaded_tree = db.load_tree(&root_id).expect("Failed to load tree");
+    let loaded_tree = db.load_database(&root_id).expect("Failed to load tree");
 
     (root_id, loaded_tree)
 }
@@ -113,20 +113,20 @@ pub fn setup_trees_for_find_testing(db: &Instance, key_name: &str) -> Vec<Databa
 
     // Tree 1: No name
     let tree1 = db
-        .new_tree_default(key_name)
+        .new_database_default(key_name)
         .expect("Failed to create tree 1");
     trees.push(tree1);
 
     // Tree 2: Unique name
-    let tree2 = create_tree_with_settings(db, key_name, "UniqueTree", "1.0");
+    let tree2 = create_database_with_settings(db, key_name, "UniqueTree", "1.0");
     trees.push(tree2);
 
     // Tree 3: First instance of duplicate name
-    let tree3 = create_tree_with_settings(db, key_name, "DuplicateName", "1.0");
+    let tree3 = create_database_with_settings(db, key_name, "DuplicateName", "1.0");
     trees.push(tree3);
 
     // Tree 4: Second instance of duplicate name
-    let tree4 = create_tree_with_settings(db, key_name, "DuplicateName", "2.0");
+    let tree4 = create_database_with_settings(db, key_name, "DuplicateName", "2.0");
     trees.push(tree4);
 
     trees
@@ -139,7 +139,7 @@ pub fn set_tree_settings(tree: &Database, settings_data: &[(&str, &str)]) -> ID 
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let settings = op
-            .get_subtree::<DocStore>(SETTINGS)
+            .get_store::<DocStore>(SETTINGS)
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings_data {
@@ -170,7 +170,7 @@ pub fn perform_basic_subtree_operations(
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let data_store = op
-            .get_subtree::<DocStore>(subtree_name)
+            .get_store::<DocStore>(subtree_name)
             .expect("Failed to get data subtree");
 
         for (key, value) in operations {
@@ -198,7 +198,7 @@ pub fn create_app_config(tree: &Database, app_name: &str, config_data: &[(&str, 
 /// Verify tree has expected settings
 pub fn assert_tree_settings(tree: &Database, expected_settings: &[(&str, &str)]) {
     let settings_viewer = tree
-        .get_subtree_viewer::<DocStore>(SETTINGS)
+        .get_store_viewer::<DocStore>(SETTINGS)
         .expect("Failed to get settings viewer");
 
     for (key, expected_value) in expected_settings {
@@ -212,7 +212,7 @@ pub fn assert_tree_settings(tree: &Database, expected_settings: &[(&str, &str)])
 /// Verify tree data in specific subtree
 pub fn assert_tree_data(tree: &Database, subtree_name: &str, expected_data: &[(&str, &str)]) {
     let data_viewer = tree
-        .get_subtree_viewer::<DocStore>(subtree_name)
+        .get_store_viewer::<DocStore>(subtree_name)
         .expect("Failed to get data viewer");
 
     for (key, expected_value) in expected_data {
@@ -230,7 +230,7 @@ pub fn assert_tree_name(tree: &Database, expected_name: &str) {
 }
 
 /// Verify trees collection contains expected IDs
-pub fn assert_trees_contain_ids(trees: &[Database], expected_ids: &[ID]) {
+pub fn assert_databases_contain_ids(trees: &[Database], expected_ids: &[ID]) {
     let found_ids: Vec<ID> = trees.iter().map(|t| t.root_id().clone()).collect();
     for expected_id in expected_ids {
         assert!(
@@ -241,7 +241,7 @@ pub fn assert_trees_contain_ids(trees: &[Database], expected_ids: &[ID]) {
 }
 
 /// Verify trees collection has expected count
-pub fn assert_trees_count(trees: &[Database], expected_count: usize) {
+pub fn assert_databases_count(trees: &[Database], expected_count: usize) {
     assert_eq!(trees.len(), expected_count, "Trees count mismatch");
 }
 
@@ -261,22 +261,23 @@ pub fn assert_tree_names_in_collection(trees: &[Database], expected_names: &[&st
 
 /// Test tree not found scenarios
 pub fn test_tree_not_found_error(db: &Instance, non_existent_name: &str) {
-    let result = db.find_tree(non_existent_name);
+    let result = db.find_database(non_existent_name);
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(eidetica::Error::Instance(eidetica::instance::InstanceError::TreeNotFound { name })) =
-        result
+    if let Err(eidetica::Error::Instance(eidetica::instance::InstanceError::DatabaseNotFound {
+        name,
+    })) = result
     {
         assert_eq!(name, non_existent_name);
     } else {
-        panic!("Expected TreeNotFound error, got an unexpected result");
+        panic!("Expected DatabaseNotFound error, got an unexpected result");
     }
 }
 
 /// Test database operations with various error conditions
 pub fn test_database_error_conditions(db: &Instance) {
     // Test with empty database
-    let all_trees_result = db.all_trees();
+    let all_trees_result = db.all_databases();
     assert!(
         all_trees_result.is_ok(),
         "all_trees should work with empty database"
@@ -293,7 +294,7 @@ pub fn test_complete_instance_workflow(key_name: &str) -> (Instance, Vec<Databas
     let db = setup_db_with_key(key_name);
 
     // Create trees with different configurations
-    let tree1 = create_tree_with_settings(&db, key_name, "MainTree", "1.0");
+    let tree1 = create_database_with_settings(&db, key_name, "MainTree", "1.0");
     let tree2 = create_tree_with_data(
         &db,
         key_name,
@@ -315,7 +316,7 @@ pub fn test_concurrent_tree_operations(db: &Instance, key_name: &str) -> Vec<Dat
     // Create multiple trees rapidly
     for i in 0..5 {
         let tree_name = format!("ConcurrentTree{i}");
-        let tree = create_tree_with_settings(db, key_name, &tree_name, "1.0");
+        let tree = create_database_with_settings(db, key_name, &tree_name, "1.0");
 
         // Add some data to each tree
         create_user_profile(

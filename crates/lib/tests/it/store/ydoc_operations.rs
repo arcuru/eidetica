@@ -50,7 +50,7 @@ fn test_ydoc_incremental_updates_save_diffs_only() {
 
     // Verify final content contains the change
     let viewer = tree
-        .get_subtree_viewer::<YDoc>("yrs_diff_test")
+        .get_store_viewer::<YDoc>("yrs_diff_test")
         .expect("Failed to get YDoc viewer");
 
     viewer
@@ -98,7 +98,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     let op1 = tree.new_operation().expect("Op1: Failed to start");
     {
         let ydoc = op1
-            .get_subtree::<YDoc>("yrs_multi")
+            .get_store::<YDoc>("yrs_multi")
             .expect("Op1: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -118,7 +118,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     let op2 = tree.new_operation().expect("Op2: Failed to start");
     {
         let ydoc = op2
-            .get_subtree::<YDoc>("yrs_multi")
+            .get_store::<YDoc>("yrs_multi")
             .expect("Op2: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -140,7 +140,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     let op3 = tree.new_operation().expect("Op3: Failed to start");
     {
         let ydoc = op3
-            .get_subtree::<YDoc>("yrs_multi")
+            .get_store::<YDoc>("yrs_multi")
             .expect("Op3: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -156,7 +156,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
 
     // Verify final state
     let viewer = tree
-        .get_subtree_viewer::<YDoc>("yrs_multi")
+        .get_store_viewer::<YDoc>("yrs_multi")
         .expect("Failed to get YDoc viewer");
 
     viewer
@@ -199,7 +199,7 @@ fn test_ydoc_apply_external_update() {
     let op = tree.new_operation().expect("Failed to start operation");
     {
         let ydoc = op
-            .get_subtree::<YDoc>("yrs_external")
+            .get_store::<YDoc>("yrs_external")
             .expect("Failed to get YDoc");
 
         ydoc.apply_update(&external_update)
@@ -209,7 +209,7 @@ fn test_ydoc_apply_external_update() {
 
     // Verify the external update was applied
     let viewer = tree
-        .get_subtree_viewer::<YDoc>("yrs_external")
+        .get_store_viewer::<YDoc>("yrs_external")
         .expect("Failed to get YDoc viewer");
 
     viewer

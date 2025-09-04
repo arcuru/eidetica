@@ -116,24 +116,28 @@ impl Instance {
     ///
     /// # Arguments
     /// * `settings` - The initial settings for the tree, typically including metadata like a name.
-    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all databases.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
-    pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Database> {
-        let tree = Database::new(settings, Arc::clone(&self.backend), signing_key_name)?;
-        Ok(self.configure_tree_sync_hooks(tree))
+    pub fn new_database(
+        &self,
+        settings: Doc,
+        signing_key_name: impl AsRef<str>,
+    ) -> Result<Database> {
+        let database = Database::new(settings, Arc::clone(&self.backend), signing_key_name)?;
+        Ok(self.configure_database_sync_hooks(database))
     }
 
-    /// Create a new tree with default empty settings
+    /// Create a new database with default empty settings
     /// All trees must now be created with authentication.
     ///
     /// # Arguments
-    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all databases.
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
-    pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
+    pub fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
         let mut settings = Doc::new();
 
         // Add a unique tree identifier to ensure each tree gets a unique root ID
@@ -149,48 +153,48 @@ impl Instance {
         );
         settings.set_string("tree_id", unique_id);
 
-        self.new_tree(settings, signing_key_name)
+        self.new_database(settings, signing_key_name)
     }
 
-    /// Load an existing tree from the database by its root ID.
+    /// Load an existing database from the backend by its root ID.
     ///
     /// # Arguments
-    /// * `root_id` - The content-addressable ID of the root `Entry` of the tree to load.
+    /// * `root_id` - The content-addressable ID of the root `Entry` of the database to load.
     ///
     /// # Returns
     /// A `Result` containing the loaded `Database` or an error if the root ID is not found.
-    pub fn load_tree(&self, root_id: &ID) -> Result<Database> {
+    pub fn load_database(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
         self.backend.get(root_id)?;
 
-        // Create a tree object with the given root_id
-        let tree = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
-        Ok(self.configure_tree_sync_hooks(tree))
+        // Create a database object with the given root_id
+        let database = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+        Ok(self.configure_database_sync_hooks(database))
     }
 
-    /// Load all trees stored in the backend.
+    /// Load all databases stored in the backend.
     ///
     /// This retrieves all known root entry IDs from the backend and constructs
     /// `Database` instances for each.
     ///
     /// # Returns
     /// A `Result` containing a vector of all `Database` instances or an error.
-    pub fn all_trees(&self) -> Result<Vec<Database>> {
+    pub fn all_databases(&self) -> Result<Vec<Database>> {
         let root_ids = self.backend.all_roots()?;
-        let mut trees = Vec::new();
+        let mut databases = Vec::new();
 
         for root_id in root_ids {
-            let tree = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
-            trees.push(self.configure_tree_sync_hooks(tree));
+            let database = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+            databases.push(self.configure_database_sync_hooks(database));
         }
 
-        Ok(trees)
+        Ok(databases)
     }
 
-    /// Find trees by their assigned name.
+    /// Find databases by their assigned name.
     ///
-    /// Searches through all trees in the database and returns those whose "name"
+    /// Searches through all databases in the backend and returns those whose "name"
     /// setting matches the provided name.
     ///
     /// # Arguments
@@ -201,29 +205,29 @@ impl Instance {
     /// or an error.
     ///
     /// # Errors
-    /// Returns `BaseError::TreeNotFound` if no trees with the specified name are found.
-    pub fn find_tree(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
+    /// Returns `InstanceError::DatabaseNotFound` if no databases with the specified name are found.
+    pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
-        let all_trees = self.all_trees()?;
-        let mut matching_trees = Vec::new();
+        let all_databases = self.all_databases()?;
+        let mut matching_databases = Vec::new();
 
-        for tree in all_trees {
-            // Attempt to get the name from the tree's settings
-            if let Ok(tree_name) = tree.get_name()
-                && tree_name == name
+        for database in all_databases {
+            // Attempt to get the name from the database's settings
+            if let Ok(database_name) = database.get_name()
+                && database_name == name
             {
-                matching_trees.push(tree);
+                matching_databases.push(database);
             }
-            // Ignore trees where getting the name fails or doesn't match
+            // Ignore databases where getting the name fails or doesn't match
         }
 
-        if matching_trees.is_empty() {
-            Err(InstanceError::TreeNotFound {
+        if matching_databases.is_empty() {
+            Err(InstanceError::DatabaseNotFound {
                 name: name.to_string(),
             }
             .into())
         } else {
-            Ok(matching_trees)
+            Ok(matching_databases)
         }
     }
 
@@ -382,33 +386,33 @@ impl Instance {
     /// Load an existing Sync module from a sync tree root ID.
     ///
     /// # Arguments
-    /// * `sync_tree_root_id` - The root ID of an existing sync tree
+    /// * `sync_database_root_id` - The root ID of an existing sync database
     ///
     /// # Returns
     /// A `Result` containing a new Instance with the sync module loaded.
-    pub fn with_sync_from_tree(mut self, sync_tree_root_id: &ID) -> Result<Self> {
+    pub fn with_sync_from_database(mut self, sync_database_root_id: &ID) -> Result<Self> {
         // Ensure device key exists before loading sync
         self.device_id()?;
 
-        let sync = Sync::load(Arc::clone(&self.backend), sync_tree_root_id)?;
+        let sync = Sync::load(Arc::clone(&self.backend), sync_database_root_id)?;
         self.sync = Some(sync);
         Ok(self)
     }
 
-    /// Configure a tree with sync hooks if sync is enabled.
+    /// Configure a database with sync hooks if sync is enabled.
     ///
-    /// This is a helper method that sets up sync hooks for a tree
+    /// This is a helper method that sets up sync hooks for a database
     /// when sync is available in this Instance instance.
     ///
     /// # Arguments
-    /// * `tree` - The tree to configure with sync hooks
+    /// * `database` - The database to configure with sync hooks
     ///
     /// # Returns
-    /// The tree with sync hooks configured if sync is enabled
-    fn configure_tree_sync_hooks(&self, tree: Database) -> Database {
-        // TODO: Implement tree sync hooks for the new BackgroundSync architecture
+    /// The database with sync hooks configured if sync is enabled
+    fn configure_database_sync_hooks(&self, database: Database) -> Database {
+        // TODO: Implement database sync hooks for the new BackgroundSync architecture
         // The new architecture requires per-peer hooks rather than a collection
         // For now, sync hooks need to be set up manually per peer
-        tree
+        database
     }
 }

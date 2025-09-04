@@ -84,7 +84,7 @@ fn main() -> io::Result<()> {
     let mut trees: HashMap<String, Database> = HashMap::new();
 
     // Restore trees using the new Instance.all_trees method
-    match db.all_trees() {
+    match db.all_databases() {
         Ok(loaded_trees) => {
             for tree in loaded_trees {
                 match tree.get_name() {
@@ -163,7 +163,7 @@ fn main() -> io::Result<()> {
 
                 let name = args[1];
 
-                match db.new_tree_default(DEFAULT_CLI_KEY) {
+                match db.new_database_default(DEFAULT_CLI_KEY) {
                     Ok(tree) => {
                         tracing::info!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());

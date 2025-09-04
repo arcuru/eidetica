@@ -35,7 +35,7 @@ pub fn setup_db_with_key(key_name: &str) -> Instance {
 pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
-        .new_tree(Doc::new(), key_name)
+        .new_database(Doc::new(), key_name)
         .expect("Failed to create tree");
     (db, tree)
 }
@@ -98,7 +98,7 @@ pub fn setup_authenticated_tree(
             panic!("setup_authenticated_tree requires at least one key with Admin permissions for tree creation")
         });
 
-    db.new_tree(settings, admin_key)
+    db.new_database(settings, admin_key)
         .expect("Failed to create tree")
 }
 
@@ -146,7 +146,7 @@ pub fn setup_complete_auth_environment(
         .expect("No admin key found");
 
     let tree = db
-        .new_tree(settings, admin_key)
+        .new_database(settings, admin_key)
         .expect("Failed to create authenticated tree");
 
     (db, tree, public_keys)
@@ -176,7 +176,7 @@ pub fn create_delegated_tree(
     }
 
     settings.set_node("auth", auth_settings);
-    db.new_tree(settings, creator_key)
+    db.new_database(settings, creator_key)
 }
 
 /// Create delegation reference for a tree
@@ -245,7 +245,7 @@ impl DelegationChain {
                 .unwrap();
 
             settings.set_node("auth", auth_settings);
-            let tree = db.new_tree(settings, &key_name)?;
+            let tree = db.new_database(settings, &key_name)?;
             trees.push(tree);
         }
 
@@ -285,7 +285,7 @@ pub fn test_operation_succeeds(
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<DocStore>(subtree_name)
+        .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -299,7 +299,7 @@ pub fn test_operation_fails(tree: &Database, key_name: &str, subtree_name: &str,
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<DocStore>(subtree_name)
+        .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -363,7 +363,7 @@ pub fn assert_operation_permissions(
         .new_authenticated_operation(key_name)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<DocStore>(subtree_name)
+        .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
     store
         .set("test", test_description)

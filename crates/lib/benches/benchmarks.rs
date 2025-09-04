@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use eidetica::backend::database::InMemory;
 use eidetica::Instance;
+use eidetica::backend::database::InMemory;
 use eidetica::store::DocStore;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
@@ -9,7 +9,7 @@ fn setup_tree() -> eidetica::Database {
     let db = Instance::new(backend);
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
-    db.new_tree_default("BENCH_KEY")
+    db.new_database_default("BENCH_KEY")
         .expect("Failed to create tree")
 }
 
@@ -21,7 +21,7 @@ fn setup_tree_with_entries(entry_count: usize) -> eidetica::Database {
     for i in 0..entry_count {
         let op = tree.new_operation().expect("Failed to start operation");
         let doc_store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get DocStore");
 
         doc_store
@@ -50,7 +50,7 @@ fn bench_add_entries(c: &mut Criterion) {
                     |tree| {
                         let op = tree.new_operation().expect("Failed to start operation");
                         let doc_store = op
-                            .get_subtree::<DocStore>("data")
+                            .get_store::<DocStore>("data")
                             .expect("Failed to get DocStore");
 
                         doc_store
@@ -85,7 +85,7 @@ fn bench_batch_add_entries(c: &mut Criterion) {
                 b.iter_with_setup(setup_tree, |tree| {
                     let op = tree.new_operation().expect("Failed to start operation");
                     let doc_store = op
-                        .get_subtree::<DocStore>("data")
+                        .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
 
                     for i in 0..batch_size {
@@ -124,7 +124,7 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
                 b.iter(|| {
                     let op = tree.new_operation().expect("Failed to start operation");
                     let doc_store = op
-                        .get_subtree::<DocStore>("data")
+                        .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
 
                     doc_store
@@ -161,7 +161,7 @@ fn bench_access_entries(c: &mut Criterion) {
                 b.iter(|| {
                     let op = tree.new_operation().expect("Failed to start operation");
                     let doc_store = op
-                        .get_subtree::<DocStore>("data")
+                        .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
 
                     let _value = doc_store
@@ -188,7 +188,7 @@ fn bench_tree_operations(c: &mut Criterion) {
             db.add_private_key("BENCH_KEY")
                 .expect("Failed to add benchmark key");
             black_box(
-                db.new_tree_default("BENCH_KEY")
+                db.new_database_default("BENCH_KEY")
                     .expect("Failed to create tree"),
             );
         });

@@ -23,10 +23,10 @@ fn test_database_authentication_scenarios() {
 
     // Test tree creation with authentication
     let tree1 = auth_db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree with auth key");
     let tree2 = auth_db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create second tree with auth key");
 
     // Verify both trees are different
@@ -52,10 +52,10 @@ fn test_multiple_database_creation() {
 
     // Create trees in each database
     let tree1 = db1
-        .new_tree_default("key1")
+        .new_database_default("key1")
         .expect("Failed to create tree in db1");
     let tree2 = db2
-        .new_tree_default("key2")
+        .new_database_default("key2")
         .expect("Failed to create tree in db2");
 
     // Verify they have different root IDs
@@ -71,7 +71,7 @@ fn test_tree_creation_workflow_with_helpers() {
     let db = setup_db_with_key(TEST_KEY);
 
     // Use helper to create tree with settings
-    let tree = create_tree_with_settings(&db, TEST_KEY, "TestTree", "1.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "TestTree", "1.0");
 
     // Verify the tree was created correctly
     assert_tree_name(&tree, "TestTree");
@@ -95,7 +95,7 @@ fn test_database_operations_using_helpers() {
     let (_db, trees) = test_complete_instance_workflow(TEST_KEY);
 
     // Verify we created the expected trees
-    assert_trees_count(&trees, 2);
+    assert_databases_count(&trees, 2);
 
     // Verify the first tree
     assert_tree_name(&trees[0], "MainTree");

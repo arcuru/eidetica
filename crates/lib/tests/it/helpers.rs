@@ -31,24 +31,22 @@ pub fn setup_db_with_key(key_name: &str) -> eidetica::Instance {
 /// Creates a basic tree using an InMemory database with authentication
 pub fn setup_tree() -> eidetica::Database {
     let db = setup_db();
-    db.new_tree_default(DEFAULT_TEST_KEY_NAME)
+    db.new_database_default(DEFAULT_TEST_KEY_NAME)
         .expect("Failed to create tree for testing")
 }
 
 /// Creates a tree with a specific key
 pub fn setup_tree_with_key(key_name: &str) -> eidetica::Database {
     let db = setup_db_with_key(key_name);
-    db.new_tree_default(key_name)
+    db.new_database_default(key_name)
         .expect("Failed to create tree for testing")
 }
 
 /// Creates a tree and database with a specific key
-pub fn setup_db_and_tree_with_key(
-    key_name: &str,
-) -> (eidetica::Instance, eidetica::Database) {
+pub fn setup_db_and_tree_with_key(key_name: &str) -> (eidetica::Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
-        .new_tree_default(key_name)
+        .new_database_default(key_name)
         .expect("Failed to create tree for testing");
     (db, tree)
 }
@@ -57,14 +55,14 @@ pub fn setup_db_and_tree_with_key(
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database {
     let db = setup_db();
     let tree = db
-        .new_tree_default(DEFAULT_TEST_KEY_NAME)
+        .new_database_default(DEFAULT_TEST_KEY_NAME)
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let settings_store = op
-            .get_subtree::<DocStore>("_settings")
+            .get_store::<DocStore>("_settings")
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings {

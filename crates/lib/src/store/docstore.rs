@@ -62,7 +62,7 @@ impl DocStore {
         match data.get(key) {
             Some(value) => Ok(value.clone()),
             None => Err(StoreError::KeyNotFound {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 key: key.to_string(),
             }
             .into()),
@@ -84,24 +84,24 @@ impl DocStore {
         match self.get(key_ref)? {
             Value::Text(value) => Ok(value),
             Value::Node(_) => Err(StoreError::TypeMismatch {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Node".to_string(),
             }
             .into()),
             Value::List(_) => Err(StoreError::TypeMismatch {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "list".to_string(),
             }
             .into()),
             Value::Deleted => Err(StoreError::KeyNotFound {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 key: key_ref.to_string(),
             }
             .into()),
             _ => Err(StoreError::TypeMismatch {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 expected: "String".to_string(),
                 actual: "Other".to_string(),
             }
@@ -160,7 +160,7 @@ impl DocStore {
         match self.get(key)? {
             Value::List(list) => Ok(list),
             _ => Err(StoreError::TypeMismatch {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 expected: "list".to_string(),
                 actual: "Other".to_string(),
             }
@@ -173,7 +173,7 @@ impl DocStore {
         match self.get(key)? {
             Value::Node(node) => Ok(node.into()),
             _ => Err(StoreError::TypeMismatch {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 expected: "Node".to_string(),
                 actual: "Other".to_string(),
             }
@@ -226,7 +226,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.profile.name"), "Alice")?;
     ///
@@ -259,7 +259,7 @@ impl DocStore {
         match data.get_path(&path) {
             Some(value) => Ok(value.clone()),
             None => Err(StoreError::KeyNotFound {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 key: path.as_ref().as_str().to_string(),
             }
             .into()),
@@ -287,7 +287,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set("name", "Alice")?;
     /// store.set("age", 30)?;
@@ -322,7 +322,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Assuming nested structure exists
     /// // Type inference with path access
@@ -376,7 +376,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will set default
     /// let count1: i64 = store.get_or_insert("counter", 0)?;
@@ -431,7 +431,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set("count", 5)?;
     /// store.set("text", "hello")?;
@@ -479,7 +479,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will create with default then modify
     /// store.modify_or_insert::<i64, _>("counter", 0, |count| {
@@ -527,7 +527,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure and set default
     /// let count1: i64 = store.get_or_insert_path(path!("user.stats.score"), 0)?;
@@ -576,7 +576,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
     /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 0, |score| {
@@ -657,7 +657,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::Value;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Set nested values, creating structure as needed
     /// store.set_path(path!("user.profile.name"), "Alice")?;
@@ -737,7 +737,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.score"), 100)?;
     ///
@@ -791,7 +791,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation().unwrap();
-    /// let store = op.get_subtree::<DocStore>("my_data").unwrap();
+    /// let store = op.get_store::<DocStore>("my_data").unwrap();
     ///
     /// // First set a value
     /// store.set("user1", "Alice").unwrap();
@@ -847,7 +847,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::Value;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Using set_path creates nested structure
     /// store.set_path(path!("user.name"), "Alice")?;
@@ -904,7 +904,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_key("missing")); // Key doesn't exist
     ///
@@ -955,7 +955,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
     /// let op = database.new_operation()?;
-    /// let store = op.get_subtree::<DocStore>("data")?;
+    /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_path(path!("user.name"))); // Path doesn't exist
     ///
@@ -1052,7 +1052,7 @@ impl DocStore {
                     }
                     None => {
                         return Err(StoreError::KeyNotFound {
-                            subtree: self.name.clone(),
+                            store: self.name.clone(),
                             key: path_slice
                                 .iter()
                                 .map(|s| s.as_ref())
@@ -1065,7 +1065,7 @@ impl DocStore {
                 Value::Deleted => {
                     // A tombstone encountered in the path means the path doesn't lead to a value.
                     return Err(StoreError::KeyNotFound {
-                        subtree: self.name.clone(),
+                        store: self.name.clone(),
                         key: path_slice
                             .iter()
                             .map(|s| s.as_ref())
@@ -1077,7 +1077,7 @@ impl DocStore {
                 _ => {
                     // Expected a node to continue traversal, but found something else.
                     return Err(StoreError::TypeMismatch {
-                        subtree: self.name.clone(),
+                        store: self.name.clone(),
                         expected: "Node".to_string(),
                         actual: "non-node value".to_string(),
                     }
@@ -1089,7 +1089,7 @@ impl DocStore {
         // Check if the final resolved value is a tombstone.
         match current_value_view {
             Value::Deleted => Err(StoreError::KeyNotFound {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 key: path_slice
                     .iter()
                     .map(|s| s.as_ref())
@@ -1135,7 +1135,7 @@ impl DocStore {
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
                 return Err(StoreError::TypeMismatch {
-                    subtree: self.name.clone(),
+                    store: self.name.clone(),
                     expected: "Node".to_string(),
                     actual: "non-node value".to_string(),
                 }
@@ -1178,7 +1178,7 @@ impl DocStore {
             // This case should be prevented by the initial path.is_empty() check.
             // Given the check, this is technically unreachable if path is not empty.
             return Err(StoreError::InvalidOperation {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 operation: "set_at_path".to_string(),
                 reason: "Path became empty unexpectedly".to_string(),
             }

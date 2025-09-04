@@ -2,7 +2,7 @@
 
 Eidetica is a decentralized database designed to "Remember Everything." This document outlines the architecture and how different components interact with each other.
 
-Eidetica is built on a foundation of content-addressable entries organized in databases, with a pluggable backend system for storage. `Entry` objects are immutable and include integrated authentication using Ed25519 digital signatures. The database is designed with concepts from Merkle-CRDTs to enable efficient merging and synchronization of distributed data.
+Eidetica is built on a foundation of content-addressable entries organized in databases, with a pluggable backend system for storage. `Entry` objects are immutable and contain Tree/SubTree structures that form the Merkle-DAG, with integrated authentication using Ed25519 digital signatures. The system provides Database and Store abstractions over these internal structures to enable efficient merging and synchronization of distributed data.
 
 See the [Core Components](core_components/index.md) section for details on the key building blocks.
 
@@ -10,29 +10,38 @@ See the [Core Components](core_components/index.md) section for details on the k
 graph TD
     A[User Application] --> B[Instance]
     B --> C[Database]
-    C --> E[Database]
-    E --> F[InMemoryDatabase]
-    E -.-> G[Other Databases]
+    C --> T[Transaction]
+    T --> S[Stores: DocStore, Table, etc.]
 
-    subgraph Entry Creation and Structure
-        H[EntryBuilder] -- builds --> D[Entry]
-        D -- contains --> I[TreeNode]
-        D -- contains --> J[SubTreeNode]
-        D -- contains --> K[SigInfo]
-        L[AuthValidator] -- validates --> D
-        L -- uses --> M[_settings.auth]
+    subgraph Backend Layer
+        C --> BE[Backend: InMemory, etc.]
+        BE --> D[Entry Storage]
     end
 
-    subgraph Authentication Module
+    subgraph Entry Internal Structure
+        H[EntryBuilder] -- builds --> E[Entry]
+        E -- contains --> I[TreeNode]
+        E -- contains --> J[SubTreeNode Vector]
+        E -- contains --> K[SigInfo]
+        I --> IR[Root ID, Parents, Metadata]
+        J --> JR[Name, Parents, Data]
+    end
+
+    subgraph Authentication System
         K --> N[SigKey]
         K --> O[Signature]
-        L --> P[ResolvedAuth]
-        Q[CryptoModule] -- signs/verifies --> D
+        L[AuthValidator] -- validates --> E
+        L -- uses --> M[_settings subtree]
+        Q[CryptoModule] -- signs/verifies --> E
     end
 
-    B -- creates --> C
-    C -- manages --> D
-    B -- uses --> H
-    C -- uses --> E
+    subgraph User Abstractions
+        C -.-> |"provides view over"| I
+        S -.-> |"provides view over"| J
+    end
+
+    T -- uses --> H
+    H -- stores --> BE
     C -- uses --> L
+    S -- modifies --> J
 ```

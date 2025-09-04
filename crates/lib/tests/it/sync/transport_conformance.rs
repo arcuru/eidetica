@@ -88,8 +88,8 @@ fn setup_sync_hooks(
 ) -> Result<(eidetica::Database, eidetica::Database)> {
     use eidetica::sync::hooks::SyncHookCollection;
 
-    let mut tree1 = db1.new_tree_default("device_key")?;
-    let mut tree2 = db2.new_tree_default("device_key")?;
+    let mut tree1 = db1.new_database_default("device_key")?;
+    let mut tree2 = db2.new_database_default("device_key")?;
 
     // Set up sync hooks
     let hook1 = sync1.create_sync_hook(peer2_pubkey.to_string());
@@ -131,13 +131,13 @@ where
 
     // Create entries in DB1 - these should automatically sync via hooks
     let op1 = tree1.new_operation()?;
-    let docstore1 = op1.get_subtree::<eidetica::store::DocStore>("data")?;
+    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
     docstore1.set("name", "Alice")?;
     docstore1.set("age", "30")?;
     let entry_id1 = op1.commit()?;
 
     let op2 = tree1.new_operation()?;
-    let docstore1_2 = op2.get_subtree::<eidetica::store::DocStore>("data")?;
+    let docstore1_2 = op2.get_store::<eidetica::store::DocStore>("data")?;
     docstore1_2.set("name", "Bob")?;
     docstore1_2.set("age", "25")?;
     let entry_id2 = op2.commit()?;
@@ -206,13 +206,13 @@ where
 
     // Create entry in DB1
     let op1 = tree1.new_operation()?;
-    let docstore1 = op1.get_subtree::<eidetica::store::DocStore>("data")?;
+    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
     docstore1.set("origin", "db1")?;
     let entry_from_db1 = op1.commit()?;
 
     // Create entry in DB2
     let op2 = tree2.new_operation()?;
-    let docstore2 = op2.get_subtree::<eidetica::store::DocStore>("data")?;
+    let docstore2 = op2.get_store::<eidetica::store::DocStore>("data")?;
     docstore2.set("origin", "db2")?;
     let entry_from_db2 = op2.commit()?;
 

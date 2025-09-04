@@ -21,11 +21,13 @@
 # Internal
 
 - [Overview](internal/index.md)
+- [Architectural Terminology](internal/terminology.md)
 - [Core Components](internal/core_components/index.md)
   - [Entry Structure](internal/core_components/entry.md)
   - [Database Interface](internal/core_components/backend.md)
   - [Instance](internal/core_components/basedb.md)
   - [Database](internal/core_components/database.md)
+  - [Transaction](internal/core_components/atomicop.md)
   - [Authentication](internal/core_components/authentication.md)
   - [Synchronization](internal/core_components/synchronization.md)
   - [Store Implementations](internal/core_components/stores.md)

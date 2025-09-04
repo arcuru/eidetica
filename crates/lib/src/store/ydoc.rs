@@ -50,7 +50,7 @@ pub enum YDocError {
 impl From<YDocError> for StoreError {
     fn from(err: YDocError) -> Self {
         StoreError::ImplementationError {
-            subtree: "YDoc".to_string(),
+            store: "YDoc".to_string(),
             reason: err.to_string(),
         }
     }

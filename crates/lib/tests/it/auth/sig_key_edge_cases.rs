@@ -3,12 +3,12 @@
 //! These tests cover edge cases, error conditions, and boundary scenarios
 //! for the flat delegation structure implementation.
 
+use eidetica::Instance;
 use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey};
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
-use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::entry::ID;
 
@@ -52,7 +52,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     settings.set_node("auth", auth);
 
     // This should work - empty key is technically valid
-    let tree = db.new_tree(settings, "")?;
+    let tree = db.new_database(settings, "")?;
 
     // Test resolving empty key ID
     let empty_key = SigKey::Direct("".to_string());
@@ -270,7 +270,7 @@ fn test_circular_delegation_simple() -> Result<()> {
 
     let mut settings = Doc::new();
     settings.set_node("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let tree = db.new_database(settings, "admin")?;
     let tree_tips = tree.get_tips()?;
 
     // Create delegation path that references the same tree
@@ -287,7 +287,7 @@ fn test_circular_delegation_simple() -> Result<()> {
 
     // Add self-referencing delegation to the tree
     let op = tree.new_operation()?.with_auth("admin");
-    let _dict = op.get_subtree::<eidetica::store::DocStore>("_settings")?;
+    let _dict = op.get_store::<eidetica::store::DocStore>("_settings")?;
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash

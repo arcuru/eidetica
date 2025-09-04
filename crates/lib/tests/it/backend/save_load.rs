@@ -1,5 +1,5 @@
-use eidetica::backend::{BackendDB, database::InMemory};
 use eidetica::Entry;
+use eidetica::backend::{BackendDB, database::InMemory};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;

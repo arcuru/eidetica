@@ -83,7 +83,7 @@ where
         {
             return serde_json::from_str(value).map_err(|e| {
                 StoreError::DeserializationFailed {
-                    subtree: self.name.clone(),
+                    store: self.name.clone(),
                     reason: format!("Failed to deserialize record for key '{key}': {e}"),
                 }
                 .into()
@@ -97,13 +97,13 @@ where
         match data.get(key).and_then(|v| v.as_text()) {
             Some(value) => serde_json::from_str(value).map_err(|e| {
                 StoreError::DeserializationFailed {
-                    subtree: self.name.clone(),
+                    store: self.name.clone(),
                     reason: format!("Failed to deserialize record for key '{key}': {e}"),
                 }
                 .into()
             }),
             None => Err(StoreError::KeyNotFound {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 key: key.to_string(),
             }
             .into()),
@@ -138,7 +138,7 @@ where
         // Serialize the row
         let serialized_row =
             serde_json::to_string(&row).map_err(|e| StoreError::SerializationFailed {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 reason: format!("Failed to serialize record: {e}"),
             })?;
 
@@ -148,7 +148,7 @@ where
         // Serialize and update the atomic op
         let serialized_data =
             serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
         self.atomic_op
@@ -183,7 +183,7 @@ where
         // Serialize the row
         let serialized_row =
             serde_json::to_string(&row).map_err(|e| StoreError::SerializationFailed {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 reason: format!("Failed to serialize record for key '{key_str}': {e}"),
             })?;
 
@@ -193,7 +193,7 @@ where
         // Serialize and update the atomic op
         let serialized_data =
             serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
-                subtree: self.name.clone(),
+                store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)
@@ -231,7 +231,7 @@ where
                 // Deserialize the row
                 let row: T =
                     serde_json::from_str(value).map_err(|e| StoreError::DeserializationFailed {
-                        subtree: self.name.clone(),
+                        store: self.name.clone(),
                         reason: format!(
                             "Failed to deserialize record for key '{key}' during search: {e}"
                         ),

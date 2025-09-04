@@ -23,8 +23,8 @@ async fn setup_iroh_sync_pair() -> (
     eidetica::sync::Sync,
     Address,
 ) {
-    use eidetica::backend::database::InMemory;
     use eidetica::Instance;
+    use eidetica::backend::database::InMemory;
     use eidetica::sync::Sync;
 
     // Create databases

@@ -5,8 +5,8 @@
 
 use crate::helpers::*;
 use eidetica::Database;
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::Instance;
+use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
@@ -19,7 +19,7 @@ pub fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &
     let op = tree.new_operation().expect("Failed to create operation");
     {
         let store = op
-            .get_subtree::<DocStore>(subtree_name)
+            .get_store::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -40,7 +40,7 @@ pub fn add_authenticated_data(
         .expect("Failed to create authenticated operation");
     {
         let store = op
-            .get_subtree::<DocStore>(subtree_name)
+            .get_store::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -61,7 +61,7 @@ pub fn create_branch_from_entry(
         .expect("Failed to create branch operation");
     {
         let store = op
-            .get_subtree::<DocStore>(subtree_name)
+            .get_store::<DocStore>(subtree_name)
             .expect("Failed to get subtree");
         for (key, value) in data {
             store.set(*key, *value).expect("Failed to set data");
@@ -75,7 +75,7 @@ pub fn create_branch_from_entry(
 /// Verify tree contains expected data in subtree
 pub fn assert_subtree_data(tree: &Database, subtree_name: &str, expected: &[(&str, &str)]) {
     let viewer = tree
-        .get_subtree_viewer::<DocStore>(subtree_name)
+        .get_store_viewer::<DocStore>(subtree_name)
         .expect("Failed to get subtree viewer");
 
     for (key, expected_value) in expected {
@@ -158,7 +158,7 @@ pub fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)]) -> (I
         .expect("Failed to create merge operation");
     {
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get data store");
         store.set("merge", "D").expect("Failed to set merge data");
         store
@@ -211,7 +211,7 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
     settings.set_string("name", "AuthenticatedTree");
 
     let tree = db
-        .new_tree(settings, key_name)
+        .new_database(settings, key_name)
         .expect("Failed to create tree");
     (db, tree)
 }
@@ -242,7 +242,7 @@ pub fn assert_deep_operations_performance(tree: &Database, depth: usize) {
 
     // Reading should not cause stack overflow
     let viewer = tree
-        .get_subtree_viewer::<DocStore>("deep_data")
+        .get_store_viewer::<DocStore>("deep_data")
         .expect("Deep operations should not fail");
     let final_state = viewer.get_all().expect("Should get final state");
 
@@ -272,7 +272,7 @@ pub fn assert_deterministic_reads(tree: &Database, subtree_name: &str, read_coun
 
     for _ in 0..read_count {
         let viewer = tree
-            .get_subtree_viewer::<DocStore>(subtree_name)
+            .get_store_viewer::<DocStore>(subtree_name)
             .expect("Failed to get viewer");
         let state = viewer.get_all().expect("Failed to get state");
         results.push(state);
@@ -296,13 +296,13 @@ pub fn assert_caching_consistency(tree: &Database, subtree_name: &str) {
 
     // First read - should populate cache
     let viewer1 = tree
-        .get_subtree_viewer::<DocStore>(subtree_name)
+        .get_store_viewer::<DocStore>(subtree_name)
         .expect("Failed to get viewer 1");
     let state1 = viewer1.get_all().expect("Failed to get state 1");
 
     // Second read - should use cache
     let viewer2 = tree
-        .get_subtree_viewer::<DocStore>(subtree_name)
+        .get_store_viewer::<DocStore>(subtree_name)
         .expect("Failed to get viewer 2");
     let state2 = viewer2.get_all().expect("Failed to get state 2");
 

@@ -37,7 +37,7 @@ pub fn create_dict_operation(
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     for (key, value) in data {
         dict.set(*key, *value).unwrap();
@@ -52,7 +52,7 @@ pub fn create_dict_with_nested_map(
     subtree_name: &str,
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     // Set regular string
     dict.set("key1", "value1").unwrap();
@@ -72,7 +72,7 @@ pub fn create_dict_with_list(
     list_items: &[&str],
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let dict = op.get_subtree::<DocStore>(subtree_name).unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     let mut fruits = eidetica::crdt::doc::List::new();
     for item in list_items {
@@ -93,7 +93,7 @@ pub fn test_dict_persistence(
     // Op 1: Initial data
     let op1 = tree.new_operation().unwrap();
     {
-        let dict = op1.get_subtree::<DocStore>(subtree_name).unwrap();
+        let dict = op1.get_store::<DocStore>(subtree_name).unwrap();
         dict.set("key_a", "val_a").unwrap();
         dict.set("key_b", "val_b").unwrap();
     }
@@ -102,7 +102,7 @@ pub fn test_dict_persistence(
     // Op 2: Update one, add another
     let op2 = tree.new_operation().unwrap();
     {
-        let dict = op2.get_subtree::<DocStore>(subtree_name).unwrap();
+        let dict = op2.get_store::<DocStore>(subtree_name).unwrap();
         dict.set("key_b", "val_b_updated").unwrap();
         dict.set("key_c", "val_c").unwrap();
     }
@@ -119,7 +119,7 @@ pub fn assert_dict_viewer_data(
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
     for (key, expected_value) in expected_data {
         assert_dict_value(&viewer, key, expected_value);
     }
@@ -131,7 +131,7 @@ pub fn assert_dict_viewer_count(
     subtree_name: &str,
     expected_count: usize,
 ) {
-    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
     let all_data = viewer.get_all().unwrap();
     assert_eq!(all_data.as_hashmap().len(), expected_count);
 }
@@ -143,7 +143,7 @@ pub fn assert_dict_list_data(
     list_key: &str,
     expected_items: &[&str],
 ) {
-    let viewer = tree.get_subtree_viewer::<DocStore>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
     let list = viewer.get_list(list_key).unwrap();
 
     assert_eq!(list.len(), expected_items.len());
@@ -177,7 +177,7 @@ pub fn create_ydoc_text_operation(
     text_content: &str,
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let ydoc = op.get_subtree::<YDoc>(subtree_name).unwrap();
+    let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let text = doc.get_or_insert_text("document");
@@ -198,7 +198,7 @@ pub fn create_ydoc_map_operation(
     map_data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
     let op = tree.new_operation().unwrap();
-    let ydoc = op.get_subtree::<YDoc>(subtree_name).unwrap();
+    let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let map = doc.get_or_insert_map("root");
@@ -222,7 +222,7 @@ pub fn test_ydoc_incremental_updates(
     // Large initial content
     let op1 = tree.new_operation().unwrap();
     let first_diff_size = {
-        let ydoc = op1.get_subtree::<YDoc>(subtree_name).unwrap();
+        let ydoc = op1.get_store::<YDoc>(subtree_name).unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
@@ -241,7 +241,7 @@ pub fn test_ydoc_incremental_updates(
     // Small incremental change
     let op2 = tree.new_operation().unwrap();
     let second_diff_size = {
-        let ydoc = op2.get_subtree::<YDoc>(subtree_name).unwrap();
+        let ydoc = op2.get_store::<YDoc>(subtree_name).unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
@@ -265,7 +265,7 @@ pub fn assert_ydoc_text_content(
     subtree_name: &str,
     expected_text: &str,
 ) {
-    let viewer = tree.get_subtree_viewer::<YDoc>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).unwrap();
     viewer
         .with_doc(|doc| {
             let text = doc.get_or_insert_text("document");
@@ -284,7 +284,7 @@ pub fn assert_ydoc_map_content(
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let viewer = tree.get_subtree_viewer::<YDoc>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).unwrap();
     viewer
         .with_doc(|doc| {
             let map = doc.get_or_insert_map("root");
@@ -323,7 +323,7 @@ pub fn create_table_operation(
     records: &[TestRecord],
 ) -> Vec<String> {
     let op = tree.new_operation().unwrap();
-    let table = op.get_subtree::<Table<TestRecord>>(subtree_name).unwrap();
+    let table = op.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
     let mut keys = Vec::new();
     for record in records {
@@ -342,7 +342,7 @@ pub fn create_simple_table_operation(
     values: &[i32],
 ) -> Vec<String> {
     let op = tree.new_operation().unwrap();
-    let table = op.get_subtree::<Table<SimpleRecord>>(subtree_name).unwrap();
+    let table = op.get_store::<Table<SimpleRecord>>(subtree_name).unwrap();
 
     let mut keys = Vec::new();
     for value in values {
@@ -363,7 +363,7 @@ pub fn test_table_multi_operations(
     // Op 1: Insert initial records
     let op1 = tree.new_operation().unwrap();
     let (key1, key2) = {
-        let table = op1.get_subtree::<Table<TestRecord>>(subtree_name).unwrap();
+        let table = op1.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
         let record1 = TestRecord {
             name: "Initial User 1".to_string(),
@@ -385,7 +385,7 @@ pub fn test_table_multi_operations(
     // Op 2: Update and add
     let op2 = tree.new_operation().unwrap();
     let key3 = {
-        let table = op2.get_subtree::<Table<TestRecord>>(subtree_name).unwrap();
+        let table = op2.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
         // Update existing
         let updated_record1 = TestRecord {
@@ -418,7 +418,7 @@ pub fn assert_table_record(
     expected_record: &TestRecord,
 ) {
     let viewer = tree
-        .get_subtree_viewer::<Table<TestRecord>>(subtree_name)
+        .get_store_viewer::<Table<TestRecord>>(subtree_name)
         .unwrap();
     let record = viewer.get(key).unwrap();
     assert_eq!(record, *expected_record);
@@ -434,7 +434,7 @@ pub fn assert_table_search_count<F>(
     F: Fn(&TestRecord) -> bool,
 {
     let viewer = tree
-        .get_subtree_viewer::<Table<TestRecord>>(subtree_name)
+        .get_store_viewer::<Table<TestRecord>>(subtree_name)
         .unwrap();
     let results = viewer.search(predicate).unwrap();
     assert_eq!(results.len(), expected_count);
@@ -490,7 +490,7 @@ pub fn test_table_concurrent_modifications(
     let op_base = tree.new_operation().unwrap();
     let key1 = {
         let table = op_base
-            .get_subtree::<Table<TestRecord>>(subtree_name)
+            .get_store::<Table<TestRecord>>(subtree_name)
             .unwrap();
         let record = TestRecord {
             name: "Original User".to_string(),
@@ -507,7 +507,7 @@ pub fn test_table_concurrent_modifications(
         .unwrap();
     {
         let table = op_branch_a
-            .get_subtree::<Table<TestRecord>>(subtree_name)
+            .get_store::<Table<TestRecord>>(subtree_name)
             .unwrap();
         let updated_record = TestRecord {
             name: "Updated by Branch A".to_string(),
@@ -522,7 +522,7 @@ pub fn test_table_concurrent_modifications(
     let op_branch_b = tree.new_operation_with_tips([base_entry_id]).unwrap();
     {
         let table = op_branch_b
-            .get_subtree::<Table<TestRecord>>(subtree_name)
+            .get_store::<Table<TestRecord>>(subtree_name)
             .unwrap();
         let updated_record = TestRecord {
             name: "Updated by Branch B".to_string(),
@@ -537,7 +537,7 @@ pub fn test_table_concurrent_modifications(
     let op_merge = tree.new_operation().unwrap();
     let merged_record = {
         let table = op_merge
-            .get_subtree::<Table<TestRecord>>(subtree_name)
+            .get_store::<Table<TestRecord>>(subtree_name)
             .unwrap();
         table.get(&key1).unwrap()
     };

@@ -17,23 +17,23 @@
 //!     * **YDoc (`store::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
-pub mod transaction;
 pub mod auth;
 pub mod backend;
-pub mod instance;
 pub mod constants;
 pub mod crdt;
+pub mod database;
 pub mod entry;
+pub mod instance;
 pub mod store;
 pub mod sync;
-pub mod database;
+pub mod transaction;
 
+pub use database::Database;
+pub use entry::Entry;
+pub use instance::Instance;
+pub use store::Store;
 /// Re-export fundamental types for easier access.
 pub use transaction::Transaction;
-pub use instance::Instance;
-pub use entry::Entry;
-pub use store::Store;
-pub use database::Database;
 
 /// Y-CRDT types re-exported for convenience when the "y-crdt" feature is enabled.
 ///
@@ -267,5 +267,4 @@ impl Error {
             _ => false,
         }
     }
-
 }

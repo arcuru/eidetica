@@ -39,13 +39,13 @@ fn test_key_management() {
 
     // Test signing and verification
     let tree = db
-        .new_tree(Doc::new(), key_id)
+        .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::store::DocStore>("data")
+        .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -86,13 +86,13 @@ fn test_import_private_key() {
 
     // Test that we can sign with the imported key
     let tree = db
-        .new_tree(Doc::new(), key_id)
+        .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::store::DocStore>("data")
+        .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -139,7 +139,7 @@ fn test_backend_serialization() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::store::DocStore>("data")
+        .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -159,7 +159,7 @@ fn test_backend_serialization() {
         .new_authenticated_operation(key_id2)
         .expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<eidetica::store::DocStore>("data")
+        .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store2.set("test2", "value2").expect("Failed to set value");
 
@@ -202,13 +202,13 @@ fn test_overwrite_existing_key() {
 
     // New key should work for signing
     let tree = db
-        .new_tree(Doc::new(), key_id)
+        .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
     let op = tree
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::store::DocStore>("data")
+        .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 

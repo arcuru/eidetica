@@ -25,7 +25,7 @@ fn test_basic_subtree_modification() {
 fn test_subtree_operations_using_helpers() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Use helper to perform basic operations
@@ -46,7 +46,7 @@ fn test_subtree_operations_using_helpers() {
 fn test_user_profile_creation() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Use helper to create user profile
@@ -68,7 +68,7 @@ fn test_user_profile_creation() {
 fn test_application_configuration() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Use helper to create app config
@@ -91,7 +91,7 @@ fn test_application_configuration() {
 fn test_multiple_subtree_operations() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Perform operations on multiple subtrees
@@ -137,7 +137,7 @@ fn test_multiple_subtree_operations() {
 fn test_data_persistence_across_operations() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // First operation: create user
@@ -182,7 +182,7 @@ fn test_data_persistence_across_operations() {
 fn test_data_operations_with_special_characters() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Test data with special characters
@@ -211,7 +211,7 @@ fn test_data_operations_with_special_characters() {
 fn test_data_overwrite_operations() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Initial data
@@ -264,7 +264,7 @@ fn test_data_overwrite_operations() {
 fn test_large_data_operations() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Create large dataset
@@ -297,7 +297,7 @@ fn test_large_data_operations() {
 fn test_empty_and_edge_case_operations() {
     let db = setup_db_with_key(TEST_KEY);
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Test with edge case values
@@ -323,7 +323,7 @@ fn test_basic_operations_integration() {
     let db = setup_db_with_key(TEST_KEY);
 
     // Create tree with initial settings
-    let tree = create_tree_with_settings(&db, TEST_KEY, "IntegrationTree", "1.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "IntegrationTree", "1.0");
 
     // Add user profile
     create_user_profile(

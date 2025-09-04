@@ -13,7 +13,7 @@ fn test_create_tree_with_initial_settings() {
     let db = setup_db_with_key(TEST_KEY);
 
     // Use helper to create tree with settings
-    let tree = create_tree_with_settings(&db, TEST_KEY, "My Settings Tree", "1.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "My Settings Tree", "1.0");
 
     // Verify settings using helper
     assert_tree_name(&tree, "My Settings Tree");
@@ -25,7 +25,7 @@ fn test_settings_using_helpers() {
     let db = setup_db_with_key(TEST_KEY);
 
     // Use helper to create tree with settings
-    let tree = create_tree_with_settings(&db, TEST_KEY, "HelperTree", "2.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "HelperTree", "2.0");
 
     // Verify settings were applied correctly
     assert_tree_name(&tree, "HelperTree");
@@ -38,7 +38,7 @@ fn test_multiple_settings_updates() {
 
     // Create tree and perform multiple settings updates
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // First update: basic info
@@ -89,7 +89,7 @@ fn test_multiple_settings_updates() {
 fn test_settings_overwrite() {
     let db = setup_db_with_key(TEST_KEY);
 
-    let tree = create_tree_with_settings(&db, TEST_KEY, "OverwriteTest", "1.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "OverwriteTest", "1.0");
 
     // Verify initial settings
     assert_tree_settings(&tree, &[("name", "OverwriteTest"), ("version", "1.0")]);
@@ -123,7 +123,7 @@ fn test_metadata_helper_functions() {
     let db = setup_db_with_key(TEST_KEY);
 
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Use metadata helper
@@ -152,7 +152,7 @@ fn test_settings_with_complex_values() {
     let db = setup_db_with_key(TEST_KEY);
 
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Set settings with various types of values
@@ -194,7 +194,7 @@ fn test_settings_with_complex_values() {
 fn test_settings_persistence_across_operations() {
     let db = setup_db_with_key(TEST_KEY);
 
-    let tree = create_tree_with_settings(&db, TEST_KEY, "PersistenceTest", "1.0");
+    let tree = create_database_with_settings(&db, TEST_KEY, "PersistenceTest", "1.0");
 
     // Perform some operations that modify other subtrees
     create_user_profile(&tree, "user123", "John Doe", "john@example.com");
@@ -227,9 +227,9 @@ fn test_settings_in_multiple_trees() {
     let db = setup_db_with_key(TEST_KEY);
 
     // Create multiple trees with different settings
-    let tree1 = create_tree_with_settings(&db, TEST_KEY, "Tree1", "1.0");
-    let tree2 = create_tree_with_settings(&db, TEST_KEY, "Tree2", "2.0");
-    let tree3 = create_tree_with_settings(&db, TEST_KEY, "Tree3", "3.0");
+    let tree1 = create_database_with_settings(&db, TEST_KEY, "Tree1", "1.0");
+    let tree2 = create_database_with_settings(&db, TEST_KEY, "Tree2", "2.0");
+    let tree3 = create_database_with_settings(&db, TEST_KEY, "Tree3", "3.0");
 
     // Add unique settings to each
     set_tree_settings(&tree1, &[("purpose", "development"), ("team", "frontend")]);
@@ -273,7 +273,7 @@ fn test_empty_and_edge_case_settings() {
     let db = setup_db_with_key(TEST_KEY);
 
     let tree = db
-        .new_tree_default(TEST_KEY)
+        .new_database_default(TEST_KEY)
         .expect("Failed to create tree");
 
     // Test edge case values

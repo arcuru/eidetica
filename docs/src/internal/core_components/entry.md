@@ -11,15 +11,32 @@ Entries serve as the atomic units of both data storage and version history in Ei
 - **Authentication Unit**: Cryptographically signed to ensure integrity and authorization
 - **Content-Addressable Object**: Uniquely identified by their content hash for deduplication and verification
 
-## Structural Organization
+## Internal Data Structure
 
-**Main Database Data**: Each entry contains data for its parent Database, stored as serialized CRDT structures that can be merged with concurrent changes.
+Entry contains two fundamental internal data structures that form the Merkle-DAG:
 
-**Store Partitioning**: Entries can contain multiple named stores (like DocStore, Table, YDoc), each with independent parent linkage and merge semantics.
+**TreeNode**: The main tree node containing:
 
-**Parent References**: Entries link to previous entries, creating a directed acyclic graph that represents the evolution of data over time.
+- Root ID of the tree this entry belongs to
+- Parent entry references for the main tree history
+- Optional metadata (not merged with other entries)
+
+**SubTreeNodes**: Named subtree nodes, each containing:
+
+- Subtree name (analogous to store/table names)
+- Parent entry references specific to this subtree's history
+- Serialized CRDT data payload for this subtree
 
 **Authentication Envelope**: Every entry includes signature information that proves authorization and ensures tamper-detection.
+
+## Relationship to User Abstractions
+
+While entries internally use TreeNode and SubTreeNode structures, users interact with higher-level abstractions:
+
+- **Database**: Provides operations over the tree of entries (uses TreeNode data)
+- **Stores**: Typed access patterns (DocStore, Tables, etc.) over subtree data (uses SubTreeNode data)
+
+This separation allows the internal Merkle-DAG structures to remain efficient and correct while providing user-friendly APIs.
 
 ## Identity and Integrity
 
@@ -39,31 +56,30 @@ Entries serve as the atomic units of both data storage and version history in Ei
 
 **Efficient Storage**: Identical entries are automatically deduplicated, and metadata can be stored separately from bulk data.
 
-## Data Structure Example
+## Internal Data Structure Detail
 
-An Entry contains the following core data structure:
+An Entry contains the following internal data structures:
 
 ```rust,ignore
 struct Entry {
-    // Main database node containing root ID, parent references, and metadata
-    database: TreeNode {
-        root: ID,                    // Root entry ID of the database
-        parents: Vec<ID>,           // Parent entries in main database history
+    // Main tree node - the core Merkle-DAG structure
+    tree: TreeNode {
+        root: ID,                    // Root entry ID of the tree
+        parents: Vec<ID>,           // Parent entries in main tree history
         metadata: Option<RawData>,  // Optional metadata (not merged)
-        data: RawData,             // Serialized CRDT data for main database
     },
 
-    // Named stores with independent histories
-    stores: Vec<SubTreeNode> {
-        name: String,              // Store name (e.g., "users", "posts")
-        parents: Vec<ID>,          // Parent entries specific to this store
-        data: RawData,            // Serialized CRDT data for this store
+    // Named subtree nodes - independent data partitions
+    subtrees: Vec<SubTreeNode> {
+        name: String,              // Subtree name (e.g., "users", "posts")
+        parents: Vec<ID>,          // Parent entries specific to this subtree
+        data: RawData,            // Serialized CRDT data for this subtree
     },
 
     // Authentication and signature information
     sig: SigInfo {
         sig: Option<String>,       // Base64-encoded Ed25519 signature
-        key_ref: String,          // Reference to signing key
+        key: SigKey,              // Reference to signing key
     },
 }
 
@@ -72,4 +88,9 @@ type RawData = String;            // JSON-serialized CRDT structures
 type ID = String;                // SHA-256 content hash (hex-encoded)
 ```
 
-This structure enables each Entry to participate in multiple independent histories simultaneously - the main database history plus any number of named store histories.
+### Key Design Points
+
+- **TreeNode**: Represents the entry's position in the main Merkle-DAG tree structure
+- **SubTreeNodes**: Enable independent histories for different data partitions within the same entry
+- **Separation**: The tree structure (TreeNode) is separate from the data partitions (SubTreeNodes)
+- **Multiple Histories**: Each entry can participate in one main tree history plus multiple independent subtree histories

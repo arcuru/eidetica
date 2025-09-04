@@ -27,14 +27,14 @@ fn init_test_tracing() {
         .try_init();
 }
 
-mod transaction;
 mod auth;
 mod backend;
-mod instance;
 mod crdt;
 mod data;
+mod database;
 mod entry;
 mod helpers;
+mod instance;
 mod store;
 mod sync;
-mod database;
+mod transaction;

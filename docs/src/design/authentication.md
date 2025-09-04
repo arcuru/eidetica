@@ -105,10 +105,10 @@ The `_settings` store uses the `crate::crdt::Doc` type, which is a hierarchical 
 Eidetica implements a three-tier permission model:
 
 | Permission Level | Modify `_settings` | Add/Remove Keys | Change Permissions | Read Data | Write Data | Public Database Access |
-| ---------------- | ------------------ | --------------- | ------------------ | --------- | ---------- | ------------------ |
-| **Admin**        | ✓                  | ✓               | ✓                  | ✓         | ✓          | ✓                  |
-| **Write**        | ✗                  | ✗               | ✗                  | ✓         | ✓          | ✓                  |
-| **Read**         | ✗                  | ✗               | ✗                  | ✓         | ✗          | ✓                  |
+| ---------------- | ------------------ | --------------- | ------------------ | --------- | ---------- | ---------------------- |
+| **Admin**        | ✓                  | ✓               | ✓                  | ✓         | ✓          | ✓                      |
+| **Write**        | ✗                  | ✗               | ✗                  | ✓         | ✓          | ✓                      |
+| **Read**         | ✗                  | ✗               | ✗                  | ✓         | ✗          | ✓                      |
 
 ## Authentication Framework
 

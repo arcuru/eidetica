@@ -20,7 +20,7 @@ fn test_authenticated_operations() {
 
     // Test that we can use the operation
     let store = op
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -44,7 +44,7 @@ fn test_operation_auth_methods() {
         .expect("Failed to add test key");
 
     let tree = db
-        .new_tree(Doc::new(), "TEST_KEY")
+        .new_database(Doc::new(), "TEST_KEY")
         .expect("Failed to create tree");
 
     // Test operations with different auth key IDs
@@ -90,7 +90,7 @@ fn test_tree_default_authentication() {
 
     // Try to use the operation - should fail at commit
     let store = op3
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
     let result = op3.commit();
@@ -109,7 +109,7 @@ fn test_mandatory_authentication() {
 
     // Should be able to use it normally
     let store = op
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -127,7 +127,7 @@ fn test_missing_authentication_key_error() {
         .new_authenticated_operation("NONEXISTENT_KEY")
         .expect("Operation creation should succeed");
     let store = op
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -163,7 +163,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     settings.set_node("auth", auth_settings);
 
     let tree = db
-        .new_tree(settings, "KEY1")
+        .new_database(settings, "KEY1")
         .expect("Failed to create tree");
 
     // Create operation that adds KEY2 to auth settings
@@ -171,7 +171,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .new_authenticated_operation("KEY1")
         .expect("Failed to create operation");
     let settings_store = op1
-        .get_subtree::<DocStore>("_settings")
+        .get_store::<DocStore>("_settings")
         .expect("Failed to get settings subtree");
 
     // Add KEY2 to auth settings
@@ -208,7 +208,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .new_authenticated_operation("KEY2")
         .expect("Failed to create operation with KEY2");
     let data_store = op2
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get data subtree");
     data_store
         .set("test", "value")
@@ -245,7 +245,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     settings.set_node("auth", auth_settings);
 
     let tree = db
-        .new_tree(settings, "VALID_KEY")
+        .new_database(settings, "VALID_KEY")
         .expect("Failed to create tree");
 
     // Valid operation should work
@@ -256,7 +256,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
         .new_authenticated_operation("VALID_KEY")
         .expect("Failed to create operation");
     let settings_store = op
-        .get_subtree::<DocStore>("_settings")
+        .get_store::<DocStore>("_settings")
         .expect("Failed to get settings subtree");
 
     // Corrupt the auth settings by setting it to a string instead of a map
@@ -272,7 +272,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
         .new_authenticated_operation("VALID_KEY")
         .expect("Should still be able to create operation");
     let data_store = op2
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get data subtree");
     data_store
         .set("after_corruption", "value")
@@ -337,7 +337,7 @@ fn test_validation_pipeline_entry_level_validation() {
 
     settings.set_node("auth", auth_settings);
     let tree = db
-        .new_tree(settings, "ADMIN_KEY")
+        .new_database(settings, "ADMIN_KEY")
         .expect("Failed to create tree");
 
     // Create entries with various keys
@@ -346,7 +346,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .new_authenticated_operation("ACTIVE_KEY")
             .expect("Failed to create operation");
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("test", format!("value_{i}"))
@@ -360,7 +360,7 @@ fn test_validation_pipeline_entry_level_validation() {
     // Test validation of entries
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let current_settings = tree
-        .get_subtree_viewer::<DocStore>("_settings")
+        .get_store_viewer::<DocStore>("_settings")
         .expect("Failed to get settings")
         .get_all()
         .expect("Failed to get settings data");
@@ -379,7 +379,7 @@ fn test_validation_pipeline_entry_level_validation() {
             .new_authenticated_operation("REVOKED_KEY")
             .expect("Failed to create operation");
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("test", format!("revoked_value_{i}"))

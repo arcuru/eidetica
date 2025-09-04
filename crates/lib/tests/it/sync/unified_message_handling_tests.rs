@@ -1,5 +1,5 @@
-use eidetica::backend::database::InMemory;
 use eidetica::Instance;
+use eidetica::backend::database::InMemory;
 use eidetica::sync::{
     Address, Sync,
     protocol::{SyncRequest, SyncResponse},

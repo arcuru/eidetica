@@ -236,13 +236,13 @@ impl<'a> SyncStateManager<'a> {
         peer_pubkey: impl AsRef<str>,
         tree_id: &ID,
     ) -> Result<SyncCursor> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let cursor_path = path!("cursors", peer_pubkey.as_ref(), tree_id.as_str());
 
         match sync_state.get_path_as::<String>(&cursor_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
                 crate::Error::Store(crate::store::StoreError::SerializationFailed {
-                    subtree: "sync_state".to_string(),
+                    store: "sync_state".to_string(),
                     reason: format!("Invalid cursor JSON: {e}"),
                 })
             }),
@@ -258,7 +258,7 @@ impl<'a> SyncStateManager<'a> {
 
     /// Update a sync cursor.
     pub fn update_sync_cursor(&self, cursor: &SyncCursor) -> Result<()> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let cursor_path = path!("cursors", cursor.peer_pubkey, cursor.tree_id.as_str());
         let cursor_json = serde_json::to_string(cursor)?;
         sync_state.set_path(&cursor_path, cursor_json)?;
@@ -267,13 +267,13 @@ impl<'a> SyncStateManager<'a> {
 
     /// Get or create sync metadata for a peer.
     pub fn get_sync_metadata(&self, peer_pubkey: impl AsRef<str>) -> Result<SyncMetadata> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let metadata_path = path!("metadata", peer_pubkey.as_ref());
 
         match sync_state.get_path_as::<String>(&metadata_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
                 crate::Error::Store(crate::store::StoreError::SerializationFailed {
-                    subtree: "sync_state".to_string(),
+                    store: "sync_state".to_string(),
                     reason: format!("Invalid metadata JSON: {e}"),
                 })
             }),
@@ -286,7 +286,7 @@ impl<'a> SyncStateManager<'a> {
 
     /// Update sync metadata for a peer.
     pub fn update_sync_metadata(&self, metadata: &SyncMetadata) -> Result<()> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let metadata_path = path!("metadata", metadata.peer_pubkey);
         let metadata_json = serde_json::to_string(metadata)?;
         sync_state.set_path(&metadata_path, metadata_json)?;
@@ -295,7 +295,7 @@ impl<'a> SyncStateManager<'a> {
 
     /// Add a sync history entry.
     pub fn add_sync_history(&self, history_entry: &SyncHistoryEntry) -> Result<()> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let history_path = path!("history", history_entry.sync_id);
         let history_json = serde_json::to_string(history_entry)?;
         sync_state.set_path(&history_path, history_json)?;
@@ -313,7 +313,7 @@ impl<'a> SyncStateManager<'a> {
         peer_pubkey: impl AsRef<str>,
         limit: Option<usize>,
     ) -> Result<Vec<SyncHistoryEntry>> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let all_data = sync_state.get_all()?;
 
         let mut history_entries = Vec::new();
@@ -349,7 +349,7 @@ impl<'a> SyncStateManager<'a> {
     /// The data is organized in nested maps like `{ "metadata": { "peer_key": data } }`
     /// and `{ "cursors": { "peer_key": { "tree_id": data } } }`.
     pub fn get_peers_with_sync_state(&self) -> Result<Vec<String>> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let all_data = sync_state.get_all()?;
 
         let mut peers = std::collections::HashSet::new();
@@ -378,7 +378,7 @@ impl<'a> SyncStateManager<'a> {
     /// History entries are stored as `{ "history": { "sync_id": data } }` and the
     /// method properly navigates this structure to find and clean old entries.
     pub fn cleanup_old_history(&self, max_age_days: u32) -> Result<usize> {
-        let sync_state = self.op.get_subtree::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
         let all_data = sync_state.get_all()?;
 
         let cutoff_time = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
@@ -458,7 +458,9 @@ mod tests {
         db.add_private_key("test_key").unwrap();
 
         // Create a user tree for testing tree ID
-        let user_tree = db.new_tree(crate::crdt::Doc::new(), "test_key").unwrap();
+        let user_tree = db
+            .new_database(crate::crdt::Doc::new(), "test_key")
+            .unwrap();
         let tree_id = user_tree.root_id().clone();
 
         // Get the sync instance and its tree

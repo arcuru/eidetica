@@ -17,13 +17,13 @@ use eidetica::store::DocStore;
 pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
     let db = Instance::new(Box::new(InMemory::new()));
     db.add_private_key("test_key")?;
-    let tree = db.new_tree_default("test_key")?;
+    let tree = db.new_database_default("test_key")?;
     Ok((db, tree))
 }
 
 /// Setup a Doc subtree for testing
 pub fn setup_dict_subtree(op: &Transaction, subtree_name: &str) -> eidetica::Result<DocStore> {
-    op.get_subtree::<DocStore>(subtree_name)
+    op.get_store::<DocStore>(subtree_name)
 }
 
 /// Create a complete test environment with DB, tree, operation, and Doc

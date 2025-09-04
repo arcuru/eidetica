@@ -495,7 +495,7 @@ async fn test_sync_protocol_implementation() {
     // Add test data to tree1
     let test_entry_id = {
         let op = tree1.new_operation().unwrap();
-        let doc_store = op.get_subtree::<DocStore>("data").unwrap();
+        let doc_store = op.get_store::<DocStore>("data").unwrap();
         doc_store.set_string("test_key", "test_value").unwrap();
         doc_store.set_string("protocol", "implemented").unwrap();
         op.commit().unwrap()
@@ -556,7 +556,7 @@ async fn test_sync_protocol_implementation() {
     );
 
     // Load the tree in db2 now that it has the root
-    let _tree2_initial = base_db2.load_tree(&tree_root_id).unwrap();
+    let _tree2_initial = base_db2.load_database(&tree_root_id).unwrap();
 
     // Verify the first entry doesn't exist in db2 yet
     assert!(
@@ -585,7 +585,7 @@ async fn test_sync_protocol_implementation() {
     // Now add MORE data to tree1 and sync again to truly test the sync protocol
     let second_entry_id = {
         let op = tree1.new_operation().unwrap();
-        let doc_store = op.get_subtree::<DocStore>("data").unwrap();
+        let doc_store = op.get_store::<DocStore>("data").unwrap();
         doc_store.set_string("second_key", "second_value").unwrap();
         doc_store
             .set_string("sync_test", "actually_working")
@@ -623,11 +623,11 @@ async fn test_sync_protocol_implementation() {
     );
 
     // Reload the tree to get the latest state
-    let tree2 = base_db2.load_tree(&tree_root_id).unwrap();
+    let tree2 = base_db2.load_database(&tree_root_id).unwrap();
 
     // Verify ALL synced data is correct
     {
-        let doc_store = tree2.get_subtree_viewer::<DocStore>("data").unwrap();
+        let doc_store = tree2.get_store_viewer::<DocStore>("data").unwrap();
         // First entry data
         assert_eq!(doc_store.get_string("test_key").unwrap(), "test_value");
         assert_eq!(doc_store.get_string("protocol").unwrap(), "implemented");

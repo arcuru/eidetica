@@ -6,7 +6,7 @@
 use eidetica::sync::handler::{SyncHandler, SyncHandlerImpl};
 use eidetica::sync::peer_types::Address;
 use eidetica::sync::transports::iroh::IrohTransport;
-use eidetica::{Result, Instance, sync::Sync};
+use eidetica::{Instance, Result, sync::Sync};
 use iroh::RelayMode;
 use std::sync::Arc;
 use std::time::Duration;

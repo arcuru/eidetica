@@ -78,13 +78,13 @@ fn test_tree_validation_rejects_foreign_entries() {
     let mut settings1 = Doc::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
-        .new_tree(settings1, "test_key")
+        .new_database(settings1, "test_key")
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
-        .new_tree(settings2, "test_key")
+        .new_database(settings2, "test_key")
         .expect("Failed to create tree2");
 
     // Create an entry in tree1
@@ -92,7 +92,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree1");
     let store1 = op1
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree in tree1");
     store1
         .set("key", "value1")
@@ -104,7 +104,7 @@ fn test_tree_validation_rejects_foreign_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -121,13 +121,13 @@ fn test_tree_validation_rejects_foreign_entries() {
     let result = tree1.get_entry(&entry2_id);
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("does not belong to tree"));
+    assert!(error_msg.contains("does not belong to database"));
 
     // Verify tree2 cannot access tree1's entry
     let result = tree2.get_entry(&entry1_id);
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("does not belong to tree"));
+    assert!(error_msg.contains("does not belong to database"));
 }
 
 /// Test tree validation with get_entries
@@ -139,13 +139,13 @@ fn test_tree_validation_get_entries() {
     let mut settings1 = Doc::new();
     settings1.set_string("name".to_string(), "tree1".to_string());
     let tree1 = db
-        .new_tree(settings1, "test_key")
+        .new_database(settings1, "test_key")
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
     settings2.set_string("name".to_string(), "tree2".to_string());
     let tree2 = db
-        .new_tree(settings2, "test_key")
+        .new_database(settings2, "test_key")
         .expect("Failed to create tree2");
 
     // Create entries in tree1
@@ -155,7 +155,7 @@ fn test_tree_validation_get_entries() {
             .new_operation()
             .expect("Failed to create operation in tree1");
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get subtree in tree1");
         store
             .set("key", format!("value1_{i}"))
@@ -169,7 +169,7 @@ fn test_tree_validation_get_entries() {
         .new_operation()
         .expect("Failed to create operation in tree2");
     let store2 = op2
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree in tree2");
     store2
         .set("key", "value2")
@@ -187,7 +187,7 @@ fn test_tree_validation_get_entries() {
     let result = tree1.get_entries(&mixed_entries);
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("does not belong to tree"));
+    assert!(error_msg.contains("does not belong to database"));
 }
 
 /// Test authentication helpers with signed entries
@@ -271,7 +271,7 @@ fn test_verify_entry_signature_unauthorized_key() {
         .new_authenticated_operation("UNAUTHORIZED_KEY")
         .expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<DocStore>("data")
+        .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store2.set("key", "value2").expect("Failed to set value");
     let commit_result = op2.commit();
@@ -318,7 +318,7 @@ fn test_tree_queries() {
     for i in 0..3 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))
@@ -348,7 +348,7 @@ fn test_batch_vs_individual_retrieval() {
     for i in 0..5 {
         let op = tree.new_operation().expect("Failed to create operation");
         let store = op
-            .get_subtree::<DocStore>("data")
+            .get_store::<DocStore>("data")
             .expect("Failed to get subtree");
         store
             .set("key", format!("value_{i}"))

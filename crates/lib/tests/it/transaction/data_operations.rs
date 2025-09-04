@@ -100,7 +100,7 @@ fn test_transaction_staged_data_isolation() {
 
     // Create initial data
     let op1 = tree.new_operation().unwrap();
-    let store1 = op1.get_subtree::<DocStore>("data").unwrap();
+    let store1 = op1.get_store::<DocStore>("data").unwrap();
     store1.set("key1", "committed_value").unwrap();
     let entry1_id = op1.commit().unwrap();
 
@@ -108,7 +108,7 @@ fn test_transaction_staged_data_isolation() {
     let op2 = tree
         .new_operation_with_tips(std::slice::from_ref(&entry1_id))
         .unwrap();
-    let store2 = op2.get_subtree::<DocStore>("data").unwrap();
+    let store2 = op2.get_store::<DocStore>("data").unwrap();
 
     // Initially should see committed data
     assert_dict_value(&store2, "key1", "committed_value");
@@ -123,7 +123,7 @@ fn test_transaction_staged_data_isolation() {
 
     // Create another operation from same tip - should not see staged data
     let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
-    let store3 = op3.get_subtree::<DocStore>("data").unwrap();
+    let store3 = op3.get_store::<DocStore>("data").unwrap();
 
     // Should see original committed data, not staged data from op2
     assert_dict_value(&store3, "key1", "committed_value");
@@ -134,7 +134,7 @@ fn test_transaction_staged_data_isolation() {
 
     // Create operation from entry2 - should see committed staged data
     let op4 = tree.new_operation_with_tips([entry2_id]).unwrap();
-    let store4 = op4.get_subtree::<DocStore>("data").unwrap();
+    let store4 = op4.get_store::<DocStore>("data").unwrap();
 
     assert_dict_value(&store4, "key1", "staged_value");
     assert_dict_value(&store4, "key2", "new_staged");
@@ -146,13 +146,13 @@ fn test_metadata_for_settings_entries() {
 
     // Create a settings update
     let settings_op = tree.new_operation().unwrap();
-    let settings_subtree = settings_op.get_subtree::<DocStore>(SETTINGS).unwrap();
+    let settings_subtree = settings_op.get_store::<DocStore>(SETTINGS).unwrap();
     settings_subtree.set("version", "1.0").unwrap();
     let settings_id = settings_op.commit().unwrap();
 
     // Now create a data entry (not touching settings)
     let data_op = tree.new_operation().unwrap();
-    let data_subtree = data_op.get_subtree::<DocStore>("data").unwrap();
+    let data_subtree = data_op.get_store::<DocStore>("data").unwrap();
     data_subtree.set("key1", "value1").unwrap();
     let data_id = data_op.commit().unwrap();
 

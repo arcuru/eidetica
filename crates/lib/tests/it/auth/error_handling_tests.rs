@@ -4,6 +4,7 @@
 //! and security edge cases in the delegation system.
 
 use super::helpers::*;
+use eidetica::Instance;
 use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{
@@ -12,7 +13,6 @@ use eidetica::auth::types::{
 };
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
-use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
@@ -46,7 +46,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Add delegation to non-existent tree using operations
     let op = tree.new_authenticated_operation("admin")?;
-    let settings_store = op.get_subtree::<eidetica::store::DocStore>("_settings")?;
+    let settings_store = op.get_store::<eidetica::store::DocStore>("_settings")?;
 
     let nonexistent_delegation = DelegatedTreeRef {
         permission_bounds: PermissionBounds {
@@ -115,7 +115,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
 
     let mut settings = Doc::new();
     settings.set_node("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let tree = db.new_database(settings, "admin")?;
 
     // Try to resolve corrupted delegation
     let delegation_path = SigKey::DelegationPath(vec![
@@ -163,7 +163,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "admin_in_delegated_tree")?;
+    let delegated_tree = db.new_database(delegated_settings, "admin_in_delegated_tree")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Create main tree that delegates with restricted permissions
@@ -198,7 +198,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
 
     let mut main_settings = Doc::new();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Try to use admin key from delegated tree through restricted delegation
     let delegation_path = SigKey::DelegationPath(vec![
@@ -263,7 +263,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let real_tips = delegated_tree.get_tips()?;
 
     // Create main tree with delegation
@@ -297,7 +297,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
 
     let mut main_settings = Doc::new();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "admin")?;
+    let main_tree = db.new_database(main_settings, "admin")?;
 
     // Try to use delegation with fake/tampered tips
     let fake_tips = vec![ID::from("fake_tip_1"), ID::from("fake_tip_2")];
@@ -369,7 +369,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Create main tree with delegation
@@ -403,7 +403,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
 
     let mut main_settings = Doc::new();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "admin")?;
+    let main_tree = db.new_database(main_settings, "admin")?;
 
     // Test accessing active key through delegation
     let active_delegation = SigKey::DelegationPath(vec![
@@ -472,7 +472,7 @@ fn test_validation_cache_error_conditions() -> Result<()> {
 
     let mut settings = Doc::new();
     settings.set_node("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let tree = db.new_database(settings, "admin")?;
 
     let mut validator = AuthValidator::new();
     let tree_settings = tree.get_settings()?.get_all()?;
@@ -564,7 +564,7 @@ fn test_concurrent_validation_basic() -> Result<()> {
 
     let mut settings = Doc::new();
     settings.set_node("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let tree = db.new_database(settings, "admin")?;
     let tree_settings = Arc::new(tree.get_settings()?.get_all()?);
 
     let handles: Vec<_> = (0..4)

@@ -7,11 +7,11 @@
 use crate::Result;
 use crate::Transaction;
 use crate::backend::BackendDB;
-use crate::instance::errors::InstanceError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::{Entry, ID};
+use crate::instance::errors::InstanceError;
 use crate::store::{DocStore, Store};
 
 use crate::auth::crypto::format_public_key;
@@ -170,7 +170,7 @@ impl Database {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::new(backend);
     /// # db.add_private_key("test_key")?;
-    /// # let mut tree = db.new_tree(Doc::new(), "test_key")?;
+    /// # let mut tree = db.new_database(Doc::new(), "test_key")?;
     /// tree.set_default_auth_key("my_key");                    // &str
     /// tree.set_default_auth_key(String::from("my_key"));      // String
     /// tree.set_default_auth_key(&String::from("my_key"));     // &String
@@ -250,7 +250,7 @@ impl Database {
     /// # Returns
     /// A `Result` containing the `DocStore` for settings or an error.
     pub fn get_settings(&self) -> Result<DocStore> {
-        self.get_subtree_viewer::<DocStore>(SETTINGS)
+        self.get_store_viewer::<DocStore>(SETTINGS)
     }
 
     /// Get the name of the tree from its settings subtree
@@ -319,7 +319,7 @@ impl Database {
     ///
     /// The returned subtree should NOT be used to modify the tree, as it intentionally does not
     /// expose the Transaction.
-    pub fn get_subtree_viewer<T>(&self, name: impl Into<String>) -> Result<T>
+    pub fn get_store_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
         T: Store,
     {
@@ -371,7 +371,7 @@ impl Database {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(Doc::new(), "TEST_KEY")?;
+    /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
     /// # let op = tree.new_operation()?;
     /// let entry_id = op.commit()?;
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
@@ -387,9 +387,9 @@ impl Database {
 
         // Check if the entry belongs to this tree
         if !entry.in_tree(&self.root) {
-            return Err(InstanceError::EntryNotInTree {
+            return Err(InstanceError::EntryNotInDatabase {
                 entry_id: id,
-                tree_id: self.root.clone(),
+                database_id: self.root.clone(),
             }
             .into());
         }
@@ -422,7 +422,7 @@ impl Database {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_tree(Doc::new(), "TEST_KEY")?;
+    /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
     /// let entries = tree.get_entries(entry_ids)?;
     /// # Ok(())
@@ -442,9 +442,9 @@ impl Database {
 
             // Check if the entry belongs to this tree
             if !entry.in_tree(&self.root) {
-                return Err(InstanceError::EntryNotInTree {
+                return Err(InstanceError::EntryNotInDatabase {
                     entry_id: id,
-                    tree_id: self.root.clone(),
+                    database_id: self.root.clone(),
                 }
                 .into());
             }

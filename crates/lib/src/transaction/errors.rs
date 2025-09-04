@@ -184,5 +184,4 @@ mod tests {
         let other_err = TransactionError::AuthenticationRequired;
         assert_eq!(other_err.key_name(), None);
     }
-
 }

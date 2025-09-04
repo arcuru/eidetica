@@ -14,44 +14,44 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum StoreError {
     /// Key or record not found in store
-    #[error("Key not found in store '{subtree}': {key}")]
-    KeyNotFound { subtree: String, key: String },
+    #[error("Key not found in store '{store}': {key}")]
+    KeyNotFound { store: String, key: String },
 
     /// Serialization failed for store data
-    #[error("Serialization failed in store '{subtree}': {reason}")]
-    SerializationFailed { subtree: String, reason: String },
+    #[error("Serialization failed in store '{store}': {reason}")]
+    SerializationFailed { store: String, reason: String },
 
     /// Deserialization failed for store data
-    #[error("Deserialization failed in store '{subtree}': {reason}")]
-    DeserializationFailed { subtree: String, reason: String },
+    #[error("Deserialization failed in store '{store}': {reason}")]
+    DeserializationFailed { store: String, reason: String },
 
     /// Type mismatch in store operation
-    #[error("Type mismatch in store '{subtree}': expected {expected}, found {actual}")]
+    #[error("Type mismatch in store '{store}': expected {expected}, found {actual}")]
     TypeMismatch {
-        subtree: String,
+        store: String,
         expected: String,
         actual: String,
     },
 
     /// Invalid operation for the store type
-    #[error("Invalid operation '{operation}' for store '{subtree}': {reason}")]
+    #[error("Invalid operation '{operation}' for store '{store}': {reason}")]
     InvalidOperation {
-        subtree: String,
+        store: String,
         operation: String,
         reason: String,
     },
 
     /// Store operation requires transaction context
-    #[error("Operation requires transaction context for store '{subtree}'")]
-    RequiresTransaction { subtree: String },
+    #[error("Operation requires transaction context for store '{store}'")]
+    RequiresTransaction { store: String },
 
     /// Data corruption detected in store
-    #[error("Data corruption detected in store '{subtree}': {reason}")]
-    DataCorruption { subtree: String, reason: String },
+    #[error("Data corruption detected in store '{store}': {reason}")]
+    DataCorruption { store: String, reason: String },
 
     /// Implementation-specific error from a store type
-    #[error("Store implementation error in '{subtree}': {reason}")]
-    ImplementationError { subtree: String, reason: String },
+    #[error("Store implementation error in '{store}': {reason}")]
+    ImplementationError { store: String, reason: String },
 }
 
 impl StoreError {
@@ -92,16 +92,16 @@ impl StoreError {
     }
 
     /// Get the store name associated with this error
-    pub fn subtree_name(&self) -> &str {
+    pub fn store_name(&self) -> &str {
         match self {
-            StoreError::KeyNotFound { subtree, .. }
-            | StoreError::SerializationFailed { subtree, .. }
-            | StoreError::DeserializationFailed { subtree, .. }
-            | StoreError::TypeMismatch { subtree, .. }
-            | StoreError::InvalidOperation { subtree, .. }
-            | StoreError::RequiresTransaction { subtree, .. }
-            | StoreError::DataCorruption { subtree, .. }
-            | StoreError::ImplementationError { subtree, .. } => subtree,
+            StoreError::KeyNotFound { store, .. }
+            | StoreError::SerializationFailed { store, .. }
+            | StoreError::DeserializationFailed { store, .. }
+            | StoreError::TypeMismatch { store, .. }
+            | StoreError::InvalidOperation { store, .. }
+            | StoreError::RequiresTransaction { store, .. }
+            | StoreError::DataCorruption { store, .. }
+            | StoreError::ImplementationError { store, .. } => store,
         }
     }
 

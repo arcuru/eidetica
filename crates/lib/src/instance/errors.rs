@@ -19,25 +19,25 @@ use thiserror::Error;
 pub enum InstanceError {
     /// Database not found by name.
     #[error("Database not found: {name}")]
-    TreeNotFound {
-        /// The name of the tree that was not found
+    DatabaseNotFound {
+        /// The name of the database that was not found
         name: String,
     },
 
     /// Database already exists with the given name.
     #[error("Database already exists: {name}")]
-    TreeAlreadyExists {
-        /// The name of the tree that already exists
+    DatabaseAlreadyExists {
+        /// The name of the database that already exists
         name: String,
     },
 
-    /// Entry does not belong to the specified tree.
-    #[error("Entry '{entry_id}' does not belong to tree '{tree_id}'")]
-    EntryNotInTree {
+    /// Entry does not belong to the specified database.
+    #[error("Entry '{entry_id}' does not belong to database '{database_id}'")]
+    EntryNotInDatabase {
         /// The ID of the entry
         entry_id: ID,
-        /// The ID of the tree
-        tree_id: ID,
+        /// The ID of the database
+        database_id: ID,
     },
 
     /// Entry not found by ID.
@@ -55,13 +55,13 @@ pub enum InstanceError {
     #[error("Cannot create operation with empty tips")]
     EmptyTipsNotAllowed,
 
-    /// Tip entry does not belong to the specified tree.
-    #[error("Tip entry '{tip_id}' does not belong to tree '{tree_id}'")]
+    /// Tip entry does not belong to the specified database.
+    #[error("Tip entry '{tip_id}' does not belong to database '{database_id}'")]
     InvalidTip {
         /// The ID of the invalid tip entry
         tip_id: ID,
-        /// The ID of the tree
-        tree_id: ID,
+        /// The ID of the database
+        database_id: ID,
     },
 
     /// Signing key not found in backend storage.
@@ -110,10 +110,10 @@ pub enum InstanceError {
         context: String,
     },
 
-    /// Invalid tree configuration.
-    #[error("Invalid tree configuration: {reason}")]
-    InvalidTreeConfiguration {
-        /// Description of why the tree configuration is invalid
+    /// Invalid database configuration.
+    #[error("Invalid database configuration: {reason}")]
+    InvalidDatabaseConfiguration {
+        /// Description of why the database configuration is invalid
         reason: String,
     },
 
@@ -133,8 +133,8 @@ pub enum InstanceError {
 
     /// Database initialization failed.
     #[error("Database initialization failed: {reason}")]
-    TreeInitializationFailed {
-        /// Description of why tree initialization failed
+    DatabaseInitializationFailed {
+        /// Description of why database initialization failed
         reason: String,
     },
 
@@ -147,7 +147,7 @@ pub enum InstanceError {
 
     /// Database state is corrupted or inconsistent.
     #[error("Database state corruption detected: {reason}")]
-    TreeStateCorruption {
+    DatabaseStateCorruption {
         /// Description of the corruption detected
         reason: String,
     },
@@ -158,7 +158,7 @@ impl InstanceError {
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            InstanceError::TreeNotFound { .. }
+            InstanceError::DatabaseNotFound { .. }
                 | InstanceError::EntryNotFound { .. }
                 | InstanceError::SigningKeyNotFound { .. }
         )
@@ -166,7 +166,7 @@ impl InstanceError {
 
     /// Check if this error indicates a resource already exists.
     pub fn is_already_exists(&self) -> bool {
-        matches!(self, InstanceError::TreeAlreadyExists { .. })
+        matches!(self, InstanceError::DatabaseAlreadyExists { .. })
     }
 
     /// Check if this error is authentication-related.
@@ -196,10 +196,10 @@ impl InstanceError {
     pub fn is_validation_error(&self) -> bool {
         matches!(
             self,
-            InstanceError::EntryNotInTree { .. }
+            InstanceError::EntryNotInDatabase { .. }
                 | InstanceError::InvalidTip { .. }
                 | InstanceError::InvalidDataType { .. }
-                | InstanceError::InvalidTreeConfiguration { .. }
+                | InstanceError::InvalidDatabaseConfiguration { .. }
                 | InstanceError::SettingsValidationFailed { .. }
                 | InstanceError::EntryValidationFailed { .. }
         )
@@ -207,14 +207,14 @@ impl InstanceError {
 
     /// Check if this error indicates corruption or inconsistency.
     pub fn is_corruption_error(&self) -> bool {
-        matches!(self, InstanceError::TreeStateCorruption { .. })
+        matches!(self, InstanceError::DatabaseStateCorruption { .. })
     }
 
     /// Get the entry ID if this error is about a specific entry.
     pub fn entry_id(&self) -> Option<&ID> {
         match self {
             InstanceError::EntryNotFound { entry_id }
-            | InstanceError::EntryNotInTree { entry_id, .. }
+            | InstanceError::EntryNotInDatabase { entry_id, .. }
             | InstanceError::InvalidTip {
                 tip_id: entry_id, ..
             } => Some(entry_id),
@@ -222,21 +222,20 @@ impl InstanceError {
         }
     }
 
-    /// Get the tree ID if this error is about a specific tree.
-    pub fn tree_id(&self) -> Option<&ID> {
+    /// Get the database ID if this error is about a specific database.
+    pub fn database_id(&self) -> Option<&ID> {
         match self {
-            InstanceError::EntryNotInTree { tree_id, .. }
-            | InstanceError::InvalidTip { tree_id, .. } => Some(tree_id),
+            InstanceError::EntryNotInDatabase { database_id, .. }
+            | InstanceError::InvalidTip { database_id, .. } => Some(database_id),
             _ => None,
         }
     }
 
-    /// Get the tree name if this error is about a named tree.
-    pub fn tree_name(&self) -> Option<&str> {
+    /// Get the database name if this error is about a named database.
+    pub fn database_name(&self) -> Option<&str> {
         match self {
-            InstanceError::TreeNotFound { name } | InstanceError::TreeAlreadyExists { name } => {
-                Some(name)
-            }
+            InstanceError::DatabaseNotFound { name }
+            | InstanceError::DatabaseAlreadyExists { name } => Some(name),
             _ => None,
         }
     }
@@ -256,17 +255,17 @@ mod tests {
 
     #[test]
     fn test_error_helpers() {
-        let err = InstanceError::TreeNotFound {
-            name: "test-tree".to_string(),
+        let err = InstanceError::DatabaseNotFound {
+            name: "test-database".to_string(),
         };
         assert!(err.is_not_found());
-        assert_eq!(err.tree_name(), Some("test-tree"));
+        assert_eq!(err.database_name(), Some("test-database"));
 
-        let err = InstanceError::TreeAlreadyExists {
-            name: "existing-tree".to_string(),
+        let err = InstanceError::DatabaseAlreadyExists {
+            name: "existing-database".to_string(),
         };
         assert!(err.is_already_exists());
-        assert_eq!(err.tree_name(), Some("existing-tree"));
+        assert_eq!(err.database_name(), Some("existing-database"));
 
         let err = InstanceError::EntryNotFound {
             entry_id: ID::from("test-entry"),
@@ -286,7 +285,7 @@ mod tests {
         };
         assert!(err.is_validation_error());
 
-        let err = InstanceError::TreeStateCorruption {
+        let err = InstanceError::DatabaseStateCorruption {
             reason: "test".to_string(),
         };
         assert!(err.is_corruption_error());
@@ -294,12 +293,12 @@ mod tests {
 
     #[test]
     fn test_error_conversion() {
-        let base_err = InstanceError::TreeNotFound {
+        let base_err = InstanceError::DatabaseNotFound {
             name: "test".to_string(),
         };
         let err: crate::Error = base_err.into();
         match err {
-            crate::Error::Instance(InstanceError::TreeNotFound { name }) => {
+            crate::Error::Instance(InstanceError::DatabaseNotFound { name }) => {
                 assert_eq!(name, "test")
             }
             _ => panic!("Unexpected error variant"),

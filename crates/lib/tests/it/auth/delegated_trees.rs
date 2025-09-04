@@ -5,6 +5,7 @@
 //! clamping, and various authorization scenarios.
 
 use super::helpers::*;
+use eidetica::Instance;
 use eidetica::Result;
 use eidetica::auth::crypto::format_public_key;
 use eidetica::auth::types::{
@@ -13,7 +14,6 @@ use eidetica::auth::types::{
 };
 use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
-use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
@@ -47,7 +47,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
 
     // Add delegation to main tree auth settings
     let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_subtree::<DocStore>("_settings")?;
+    let settings_store = op.get_store::<DocStore>("_settings")?;
 
     let delegation_ref = create_delegation_ref(
         &delegated_tree,
@@ -99,7 +99,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     // Add read-only delegation
     let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_subtree::<DocStore>("_settings")?;
+    let settings_store = op.get_store::<DocStore>("_settings")?;
 
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
     let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
@@ -156,7 +156,7 @@ fn test_nested_delegation() -> Result<()> {
         )
         .unwrap();
     user_settings.set_node("auth", user_auth);
-    let user_tree = db.new_tree(user_settings, "user")?;
+    let user_tree = db.new_database(user_settings, "user")?;
 
     // Create org tree (middle level) that delegates to user tree
     let mut org_settings = Doc::new();
@@ -190,7 +190,7 @@ fn test_nested_delegation() -> Result<()> {
         )
         .unwrap();
     org_settings.set_node("auth", org_auth);
-    let org_tree = db.new_tree(org_settings, "org_admin")?;
+    let org_tree = db.new_database(org_settings, "org_admin")?;
 
     // Create main tree (top level) that delegates to org tree
     let mut main_settings = Doc::new();
@@ -224,7 +224,7 @@ fn test_nested_delegation() -> Result<()> {
         )
         .unwrap();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Test nested delegation: main -> org -> user
     let mut validator = AuthValidator::new();
@@ -284,7 +284,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
 
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_user")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_user")?;
 
     // Create main tree with delegation
     let mut main_settings = Doc::new();
@@ -318,7 +318,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
         .unwrap();
     main_settings.set_node("auth", main_auth);
 
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Test with active key - should work
     let mut validator = AuthValidator::new();
@@ -398,7 +398,7 @@ fn test_delegation_depth_limits() -> Result<()> {
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "user")?;
+    let delegated_tree = db.new_database(delegated_settings, "user")?;
 
     // Create main tree settings
     let mut main_settings = Doc::new();
@@ -431,7 +431,7 @@ fn test_delegation_depth_limits() -> Result<()> {
         )
         .unwrap();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "admin")?;
+    let main_tree = db.new_database(main_settings, "admin")?;
 
     // Create a deeply nested delegation that should exceed the limit
     // We'll create a chain with 12 levels (exceeds MAX_DELEGATION_DEPTH of 10)
@@ -504,7 +504,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
 
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     // ---------------- Main tree with delegation ----------------
@@ -539,7 +539,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         .unwrap();
     main_settings.set_node("auth", main_auth);
 
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -602,7 +602,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Main tree delegates with max Write(8) (more privileged) and no min
@@ -635,7 +635,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
         .unwrap();
     main_settings.set_node("auth", main_auth);
 
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -682,7 +682,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
     )
     .unwrap();
     settings.set_node("auth", auth);
-    let tree = db.new_tree(settings, "admin")?;
+    let tree = db.new_database(settings, "admin")?;
     let tips = tree.get_tips()?;
 
     // Build a chain exactly 10 levels deep
@@ -751,7 +751,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
-    let delegated_tree = db.new_tree(delegated_settings, "delegated_admin")?;
+    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
 
     // Fake tip that does not exist
     let bogus_tip = ID::new("nonexistent_tip_hash");
@@ -785,7 +785,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
         )
         .unwrap();
     main_settings.set_node("auth", main_auth);
-    let main_tree = db.new_tree(main_settings, "main_admin")?;
+    let main_tree = db.new_database(main_settings, "main_admin")?;
 
     let mut validator = AuthValidator::new();
     let main_tree_settings = main_tree.get_settings()?.get_all()?;

@@ -122,7 +122,7 @@ impl Sync {
     /// * `value` - The setting value
     pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let op = self.sync_tree.new_operation()?;
-        let sync_settings = op.get_subtree::<DocStore>(SETTINGS_SUBTREE)?;
+        let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE)?;
         sync_settings.set_string(key, value)?;
         op.commit()?;
         Ok(())
@@ -138,7 +138,7 @@ impl Sync {
     pub fn get_setting(&self, key: impl AsRef<str>) -> Result<Option<String>> {
         let sync_settings = self
             .sync_tree
-            .get_subtree_viewer::<DocStore>(SETTINGS_SUBTREE)?;
+            .get_store_viewer::<DocStore>(SETTINGS_SUBTREE)?;
         match sync_settings.get_string(key) {
             Ok(value) => Ok(Some(value)),
             Err(e) if e.is_not_found() => Ok(None),

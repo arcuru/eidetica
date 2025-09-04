@@ -22,7 +22,7 @@ pub use ydoc::{YDoc, YrsBinary};
 /// to stage changes before committing them as a single `Entry`.
 ///
 /// Users typically interact with `Store` implementations obtained either via:
-/// 1. `Database::get_subtree_viewer`: For read-only access to the current merged state.
+/// 1. `Database::get_store_viewer`: For read-only access to the current merged state.
 /// 2. `Transaction::get_store`: For staging modifications within an atomic operation.
 pub trait Store: Sized {
     /// Creates a new `Store` handle associated with a specific transaction.
