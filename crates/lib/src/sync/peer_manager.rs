@@ -7,7 +7,7 @@ use super::error::SyncError;
 use super::peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use crate::Transaction;
 use crate::crdt::doc::path;
-use crate::subtree::DocStore;
+use crate::store::DocStore;
 use crate::{Error, Result};
 use tracing::{debug, info, warn};
 

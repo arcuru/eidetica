@@ -11,7 +11,7 @@ use crate::crdt::CRDT;
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::{Entry, EntryBuilder, ID};
-use crate::subtree::DocStore;
+use crate::store::DocStore;
 use crate::sync::hooks::{SyncHookCollection, SyncHookContext};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -184,9 +184,9 @@ impl Transaction {
     /// # Example
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let settings = op.get_settings()?;
     ///
     /// // Read a setting

@@ -45,7 +45,7 @@ fn test_key_management() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -92,7 +92,7 @@ fn test_import_private_key() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -139,7 +139,7 @@ fn test_backend_serialization() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 
@@ -159,7 +159,7 @@ fn test_backend_serialization() {
         .new_authenticated_operation(key_id2)
         .expect("Failed to create operation");
     let store2 = op2
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store2.set("test2", "value2").expect("Failed to set value");
 
@@ -208,7 +208,7 @@ fn test_overwrite_existing_key() {
         .new_authenticated_operation(key_id)
         .expect("Failed to create operation");
     let store = op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
 

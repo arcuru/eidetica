@@ -207,7 +207,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or_else(|| {
-                crate::subtree::StoreError::KeyNotFound {
+                crate::store::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -229,7 +229,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::subtree::StoreError::KeyNotFound {
+                crate::store::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -407,7 +407,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| &node.data)
             .ok_or_else(|| {
-                crate::subtree::StoreError::KeyNotFound {
+                crate::store::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -429,7 +429,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::subtree::StoreError::KeyNotFound {
+                crate::store::StoreError::KeyNotFound {
                     subtree: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }

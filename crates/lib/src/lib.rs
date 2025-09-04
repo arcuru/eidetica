@@ -9,7 +9,7 @@
 //! * **Entries (`entry::Entry`)**: The fundamental, content-addressable unit of data. Entries contain data for a main tree and optional named subtrees.
 //! * **Trees (`basedb::Tree`)**: Analogous to tables or branches, representing a history of related entries identified by a root entry ID.
 //! * **Backends (`backend::Backend`)**: A pluggable storage layer for persisting entries.
-//! * **BaseDB (`basedb::BaseDB`)**: The main database struct that manages trees and interacts with a backend.
+//! * **BaseDB (`instance::Instance`)**: The main database struct that manages trees and interacts with a backend.
 //! * **CRDTs (`crdt::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
 //! * **SubTrees (`subtree::SubTree`)**: Named data structures within a tree that provide specialized data access patterns:
 //!     * **DocStore (`subtree::DocStore`)**: A document-oriented store for structured data with path-based operations.
@@ -17,23 +17,23 @@
 //!     * **YDoc (`subtree::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
-pub mod atomicop;
+pub mod transaction;
 pub mod auth;
 pub mod backend;
-pub mod basedb;
+pub mod instance;
 pub mod constants;
 pub mod crdt;
 pub mod entry;
-pub mod subtree;
+pub mod store;
 pub mod sync;
-pub mod tree;
+pub mod database;
 
 /// Re-export fundamental types for easier access.
-pub use atomicop::Transaction;
-pub use basedb::Instance;
+pub use transaction::Transaction;
+pub use instance::Instance;
 pub use entry::Entry;
-pub use subtree::Store;
-pub use tree::Database;
+pub use store::Store;
+pub use database::Database;
 
 /// Y-CRDT types re-exported for convenience when the "y-crdt" feature is enabled.
 ///
@@ -64,21 +64,21 @@ pub enum Error {
     #[error(transparent)]
     Backend(backend::BackendError),
 
-    /// Structured base database errors from the basedb module
+    /// Structured base database errors from the instance module
     #[error(transparent)]
-    Instance(basedb::InstanceError),
+    Instance(instance::InstanceError),
 
     /// Structured CRDT errors from the crdt module
     #[error(transparent)]
     CRDT(crdt::CRDTError),
 
-    /// Structured subtree errors from the subtree module
+    /// Structured subtree errors from the store module
     #[error(transparent)]
-    Store(subtree::StoreError),
+    Store(store::StoreError),
 
-    /// Structured atomic operation errors from the atomicop module
+    /// Structured atomic operation errors from the transaction module
     #[error(transparent)]
-    Transaction(atomicop::TransactionError),
+    Transaction(transaction::TransactionError),
 
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
@@ -97,10 +97,10 @@ impl Error {
         match self {
             Error::Auth(_) => "auth",
             Error::Backend(_) => "backend",
-            Error::Instance(_) => "basedb",
+            Error::Instance(_) => "instance",
             Error::CRDT(_) => "crdt",
-            Error::Store(_) => "subtree",
-            Error::Transaction(_) => "atomicop",
+            Error::Store(_) => "store",
+            Error::Transaction(_) => "transaction",
             Error::Sync(_) => "sync",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",

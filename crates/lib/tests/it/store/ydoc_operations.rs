@@ -8,7 +8,7 @@ use super::helpers::*;
 #[cfg(feature = "y-crdt")]
 use crate::helpers::*;
 #[cfg(feature = "y-crdt")]
-use eidetica::subtree::YDoc;
+use eidetica::store::YDoc;
 #[cfg(feature = "y-crdt")]
 use yrs::{GetString, Map as YrsMapTrait, Text, Transact};
 

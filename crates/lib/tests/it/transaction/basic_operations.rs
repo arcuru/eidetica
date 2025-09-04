@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::{DocStore, Store};
+use eidetica::store::{DocStore, Store};
 
 #[test]
 fn test_atomicop_through_dict() {

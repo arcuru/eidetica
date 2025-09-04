@@ -4,7 +4,7 @@ use crate::Transaction;
 use crate::crdt::doc::{List, Node, Value};
 use crate::crdt::doc::{Path, PathBuf, PathError};
 use crate::crdt::{CRDT, Doc};
-use crate::subtree::errors::StoreError;
+use crate::store::errors::StoreError;
 use std::str::FromStr;
 
 /// A document-oriented SubTree providing ergonomic access to Doc CRDT data.
@@ -221,11 +221,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.profile.name"), "Alice")?;
@@ -283,10 +283,10 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// store.set("name", "Alice")?;
@@ -317,11 +317,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Assuming nested structure exists
@@ -372,10 +372,10 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will set default
@@ -427,10 +427,10 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// store.set("count", 5)?;
@@ -475,10 +475,10 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will create with default then modify
@@ -522,11 +522,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure and set default
@@ -571,11 +571,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
@@ -651,12 +651,12 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Set nested values, creating structure as needed
@@ -732,11 +732,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.score"), 100)?;
@@ -787,10 +787,10 @@ impl DocStore {
     ///
     /// # Examples
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation().unwrap();
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation().unwrap();
     /// let store = op.get_subtree::<DocStore>("my_data").unwrap();
     ///
     /// // First set a value
@@ -841,12 +841,12 @@ impl DocStore {
     ///
     /// ## Example:
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// // Using set_path creates nested structure
@@ -900,10 +900,10 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_key("missing")); // Key doesn't exist
@@ -950,11 +950,11 @@ impl DocStore {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use eidetica::Tree;
-    /// # use eidetica::subtree::DocStore;
+    /// # use eidetica::Database;
+    /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let tree: Tree = unimplemented!();
-    /// let op = tree.new_operation()?;
+    /// # let database: Database = unimplemented!();
+    /// let op = database.new_operation()?;
     /// let store = op.get_subtree::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_path(path!("user.name"))); // Path doesn't exist

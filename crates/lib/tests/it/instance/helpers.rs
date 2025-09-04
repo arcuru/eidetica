@@ -9,7 +9,7 @@ use eidetica::Instance;
 use eidetica::backend::database::InMemory;
 use eidetica::constants::SETTINGS;
 use eidetica::entry::ID;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 // ===== DATABASE SETUP HELPERS =====
 
@@ -264,7 +264,7 @@ pub fn test_tree_not_found_error(db: &Instance, non_existent_name: &str) {
     let result = db.find_tree(non_existent_name);
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(eidetica::Error::Instance(eidetica::basedb::InstanceError::TreeNotFound { name })) =
+    if let Err(eidetica::Error::Instance(eidetica::instance::InstanceError::TreeNotFound { name })) =
         result
     {
         assert_eq!(name, non_existent_name);

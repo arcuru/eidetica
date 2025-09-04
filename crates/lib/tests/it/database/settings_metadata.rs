@@ -28,7 +28,7 @@ fn test_settings_tips_in_metadata() {
     // Create an operation to add some data
     let op1 = tree.new_operation().unwrap();
     let kv = op1
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     kv.set("key1", "value1").unwrap();
     let entry1_id = op1.commit().unwrap();
@@ -50,7 +50,7 @@ fn test_settings_tips_in_metadata() {
     // Create another operation to modify settings
     let op2 = tree.new_operation().unwrap();
     let settings_store = op2
-        .get_subtree::<eidetica::subtree::DocStore>("_settings")
+        .get_subtree::<eidetica::store::DocStore>("_settings")
         .unwrap();
     settings_store.set("description", "A test tree").unwrap();
     let entry2_id = op2.commit().unwrap();
@@ -58,7 +58,7 @@ fn test_settings_tips_in_metadata() {
     // Create a third operation that doesn't modify settings
     let op3 = tree.new_operation().unwrap();
     let kv3 = op3
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     kv3.set("key2", "value2").unwrap();
     let entry3_id = op3.commit().unwrap();
@@ -160,7 +160,7 @@ fn test_settings_tips_propagation() {
     // Create a chain of entries
     let op1 = tree.new_operation().unwrap();
     let kv = op1
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     kv.set("entry", "1").unwrap();
     let entry1_id = op1.commit().unwrap();
@@ -168,7 +168,7 @@ fn test_settings_tips_propagation() {
     // Modify settings
     let op2 = tree.new_operation().unwrap();
     let settings_store = op2
-        .get_subtree::<eidetica::subtree::DocStore>("_settings")
+        .get_subtree::<eidetica::store::DocStore>("_settings")
         .unwrap();
     settings_store.set("updated", "true").unwrap();
     let entry2_id = op2.commit().unwrap();
@@ -176,7 +176,7 @@ fn test_settings_tips_propagation() {
     // Create another entry after settings change
     let op3 = tree.new_operation().unwrap();
     let kv = op3
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     kv.set("entry", "3").unwrap();
     let entry3_id = op3.commit().unwrap();
@@ -244,7 +244,7 @@ fn test_settings_metadata_with_complex_operations() {
     for i in 0..3 {
         let op = tree.new_operation().unwrap();
         let data_store = op
-            .get_subtree::<eidetica::subtree::DocStore>("data")
+            .get_subtree::<eidetica::store::DocStore>("data")
             .unwrap();
         data_store.set("counter", i.to_string()).unwrap();
         data_store
@@ -257,7 +257,7 @@ fn test_settings_metadata_with_complex_operations() {
     // Update settings
     let settings_op = tree.new_operation().unwrap();
     let settings_store = settings_op
-        .get_subtree::<eidetica::subtree::DocStore>("_settings")
+        .get_subtree::<eidetica::store::DocStore>("_settings")
         .unwrap();
     settings_store
         .set("description", "Updated with metadata")
@@ -270,7 +270,7 @@ fn test_settings_metadata_with_complex_operations() {
     for i in 3..6 {
         let op = tree.new_operation().unwrap();
         let data_store = op
-            .get_subtree::<eidetica::subtree::DocStore>("data")
+            .get_subtree::<eidetica::store::DocStore>("data")
             .unwrap();
         data_store.set("counter", i.to_string()).unwrap();
         data_store
@@ -338,7 +338,7 @@ fn test_settings_metadata_with_branching() {
     // Create base entry
     let base_op = tree.new_operation().unwrap();
     let base_store = base_op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     base_store.set("base", "true").unwrap();
     let base_id = base_op.commit().unwrap();
@@ -348,7 +348,7 @@ fn test_settings_metadata_with_branching() {
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let branch1_store = branch1_op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     branch1_store.set("branch", "1").unwrap();
     let branch1_id = branch1_op.commit().unwrap();
@@ -357,7 +357,7 @@ fn test_settings_metadata_with_branching() {
         .new_operation_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let branch2_store = branch2_op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     branch2_store.set("branch", "2").unwrap();
     let branch2_id = branch2_op.commit().unwrap();
@@ -367,7 +367,7 @@ fn test_settings_metadata_with_branching() {
         .new_operation_with_tips(std::slice::from_ref(&branch1_id))
         .unwrap();
     let settings_store = settings_op
-        .get_subtree::<eidetica::subtree::DocStore>("_settings")
+        .get_subtree::<eidetica::store::DocStore>("_settings")
         .unwrap();
     settings_store.set("branch_settings", "updated").unwrap();
     let settings_id = settings_op.commit().unwrap();
@@ -376,7 +376,7 @@ fn test_settings_metadata_with_branching() {
     let merge_tips = vec![settings_id.clone(), branch2_id.clone()];
     let merge_op = tree.new_operation_with_tips(&merge_tips).unwrap();
     let merge_store = merge_op
-        .get_subtree::<eidetica::subtree::DocStore>("data")
+        .get_subtree::<eidetica::store::DocStore>("data")
         .unwrap();
     merge_store.set("merged", "true").unwrap();
     let merge_id = merge_op.commit().unwrap();
@@ -419,7 +419,7 @@ fn test_metadata_consistency_across_operations() {
     // Create authenticated operation
     let auth_op = tree.new_authenticated_operation(key_id).unwrap();
     let auth_store = auth_op
-        .get_subtree::<eidetica::subtree::DocStore>("auth_data")
+        .get_subtree::<eidetica::store::DocStore>("auth_data")
         .unwrap();
     auth_store.set("authenticated", "true").unwrap();
     let auth_id = auth_op.commit().unwrap();
@@ -427,7 +427,7 @@ fn test_metadata_consistency_across_operations() {
     // Create regular operation
     let regular_op = tree.new_operation().unwrap();
     let regular_store = regular_op
-        .get_subtree::<eidetica::subtree::DocStore>("regular_data")
+        .get_subtree::<eidetica::store::DocStore>("regular_data")
         .unwrap();
     regular_store.set("regular", "true").unwrap();
     let regular_id = regular_op.commit().unwrap();

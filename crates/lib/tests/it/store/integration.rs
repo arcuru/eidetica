@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::{DocStore, Table};
+use eidetica::store::{DocStore, Table};
 
 #[test]
 fn test_table_complex_data_merging() {

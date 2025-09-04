@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::Table;
+use eidetica::store::Table;
 
 #[test]
 fn test_table_basic_crud_operations() {

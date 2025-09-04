@@ -6,11 +6,11 @@
 use crate::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
-use eidetica::subtree::{DocStore, Table};
+use eidetica::store::{DocStore, Table};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "y-crdt")]
-use eidetica::subtree::YDoc;
+use eidetica::store::YDoc;
 #[cfg(feature = "y-crdt")]
 use yrs::{GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
 
@@ -233,7 +233,7 @@ pub fn test_ydoc_incremental_updates(
         })
         .unwrap();
 
-        let local_diff: eidetica::subtree::YrsBinary = op1.get_local_data(subtree_name).unwrap();
+        let local_diff: eidetica::store::YrsBinary = op1.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
     op1.commit().unwrap();
@@ -250,7 +250,7 @@ pub fn test_ydoc_incremental_updates(
         })
         .unwrap();
 
-        let local_diff: eidetica::subtree::YrsBinary = op2.get_local_data(subtree_name).unwrap();
+        let local_diff: eidetica::store::YrsBinary = op2.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
     op2.commit().unwrap();

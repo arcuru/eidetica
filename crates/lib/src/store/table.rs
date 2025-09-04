@@ -2,7 +2,7 @@ use crate::Result;
 use crate::Store;
 use crate::Transaction;
 use crate::crdt::{CRDT, Doc};
-use crate::subtree::errors::StoreError;
+use crate::store::errors::StoreError;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use uuid::Uuid;

@@ -9,7 +9,7 @@ use eidetica::Transaction;
 use eidetica::backend::database::InMemory;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::{Node, Value};
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 // ===== BASIC SETUP HELPERS =====
 

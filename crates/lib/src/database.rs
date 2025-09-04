@@ -7,12 +7,12 @@
 use crate::Result;
 use crate::Transaction;
 use crate::backend::BackendDB;
-use crate::basedb::errors::InstanceError;
+use crate::instance::errors::InstanceError;
 use crate::constants::{ROOT, SETTINGS};
 use crate::crdt::Doc;
 use crate::crdt::doc::Value;
 use crate::entry::{Entry, ID};
-use crate::subtree::{DocStore, Store};
+use crate::store::{DocStore, Store};
 
 use crate::auth::crypto::format_public_key;
 use crate::auth::settings::AuthSettings;

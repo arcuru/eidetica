@@ -7,7 +7,7 @@ use crate::Result;
 use crate::Transaction;
 use crate::crdt::doc::{Value, path};
 use crate::entry::ID;
-use crate::subtree::DocStore;
+use crate::store::DocStore;
 use serde::{Deserialize, Serialize};
 
 /// Tracks the synchronization position for a specific peer-tree relationship.
@@ -241,7 +241,7 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&cursor_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                crate::Error::Store(crate::subtree::StoreError::SerializationFailed {
+                crate::Error::Store(crate::store::StoreError::SerializationFailed {
                     subtree: "sync_state".to_string(),
                     reason: format!("Invalid cursor JSON: {e}"),
                 })
@@ -272,7 +272,7 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&metadata_path) {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                crate::Error::Store(crate::subtree::StoreError::SerializationFailed {
+                crate::Error::Store(crate::store::StoreError::SerializationFailed {
                     subtree: "sync_state".to_string(),
                     reason: format!("Invalid metadata JSON: {e}"),
                 })

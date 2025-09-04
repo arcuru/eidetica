@@ -8,7 +8,7 @@ use crate::helpers::*;
 use eidetica::constants::SETTINGS;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
-use eidetica::subtree::{DocStore, Store};
+use eidetica::store::{DocStore, Store};
 
 #[test]
 fn test_atomicop_with_delete() {

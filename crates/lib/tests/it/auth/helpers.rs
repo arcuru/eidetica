@@ -10,7 +10,7 @@ use eidetica::auth::validation::AuthValidator;
 use eidetica::backend::database::InMemory;
 use eidetica::crdt::Doc;
 use eidetica::entry::ID;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 // Helper functions for auth testing
 //

@@ -7,7 +7,7 @@ use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::{Value, path};
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 #[test]
 fn test_dict_set_and_get_via_op() {

@@ -5,14 +5,14 @@
  * https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html
  *
  * The module structure mirrors the main library structure:
- * - atomicop: Tests for the AtomicOp struct and its interaction with EntryBuilder
+ * - transaction: Tests for the Transaction struct and its interaction with EntryBuilder
  * - auth: Tests for the authentication system, organized by auth submodules
- * - basedb: Tests for the BaseDB struct and related functionality
+ * - instance: Tests for the Instance struct and related functionality
  * - backend: Tests for the Backend trait and implementations
  * - crdt: Tests for the CRDT implementations (Doc, Node, List, Value types)
  * - data: Tests for the CRDT trait and implementations (e.g., KVOverWrite)
  * - entry: Tests for the Entry struct and related functionality
- * - tree: Tests for the Tree struct and related functionality
+ * - database: Tests for the Database struct and related functionality
  */
 
 use tracing_subscriber::EnvFilter;
@@ -27,14 +27,14 @@ fn init_test_tracing() {
         .try_init();
 }
 
-mod atomicop;
+mod transaction;
 mod auth;
 mod backend;
-mod basedb;
+mod instance;
 mod crdt;
 mod data;
 mod entry;
 mod helpers;
-mod subtree;
+mod store;
 mod sync;
-mod tree;
+mod database;

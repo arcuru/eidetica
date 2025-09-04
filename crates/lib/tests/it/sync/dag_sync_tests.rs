@@ -6,7 +6,7 @@
 use super::helpers;
 use eidetica::Database;
 use eidetica::entry::{Entry, ID};
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 use eidetica::sync::{
     Address,
     protocol::{SyncRequest, SyncResponse},

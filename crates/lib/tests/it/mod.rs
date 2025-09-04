@@ -1,10 +1,10 @@
-pub mod atomicop;
+pub mod transaction;
 pub mod auth;
 pub mod backend;
-pub mod basedb;
+pub mod instance;
 pub mod crdt;
 pub mod data;
 pub mod entry;
-pub mod subtree;
+pub mod store;
 pub mod sync;
-pub mod tree;
+pub mod database;

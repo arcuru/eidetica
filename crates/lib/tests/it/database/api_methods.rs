@@ -7,7 +7,7 @@ use super::helpers::*;
 use crate::helpers::*;
 use eidetica::auth::types::SigKey;
 use eidetica::crdt::Doc;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 /// Test basic entry retrieval functionality
 #[test]

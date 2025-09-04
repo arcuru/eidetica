@@ -6,7 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::crdt::doc::Value;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 #[test]
 fn test_simple_linear_chain() {

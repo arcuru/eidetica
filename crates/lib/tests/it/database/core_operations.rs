@@ -6,7 +6,7 @@
 use super::helpers::*;
 use crate::helpers::*;
 use eidetica::constants::SETTINGS;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 #[test]
 fn test_insert_into_tree() {

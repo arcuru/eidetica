@@ -10,7 +10,7 @@ use eidetica::Instance;
 use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 use eidetica::entry::ID;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 // ===== OPERATION HELPERS =====
 

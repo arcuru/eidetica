@@ -5,7 +5,7 @@
 
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 #[test]
 fn test_atomicop_diamond_pattern() {

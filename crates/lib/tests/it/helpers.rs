@@ -1,6 +1,6 @@
 use eidetica::backend::database::InMemory;
 use eidetica::crdt::doc::Value;
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
 const DEFAULT_TEST_KEY_NAME: &str = "test_key";
 

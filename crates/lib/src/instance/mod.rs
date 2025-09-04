@@ -247,9 +247,9 @@ impl Instance {
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::database::InMemory, basedb::BaseDB};
+    /// # use eidetica::{backend::database::InMemory, instance::Instance};
     /// let backend = InMemory::new();
-    /// let db = BaseDB::new(Box::new(backend));
+    /// let db = Instance::new(Box::new(backend));
     ///
     /// // Generate a new key for laptop
     /// let public_key = db.add_private_key("KEY_LAPTOP")?;

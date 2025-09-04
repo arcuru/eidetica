@@ -4,7 +4,7 @@
 //! storing its configuration in a dedicated tree within the database.
 
 use crate::auth::crypto::format_public_key;
-use crate::{Database, Entry, Result, crdt::Doc, subtree::DocStore};
+use crate::{Database, Entry, Result, crdt::Doc, store::DocStore};
 use std::sync::Arc;
 
 pub mod background;
