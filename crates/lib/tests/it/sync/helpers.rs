@@ -26,7 +26,7 @@ pub fn setup() -> (Arc<Instance>, Sync) {
 }
 
 /// Create Instance with initialized sync module
-pub fn setup_basedb_with_initialized() -> Instance {
+pub fn setup_instance_with_initialized() -> Instance {
     let base_db = crate::helpers::setup_db();
     base_db.with_sync().expect("Failed to initialize sync")
 }

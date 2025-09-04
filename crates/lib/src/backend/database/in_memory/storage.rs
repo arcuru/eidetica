@@ -67,14 +67,14 @@ pub(crate) fn put(
             // Update subtree tips for each subtree
             for subtree_name in entry.subtrees() {
                 if let Some(subtree_tips) = cache.subtree_tips.get_mut(&subtree_name)
-                    && let Ok(subtree_parents) = entry.subtree_parents(&subtree_name)
+                    && let Ok(store_parents) = entry.subtree_parents(&subtree_name)
                 {
-                    if subtree_parents.is_empty() {
+                    if store_parents.is_empty() {
                         // Root subtree entry is also a tip initially
                         subtree_tips.insert(entry_id.clone());
                     } else {
                         // Remove parents from tips if they exist (they're no longer tips)
-                        for parent in &subtree_parents {
+                        for parent in &store_parents {
                             subtree_tips.remove(parent);
                         }
                         // Add the new entry as a tip (it has no children yet)
@@ -112,8 +112,8 @@ pub(crate) fn is_subtree_tip(backend: &InMemory, tree: &ID, subtree: &str, entry
     for other_entry in entries.values() {
         if other_entry.root() == tree
             && other_entry.subtrees().contains(&subtree.to_string())
-            && let Ok(subtree_parents) = other_entry.subtree_parents(subtree)
-            && subtree_parents.contains(entry_id)
+            && let Ok(store_parents) = other_entry.subtree_parents(subtree)
+            && store_parents.contains(entry_id)
         {
             return false;
         }
@@ -143,12 +143,12 @@ fn update_cached_heights(cache: &mut TreeHeightsCache, entry: &Entry, entry_id: 
     // Calculate subtree heights
     let mut subtree_heights = std::collections::HashMap::new();
     for subtree_name in entry.subtrees() {
-        let subtree_height = if let Ok(subtree_parents) = entry.subtree_parents(&subtree_name) {
-            if subtree_parents.is_empty() {
+        let subtree_height = if let Ok(store_parents) = entry.subtree_parents(&subtree_name) {
+            if store_parents.is_empty() {
                 0 // Subtree root has height 0
             } else {
                 // Height is max subtree parent height + 1
-                subtree_parents
+                store_parents
                     .iter()
                     .filter_map(|parent_id| {
                         cache
@@ -160,7 +160,7 @@ fn update_cached_heights(cache: &mut TreeHeightsCache, entry: &Entry, entry_id: 
                     + 1
             }
         } else {
-            0 // If subtree_parents() fails, assume it's a subtree root
+            0 // If store_parents() fails, assume it's a subtree root
         };
         subtree_heights.insert(subtree_name, subtree_height);
     }
@@ -185,7 +185,7 @@ pub(crate) fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree, sorted topologically.
-pub(crate) fn get_subtree(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
+pub(crate) fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
     let entries = backend.entries.read().unwrap();
     let mut subtree_entries: Vec<Entry> = entries
         .values()
@@ -258,7 +258,7 @@ pub(crate) fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> 
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips, sorted topologically.
-pub(crate) fn get_subtree_from_tips(
+pub(crate) fn get_store_from_tips(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -295,8 +295,8 @@ pub(crate) fn get_subtree_from_tips(
             // Entry must be in both the tree and subtree to be included
             if entry.in_tree(tree) && entry.in_subtree(subtree) {
                 // Add subtree parents to be processed
-                if let Ok(subtree_parents) = entry.subtree_parents(subtree) {
-                    for parent in subtree_parents {
+                if let Ok(store_parents) = entry.subtree_parents(subtree) {
+                    for parent in store_parents {
                         if !processed.contains(&parent) {
                             to_process.push_back(parent);
                         }

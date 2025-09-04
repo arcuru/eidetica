@@ -11,7 +11,7 @@ use eidetica::crdt::doc::Value;
 use eidetica::store::{DocStore, Store};
 
 #[test]
-fn test_atomicop_with_delete() {
+fn test_transaction_with_delete() {
     // Create a backend and a tree
     let tree = setup_tree();
 
@@ -46,7 +46,7 @@ fn test_atomicop_with_delete() {
 }
 
 #[test]
-fn test_atomicop_nested_values() {
+fn test_transaction_nested_values() {
     const TEST_KEY: &str = "test_key";
     let (_db, tree) = setup_db_and_tree_with_key(TEST_KEY);
 
@@ -95,7 +95,7 @@ fn test_atomicop_nested_values() {
 }
 
 #[test]
-fn test_atomicop_staged_data_isolation() {
+fn test_transaction_staged_data_isolation() {
     let tree = setup_tree();
 
     // Create initial data

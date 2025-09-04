@@ -1,8 +1,8 @@
 use super::super::sync::helpers;
 
 #[test]
-fn test_basedb_sync_initialization() {
-    let base_db = helpers::setup_basedb_with_initialized();
+fn test_instance_sync_initialization() {
+    let base_db = helpers::setup_instance_with_initialized();
 
     // Verify sync is initialized and accessible
     let sync_ref = base_db.sync().expect("Sync should be initialized");
@@ -12,8 +12,8 @@ fn test_basedb_sync_initialization() {
 }
 
 #[test]
-fn test_basedb_sync_load() {
-    let base_db = helpers::setup_basedb_with_initialized();
+fn test_instance_sync_load() {
+    let base_db = helpers::setup_instance_with_initialized();
 
     // Get the sync tree root ID for verification
     let sync_root_id = base_db

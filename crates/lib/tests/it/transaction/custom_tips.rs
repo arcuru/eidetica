@@ -9,7 +9,7 @@ use eidetica::crdt::doc::Value;
 use eidetica::store::DocStore;
 
 #[test]
-fn test_atomicop_with_custom_tips() {
+fn test_transaction_with_custom_tips() {
     let tree = setup_tree();
 
     // Create a chain of operations: A -> B -> C
@@ -58,7 +58,7 @@ fn test_atomicop_with_custom_tips() {
 }
 
 #[test]
-fn test_atomicop_multiple_subtrees_with_custom_tips() {
+fn test_transaction_multiple_subtrees_with_custom_tips() {
     let tree = setup_tree();
 
     // Create base entry with multiple subtrees
@@ -120,7 +120,7 @@ fn test_atomicop_multiple_subtrees_with_custom_tips() {
 }
 
 #[test]
-fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
+fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     let tree = setup_tree();
 
     // Create base entry with subtree data
@@ -173,7 +173,7 @@ fn test_atomicop_custom_tips_subtree_in_ancestors_not_tips() {
 }
 
 #[test]
-fn test_atomicop_custom_tips_no_subtree_data_in_tips() {
+fn test_transaction_custom_tips_no_subtree_data_in_tips() {
     let tree = setup_tree();
 
     // Create entry with subtree data

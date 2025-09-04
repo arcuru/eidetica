@@ -8,7 +8,7 @@ use crate::helpers::*;
 use eidetica::store::{DocStore, Store};
 
 #[test]
-fn test_atomicop_through_dict() {
+fn test_transaction_through_dict() {
     // Create a backend and a tree
     let tree = setup_tree();
 
@@ -36,7 +36,7 @@ fn test_atomicop_through_dict() {
 }
 
 #[test]
-fn test_atomicop_multiple_subtrees() {
+fn test_transaction_multiple_subtrees() {
     // Create a backend and a tree
     let tree = setup_tree();
 
@@ -68,7 +68,7 @@ fn test_atomicop_multiple_subtrees() {
 }
 
 #[test]
-fn test_atomicop_empty_subtree_removal() {
+fn test_transaction_empty_subtree_removal() {
     // Create a backend and a tree
     let tree = setup_tree();
 
@@ -106,7 +106,7 @@ fn test_atomicop_empty_subtree_removal() {
 }
 
 #[test]
-fn test_atomicop_parent_relationships() {
+fn test_transaction_parent_relationships() {
     // Create a backend and a tree
     let tree = setup_tree();
 

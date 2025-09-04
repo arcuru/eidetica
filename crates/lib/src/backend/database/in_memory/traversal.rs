@@ -149,7 +149,7 @@ pub(crate) fn get_path_from_to(
         processed.insert(current.clone());
 
         // Get parents in the subtree
-        let parents = get_sorted_subtree_parents(backend, tree_id, &current, subtree)?;
+        let parents = get_sorted_store_parents(backend, tree_id, &current, subtree)?;
 
         // Add all parents to be processed
         for parent in parents {
@@ -188,7 +188,7 @@ pub(crate) fn get_path_from_to(
 ///
 /// # Returns
 /// A `Result` containing a vector of parent entry IDs, sorted by height then ID.
-pub(crate) fn get_sorted_subtree_parents(
+pub(crate) fn get_sorted_store_parents(
     backend: &InMemory,
     tree_id: &ID,
     entry_id: &ID,
@@ -386,7 +386,7 @@ pub(crate) fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the subtree.
-pub(crate) fn get_subtree_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+pub(crate) fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
     // Check if we have cached subtree tips
     let tips_cache = backend.tips.read().unwrap();
     if let Some(cache) = tips_cache.get(tree)
@@ -398,7 +398,7 @@ pub(crate) fn get_subtree_tips(backend: &InMemory, tree: &ID, subtree: &str) -> 
 
     // Compute subtree tips lazily
     let tree_tips = get_tips(backend, tree)?;
-    let subtree_tips = get_subtree_tips_up_to_entries(backend, tree, subtree, &tree_tips)?;
+    let subtree_tips = get_store_tips_up_to_entries(backend, tree, subtree, &tree_tips)?;
 
     // Cache the result
     let tips_set: HashSet<ID> = subtree_tips.iter().cloned().collect();
@@ -422,7 +422,7 @@ pub(crate) fn get_subtree_tips(backend: &InMemory, tree: &ID, subtree: &str) -> 
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are subtree tips within the scope.
-pub(crate) fn get_subtree_tips_up_to_entries(
+pub(crate) fn get_store_tips_up_to_entries(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,

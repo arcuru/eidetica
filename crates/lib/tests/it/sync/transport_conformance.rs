@@ -116,7 +116,7 @@ async fn cleanup_sync(
 }
 
 /// Generic test function that works with any transport factory
-async fn test_basedb_entry_sync_conformance<F>(factory: F) -> Result<()>
+async fn test_instance_entry_sync_conformance<F>(factory: F) -> Result<()>
 where
     F: TransportFactory,
 {
@@ -263,14 +263,14 @@ where
 
 #[tokio::test]
 async fn test_http_transport_conformance() {
-    test_basedb_entry_sync_conformance(HttpTransportFactory)
+    test_instance_entry_sync_conformance(HttpTransportFactory)
         .await
         .unwrap();
 }
 
 #[tokio::test]
 async fn test_iroh_transport_conformance() {
-    test_basedb_entry_sync_conformance(IrohTransportFactory)
+    test_instance_entry_sync_conformance(IrohTransportFactory)
         .await
         .unwrap();
 }

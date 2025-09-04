@@ -92,7 +92,7 @@ fn test_tree_creation_with_data() {
 
 #[test]
 fn test_database_operations_using_helpers() {
-    let (_db, trees) = test_complete_basedb_workflow(TEST_KEY);
+    let (_db, trees) = test_complete_instance_workflow(TEST_KEY);
 
     // Verify we created the expected trees
     assert_trees_count(&trees, 2);

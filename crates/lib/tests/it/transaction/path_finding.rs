@@ -8,7 +8,7 @@ use crate::helpers::*;
 use eidetica::store::DocStore;
 
 #[test]
-fn test_atomicop_diamond_pattern() {
+fn test_transaction_diamond_pattern() {
     let tree = setup_tree();
 
     // Create base entry

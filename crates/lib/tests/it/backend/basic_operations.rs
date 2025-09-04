@@ -43,15 +43,15 @@ fn test_in_memory_backend_error_handling() {
     }
 
     // Similarly, get_subtree might return an empty vector for non-existent trees
-    let subtree_result = backend.get_subtree(&non_existent_id, "non_existent_subtree");
+    let subtree_result = backend.get_store(&non_existent_id, "non_existent_subtree");
     if let Ok(entries) = subtree_result {
         assert!(entries.is_empty());
     } else {
         assert!(subtree_result.is_err());
     }
 
-    // Similar to get_tips, get_subtree_tips might return an empty vector for non-existent trees
-    let subtree_tips_result = backend.get_subtree_tips(&non_existent_id, "non_existent_subtree");
+    // Similar to get_tips, get_store_tips might return an empty vector for non-existent trees
+    let subtree_tips_result = backend.get_store_tips(&non_existent_id, "non_existent_subtree");
     if let Ok(tips) = subtree_tips_result {
         assert!(tips.is_empty());
     } else {

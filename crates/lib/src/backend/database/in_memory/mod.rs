@@ -257,17 +257,17 @@ impl BackendDB for InMemory {
         traversal::get_tips(self, tree)
     }
 
-    fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
-        traversal::get_subtree_tips(self, tree, subtree)
+    fn get_store_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+        traversal::get_store_tips(self, tree, subtree)
     }
 
-    fn get_subtree_tips_up_to_entries(
+    fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         subtree: &str,
         main_entries: &[ID],
     ) -> Result<Vec<ID>> {
-        traversal::get_subtree_tips_up_to_entries(self, tree, subtree, main_entries)
+        traversal::get_store_tips_up_to_entries(self, tree, subtree, main_entries)
     }
 
     /// Retrieves the IDs of all top-level root entries stored in the database.
@@ -310,16 +310,16 @@ impl BackendDB for InMemory {
         storage::get_tree(self, tree)
     }
 
-    fn get_subtree(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
-        storage::get_subtree(self, tree, subtree)
+    fn get_store(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
+        storage::get_store(self, tree, subtree)
     }
 
     fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
         storage::get_tree_from_tips(self, tree, tips)
     }
 
-    fn get_subtree_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        storage::get_subtree_from_tips(self, tree, subtree, tips)
+    fn get_store_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+        storage::get_store_from_tips(self, tree, subtree, tips)
     }
 
     /// Store a private key in the database's local key storage.
@@ -389,13 +389,13 @@ impl BackendDB for InMemory {
         cache::clear_crdt_cache(self)
     }
 
-    fn get_sorted_subtree_parents(
+    fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
         entry_id: &ID,
         subtree: &str,
     ) -> Result<Vec<ID>> {
-        traversal::get_sorted_subtree_parents(self, tree_id, entry_id, subtree)
+        traversal::get_sorted_store_parents(self, tree_id, entry_id, subtree)
     }
 
     fn get_path_from_to(

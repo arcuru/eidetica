@@ -22,7 +22,7 @@ pub use errors::BackendError;
 ///
 /// This enum tracks whether an entry has been cryptographically verified
 /// by the higher-level authentication system. The backend stores this status
-/// but does not perform verification itself - that's handled by the Database/Operation layers.
+/// but does not perform verification itself - that's handled by the Database/Transaction layers.
 ///
 /// Currently all local entries must be authenticated (Verified), but this enum
 /// is designed to support future sync scenarios where entries may be received
@@ -46,7 +46,7 @@ pub enum VerificationStatus {
 /// Database trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
-/// and querying entries and their relationships within trees and subtrees.
+/// and querying entries and their relationships within databases and stores.
 /// Implementations of this trait handle the specifics of how data is persisted
 /// (e.g., in memory, on disk, in a remote database).
 ///
@@ -62,7 +62,7 @@ pub enum VerificationStatus {
 /// The database stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
 /// The database itself does not perform verification - it only stores the status
-/// set by the calling code (typically Database/Operation implementations).
+/// set by the calling code (typically Database/Transaction implementations).
 pub trait BackendDB: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
@@ -168,37 +168,37 @@ pub trait BackendDB: Send + Sync + Any {
     /// A `Result` containing a vector of tip entry IDs or an error.
     fn get_tips(&self, tree: &ID) -> Result<Vec<ID>>;
 
-    /// Retrieves the IDs of the tip entries for a specific subtree within a given tree.
+    /// Retrieves the IDs of the tip entries for a specific store within a given tree.
     ///
-    /// Subtree tips are defined as the set of entries within the specified subtree
-    /// that have no children *within that same subtree*. An entry is considered
-    /// a child of another within a subtree if it lists the other entry in its
-    /// `subtree_parents` list for that specific subtree name.
+    /// Store tips are defined as the set of entries within the specified store
+    /// that have no children *within that same store*. An entry is considered
+    /// a child of another within a store if it lists the other entry in its
+    /// `store_parents` list for that specific store name.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.
-    /// * `subtree` - The name of the subtree for which to find tips.
+    /// * `store` - The name of the store for which to find tips.
     ///
     /// # Returns
-    /// A `Result` containing a vector of tip entry IDs for the subtree or an error.
-    fn get_subtree_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>>;
+    /// A `Result` containing a vector of tip entry IDs for the store or an error.
+    fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>>;
 
-    /// Gets the subtree tips that exist up to a specific set of main tree entries.
+    /// Gets the store tips that exist up to a specific set of main tree entries.
     ///
-    /// This method finds all subtree entries that are reachable from the specified
-    /// main tree entries, then filters to find which of those are tips within the subtree.
+    /// This method finds all store entries that are reachable from the specified
+    /// main tree entries, then filters to find which of those are tips within the store.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.
-    /// * `subtree` - The name of the subtree for which to find tips.
+    /// * `store` - The name of the store for which to find tips.
     /// * `main_entries` - The main tree entry IDs to use as the boundary.
     ///
     /// # Returns
-    /// A `Result` containing a vector of subtree tip entry IDs up to the main entries.
-    fn get_subtree_tips_up_to_entries(
+    /// A `Result` containing a vector of store tip entry IDs up to the main entries.
+    fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
-        subtree: &str,
+        store: &str,
         main_entries: &[ID],
     ) -> Result<Vec<ID>>;
 
@@ -214,30 +214,30 @@ pub trait BackendDB: Send + Sync + Any {
     /// A `Result` containing a vector of top-level root entry IDs or an error.
     fn all_roots(&self) -> Result<Vec<ID>>;
 
-    /// Finds the Lowest Common Ancestor (LCA) of the given entry IDs within a subtree.
+    /// Finds the Lowest Common Ancestor (LCA) of the given entry IDs within a store.
     ///
     /// The LCA is the deepest entry that is an ancestor of all the given entries
-    /// within the specified subtree context. This is used to determine optimal
+    /// within the specified store context. This is used to determine optimal
     /// computation boundaries for CRDT state calculation.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the tree
-    /// * `subtree` - The name of the subtree context
+    /// * `store` - The name of the store context
     /// * `entry_ids` - The entry IDs to find the LCA for
     ///
     /// # Returns
     /// A `Result` containing the LCA entry ID, or an error if no common ancestor exists
-    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID>;
+    fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
 
-    /// Collects all entries from the tree root down to the target entry within a subtree.
+    /// Collects all entries from the tree root down to the target entry within a store.
     ///
     /// This method performs a complete traversal from the tree root to the target entry,
-    /// collecting all entries that are ancestors of the target within the specified subtree.
+    /// collecting all entries that are ancestors of the target within the specified store.
     /// The result includes the tree root and the target entry itself.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the tree
-    /// * `subtree` - The name of the subtree context
+    /// * `store` - The name of the store context
     /// * `target_entry` - The target entry to collect ancestors for
     ///
     /// # Returns
@@ -245,7 +245,7 @@ pub trait BackendDB: Send + Sync + Any {
     fn collect_root_to_target(
         &self,
         tree: &ID,
-        subtree: &str,
+        store: &str,
         target_entry: &ID,
     ) -> Result<Vec<ID>>;
 
@@ -272,22 +272,22 @@ pub trait BackendDB: Send + Sync + Any {
     /// sorted topologically, or an error.
     fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>>;
 
-    /// Retrieves all entries belonging to a specific subtree within a tree, sorted topologically.
+    /// Retrieves all entries belonging to a specific store within a tree, sorted topologically.
     ///
-    /// Similar to `get_tree`, but limited to entries that are part of the specified subtree.
-    /// The entries are sorted primarily by their height within the subtree (distance
-    /// from the subtree's initial entry/entries) and secondarily by their ID.
+    /// Similar to `get_tree`, but limited to entries that are part of the specified store.
+    /// The entries are sorted primarily by their height within the store (distance
+    /// from the store's initial entry/entries) and secondarily by their ID.
     ///
-    /// **Note:** This potentially loads the entire history of the subtree. Use with caution.
+    /// **Note:** This potentially loads the entire history of the store. Use with caution.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.
-    /// * `subtree` - The name of the subtree to retrieve.
+    /// * `store` - The name of the store to retrieve.
     ///
     /// # Returns
-    /// A `Result` containing a vector of all `Entry` objects in the subtree,
-    /// sorted topologically according to their position within the subtree, or an error.
-    fn get_subtree(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>>;
+    /// A `Result` containing a vector of all `Entry` objects in the store,
+    /// sorted topologically according to their position within the store, or an error.
+    fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>>;
 
     /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
     ///
@@ -303,20 +303,20 @@ pub trait BackendDB: Send + Sync + Any {
     /// sorted topologically, or an error.
     fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
 
-    /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips, sorted topologically.
+    /// Retrieves all entries belonging to a specific store within a tree up to the given tips, sorted topologically.
     ///
-    /// Similar to `get_subtree`, but only includes entries that are ancestors of the provided subtree tips.
-    /// This allows reading from a specific state of the subtree defined by those tips.
+    /// Similar to `get_subtree`, but only includes entries that are ancestors of the provided store tips.
+    /// This allows reading from a specific state of the store defined by those tips.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.
-    /// * `subtree` - The name of the subtree to retrieve.
+    /// * `store` - The name of the store to retrieve.
     /// * `tips` - The tip IDs defining the state to read from.
     ///
     /// # Returns
-    /// A `Result` containing a vector of `Entry` objects in the subtree up to the given tips,
+    /// A `Result` containing a vector of `Entry` objects in the store up to the given tips,
     /// sorted topologically, or an error.
-    fn get_subtree_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>>;
+    fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
 
     // === Private Key Storage Methods ===
     //
@@ -368,29 +368,29 @@ pub trait BackendDB: Send + Sync + Any {
     // === CRDT State Cache Methods ===
     //
     // These methods provide caching for computed CRDT state at specific
-    // entry+subtree combinations. This optimizes repeated computations
-    // of the same subtree state from the same set of tip entries.
+    // entry+store combinations. This optimizes repeated computations
+    // of the same store state from the same set of tip entries.
 
-    /// Get cached CRDT state for a subtree at a specific entry.
+    /// Get cached CRDT state for a store at a specific entry.
     ///
     /// # Arguments
     /// * `entry_id` - The entry ID where the state is cached
-    /// * `subtree` - The name of the subtree
+    /// * `store` - The name of the store
     ///
     /// # Returns
     /// A `Result` containing an `Option<String>`. Returns `None` if not cached.
-    fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>>;
+    fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>>;
 
-    /// Cache CRDT state for a subtree at a specific entry.
+    /// Cache CRDT state for a store at a specific entry.
     ///
     /// # Arguments
     /// * `entry_id` - The entry ID where the state should be cached
-    /// * `subtree` - The name of the subtree
+    /// * `store` - The name of the store
     /// * `state` - The serialized CRDT state to cache
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()>;
+    fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()>;
 
     /// Clear all cached CRDT states.
     ///
@@ -401,25 +401,25 @@ pub trait BackendDB: Send + Sync + Any {
     /// A `Result` indicating success or an error during the clear operation.
     fn clear_crdt_cache(&self) -> Result<()>;
 
-    /// Get the subtree parent IDs for a specific entry and subtree, sorted by height then ID.
+    /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///
-    /// This method retrieves the parent entry IDs for a given entry in a specific subtree
+    /// This method retrieves the parent entry IDs for a given entry in a specific store
     /// context, sorted using the same deterministic ordering used throughout the system
     /// (height ascending, then ID ascending for ties).
     ///
     /// # Arguments
     /// * `tree_id` - The ID of the tree containing the entry
     /// * `entry_id` - The ID of the entry to get parents for
-    /// * `subtree` - The name of the subtree context
+    /// * `store` - The name of the store context
     ///
     /// # Returns
     /// A `Result` containing a `Vec<ID>` of parent entry IDs sorted by (height, ID).
-    /// Returns empty vec if the entry has no parents in the subtree.
-    fn get_sorted_subtree_parents(
+    /// Returns empty vec if the entry has no parents in the store.
+    fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
         entry_id: &ID,
-        subtree: &str,
+        store: &str,
     ) -> Result<Vec<ID>>;
 
     /// Gets all entries between one entry and multiple target entries (exclusive of start, inclusive of targets).
@@ -430,7 +430,7 @@ pub trait BackendDB: Send + Sync + Any {
     ///
     /// # Arguments
     /// * `tree_id` - The ID of the tree containing the entries
-    /// * `subtree` - The name of the subtree context
+    /// * `store` - The name of the store context
     /// * `from_id` - The starting entry ID (not included in result)
     /// * `to_ids` - The target entry IDs (all included in result)
     ///
@@ -439,7 +439,7 @@ pub trait BackendDB: Send + Sync + Any {
     fn get_path_from_to(
         &self,
         tree_id: &ID,
-        subtree: &str,
+        store: &str,
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;

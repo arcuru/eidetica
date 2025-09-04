@@ -14,7 +14,7 @@ use tokio::time::sleep;
 /// Test direct queue operations without full Instance integration
 #[tokio::test]
 async fn test_sync_queue_operations() -> Result<()> {
-    let (_basedb, sync) = setup();
+    let (_instance, sync) = setup();
     let peer_pubkey = "ed25519:test_peer_key";
 
     // Test getting sync queue
@@ -59,7 +59,7 @@ async fn test_sync_queue_operations() -> Result<()> {
 /// Test that flush worker processes queued entries
 #[tokio::test]
 async fn test_flush_worker_processes_queue() -> Result<()> {
-    let (_basedb, mut sync) = setup();
+    let (_instance, mut sync) = setup();
     let peer_pubkey = "ed25519:test_peer_key";
 
     // Register a peer and add address
@@ -112,7 +112,7 @@ async fn test_flush_worker_processes_queue() -> Result<()> {
 /// Test flush worker lifecycle management
 #[tokio::test]
 async fn test_flush_worker_lifecycle() -> Result<()> {
-    let (_basedb, mut sync) = setup();
+    let (_instance, mut sync) = setup();
 
     // Initially worker should not be running
     assert!(
@@ -151,7 +151,7 @@ async fn test_flush_worker_lifecycle() -> Result<()> {
 /// Test sync queue management with peer states
 #[tokio::test]
 async fn test_queue_with_peer_management() -> Result<()> {
-    let (_basedb, mut sync) = setup();
+    let (_instance, mut sync) = setup();
     let peer_pubkey = "ed25519:test_peer_key";
 
     // Register peer
@@ -199,7 +199,7 @@ async fn test_queue_with_peer_management() -> Result<()> {
 /// Test queue size limits trigger flushing
 #[tokio::test]
 async fn test_queue_size_triggers_flush() -> Result<()> {
-    let (_basedb, mut sync) = setup();
+    let (_instance, mut sync) = setup();
     let peer_pubkey = "ed25519:test_peer_key";
 
     // Register peer

@@ -261,7 +261,7 @@ impl Transaction {
             let tips = self
                 .tree
                 .backend()
-                .get_subtree_tips(self.tree.root_id(), subtree)?;
+                .get_store_tips(self.tree.root_id(), subtree)?;
             builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
             builder.set_subtree_parents_mut(subtree, tips);
         } else {
@@ -312,10 +312,10 @@ impl Transaction {
                     // This operation uses current tree tips - use old behavior
                     self.tree
                         .backend()
-                        .get_subtree_tips(self.tree.root_id(), &subtree_name)?
+                        .get_store_tips(self.tree.root_id(), &subtree_name)?
                 } else {
                     // This operation uses custom tips - use new behavior
-                    self.tree.backend().get_subtree_tips_up_to_entries(
+                    self.tree.backend().get_store_tips_up_to_entries(
                         self.tree.root_id(),
                         &subtree_name,
                         &main_parents,
@@ -424,10 +424,10 @@ impl Transaction {
                 // This operation uses current tree tips - use old behavior
                 self.tree
                     .backend()
-                    .get_subtree_tips(self.tree.root_id(), subtree_name)?
+                    .get_store_tips(self.tree.root_id(), subtree_name)?
             } else {
                 // This operation uses custom tips - use new behavior
-                self.tree.backend().get_subtree_tips_up_to_entries(
+                self.tree.backend().get_store_tips_up_to_entries(
                     self.tree.root_id(),
                     subtree_name,
                     &main_parents,
@@ -548,7 +548,7 @@ impl Transaction {
 
         // Get the parents of this entry in the subtree
         let parents = {
-            self.tree.backend().get_sorted_subtree_parents(
+            self.tree.backend().get_sorted_store_parents(
                 self.tree.root_id(),
                 entry_id,
                 subtree_name,
@@ -709,7 +709,7 @@ impl Transaction {
 
         // Add metadata with settings tips for all entries
         // Get the backend to access settings tips
-        let settings_tips = self.tree.backend().get_subtree_tips_up_to_entries(
+        let settings_tips = self.tree.backend().get_store_tips_up_to_entries(
             self.tree.root_id(),
             SETTINGS,
             &self.tree.get_tips()?,

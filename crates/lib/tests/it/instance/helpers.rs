@@ -289,7 +289,7 @@ pub fn test_database_error_conditions(db: &Instance) {
 // ===== INTEGRATION HELPERS =====
 
 /// Complete workflow: create DB, add trees, perform operations, verify results
-pub fn test_complete_basedb_workflow(key_name: &str) -> (Instance, Vec<Database>) {
+pub fn test_complete_instance_workflow(key_name: &str) -> (Instance, Vec<Database>) {
     let db = setup_db_with_key(key_name);
 
     // Create trees with different configurations
