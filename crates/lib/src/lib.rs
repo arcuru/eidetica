@@ -268,19 +268,4 @@ impl Error {
         }
     }
 
-    /// Check if this error is related to concurrency issues.
-    pub fn is_concurrency_error(&self) -> bool {
-        match self {
-            Error::Transaction(atomicop_err) => atomicop_err.is_concurrency_error(),
-            _ => false,
-        }
-    }
-
-    /// Check if this error indicates a timeout.
-    pub fn is_timeout_error(&self) -> bool {
-        match self {
-            Error::Transaction(atomicop_err) => atomicop_err.is_timeout_error(),
-            _ => false,
-        }
-    }
 }

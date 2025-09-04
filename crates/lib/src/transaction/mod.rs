@@ -369,8 +369,8 @@ impl Transaction {
                 Ok(T::default())
             } else {
                 serde_json::from_str(data).map_err(|e| {
-                    TransactionError::SubtreeDeserializationFailed {
-                        subtree: subtree_name.to_string(),
+                    TransactionError::StoreDeserializationFailed {
+                        store: subtree_name.to_string(),
                         reason: e.to_string(),
                     }
                     .into()

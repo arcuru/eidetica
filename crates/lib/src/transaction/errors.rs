@@ -55,45 +55,13 @@ pub enum TransactionError {
     #[error("Entry signature verification failed")]
     SignatureVerificationFailed,
 
-    /// Subtree data serialization failed
-    #[error("Subtree data serialization failed for '{subtree}': {reason}")]
-    SubtreeSerializationFailed { subtree: String, reason: String },
-
-    /// Subtree data deserialization failed
-    #[error("Subtree data deserialization failed for '{subtree}': {reason}")]
-    SubtreeDeserializationFailed { subtree: String, reason: String },
+    /// Store data deserialization failed
+    #[error("Store data deserialization failed for '{store}': {reason}")]
+    StoreDeserializationFailed { store: String, reason: String },
 
     /// Backend operation failed during commit
     #[error("Backend operation failed during commit: {reason}")]
     BackendOperationFailed { reason: String },
-
-    /// Database state validation failed
-    #[error("Database state validation failed: {reason}")]
-    TreeStateValidationFailed { reason: String },
-
-    /// Metadata construction failed
-    #[error("Metadata construction failed: {reason}")]
-    MetadataConstructionFailed { reason: String },
-
-    /// Parent resolution failed
-    #[error("Parent resolution failed: {reason}")]
-    ParentResolutionFailed { reason: String },
-
-    /// Concurrent modification detected
-    #[error("Concurrent modification detected")]
-    ConcurrentModification,
-
-    /// Operation timeout
-    #[error("Operation timed out after {duration_ms}ms")]
-    OperationTimeout { duration_ms: u64 },
-
-    /// Invalid operation state
-    #[error("Invalid operation state: {reason}")]
-    InvalidOperationState { reason: String },
-
-    /// Subtree operation failed
-    #[error("Subtree operation failed for '{subtree}': {reason}")]
-    SubtreeOperationFailed { subtree: String, reason: String },
 }
 
 impl TransactionError {
@@ -125,14 +93,9 @@ impl TransactionError {
         )
     }
 
-    /// Check if this error is related to subtree operations
-    pub fn is_subtree_error(&self) -> bool {
-        matches!(
-            self,
-            TransactionError::SubtreeSerializationFailed { .. }
-                | TransactionError::SubtreeDeserializationFailed { .. }
-                | TransactionError::SubtreeOperationFailed { .. }
-        )
+    /// Check if this error is related to store operations
+    pub fn is_store_error(&self) -> bool {
+        matches!(self, TransactionError::StoreDeserializationFailed { .. })
     }
 
     /// Check if this error is related to backend operations
@@ -144,29 +107,14 @@ impl TransactionError {
     pub fn is_validation_error(&self) -> bool {
         matches!(
             self,
-            TransactionError::TreeStateValidationFailed { .. }
-                | TransactionError::InvalidTip { .. }
-                | TransactionError::EmptyTipsNotAllowed
-                | TransactionError::InvalidOperationState { .. }
+            TransactionError::InvalidTip { .. } | TransactionError::EmptyTipsNotAllowed
         )
     }
 
-    /// Check if this error indicates a concurrency issue
-    pub fn is_concurrency_error(&self) -> bool {
-        matches!(self, TransactionError::ConcurrentModification)
-    }
-
-    /// Check if this error indicates a timeout
-    pub fn is_timeout_error(&self) -> bool {
-        matches!(self, TransactionError::OperationTimeout { .. })
-    }
-
-    /// Get the subtree name if this is a subtree-related error
-    pub fn subtree_name(&self) -> Option<&str> {
+    /// Get the store name if this is a store-related error
+    pub fn store_name(&self) -> Option<&str> {
         match self {
-            TransactionError::SubtreeSerializationFailed { subtree, .. }
-            | TransactionError::SubtreeDeserializationFailed { subtree, .. }
-            | TransactionError::SubtreeOperationFailed { subtree, .. } => Some(subtree),
+            TransactionError::StoreDeserializationFailed { store, .. } => Some(store),
             _ => None,
         }
     }
@@ -206,13 +154,13 @@ mod tests {
         assert!(entry_err.is_entry_error());
         assert!(!entry_err.is_authentication_error());
 
-        // Test subtree errors
-        let subtree_err = TransactionError::SubtreeSerializationFailed {
-            subtree: "test_subtree".to_owned(),
+        // Test store errors
+        let store_err = TransactionError::StoreDeserializationFailed {
+            store: "test_store".to_owned(),
             reason: "test".to_owned(),
         };
-        assert!(subtree_err.is_subtree_error());
-        assert_eq!(subtree_err.subtree_name(), Some("test_subtree"));
+        assert!(store_err.is_store_error());
+        assert_eq!(store_err.store_name(), Some("test_store"));
 
         // Test validation errors
         let validation_err = TransactionError::EmptyTipsNotAllowed;
@@ -237,17 +185,4 @@ mod tests {
         assert_eq!(other_err.key_name(), None);
     }
 
-    #[test]
-    fn test_timeout_error() {
-        let err = TransactionError::OperationTimeout { duration_ms: 5000 };
-        assert!(err.is_timeout_error());
-        assert!(!err.is_authentication_error());
-    }
-
-    #[test]
-    fn test_concurrency_error() {
-        let err = TransactionError::ConcurrentModification;
-        assert!(err.is_concurrency_error());
-        assert!(!err.is_validation_error());
-    }
 }
