@@ -1,6 +1,6 @@
 //! Database operation tests
 //!
-//! This module contains tests for basic BaseDB operations including
+//! This module contains tests for basic Instance operations including
 //! database creation, tree creation, tree loading, and backend management.
 
 use super::helpers::*;

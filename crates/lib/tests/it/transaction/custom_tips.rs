@@ -1,4 +1,4 @@
-//! Custom tips operation tests for AtomicOp
+//! Custom tips operation tests for Transaction
 //!
 //! This module contains tests for operations using custom tips including
 //! branching, parallel operations, and tip-based state management.

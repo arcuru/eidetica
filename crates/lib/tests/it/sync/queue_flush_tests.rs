@@ -1,7 +1,7 @@
 //! Tests for sync queue and flush worker integration
 //!
 //! This module tests the integration between:
-//! - AtomicOp hooks detecting entry changes
+//! - Transaction hooks detecting entry changes
 //! - In-memory sync queue collecting entries for peers
 //! - Flush worker processing queued entries
 
@@ -11,7 +11,7 @@ use eidetica::sync::peer_types::{Address, PeerStatus};
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Test direct queue operations without full BaseDB integration
+/// Test direct queue operations without full Instance integration
 #[tokio::test]
 async fn test_sync_queue_operations() -> Result<()> {
     let (_basedb, sync) = setup();

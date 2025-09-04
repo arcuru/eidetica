@@ -1,14 +1,14 @@
-//! Atomic operation specific errors
+//! Transaction specific errors
 //!
-//! This module contains error types specific to atomic operations, which compose
+//! This module contains error types specific to transactions, which compose
 //! errors from multiple modules into a cohesive error handling system for
 //! cross-module operations.
 
 use thiserror::Error;
 
-/// Errors that can occur during atomic operations
+/// Errors that can occur during transactions
 ///
-/// `AtomicOpError` represents failures specific to atomic operations that
+/// `TransactionError` represents failures specific to transactions that
 /// span multiple modules and require coordinated error handling. These errors
 /// typically occur during entry construction, commit operations, and cross-module
 /// data staging.
@@ -181,7 +181,7 @@ impl TransactionError {
     }
 }
 
-// Conversion from AtomicOpError to the main Error type
+// Conversion from TransactionError to the main Error type
 impl From<TransactionError> for crate::Error {
     fn from(err: TransactionError) -> Self {
         crate::Error::Transaction(err)

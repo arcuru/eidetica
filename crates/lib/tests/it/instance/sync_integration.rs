@@ -7,7 +7,7 @@ fn test_basedb_sync_initialization() {
     // Verify sync is initialized and accessible
     let sync_ref = base_db.sync().expect("Sync should be initialized");
 
-    // Verify we can access the sync tree through BaseDB
+    // Verify we can access the sync tree through Instance
     assert!(!sync_ref.sync_tree_root_id().to_string().is_empty());
 }
 
@@ -28,5 +28,5 @@ fn test_basedb_sync_load() {
     // Note: Loading sync from a tree root ID requires the same backend instance
     // This test demonstrates the API structure for when persistent storage is used
     // In a real scenario with shared/persistent backends, you could:
-    // let base_db2 = BaseDB::new(same_backend).with_sync_from_tree(&sync_root_id).unwrap();
+    // let base_db2 = Instance::new(same_backend).with_sync_from_tree(&sync_root_id).unwrap();
 }

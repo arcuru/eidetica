@@ -139,11 +139,11 @@ fn test_save_load_with_various_entries() {
     // Check specific entries can be retrieved
     let _loaded_root = loaded_backend.get(&root_id).unwrap();
     // Entry is a pure data structure - it shouldn't know about settings
-    // Settings logic is handled by AtomicOp
+    // Settings logic is handled by Transaction
 
     let _loaded_grandchild = loaded_backend.get(&grandchild_id).unwrap();
     // Entry is a pure data structure - it shouldn't know about settings
-    // Settings logic is handled by AtomicOp
+    // Settings logic is handled by Transaction
 
     let loaded_entry_with_subtree = loaded_backend.get(&entry_with_subtree_id).unwrap();
     assert_eq!(

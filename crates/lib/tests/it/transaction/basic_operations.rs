@@ -1,6 +1,6 @@
-//! Basic AtomicOp operation tests
+//! Basic Transaction operation tests
 //!
-//! This module contains tests for fundamental AtomicOp functionality including
+//! This module contains tests for fundamental Transaction functionality including
 //! Doc operations, multiple subtrees, empty subtree handling, and parent relationships.
 
 use super::helpers::*;
@@ -15,10 +15,10 @@ fn test_atomicop_through_dict() {
     // Create a new operation
     let operation = tree.new_operation().unwrap();
 
-    // Get a Doc subtree, which will use AtomicOp internally
+    // Get a Doc subtree, which will use Transaction internally
     let dict = DocStore::new(&operation, "test").unwrap();
 
-    // Set a value in the Doc, which will use AtomicOp::update_subtree internally
+    // Set a value in the Doc, which will use Transaction::update_subtree internally
     dict.set("key", "value").unwrap();
 
     // Commit the operation

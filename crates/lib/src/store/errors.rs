@@ -1,56 +1,56 @@
-//! Generic error types for subtree operations.
+//! Generic error types for store operations.
 //!
-//! This module defines generic error types that can be used by any subtree implementation.
-//! Specific subtree types should define their own error types for implementation-specific errors.
+//! This module defines generic error types that can be used by any store implementation.
+//! Specific store types should define their own error types for implementation-specific errors.
 
 use thiserror::Error;
 
-/// Generic error types for subtree operations.
+/// Generic error types for store operations.
 ///
-/// This enum provides fundamental error variants that apply to any subtree implementation.
-/// Specific subtree types (DocStore, Table, etc.) should define their own error types
+/// This enum provides fundamental error variants that apply to any store implementation.
+/// Specific store types (DocStore, Table, etc.) should define their own error types
 /// for implementation-specific errors and convert them to SubtreeError when needed.
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum StoreError {
-    /// Key or record not found in subtree
-    #[error("Key not found in subtree '{subtree}': {key}")]
+    /// Key or record not found in store
+    #[error("Key not found in store '{subtree}': {key}")]
     KeyNotFound { subtree: String, key: String },
 
-    /// Serialization failed for subtree data
-    #[error("Serialization failed in subtree '{subtree}': {reason}")]
+    /// Serialization failed for store data
+    #[error("Serialization failed in store '{subtree}': {reason}")]
     SerializationFailed { subtree: String, reason: String },
 
-    /// Deserialization failed for subtree data
-    #[error("Deserialization failed in subtree '{subtree}': {reason}")]
+    /// Deserialization failed for store data
+    #[error("Deserialization failed in store '{subtree}': {reason}")]
     DeserializationFailed { subtree: String, reason: String },
 
-    /// Type mismatch in subtree operation
-    #[error("Type mismatch in subtree '{subtree}': expected {expected}, found {actual}")]
+    /// Type mismatch in store operation
+    #[error("Type mismatch in store '{subtree}': expected {expected}, found {actual}")]
     TypeMismatch {
         subtree: String,
         expected: String,
         actual: String,
     },
 
-    /// Invalid operation for the subtree type
-    #[error("Invalid operation '{operation}' for subtree '{subtree}': {reason}")]
+    /// Invalid operation for the store type
+    #[error("Invalid operation '{operation}' for store '{subtree}': {reason}")]
     InvalidOperation {
         subtree: String,
         operation: String,
         reason: String,
     },
 
-    /// Subtree operation requires atomic operation context
-    #[error("Operation requires atomic operation context for subtree '{subtree}'")]
-    RequiresAtomicOperation { subtree: String },
+    /// Store operation requires transaction context
+    #[error("Operation requires transaction context for store '{subtree}'")]
+    RequiresTransaction { subtree: String },
 
-    /// Data corruption detected in subtree
-    #[error("Data corruption detected in subtree '{subtree}': {reason}")]
+    /// Data corruption detected in store
+    #[error("Data corruption detected in store '{subtree}': {reason}")]
     DataCorruption { subtree: String, reason: String },
 
-    /// Implementation-specific error from a subtree type
-    #[error("Subtree implementation error in '{subtree}': {reason}")]
+    /// Implementation-specific error from a store type
+    #[error("Store implementation error in '{subtree}': {reason}")]
     ImplementationError { subtree: String, reason: String },
 }
 
@@ -82,7 +82,7 @@ impl StoreError {
     pub fn is_operation_error(&self) -> bool {
         matches!(
             self,
-            StoreError::InvalidOperation { .. } | StoreError::RequiresAtomicOperation { .. }
+            StoreError::InvalidOperation { .. } | StoreError::RequiresTransaction { .. }
         )
     }
 
@@ -91,7 +91,7 @@ impl StoreError {
         matches!(self, StoreError::ImplementationError { .. })
     }
 
-    /// Get the subtree name associated with this error
+    /// Get the store name associated with this error
     pub fn subtree_name(&self) -> &str {
         match self {
             StoreError::KeyNotFound { subtree, .. }
@@ -99,7 +99,7 @@ impl StoreError {
             | StoreError::DeserializationFailed { subtree, .. }
             | StoreError::TypeMismatch { subtree, .. }
             | StoreError::InvalidOperation { subtree, .. }
-            | StoreError::RequiresAtomicOperation { subtree, .. }
+            | StoreError::RequiresTransaction { subtree, .. }
             | StoreError::DataCorruption { subtree, .. }
             | StoreError::ImplementationError { subtree, .. } => subtree,
         }

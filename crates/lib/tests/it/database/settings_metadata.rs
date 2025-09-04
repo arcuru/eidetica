@@ -119,7 +119,7 @@ fn test_entry_get_settings_from_subtree() {
     // Get the root entry and verify it has _settings subtree
     let root_entry = tree.get_root().unwrap();
 
-    // Entry shouldn't know about settings - that's AtomicOp's job
+    // Entry shouldn't know about settings - that's Transaction's job
     // But we can verify the entry has the _settings subtree data
     let settings_data = root_entry.data("_settings").unwrap();
     let parsed_settings: Doc = serde_json::from_str(settings_data).unwrap();
@@ -134,7 +134,7 @@ fn test_entry_get_settings_from_subtree() {
         _ => panic!("Expected string value for version"),
     }
 
-    // AtomicOp should be able to get settings properly
+    // Transaction should be able to get settings properly
     let op = tree.new_operation().unwrap();
     let op_settings = op.get_settings().unwrap();
     match op_settings.get("name").unwrap() {

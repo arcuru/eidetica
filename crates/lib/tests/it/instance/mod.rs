@@ -1,6 +1,6 @@
-//! BaseDB integration tests
+//! Instance integration tests
 //!
-//! This module tests BaseDB functionality including database operations, tree management,
+//! This module tests Instance functionality including database operations, tree management,
 //! settings configuration, and basic operations. Tests are organized by functional area
 //! for better maintainability.
 

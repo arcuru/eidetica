@@ -1,7 +1,7 @@
 //! Generic transport conformance tests that work with any SyncTransport implementation
 //!
 //! These tests verify that all transport implementations provide consistent behavior
-//! for syncing entries between BaseDB instances.
+//! for syncing entries between Instance instances.
 
 use std::time::Duration;
 use tokio::time::sleep;
@@ -12,7 +12,7 @@ use eidetica::backend::database::InMemory;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
 
-/// Set up two BaseDB instances with private keys
+/// Set up two Instance instances with private keys
 async fn setup_databases() -> Result<(Instance, Instance)> {
     let db1 = {
         let db = Instance::new(Box::new(InMemory::new()));
@@ -183,7 +183,7 @@ where
         "✅ Successfully verified entries synced via {} transport",
         factory.transport_name()
     );
-    println!("   - Entries accessible via normal BaseDB/DocStore interfaces");
+    println!("   - Entries accessible via normal Instance/DocStore interfaces");
     println!("   - Data integrity maintained across sync");
 
     cleanup_sync(sync1, sync2).await?;

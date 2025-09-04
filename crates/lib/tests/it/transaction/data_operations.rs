@@ -1,4 +1,4 @@
-//! Data operation tests for AtomicOp
+//! Data operation tests for Transaction
 //!
 //! This module contains tests focused on data manipulation including
 //! deletes, nested values, and staging isolation.
@@ -215,7 +215,7 @@ fn test_nested_map_operations() {
         _ => panic!("Expected Map value"),
     }
 
-    // Test integration with AtomicOp
+    // Test integration with Transaction
     let entry_id = create_operation_with_nested_data(&tree);
     assert!(!entry_id.to_string().is_empty());
 

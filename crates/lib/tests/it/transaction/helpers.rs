@@ -1,6 +1,6 @@
-//! Comprehensive helper functions for AtomicOp testing
+//! Comprehensive helper functions for Transaction testing
 //!
-//! This module provides utilities for testing AtomicOp functionality including
+//! This module provides utilities for testing Transaction functionality including
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use crate::helpers::*;

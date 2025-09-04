@@ -1,4 +1,4 @@
-//! Path finding and LCA algorithm tests for AtomicOp
+//! Path finding and LCA algorithm tests for Transaction
 //!
 //! This module contains tests for complex scenarios involving LCA (Lowest Common Ancestor)
 //! computation, path finding, and deterministic ordering in diamond and merge patterns.

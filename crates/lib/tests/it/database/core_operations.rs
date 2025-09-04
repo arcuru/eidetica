@@ -109,7 +109,7 @@ fn test_subtree_operations() {
     // Commit the second operation
     op2.commit().expect("Failed to commit second operation");
 
-    // --- Test SubTree viewers for reading final data ---
+    // --- Test Store viewers for reading final data ---
     let users_viewer2 = tree
         .get_subtree_viewer::<DocStore>("users")
         .expect("Failed to get users viewer (2)");

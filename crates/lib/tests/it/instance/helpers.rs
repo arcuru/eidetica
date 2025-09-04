@@ -1,6 +1,6 @@
-//! Comprehensive helper functions for BaseDB testing
+//! Comprehensive helper functions for Instance testing
 //!
-//! This module provides utilities for testing BaseDB functionality including
+//! This module provides utilities for testing Instance functionality including
 //! database operations, tree management, settings configuration, and basic operations.
 
 use crate::helpers::setup_db_with_key;
@@ -13,7 +13,7 @@ use eidetica::store::DocStore;
 
 // ===== DATABASE SETUP HELPERS =====
 
-/// Create a simple BaseDB without authentication
+/// Create a simple Instance without authentication
 pub fn setup_simple_db() -> Instance {
     let backend = Box::new(InMemory::new());
     Instance::new(backend)

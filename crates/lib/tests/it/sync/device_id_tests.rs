@@ -6,7 +6,7 @@ use super::helpers::*;
 fn test_device_id_functionality() {
     let (base_db, _sync) = setup();
 
-    // Get device ID from BaseDB
+    // Get device ID from Instance
     let base_db_device_id = base_db.device_id_string().unwrap();
 
     // Verify device ID format (should be ed25519:base64)
@@ -20,7 +20,7 @@ fn test_device_id_unique_across_databases() {
     let base_db1 = std::sync::Arc::new(crate::helpers::setup_db());
     let base_db2 = std::sync::Arc::new(crate::helpers::setup_db());
 
-    // Device IDs should be different (each BaseDB generates its own unique device key)
+    // Device IDs should be different (each Instance generates its own unique device key)
     let device_id_1 = base_db1.device_id_string().unwrap();
     let device_id_2 = base_db2.device_id_string().unwrap();
 

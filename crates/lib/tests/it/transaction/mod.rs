@@ -1,6 +1,6 @@
-//! AtomicOp integration tests
+//! Transaction integration tests
 //!
-//! This module tests AtomicOp functionality including basic operations,
+//! This module tests Transaction functionality including basic operations,
 //! data manipulation, custom tips, and path finding algorithms.
 //! Tests are organized by functional category for better maintainability.
 

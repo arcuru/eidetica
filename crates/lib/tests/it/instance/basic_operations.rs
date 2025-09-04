@@ -1,6 +1,6 @@
 //! Basic operation tests
 //!
-//! This module contains tests for basic BaseDB operations through trees including
+//! This module contains tests for basic Instance operations through trees including
 //! subtree modifications, data operations, and integration with tree functionality.
 
 use super::helpers::*;

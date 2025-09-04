@@ -13,7 +13,7 @@ use std::time::Duration;
 
 // ===== SETUP HELPERS =====
 
-/// Create a BaseDB Arc with authentication key
+/// Create a Instance Arc with authentication key
 pub fn setup_db() -> Arc<Instance> {
     Arc::new(crate::helpers::setup_db())
 }
@@ -25,7 +25,7 @@ pub fn setup() -> (Arc<Instance>, Sync) {
     (base_db, sync)
 }
 
-/// Create BaseDB with initialized sync module
+/// Create Instance with initialized sync module
 pub fn setup_basedb_with_initialized() -> Instance {
     let base_db = crate::helpers::setup_db();
     base_db.with_sync().expect("Failed to initialize sync")
