@@ -114,7 +114,7 @@ impl Error {
             Error::Backend(backend_err) => backend_err.is_not_found(),
             Error::Instance(base_err) => base_err.is_not_found(),
             Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
-            Error::Store(subtree_err) => subtree_err.is_not_found(),
+            Error::Store(store_err) => store_err.is_not_found(),
             Error::Sync(sync_err) => sync_err.is_not_found(),
             _ => false,
         }
@@ -124,7 +124,7 @@ impl Error {
     pub fn is_permission_denied(&self) -> bool {
         match self {
             Error::Auth(auth_err) => auth_err.is_permission_denied(),
-            Error::Transaction(atomicop_err) => atomicop_err.is_authentication_error(),
+            Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -142,7 +142,7 @@ impl Error {
         match self {
             Error::Auth(_) => true,
             Error::Instance(base_err) => base_err.is_authentication_error(),
-            Error::Transaction(atomicop_err) => atomicop_err.is_authentication_error(),
+            Error::Transaction(transaction_err) => transaction_err.is_authentication_error(),
             _ => false,
         }
     }
@@ -179,7 +179,7 @@ impl Error {
         match self {
             Error::Instance(base_err) => base_err.is_validation_error(),
             Error::Backend(backend_err) => backend_err.is_logical_error(),
-            Error::Transaction(atomicop_err) => atomicop_err.is_validation_error(),
+            Error::Transaction(transaction_err) => transaction_err.is_validation_error(),
             _ => false,
         }
     }
@@ -188,8 +188,8 @@ impl Error {
     pub fn is_operation_error(&self) -> bool {
         match self {
             Error::Instance(base_err) => base_err.is_operation_error(),
-            Error::Store(subtree_err) => subtree_err.is_operation_error(),
-            Error::Transaction(atomicop_err) => atomicop_err.is_validation_error(),
+            Error::Store(store_err) => store_err.is_operation_error(),
+            Error::Transaction(transaction_err) => transaction_err.is_validation_error(),
             _ => false,
         }
     }
@@ -197,7 +197,7 @@ impl Error {
     /// Check if this error is type-related.
     pub fn is_type_error(&self) -> bool {
         match self {
-            Error::Store(subtree_err) => subtree_err.is_type_error(),
+            Error::Store(store_err) => store_err.is_type_error(),
             _ => false,
         }
     }
@@ -231,23 +231,23 @@ impl Error {
         }
     }
 
-    /// Check if this error is subtree-related.
-    pub fn is_subtree_error(&self) -> bool {
+    /// Check if this error is store-related.
+    pub fn is_store_error(&self) -> bool {
         matches!(self, Error::Store(_))
     }
 
-    /// Check if this error is a subtree serialization failure.
-    pub fn is_subtree_serialization_error(&self) -> bool {
+    /// Check if this error is a store serialization failure.
+    pub fn is_store_serialization_error(&self) -> bool {
         match self {
-            Error::Store(subtree_err) => subtree_err.is_serialization_error(),
+            Error::Store(store_err) => store_err.is_serialization_error(),
             _ => false,
         }
     }
 
-    /// Check if this error is a subtree type mismatch.
-    pub fn is_subtree_type_error(&self) -> bool {
+    /// Check if this error is a store type mismatch.
+    pub fn is_store_type_error(&self) -> bool {
         match self {
-            Error::Store(subtree_err) => subtree_err.is_type_error(),
+            Error::Store(store_err) => store_err.is_type_error(),
             _ => false,
         }
     }
@@ -255,7 +255,7 @@ impl Error {
     /// Check if this error indicates an operation was already committed.
     pub fn is_already_committed(&self) -> bool {
         match self {
-            Error::Transaction(atomicop_err) => atomicop_err.is_already_committed(),
+            Error::Transaction(transaction_err) => transaction_err.is_already_committed(),
             _ => false,
         }
     }
@@ -263,7 +263,7 @@ impl Error {
     /// Check if this error is related to entry operations.
     pub fn is_entry_error(&self) -> bool {
         match self {
-            Error::Transaction(atomicop_err) => atomicop_err.is_entry_error(),
+            Error::Transaction(transaction_err) => transaction_err.is_entry_error(),
             _ => false,
         }
     }
