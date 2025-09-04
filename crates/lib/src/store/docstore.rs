@@ -7,9 +7,9 @@ use crate::crdt::{CRDT, Doc};
 use crate::store::errors::StoreError;
 use std::str::FromStr;
 
-/// A document-oriented SubTree providing ergonomic access to Doc CRDT data.
+/// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///
-/// It assumes that the SubTree data is a Doc CRDT, which allows for nested document structures.
+/// It assumes that the Store data is a Doc CRDT, which allows for nested document structures.
 /// This implementation supports string values, as well as deletions via tombstones.
 /// For more complex data structures, consider using the nested capabilities of Doc directly.
 pub struct DocStore {
@@ -31,11 +31,11 @@ impl Store for DocStore {
 }
 
 impl DocStore {
-    /// Gets a value associated with a key from the SubTree.
+    /// Gets a value associated with a key from the Store.
     ///
-    /// This method prioritizes returning data staged within the current `AtomicOp`.
+    /// This method prioritizes returning data staged within the current `Transaction`.
     /// If the key is not found in the staged data it retrieves the fully merged historical
-    /// state from the backend up to the point defined by the `AtomicOp`'s parents and
+    /// state from the backend up to the point defined by the `Transaction`'s parents and
     /// returns the value from there.
     ///
     /// # Arguments
@@ -69,7 +69,7 @@ impl DocStore {
         }
     }
 
-    /// Gets a string value associated with a key from the SubTree.
+    /// Gets a string value associated with a key from the Store.
     ///
     /// This is a convenience method that calls `get()` and expects the value to be a string.
     ///
@@ -109,14 +109,14 @@ impl DocStore {
         }
     }
 
-    /// Stages the setting of a key-value pair within the associated `AtomicOp`.
+    /// Stages the setting of a key-value pair within the associated `Transaction`.
     ///
-    /// This method updates the `Map` data held within the `AtomicOp` for this
+    /// This method updates the `Map` data held within the `Transaction` for this
     /// `Doc` instance's subtree name. The change is **not** persisted to the backend
-    /// until the `AtomicOp::commit()` method is called.
+    /// until the `Transaction::commit()` method is called.
     ///
-    /// Calling this method on a `Doc` obtained via `Tree::get_subtree_viewer` is possible
-    /// but the changes will be ephemeral and discarded, as the viewer's underlying `AtomicOp`
+    /// Calling this method on a `Doc` obtained via `Database::get_store_viewer` is possible
+    /// but the changes will be ephemeral and discarded, as the viewer's underlying `Transaction`
     /// is not intended to be committed.
     ///
     /// # Arguments
@@ -145,7 +145,7 @@ impl DocStore {
         self.set(key, Value::Text(value.into()))
     }
 
-    /// Stages the setting of a nested value within the associated `AtomicOp`.
+    /// Stages the setting of a nested value within the associated `Transaction`.
     ///
     /// This method allows setting any valid Value type (String, Map, or Deleted).
     ///
@@ -361,7 +361,7 @@ impl DocStore {
     /// Mutable access methods for transaction-based modification
     ///
     /// These methods work with DocStore's staging model, where changes are staged
-    /// in the AtomicOp transaction rather than modified in-place.
+    /// in the Transaction transaction rather than modified in-place.
     ///
     /// Get or insert a value with a default.
     ///
@@ -415,7 +415,7 @@ impl DocStore {
     /// 1. Getting the current value (from local staging or historical data)
     /// 2. Converting it to the desired type
     /// 3. Applying the modification closure
-    /// 4. Staging the result back to the AtomicOp
+    /// 4. Staging the result back to the Transaction
     ///
     /// # Errors
     ///
@@ -625,7 +625,7 @@ impl DocStore {
 
     /// Sets a value at the given path, creating intermediate nodes as needed
     ///
-    /// This method stages a path-based set operation in the AtomicOp transaction.
+    /// This method stages a path-based set operation in the Transaction transaction.
     /// The path uses dot notation to navigate and create **nested map structures**.
     /// Intermediate maps are created automatically where necessary.
     ///
@@ -774,12 +774,12 @@ impl DocStore {
         self.modify_path(&pathbuf, f)
     }
 
-    /// Stages the deletion of a key within the associated `AtomicOp`.
+    /// Stages the deletion of a key within the associated `Transaction`.
     ///
     /// This method removes the key-value pair from the `Map` data held within
-    /// the `AtomicOp` for this `Doc` instance's subtree name. A tombstone is created,
+    /// the `Transaction` for this `Doc` instance's subtree name. A tombstone is created,
     /// which will propagate the deletion when merged with other data. The change is **not**
-    /// persisted to the backend until the `AtomicOp::commit()` method is called.
+    /// persisted to the backend until the `Transaction::commit()` method is called.
     ///
     /// When using the `get` method, deleted keys will return `Error::NotFound`. However,
     /// the deletion is still tracked internally as a tombstone, which ensures that the
@@ -829,7 +829,7 @@ impl DocStore {
 
     /// Retrieves all key-value pairs as a Doc, merging staged and historical state.
     ///
-    /// This method combines the data staged within the current `AtomicOp` with the
+    /// This method combines the data staged within the current `Transaction` with the
     /// fully merged historical state from the backend, providing a complete view
     /// of the document as it would appear if the operation were committed.
     /// The staged data takes precedence in case of conflicts (overwrites).
@@ -997,16 +997,16 @@ impl DocStore {
     /// allowing immediate use of map-modifying methods. The type can be changed
     /// later using `ValueEditor::set()`.
     ///
-    /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Doc`'s backend.
+    /// Changes made via the `ValueEditor` are staged in the `Transaction` by its `set` method
+    /// and must be committed via `Transaction::commit()` to be persisted to the `Doc`'s backend.
     pub fn get_value_mut(&self, key: impl Into<String>) -> ValueEditor<'_> {
         ValueEditor::new(self, vec![key.into()])
     }
 
     /// Gets a mutable editor for the root of this Doc's subtree.
     ///
-    /// Changes made via the `ValueEditor` are staged in the `AtomicOp` by its `set` method
-    /// and must be committed via `AtomicOp::commit()` to be persisted to the `Doc`'s backend.
+    /// Changes made via the `ValueEditor` are staged in the `Transaction` by its `set` method
+    /// and must be committed via `Transaction::commit()` to be persisted to the `Doc`'s backend.
     pub fn get_root_mut(&self) -> ValueEditor<'_> {
         ValueEditor::new(self, Vec::new())
     }
@@ -1018,7 +1018,7 @@ impl DocStore {
     /// content of this Doc's named subtree as a `Value::Node`.
     ///
     /// This method operates on the fully merged view of the Doc's data,
-    /// including any local changes from the current `AtomicOp` layered on top
+    /// including any local changes from the current `Transaction` layered on top
     /// of the backend state.
     ///
     /// # Arguments
@@ -1101,13 +1101,13 @@ impl DocStore {
         }
     }
 
-    /// Sets a `Value` at a specified path within the `Doc`'s `AtomicOp`.
+    /// Sets a `Value` at a specified path within the `Doc`'s `Transaction`.
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure.
     ///
-    /// This method modifies the local data associated with the `AtomicOp`. The changes
-    /// are not persisted to the backend until `AtomicOp::commit()` is called.
+    /// This method modifies the local data associated with the `Transaction`. The changes
+    /// are not persisted to the backend until `Transaction::commit()` is called.
     /// If the path does not exist, it will be created. Intermediate non-map values
     /// in the path will be overwritten by maps as needed to complete the path.
     ///
@@ -1120,7 +1120,7 @@ impl DocStore {
     ///
     /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Node`.
     /// * `Error::Serialize` if the updated subtree data cannot be serialized to JSON.
-    /// * Potentially other errors from `AtomicOp::update_subtree`.
+    /// * Potentially other errors from `Transaction::update_subtree`.
     pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
     where
         S: Into<String> + Clone,
@@ -1213,7 +1213,7 @@ impl<'a> ValueEditor<'a> {
     /// Uses the stored keys to traverse the nested data structure and retrieve the value.
     ///
     /// This method starts from the fully merged view of the DocStore's subtree (local
-    /// AtomicOp changes layered on top of backend state) and navigates using the path
+    /// Transaction changes layered on top of backend state) and navigates using the path
     /// specified by `self.keys`. If `self.keys` is empty, it retrieves the root
     /// of the DocStore's subtree.
     ///
@@ -1225,10 +1225,10 @@ impl<'a> ValueEditor<'a> {
         self.kv_store.get_at_path(&self.keys)
     }
 
-    /// Sets a `Value` at the path specified by `self.keys` within the `DocStore`'s `AtomicOp`.
+    /// Sets a `Value` at the path specified by `self.keys` within the `DocStore`'s `Transaction`.
     ///
-    /// This method modifies the local data associated with the `AtomicOp`. The changes
-    /// are not persisted to the backend until `AtomicOp::commit()` is called.
+    /// This method modifies the local data associated with the `Transaction`. The changes
+    /// are not persisted to the backend until `Transaction::commit()` is called.
     /// If the path specified by `self.keys` does not exist, it will be created.
     /// Intermediate non-map values in the path will be overwritten by maps as needed.
     /// If `self.keys` is empty (editor points to root), the provided `value` must
@@ -1266,14 +1266,14 @@ impl<'a> ValueEditor<'a> {
 
     /// Marks the value at the editor's current path as deleted.
     /// This is achieved by setting its value to `Value::Deleted`.
-    /// The change is staged in the `AtomicOp` and needs to be committed.
+    /// The change is staged in the `Transaction` and needs to be committed.
     pub fn delete_self(&self) -> Result<()> {
         self.set(Value::Deleted)
     }
 
     /// Marks the value at the specified child `key` (relative to the editor's current path) as deleted.
     /// This is achieved by setting its value to `Value::Deleted`.
-    /// The change is staged in the `AtomicOp` and needs to be committed.
+    /// The change is staged in the `Transaction` and needs to be committed.
     ///
     /// If the editor points to the root (empty path), this will delete the top-level `key`.
     pub fn delete_child(&self, key: impl Into<String>) -> Result<()> {

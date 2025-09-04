@@ -15,7 +15,7 @@ This document outlines the design principles, architecture decisions, and implem
 
 ### Non-Goals
 
-- **Selective sync**: Sync entire trees only (not partial)
+- **Selective sync**: Sync entire databases only (not partial)
 - **Multi-hop routing**: Direct peer connections only
 - **Complex conflict resolution**: CRDT-based automatic resolution only
 - **Centralized coordination**: No dependency on coordination servers
@@ -53,23 +53,23 @@ The sync system builds on Merkle DAG and CRDT principles:
 
 The sync system uses a thin frontend that sends commands to a background thread:
 
-- Frontend handles API and peer/relationship management in sync tree
+- Frontend handles API and peer/relationship management in sync database
 - Background owns transport and handles network operations
-- Both components access sync tree directly for peer data
+- Both components access sync database directly for peer data
 - Commands used only for operations requiring background processing
 - Failed operations added to retry queue
 
 **Trade-offs:**
 
 - ✅ No circular dependencies or complex locking
-- ✅ Clear ownership model (transport in background, data in sync tree)
+- ✅ Clear ownership model (transport in background, data in sync database)
 - ✅ Works in both async and sync contexts
 - ✅ Graceful startup/shutdown handling
 - ❌ All sync operations serialized through single thread
 
 ### 3. Hook-Based Change Detection
 
-**Decision:** Use trait-based hooks integrated into AtomicOp commit
+**Decision:** Use trait-based hooks integrated into Transaction commit
 
 **Rationale:**
 
@@ -86,8 +86,8 @@ trait SyncHook {
     fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
 }
 
-// Integration point in AtomicOp
-impl AtomicOp {
+// Integration point in Transaction
+impl Transaction {
     pub fn commit(self) -> Result<ID> {
         let entry = self.build_and_store_entry()?;
 
@@ -204,34 +204,34 @@ pub struct IrohTransport {
 
 ### 5. Persistent State Management
 
-**Decision:** All peer and relationship state stored persistently in sync tree
+**Decision:** All peer and relationship state stored persistently in sync database
 
 **Architecture:**
 
 ```text
-Sync Tree (Persistent):
+Sync Database (Persistent):
 ├── peers/{peer_pubkey} -> PeerInfo (addresses, status, metadata)
-├── relationships/{peer}/{tree} -> SyncRelationship
-├── sync_state/cursors/{peer}/{tree} -> SyncCursor
+├── relationships/{peer}/{database} -> SyncRelationship
+├── sync_state/cursors/{peer}/{database} -> SyncCursor
 ├── sync_state/metadata/{peer} -> SyncMetadata
 └── sync_state/history/{sync_id} -> SyncHistoryEntry
 
 BackgroundSync (Transient):
 ├── retry_queue: Vec<RetryEntry> (failed sends pending retry)
-└── sync_tree_id: ID (reference to sync tree for peer lookups)
+└── sync_tree_id: ID (reference to sync database for peer lookups)
 ```
 
 **Design:**
 
-- All peer data is stored in the sync tree via PeerManager
+- All peer data is stored in the sync database via PeerManager
 - BackgroundSync reads peer information on-demand when needed
-- Frontend writes peer/relationship changes directly to sync tree
+- Frontend writes peer/relationship changes directly to sync database
 - Single source of truth in persistent storage
 
 **Rationale:**
 
 - **Durability**: All critical state survives restarts
-- **Consistency**: Single source of truth in sync tree
+- **Consistency**: Single source of truth in sync database
 - **Recovery**: Full state recovery after failures
 - **Simplicity**: No duplicate state management
 
@@ -242,7 +242,7 @@ BackgroundSync (Transient):
 ```mermaid
 graph LR
     subgraph "Change Detection"
-        A[AtomicOp::commit] --> B[SyncHooks]
+        A[Transaction::commit] --> B[SyncHooks]
         B --> C[SyncHookImpl]
     end
 
@@ -256,7 +256,7 @@ graph LR
         F --> G[Transport Layer]
         G --> H[HTTP/Iroh/Custom]
         F --> I[Retry Queue]
-        F -.->|reads| ST[Sync Tree]
+        F -.->|reads| ST[Sync Database]
     end
 
     subgraph "State Management"
@@ -275,9 +275,9 @@ graph LR
 #### 1. Entry Commit Flow
 
 ```text
-1. Application calls tree.new_operation().commit()
-2. AtomicOp stores entry in backend
-3. AtomicOp executes sync hooks
+1. Application calls database.new_operation().commit()
+2. Transaction stores entry in backend
+3. Transaction executes sync hooks
 4. SyncHookImpl creates QueueEntry command
 5. Command sent to BackgroundSync via channel
 6. BackgroundSync fetches entry from backend
@@ -301,8 +301,8 @@ graph LR
 
 ```text
 1. Application calls sync.add_tree_sync(peer_id, tree_id)
-2. PeerManager stores relationship in sync tree
-3. Future commits to tree trigger sync hooks
+2. PeerManager stores relationship in sync database
+3. Future commits to database trigger sync hooks
 4. SyncChangeDetector finds this peer in relationships
 5. Entries queued for sync with this peer
 ```
@@ -316,7 +316,7 @@ The BackgroundSync engine processes commands sent from the frontend:
 - **SendEntries**: Direct entry transmission to peer
 - **QueueEntry**: Entry committed, needs sync
 - **AddPeer/RemovePeer**: Peer registry management
-- **CreateRelationship**: Tree-peer sync mapping
+- **CreateRelationship**: Database-peer sync mapping
 - **StartServer/StopServer**: Transport server control
 - **ConnectToPeer**: Establish peer connection
 - **SyncWithPeer**: Trigger bidirectional sync
@@ -587,7 +587,7 @@ pub struct SyncFlushConfig {
 
 - 2-peer bidirectional sync
 - 3+ peer mesh networks
-- Tree sync relationship management
+- Database sync relationship management
 - Network failure recovery
 
 **Performance testing:**
@@ -640,7 +640,7 @@ pub struct SyncFlushConfig {
 
 ### Planned Enhancements
 
-1. **Selective sync:** Per-subtree sync control
+1. **Selective sync:** Per-store sync control
 2. **Conflict resolution:** Advanced merge strategies
 3. **Performance:** Compression and protocol optimization
 4. **Monitoring:** Rich metrics and observability

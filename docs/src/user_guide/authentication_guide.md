@@ -7,23 +7,23 @@ How to use Eidetica's authentication system for securing your data.
 Every Eidetica database requires authentication. Here's the minimal setup:
 
 ```rust,ignore
-use eidetica::{BaseDB, backend::database::InMemory};
+use eidetica::{Instance, backend::database::InMemory};
 use eidetica::crdt::Doc;
 
 // Create database
 let database = InMemory::new();
-let db = BaseDB::new(Box::new(database));
+let db = Instance::new(Box::new(database));
 
 // Add an authentication key (generates Ed25519 keypair)
 db.add_private_key("my_key")?;
 
-// Create a tree using that key
+// Create a database using that key
 let mut settings = Doc::new();
 settings.set("name", "my_tree");
-let tree = db.new_tree(settings, "my_key")?;
+let database = db.new_tree(settings, "my_key")?;
 
 // All operations are now authenticated
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 // ... make changes ...
 op.commit()?;  // Automatically signed
 ```
@@ -38,18 +38,18 @@ op.commit()?;  // Automatically signed
 - **Write**: Can read and write data
 - **Read**: Can only read data
 
-**Key Storage**: Private keys are stored in BaseDB, public keys in tree settings.
+**Key Storage**: Private keys are stored in Instance, public keys in database settings.
 
 ## Common Tasks
 
 ### Adding Users
 
-Give other users access to your tree:
+Give other users access to your database:
 
 ```rust,ignore
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let auth = op.auth_settings()?;
 
 // Add a user with write access
@@ -65,10 +65,10 @@ op.commit()?;
 
 ### Making Data Public
 
-Allow anyone to read your tree:
+Allow anyone to read your database:
 
 ```rust,ignore
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let auth = op.auth_settings()?;
 
 // Wildcard key for public read access
@@ -87,7 +87,7 @@ op.commit()?;
 Remove a user's access:
 
 ```rust,ignore
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let auth = op.auth_settings()?;
 
 // Revoke the key
@@ -105,7 +105,7 @@ Note: Historical entries created by revoked keys remain valid.
 
 ```rust,ignore
 // Initial setup with admin hierarchy
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let auth = op.auth_settings()?;
 
 // Super admin (priority 0 - highest)
@@ -139,16 +139,16 @@ op.commit()?;
 3. **Regular key rotation**: Periodically update keys for security
 4. **Backup admin keys**: Keep secure copies of critical admin keys
 
-## Advanced: Cross-Tree Authentication
+## Advanced: Cross-Database Authentication
 
-Trees can delegate authentication to other trees:
+Databases can delegate authentication to other databases:
 
 ```rust,ignore
-// In main tree, delegate to a user's personal tree
+// In main database, delegate to a user's personal database
 let op = main_tree.new_operation()?;
 let auth = op.auth_settings()?;
 
-// Reference another tree for authentication
+// Reference another database for authentication
 auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
     tree_root: "USER_TREE_ROOT_ID".to_string(),
     max_permission: Permission::Write(15),
@@ -158,13 +158,13 @@ auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
 op.commit()?;
 ```
 
-This allows users to manage their own keys in their personal trees while accessing your tree with appropriate permissions.
+This allows users to manage their own keys in their personal databases while accessing your database with appropriate permissions.
 
 ## Troubleshooting
 
 **"Authentication failed"**: Check that:
 
-- The key exists in tree settings
+- The key exists in database settings
 - The key status is Active (not Revoked)
 - The key has sufficient permissions for the operation
 
@@ -177,6 +177,6 @@ This allows users to manage their own keys in their personal trees while accessi
 
 ## See Also
 
-- [Core Concepts](core_concepts.md) - Understanding Trees and Entries
+- [Core Concepts](core_concepts.md) - Understanding Databases and Entries
 - [Getting Started](getting_started.md) - Basic database setup
 - [Authentication Details](../internal/core_components/authentication.md) - Technical implementation

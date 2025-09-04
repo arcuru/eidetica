@@ -67,8 +67,8 @@ pub enum TransactionError {
     #[error("Backend operation failed during commit: {reason}")]
     BackendOperationFailed { reason: String },
 
-    /// Tree state validation failed
-    #[error("Tree state validation failed: {reason}")]
+    /// Database state validation failed
+    #[error("Database state validation failed: {reason}")]
     TreeStateValidationFailed { reason: String },
 
     /// Metadata construction failed

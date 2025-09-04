@@ -31,10 +31,10 @@ struct EntryMetadata {
     entropy: Option<u64>,
 }
 
-/// Represents a single, atomic transaction for modifying a `Tree`.
+/// Represents a single, atomic transaction for modifying a `Database`.
 ///
-/// An `AtomicOp` encapsulates a mutable `EntryBuilder` being constructed. Users interact with
-/// specific `SubTree` instances obtained via `AtomicOp::get_subtree` to stage changes.
+/// An `Transaction` encapsulates a mutable `EntryBuilder` being constructed. Users interact with
+/// specific `Store` instances obtained via `Transaction::get_subtree` to stage changes.
 /// All staged changes across different subtrees within the operation are recorded
 /// in the internal `EntryBuilder`.
 ///
@@ -46,7 +46,7 @@ struct EntryMetadata {
 /// 5. Signs the entry if authentication is configured
 /// 6. Persists the resulting immutable `Entry` to the backend
 ///
-/// `AtomicOp` instances are typically created via `Tree::new_operation()`.
+/// `Transaction` instances are typically created via `Database::new_operation()`.
 #[derive(Clone)]
 pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
@@ -60,7 +60,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Creates a new atomic operation for a specific `Tree` with custom parent tips.
+    /// Creates a new atomic operation for a specific `Database` with custom parent tips.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
     /// specified tips instead of the current tree tips. This allows creating
@@ -70,7 +70,7 @@ impl Transaction {
     /// for testing and advanced use cases.
     ///
     /// # Arguments
-    /// * `tree` - The `Tree` this operation will modify.
+    /// * `tree` - The `Database` this operation will modify.
     /// * `tips` - The specific parent tips to use for this operation. Must contain at least one tip.
     ///
     /// # Returns
@@ -191,7 +191,7 @@ impl Transaction {
     ///
     /// // Read a setting
     /// if let Ok(name) = settings.get_string("name") {
-    ///     println!("Tree name: {}", name);
+    ///     println!("Database name: {}", name);
     /// }
     ///
     /// // Modify a setting
@@ -227,7 +227,7 @@ impl Transaction {
 
     /// Stages an update for a specific subtree within this atomic operation.
     ///
-    /// This method is primarily intended for internal use by `SubTree` implementations
+    /// This method is primarily intended for internal use by `Store` implementations
     /// (like `DocStore::set`). It records the serialized `data` for the given `subtree`
     /// name within the operation's internal `EntryBuilder`.
     ///
@@ -271,24 +271,24 @@ impl Transaction {
         Ok(())
     }
 
-    /// Gets a handle to a specific `SubTree` for modification within this operation.
+    /// Gets a handle to a specific `Store` for modification within this operation.
     ///
-    /// This method creates and returns an instance of the specified `SubTree` type `T`,
-    /// associated with this `AtomicOp`. The returned `SubTree` handle can be used to
+    /// This method creates and returns an instance of the specified `Store` type `T`,
+    /// associated with this `Transaction`. The returned `Store` handle can be used to
     /// stage changes (e.g., using `DocStore::set`) for the `subtree_name`.
-    /// These changes are recorded within this `AtomicOp`.
+    /// These changes are recorded within this `Transaction`.
     ///
     /// If this is the first time this `subtree_name` is accessed within the operation,
     /// its parent tips will be fetched and stored.
     ///
     /// # Type Parameters
-    /// * `T` - The concrete `SubTree` implementation type to create.
+    /// * `T` - The concrete `Store` implementation type to create.
     ///
     /// # Arguments
     /// * `subtree_name` - The name of the subtree to get a modification handle for.
     ///
     /// # Returns
-    /// A `Result<T>` containing the `SubTree` handle.
+    /// A `Result<T>` containing the `Store` handle.
     pub fn get_subtree<T>(&self, subtree_name: impl Into<String>) -> Result<T>
     where
         T: Store,
@@ -326,14 +326,14 @@ impl Transaction {
             }
         }
 
-        // Now create the SubTree with the atomic operation
+        // Now create the Store with the atomic operation
         T::new(self, subtree_name)
     }
 
     /// Gets the currently staged data for a specific subtree within this operation.
     ///
-    /// This is intended for use by `SubTree` implementations to retrieve the data
-    /// they have staged locally within the `AtomicOp` before potentially merging
+    /// This is intended for use by `Store` implementations to retrieve the data
+    /// they have staged locally within the `Transaction` before potentially merging
     /// it with historical data.
     ///
     /// # Type Parameters
@@ -385,12 +385,12 @@ impl Transaction {
     /// Gets the fully merged historical state of a subtree up to the point this operation began.
     ///
     /// This retrieves all relevant historical entries for the `subtree_name` from the backend,
-    /// considering the parent tips recorded when this `AtomicOp` was created (or when the
+    /// considering the parent tips recorded when this `Transaction` was created (or when the
     /// subtree was first accessed within the operation). It deserializes the data from each
     /// relevant entry into the CRDT type `T` and merges them according to `T`'s `CRDT::merge`
     /// implementation.
     ///
-    /// This is intended for use by `SubTree` implementations (e.g., in their `get` or `get_all` methods)
+    /// This is intended for use by `Store` implementations (e.g., in their `get` or `get_all` methods)
     /// to provide the historical context against which staged changes might be applied or compared.
     ///
     /// # Type Parameters

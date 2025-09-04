@@ -1,7 +1,7 @@
 **Implementation Status**:
 
 - ✅ **Direct Keys** - Fully implemented and functional
-- ✅ **Delegated Trees** - Fully implemented and functional with comprehensive test coverage
+- ✅ **Delegated Databases** - Fully implemented and functional with comprehensive test coverage
 
 # Authentication Design
 
@@ -26,18 +26,18 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Key Lifecycle](#key-lifecycle)
     - [Key Status Semantics](#key-status-semantics)
     - [Priority System](#priority-system)
-  - [Delegation (Delegated Trees)](#delegation-delegated-trees)
+  - [Delegation (Delegated Databases)](#delegation-delegated-databases)
     - [Concept and Benefits](#concept-and-benefits)
     - [Structure](#structure)
     - [Permission Clamping](#permission-clamping)
     - [Multi-Level References](#multi-level-references)
-    - [Delegated Tree References](#delegated-tree-references)
+    - [Delegated Database References](#delegated-database-references)
       - [Latest Known Tips](#latest-known-tips)
       - [Tip Tracking and Validation](#tip-tracking-and-validation)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
-    - [Key Status Changes in Delegated Trees: Examples](#key-status-changes-in-delegated-trees-examples)
-      - [Example 1: Basic Delegated Tree Key Status Change](#example-1-basic-delegated-tree-key-status-change)
+    - [Key Status Changes in Delegated Databases: Examples](#key-status-changes-in-delegated-databases-examples)
+      - [Example 1: Basic Delegated Database Key Status Change](#example-1-basic-delegated-database-key-status-change)
       - [Example 2: Last Write Wins Conflict Resolution](#example-2-last-write-wins-conflict-resolution)
   - [Authorization Scenarios](#authorization-scenarios)
     - [Network Partition Recovery](#network-partition-recovery)
@@ -68,7 +68,7 @@ Eidetica's authentication scheme is designed to leverage the same CRDT and Merkl
 
 **As of the current implementation, authentication is mandatory for all entries.** All database operations require valid Ed25519 signatures, eliminating the concept of unsigned entries. This ensures data integrity and provides a consistent security model across all operations.
 
-The authentication system is **not** implemented as a pure consumer of the database API but is tightly integrated with the core system. This integration enables efficient validation and conflict resolution during entry creation and tree merging operations.
+The authentication system is **not** implemented as a pure consumer of the database API but is tightly integrated with the core system. This integration enables efficient validation and conflict resolution during entry creation and database merging operations.
 
 ## Design Goals and Principles
 
@@ -78,7 +78,7 @@ The authentication system is **not** implemented as a pure consumer of the datab
 2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
 3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
 4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
-5. **Delegation**: Support for delegating authentication to other trees without granting admin privileges (infrastructure built, activation pending)
+5. **Delegation**: Support for delegating authentication to other databases without granting admin privileges (infrastructure built, activation pending)
 6. **Auditability**: All authentication changes are tracked in the immutable DAG history
 
 ### Non-Goals
@@ -90,21 +90,21 @@ The authentication system is **not** implemented as a pure consumer of the datab
 
 ### Authentication Data Location
 
-Authentication configuration is stored in the special `_settings` subtree under the `auth` key. This placement ensures that:
+Authentication configuration is stored in the special `_settings` store under the `auth` key. This placement ensures that:
 
-- Authentication rules are included in `_settings`, which contains all the data necessary to validate the tree and add new Entries
+- Authentication rules are included in `_settings`, which contains all the data necessary to validate the database and add new Entries
 - Access control changes are tracked in the immutable history
 - Settings can be validated against the current entry being created
 
-The `_settings` subtree uses the `crate::crdt::Doc` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
+The `_settings` store uses the `crate::crdt::Doc` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
 
-**Clarification**: Throughout this document, when we refer to `Doc`, this is the hierarchical CRDT document type that wraps internal Node structures supporting nested maps. The `_settings` subtree specifically uses `Doc` to enable complex authentication configurations.
+**Clarification**: Throughout this document, when we refer to `Doc`, this is the hierarchical CRDT document type that wraps internal Node structures supporting nested maps. The `_settings` store specifically uses `Doc` to enable complex authentication configurations.
 
 ### Permission Hierarchy
 
 Eidetica implements a three-tier permission model:
 
-| Permission Level | Modify `_settings` | Add/Remove Keys | Change Permissions | Read Data | Write Data | Public Tree Access |
+| Permission Level | Modify `_settings` | Add/Remove Keys | Change Permissions | Read Data | Write Data | Public Database Access |
 | ---------------- | ------------------ | --------------- | ------------------ | --------- | ---------- | ------------------ |
 | **Admin**        | ✓                  | ✓               | ✓                  | ✓         | ✓          | ✓                  |
 | **Write**        | ✗                  | ✗               | ✗                  | ✓         | ✓          | ✓                  |
@@ -141,7 +141,7 @@ classDiagram
     AuthKey --> KeyStatus
 ```
 
-**Note**: Both direct keys and delegated trees are fully implemented and functional, including `DelegatedTreeRef`, `PermissionBounds`, and `TreeReference` types.
+**Note**: Both direct keys and delegated databases are fully implemented and functional, including `DelegatedTreeRef`, `PermissionBounds`, and `TreeReference` types.
 
 ### Direct Key Example
 
@@ -170,7 +170,7 @@ classDiagram
         "status": "active"
       }
     },
-    "name": "My Tree"
+    "name": "My Database"
   }
 }
 ```
@@ -178,9 +178,9 @@ classDiagram
 **Note**: The wildcard key `*` enables global permissions for anyone. Wildcard keys:
 
 - Can have any permission level: "read", "write:N", or "admin:N"
-- Are commonly used for world-readable trees (with "read" permissions) but can grant broader access
+- Are commonly used for world-readable databases (with "read" permissions) but can grant broader access
 - Can be revoked like any other key
-- Can be included in delegated trees (if you delegate to a tree with a wildcard, that's valid)
+- Can be included in delegated databases (if you delegate to a database with a wildcard, that's valid)
 
 ### Entry Signing Format
 
@@ -188,13 +188,13 @@ Every entry in Eidetica must be signed. The authentication information is embedd
 
 ```json
 {
-  "tree": {
+  "database": {
     "root": "tree_root_id",
     "parents": ["parent_entry_id"],
     "data": "{\"key\": \"value\"}",
     "metadata": "{\"_settings\": [\"settings_tip_id\"]}"
   },
-  "subtrees": [
+  "stores": [
     {
       "name": "users",
       "parents": ["parent_entry_id"],
@@ -210,7 +210,7 @@ Every entry in Eidetica must be signed. The authentication information is embedd
 
 The `auth.key` field can be either:
 
-- **Direct key**: A string referencing a key name in this tree's `_settings.auth`
+- **Direct key**: A string referencing a key name in this database's `_settings.auth`
 - **Delegation path**: An ordered list of `{"key": "delegated_tree_1", "tips": ["A", "B"]}` elements, where the last element must contain only a `"key"` field
 
 The `auth.sig` field contains the base64-encoded Ed25519 signature of the entry's content hash.
@@ -258,31 +258,31 @@ Priority values are u32 integers where lower values indicate higher priority:
 
 **Important**: Priority **only** affects administrative operations (key management). It does **not** influence CRDT merge conflict resolution, which uses Last Write Wins semantics based on the DAG structure.
 
-## Delegation (Delegated Trees)
+## Delegation (Delegated Databases)
 
-**Status**: Fully implemented and functional with comprehensive test coverage. Delegated trees enable powerful authentication delegation patterns.
+**Status**: Fully implemented and functional with comprehensive test coverage. Delegated databases enable powerful authentication delegation patterns.
 
 ### Concept and Benefits
 
-Delegation allows any tree to be referenced as a source of authentication keys for another tree. This enables flexible authentication patterns where trees can delegate authentication to other trees without granting administrative privileges on the delegating tree. Key benefits include:
+Delegation allows any database to be referenced as a source of authentication keys for another database. This enables flexible authentication patterns where databases can delegate authentication to other databases without granting administrative privileges on the delegating database. Key benefits include:
 
-- **Flexible Delegation**: Any tree can delegate authentication to any other tree
-- **User Autonomy**: Users can manage their own personal trees with keys they control
-- **Cross-Project Authentication**: Share authentication across multiple projects or trees
+- **Flexible Delegation**: Any database can delegate authentication to any other database
+- **User Autonomy**: Users can manage their own personal databases with keys they control
+- **Cross-Project Authentication**: Share authentication across multiple projects or databases
 - **Granular Permissions**: Set both minimum and maximum permission bounds for delegated keys
 
-Delegated trees are normal trees, and their authentication settings are used with permission clamping applied.
+Delegated databases are normal databases, and their authentication settings are used with permission clamping applied.
 
-**Important**: Any tree can be used as a delegated tree - there's no special "authentication tree" type. This means:
+**Important**: Any database can be used as a delegated database - there's no special "authentication database" type. This means:
 
-- A project's main tree can delegate to a user's personal tree
-- Multiple projects can delegate to the same shared authentication tree
-- Trees can form delegation networks where trees delegate to each other
-- The delegated tree doesn't need to know it's being used for delegation
+- A project's main database can delegate to a user's personal database
+- Multiple projects can delegate to the same shared authentication database
+- Databases can form delegation networks where databases delegate to each other
+- The delegated database doesn't need to know it's being used for delegation
 
 ### Structure
 
-A delegated tree reference in the main tree's `_settings.auth` contains:
+A delegated database reference in the main database's `_settings.auth` contains:
 
 ```json
 {
@@ -293,7 +293,7 @@ A delegated tree reference in the main tree's `_settings.auth` contains:
           "max": "write:15",
           "min": "read" // optional, defaults to no minimum
         },
-        "tree": {
+        "database": {
           "root": "hash_of_root_entry",
           "tips": ["hash1", "hash2"]
         }
@@ -302,7 +302,7 @@ A delegated tree reference in the main tree's `_settings.auth` contains:
         "permission-bounds": {
           "max": "admin:20" // min not specified, so no minimum bound
         },
-        "tree": {
+        "database": {
           "root": "hash_of_another_root",
           "tips": ["hash3"]
         }
@@ -312,7 +312,7 @@ A delegated tree reference in the main tree's `_settings.auth` contains:
 }
 ```
 
-The referenced delegated tree maintains its own `_settings.auth` with direct keys:
+The referenced delegated database maintains its own `_settings.auth` with direct keys:
 
 ```json
 {
@@ -335,11 +335,11 @@ The referenced delegated tree maintains its own `_settings.auth` with direct key
 
 ### Permission Clamping
 
-Permissions from delegated trees are clamped based on the `permission-bounds` field in the main tree's reference:
+Permissions from delegated databases are clamped based on the `permission-bounds` field in the main database's reference:
 
-- **max** (required): The maximum permission level that keys from the delegated tree can have
-  - Must be <= the permissions of the key adding the delegated tree reference
-- **min** (optional): The minimum permission level for keys from the delegated tree
+- **max** (required): The maximum permission level that keys from the delegated database can have
+  - Must be <= the permissions of the key adding the delegated database reference
+- **min** (optional): The minimum permission level for keys from the delegated database
   - If not specified, there is no minimum bound
   - If specified, keys with lower permissions are raised to this level
 
@@ -347,30 +347,30 @@ The effective priority is derived from the **effective permission returned after
 
 ```mermaid
 graph LR
-    A["Delegated Tree: admin:5"] --> B["Main Tree: max=write:10, min=read"] --> C["Effective: write:10"]
-    D["Delegated Tree: write:8"] --> B --> E["Effective: write:8"]
-    F["Delegated Tree: read"] --> B --> G["Effective: read"]
+    A["Delegated Database: admin:5"] --> B["Main Database: max=write:10, min=read"] --> C["Effective: write:10"]
+    D["Delegated Database: write:8"] --> B --> E["Effective: write:8"]
+    F["Delegated Database: read"] --> B --> G["Effective: read"]
 
-    H["Delegated Tree: admin:5"] --> I["Main Tree: max=read (no min)"] --> J["Effective: read"]
-    K["Delegated Tree: read"] --> I --> L["Effective: read"]
-    M["Delegated Tree: write:20"] --> N["Main Tree: max=admin:15, min=write:25"] --> O["Effective: write:25"]
+    H["Delegated Database: admin:5"] --> I["Main Database: max=read (no min)"] --> J["Effective: read"]
+    K["Delegated Database: read"] --> I --> L["Effective: read"]
+    M["Delegated Database: write:20"] --> N["Main Database: max=admin:15, min=write:25"] --> O["Effective: write:25"]
 ```
 
 **Clamping Rules**:
 
 - Effective permission = clamp(delegated_tree_permission, min, max)
-  - If delegated tree permission > max, it's lowered to max
-  - If min is specified and delegated tree permission < min, it's raised to min
+  - If delegated database permission > max, it's lowered to max
+  - If min is specified and delegated database permission < min, it's raised to min
   - If min is not specified, no minimum bound is applied
-- The max bound must be <= permissions of the key that added the delegated tree reference
+- The max bound must be <= permissions of the key that added the delegated database reference
 - Effective priority = priority embedded in the **effective permission** produced by clamping. This is either the delegated key's priority (when already inside the bounds) or the priority that comes from the `min`/`max` bound that performed the clamp.
-- Delegated tree admin permissions only apply within that delegated tree
+- Delegated database admin permissions only apply within that delegated database
 - Permission clamping occurs at each level of delegation chains
 - Note: There is no "none" permission level - absence of permissions means no access
 
 ### Multi-Level References
 
-Delegated trees can reference other delegated trees, creating delegation chains:
+Delegated databases can reference other delegated databases, creating delegation chains:
 
 ```json
 {
@@ -396,43 +396,43 @@ Delegated trees can reference other delegated trees, creating delegation chains:
 **Delegation Chain Rules**:
 
 - The `auth.key` field contains an ordered list representing the delegation path
-- Each element has a `"key"` field and optionally `"tips"` for delegated trees
+- Each element has a `"key"` field and optionally `"tips"` for delegated databases
 - The final element must contain only a `"key"` field (the actual signing key)
-- Each step represents traversing from one tree to the next in the delegation chain
+- Each step represents traversing from one database to the next in the delegation chain
 - Permission clamping applies at each level using the minimum function
 - Priority at each step is the priority inside the permission value that survives the clamp at that level (outer reference, inner key, or bound, depending on which one is selected by the clamping rules)
 - Tips must be valid at each level of the chain for the delegation to be valid
 
-### Delegated Tree References
+### Delegated Database References
 
-The main tree must validate the delegated tree structure as well as the main tree.
+The main database must validate the delegated database structure as well as the main database.
 
 #### Latest Known Tips
 
-"Latest known tips" refers to the latest tips of a delegated tree that have been seen used in valid key signatures within the current tree. This creates a "high water mark" for each delegated tree:
+"Latest known tips" refers to the latest tips of a delegated database that have been seen used in valid key signatures within the current database. This creates a "high water mark" for each delegated database:
 
-1. When an entry uses a delegated tree key, it includes the delegated tree's tips at signing time
-2. The tree tracks these tips as the "latest known tips" for that delegated tree
-3. Future entries using that delegated tree must reference tips that are equal to or newer than the latest known tips, or must be valid at the latest known tips
-4. This ensures that key revocations in delegated trees are respected once observed
+1. When an entry uses a delegated database key, it includes the delegated database's tips at signing time
+2. The database tracks these tips as the "latest known tips" for that delegated database
+3. Future entries using that delegated database must reference tips that are equal to or newer than the latest known tips, or must be valid at the latest known tips
+4. This ensures that key revocations in delegated databases are respected once observed
 
 #### Tip Tracking and Validation
 
-To validate entries with delegated tree keys:
+To validate entries with delegated database keys:
 
-1. Check that the referenced tips are descendants of (or equal to) the latest known tips for that delegated tree
+1. Check that the referenced tips are descendants of (or equal to) the latest known tips for that delegated database
 2. If they're not, check that the entry validates at the latest known tips
 3. Verify the key exists and has appropriate permissions at those tips
 4. Update the latest known tips if these are newer
 5. Apply permission clamping based on the delegation reference
 
-This mechanism ensures that once a key revocation is observed in a delegated tree, no entry can use an older version of that tree where the key was still valid.
+This mechanism ensures that once a key revocation is observed in a delegated database, no entry can use an older version of that database where the key was still valid.
 
 ### Key Revocation
 
-Delegated tree key deletion is always treated as `revoked` status in the main tree. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
+Delegated database key deletion is always treated as `revoked` status in the main database. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
 
-By treating delegated tree key deletion as `revoked` status, users can manage their own key lifecycle in the Main Tree while ensuring that:
+By treating delegated database key deletion as `revoked` status, users can manage their own key lifecycle in the Main Database while ensuring that:
 
 - Historical entries remain valid and their content is preserved
 - New entries cannot use the revoked key's entries as parents
@@ -441,29 +441,29 @@ By treating delegated tree key deletion as `revoked` status, users can manage th
 
 ## Conflict Resolution and Merging
 
-Conflicts in the `_settings` tree are resolved by the `crate::crdt::Doc` type using Last Write Wins (LWW) semantics. When the tree has diverged with both sides of the merge having written to the `_settings` tree, the write with the higher logical timestamp (determined by the DAG structure) will win, regardless of the priority of the signing key.
+Conflicts in the `_settings` database are resolved by the `crate::crdt::Doc` type using Last Write Wins (LWW) semantics. When the database has diverged with both sides of the merge having written to the `_settings` database, the write with the higher logical timestamp (determined by the DAG structure) will win, regardless of the priority of the signing key.
 
 Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
-This is applied to delegated trees as well. A write to the Main Tree must also recursively merge any changed settings in the delegated trees using the same LWW strategy to handle network splits in the delegated trees.
+This is applied to delegated databases as well. A write to the Main Database must also recursively merge any changed settings in the delegated databases using the same LWW strategy to handle network splits in the delegated databases.
 
-### Key Status Changes in Delegated Trees: Examples
+### Key Status Changes in Delegated Databases: Examples
 
-The following examples demonstrate how key status changes in delegated trees affect entries in the main tree.
+The following examples demonstrate how key status changes in delegated databases affect entries in the main database.
 
-#### Example 1: Basic Delegated Tree Key Status Change
+#### Example 1: Basic Delegated Database Key Status Change
 
 **Initial State**:
 
 ```mermaid
 graph TD
-    subgraph "Main Tree"
+    subgraph "Main Database"
         A["Entry A<br/>Settings: delegated_tree1 = max:write:10, min:read<br/>Tip: UA"]
         B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
         C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
     end
 
-    subgraph "Delegated Tree"
+    subgraph "Delegated Database"
         UA["Entry UA<br/>Settings: laptop = active"]
         UB["Entry UB<br/>Signed by laptop"]
     end
@@ -473,11 +473,11 @@ graph TD
     UA --> UB
 ```
 
-**After Key Status Change in Delegated Tree**:
+**After Key Status Change in Delegated Database**:
 
 ```mermaid
 graph TD
-    subgraph "Main Tree"
+    subgraph "Main Database"
         A["Entry A<br/>Settings: user1 = write:15"]
         B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
         C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
@@ -488,7 +488,7 @@ graph TD
         H["Entry H<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Merges, as there is a valid key at G"]
     end
 
-    subgraph "Delegated Tree (delegated_tree1)"
+    subgraph "Delegated Database (delegated_tree1)"
         UA["Entry UA<br/>Settings: laptop = active, mobile = active, desktop = active"]
         UB["Entry UB<br/>Signed by laptop"]
         UC["Entry UC<br/>Settings: laptop = revoked<br/>Signed by mobile"]
@@ -514,7 +514,7 @@ graph TD
 
 ```mermaid
 graph TD
-    subgraph "Merged Main Tree"
+    subgraph "Merged Main Database"
         A["Entry A"]
         B["Entry B<br/>Alice (admin:10) bans user_bob<br/>Timestamp: T1"]
         C["Entry C<br/>Super admin (admin:0) promotes user_bob to admin:5<br/>Timestamp: T2"]
@@ -543,13 +543,13 @@ graph TD
 
 When network partitions occur, the authentication system must handle concurrent changes gracefully:
 
-**Scenario**: Two branches of the tree independently modify the auth settings, requiring CRDT-based conflict resolution using Last Write Wins.
+**Scenario**: Two branches of the database independently modify the auth settings, requiring CRDT-based conflict resolution using Last Write Wins.
 
 Both branches share the same root, but a network partition has caused them to diverge before merging back together.
 
 ```mermaid
 graph TD
-    subgraph "Merged Main Tree"
+    subgraph "Merged Main Database"
         ROOT["Entry ROOT"]
         A1["Entry A1<br/>admin adds new_developer<br/>Timestamp: T1"]
         A2["Entry A2<br/>dev_team revokes contractor_alice<br/>Timestamp: T3"]
@@ -581,11 +581,11 @@ graph TD
 #### Protected Against
 
 - **Unauthorized Entry Creation**: All entries must be signed by valid keys
-- **Permission Escalation**: Users cannot grant themselves higher privileges than their main tree reference
+- **Permission Escalation**: Users cannot grant themselves higher privileges than their main database reference
 - **Historical Tampering**: Immutable DAG prevents retroactive modifications
 - **Replay Attacks**: Content-addressable IDs prevent entry duplication
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
-- **Permission Boundary Violations**: Delegated tree permissions are constrained within their specified min/max bounds
+- **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
@@ -634,11 +634,11 @@ The current validation process:
 4. **Validate Signature**: Verify the Ed25519 signature against the entry content hash
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation
 
-**Current features include**: Direct key validation, delegated tree resolution, tip validation, and permission clamping.
+**Current features include**: Direct key validation, delegated database resolution, tip validation, and permission clamping.
 
 ### Sync Permissions
 
-Eidetica servers require proof of read permissions before allowing tree synchronization. The server challenges the client to sign a random nonce, then validates the signature against the tree's authentication configuration.
+Eidetica servers require proof of read permissions before allowing database synchronization. The server challenges the client to sign a random nonce, then validates the signature against the database's authentication configuration.
 
 ### CRDT Metadata Considerations
 
@@ -673,7 +673,7 @@ The current system uses entry metadata to reference settings tips. With authenti
 
 4. **Permission Module** (`auth/permission.rs`): Permission logic
    - Permission checking for operations
-   - Permission clamping for delegated trees
+   - Permission clamping for delegated databases
 
 #### Storage Format
 
@@ -693,7 +693,7 @@ AuthKey {
 ### Current Implementation Status
 
 1. **Direct Keys**: ✅ Fully implemented and tested
-2. **Delegated Trees**: ✅ Fully implemented with comprehensive test coverage
+2. **Delegated Databases**: ✅ Fully implemented with comprehensive test coverage
 3. **Permission Clamping**: ✅ Functional for delegation chains
 4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_DEPTH=10
 

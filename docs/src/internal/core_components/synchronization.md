@@ -11,17 +11,17 @@ The synchronization system uses a **BackgroundSync architecture** with command-p
 3. **Merkle-CRDT** synchronization for conflict-free replication
 4. **Modular transport layer** supporting HTTP and Iroh P2P protocols
 5. **Hook-based change detection** for automatic sync triggering
-6. **Persistent state tracking** in sync tree using DocStore
+6. **Persistent state tracking** in sync database using DocStore
 
 ```mermaid
 graph TB
     subgraph "Application Layer"
-        APP[Application Code] --> TREE[Tree Operations]
+        APP[Application Code] --> TREE[Database Operations]
     end
 
     subgraph "Core Database Layer"
-        TREE --> ATOMICOP[AtomicOp]
-        BASEDB[BaseDB] --> TREE
+        TREE --> ATOMICOP[Transaction]
+        BASEDB[Instance] --> TREE
         BASEDB --> SYNC[Sync Module]
         ATOMICOP --> COMMIT[Commit Operation]
         COMMIT --> HOOKS[Execute Sync Hooks]
@@ -30,7 +30,7 @@ graph TB
     subgraph "Sync Frontend"
         SYNC[Sync Module] --> CMDTX[Command Channel]
         SYNC --> PEERMGR[PeerManager]
-        SYNC --> SYNCTREE[Sync Tree]
+        SYNC --> SYNCTREE[Sync Database]
         HOOKS --> SYNCHOOK[SyncHookImpl]
         SYNCHOOK --> CMDTX
     end
@@ -40,7 +40,7 @@ graph TB
         BGSYNC --> TRANSPORT[Transport Layer]
         BGSYNC --> RETRY[Retry Queue]
         BGSYNC --> TIMERS[Periodic Timers]
-        BGSYNC -.->|reads| SYNCTREE[Sync Tree]
+        BGSYNC -.->|reads| SYNCTREE[Sync Database]
         BGSYNC -.->|reads| PEERMGR[PeerManager]
     end
 
@@ -79,10 +79,10 @@ The main `Sync` struct is now a **thin frontend** that communicates with a backg
 pub struct Sync {
     /// Communication channel to the background sync engine
     command_tx: mpsc::Sender<SyncCommand>,
-    /// The backend for read operations and tree management
+    /// The backend for read operations and database management
     backend: Arc<dyn Database>,
-    /// The tree containing synchronization settings
-    sync_tree: Tree,
+    /// The database containing synchronization settings
+    sync_tree: Database,
     /// Track if transport has been enabled
     transport_enabled: bool,
 }
@@ -92,12 +92,12 @@ pub struct Sync {
 
 - Provides public API methods
 - Sends commands to background thread
-- Manages sync tree for peer/relationship storage
+- Manages sync database for peer/relationship storage
 - Creates hooks that send commands to background
 
 ### 2. BackgroundSync Engine (`sync/background.rs`)
 
-The `BackgroundSync` struct handles all sync operations in a single background thread and **accesses peer state directly from the sync tree**:
+The `BackgroundSync` struct handles all sync operations in a single background thread and **accesses peer state directly from the sync database**:
 
 ```rust,ignore
 pub struct BackgroundSync {
@@ -105,7 +105,7 @@ pub struct BackgroundSync {
     transport: Box<dyn SyncTransport>,
     backend: Arc<dyn Database>,
 
-    // Reference to sync tree for peer/relationship management
+    // Reference to sync database for peer/relationship management
     sync_tree_id: ID,
 
     // Server state
@@ -119,9 +119,9 @@ pub struct BackgroundSync {
 }
 ```
 
-BackgroundSync accesses peer and relationship data directly from the sync tree:
+BackgroundSync accesses peer and relationship data directly from the sync database:
 
-- All peer data is stored persistently in the sync tree via `PeerManager`
+- All peer data is stored persistently in the sync database via `PeerManager`
 - Peer information is read on-demand when needed for sync operations
 - Peer data automatically survives application restarts
 - Single source of truth eliminates state synchronization issues
@@ -188,7 +188,7 @@ The command pattern provides clean separation between the frontend and backgroun
 
 **Data access pattern:**
 
-- **Peer and relationship data**: Written directly to sync tree by frontend, read on-demand by background
+- **Peer and relationship data**: Written directly to sync database by frontend, read on-demand by background
 - **Network operations**: Handled via commands to maintain async boundaries
 - **Transport state**: Owned and managed by background sync engine
 
@@ -196,7 +196,7 @@ This architecture:
 
 - **Eliminates circular dependencies**: Clear ownership boundaries
 - **Maintains async separation**: Network operations stay in background thread
-- **Enables direct data access**: Both components access sync tree directly for peer data
+- **Enables direct data access**: Both components access sync database directly for peer data
 - **Provides clean shutdown**: Graceful handling in both async and sync contexts
 
 ### 4. Change Detection Hooks (`sync/hooks.rs`)
@@ -217,7 +217,7 @@ pub struct SyncHookContext {
 
 **Integration flow:**
 
-1. AtomicOp detects entry commit
+1. Transaction detects entry commit
 2. Executes registered sync hooks with entry context
 3. SyncHookImpl creates QueueEntry command
 4. Command sent to BackgroundSync via channel
@@ -234,18 +234,18 @@ impl PeerManager {
     /// Register a new peer
     pub fn register_peer(&self, pubkey: &str, display_name: Option<&str>) -> Result<()>;
 
-    /// Add tree sync relationship
+    /// Add database sync relationship
     pub fn add_tree_sync(&self, peer_pubkey: &str, tree_root_id: &str) -> Result<()>;
 
-    /// Get peers that sync a specific tree
+    /// Get peers that sync a specific database
     pub fn get_tree_peers(&self, tree_root_id: &str) -> Result<Vec<String>>;
 }
 ```
 
 **Data storage:**
 
-- Peers stored in `peers.{pubkey}` paths in sync tree
-- Tree relationships in `peers.{pubkey}.sync_trees` arrays
+- Peers stored in `peers.{pubkey}` paths in sync database
+- Database relationships in `peers.{pubkey}.sync_trees` arrays
 - Addresses in `peers.{pubkey}.addresses` arrays
 
 ### 6. Sync State Tracking (`sync/state.rs`)
@@ -335,18 +335,18 @@ This architecture solves the fundamental problem of received data storage by:
 ```mermaid
 sequenceDiagram
     participant App as Application
-    participant Tree as Tree
-    participant AtomicOp as AtomicOp
+    participant Database as Database
+    participant Transaction as Transaction
     participant Hooks as SyncHooks
     participant Cmd as Command Channel
     participant BG as BackgroundSync
 
-    App->>Tree: new_operation()
-    Tree->>AtomicOp: create with sync hooks
-    App->>AtomicOp: modify data
-    App->>AtomicOp: commit()
-    AtomicOp->>Backend: store entry
-    AtomicOp->>Hooks: execute_hooks(context)
+    App->>Database: new_operation()
+    Database->>Transaction: create with sync hooks
+    App->>Transaction: modify data
+    App->>Transaction: commit()
+    Transaction->>Backend: store entry
+    Transaction->>Hooks: execute_hooks(context)
     Hooks->>Cmd: send(QueueEntry)
     Cmd->>BG: deliver command
 
@@ -364,7 +364,7 @@ The background thread processes commands immediately upon receipt:
 - **QueueEntry:** Fetch entry from backend and send immediately
 - **SyncWithPeer:** Initiate bidirectional synchronization
 - **AddPeer/RemovePeer:** Update peer registry
-- **CreateRelationship:** Establish tree-peer sync mapping
+- **CreateRelationship:** Establish database-peer sync mapping
 - **Server operations:** Start/stop transport server
 
 Failed operations are automatically added to the retry queue with exponential backoff timing.
@@ -375,9 +375,9 @@ Eidetica implements **semantic duplicate prevention** through Merkle-CRDT tip co
 
 #### How It Works
 
-**Tree Synchronization Process:**
+**Database Synchronization Process:**
 
-1. **Tip Exchange**: Both peers share their current tree tips (frontier entries)
+1. **Tip Exchange**: Both peers share their current database tips (frontier entries)
 2. **Gap Analysis**: Compare local and remote tips to identify missing entries
 3. **Smart Filtering**: Only send entries the peer doesn't have (based on DAG analysis)
 4. **Ancestor Inclusion**: Automatically include necessary parent entries
@@ -385,7 +385,7 @@ Eidetica implements **semantic duplicate prevention** through Merkle-CRDT tip co
 ```rust,ignore
 // Background sync's smart duplicate prevention
 async fn sync_tree_with_peer(&self, peer_pubkey: &str, tree_id: &ID, address: &Address) -> Result<()> {
-    // Step 1: Get our tips for this tree
+    // Step 1: Get our tips for this database
     let our_tips = self.backend.get_tips(tree_id)?;
 
     // Step 2: Get peer's tips via network request
@@ -475,7 +475,7 @@ self.command_tx.send(SyncCommand::SendEntries {
 }).await?;
 ```
 
-**Tree Synchronization:**
+**Database Synchronization:**
 
 ```rust,ignore
 // Via SyncWithPeer command - background sync determines what to send
@@ -533,11 +533,11 @@ sequenceDiagram
 - Single background thread with owned state
 - Retry queue: O(n) where n = failed entries pending retry
 - Peer state: ~1KB per registered peer
-- Relationships: ~100 bytes per peer-tree relationship
+- Relationships: ~100 bytes per peer-database relationship
 
-**Persistent state:** Stored in sync tree
+**Persistent state:** Stored in sync database
 
-- Sync cursors: ~200 bytes per peer-tree relationship
+- Sync cursors: ~200 bytes per peer-database relationship
 - Metadata: ~500 bytes per peer
 - History: ~300 bytes per sync operation (with cleanup)
 - Sent entries tracking: ~50 bytes per entry-peer pair
@@ -588,11 +588,11 @@ Eidetica uses a **lazy connection strategy** where connections are established o
 ```mermaid
 graph LR
     subgraph "Peer Registration"
-        REG[register_peer] --> STORE[Store in Sync Tree]
+        REG[register_peer] --> STORE[Store in Sync Database]
     end
 
     subgraph "Discovery & Connection"
-        TIMER[Periodic Timer<br/>Every 5 min] --> SCAN[Scan Active Peers<br/>from Sync Tree]
+        TIMER[Periodic Timer<br/>Every 5 min] --> SCAN[Scan Active Peers<br/>from Sync Database]
         SCAN --> SYNC[sync_with_peer]
         SYNC --> CONN[Transport Establishes<br/>Connection On-Demand]
         CONN --> XFER[Transfer Data]
@@ -616,8 +616,8 @@ graph LR
 
 1. **Periodic Sync** (every 5 minutes):
 
-   - BackgroundSync scans all active peers from sync tree
-   - Attempts to sync with each peer's registered trees
+   - BackgroundSync scans all active peers from sync database
+   - Attempts to sync with each peer's registered databases
    - Connections established as needed during sync
 
 2. **Manual Sync Commands**:
@@ -633,7 +633,7 @@ graph LR
 
 When `register_peer()` or `add_peer_address()` is called:
 
-- Peer information is stored in the sync tree
+- Peer information is stored in the sync database
 - No command is sent to BackgroundSync
 - No immediate connection attempt is made
 - Peer will be discovered in next periodic sync cycle (within 5 minutes)
@@ -698,7 +698,7 @@ The HTTP transport provides traditional client-server connectivity using REST en
 
 **Clean separation of concerns:**
 
-- Frontend handles API and tree management
+- Frontend handles API and database management
 - Background owns transport and sync state
 - No circular dependencies
 
@@ -719,7 +719,7 @@ The HTTP transport provides traditional client-server connectivity using REST en
 
 **State persistence:**
 
-- Sync state stored in database via DocStore subtree
+- Sync state stored in database via DocStore store
 - Tracks sent entries to prevent duplicates
 - Survives restarts and crashes
 - Provides complete audit trail of sync operations

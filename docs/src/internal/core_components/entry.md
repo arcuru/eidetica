@@ -13,9 +13,9 @@ Entries serve as the atomic units of both data storage and version history in Ei
 
 ## Structural Organization
 
-**Main Tree Data**: Each entry contains data for its parent Tree, stored as serialized CRDT structures that can be merged with concurrent changes.
+**Main Database Data**: Each entry contains data for its parent Database, stored as serialized CRDT structures that can be merged with concurrent changes.
 
-**Subtree Partitioning**: Entries can contain multiple named subtrees (like DocStore, Table, YDoc), each with independent parent linkage and merge semantics.
+**Store Partitioning**: Entries can contain multiple named stores (like DocStore, Table, YDoc), each with independent parent linkage and merge semantics.
 
 **Parent References**: Entries link to previous entries, creating a directed acyclic graph that represents the evolution of data over time.
 
@@ -45,19 +45,19 @@ An Entry contains the following core data structure:
 
 ```rust,ignore
 struct Entry {
-    // Main tree node containing root ID, parent references, and metadata
-    tree: TreeNode {
-        root: ID,                    // Root entry ID of the tree
-        parents: Vec<ID>,           // Parent entries in main tree history
+    // Main database node containing root ID, parent references, and metadata
+    database: TreeNode {
+        root: ID,                    // Root entry ID of the database
+        parents: Vec<ID>,           // Parent entries in main database history
         metadata: Option<RawData>,  // Optional metadata (not merged)
-        data: RawData,             // Serialized CRDT data for main tree
+        data: RawData,             // Serialized CRDT data for main database
     },
 
-    // Named subtrees with independent histories
-    subtrees: Vec<SubTreeNode> {
-        name: String,              // Subtree name (e.g., "users", "posts")
-        parents: Vec<ID>,          // Parent entries specific to this subtree
-        data: RawData,            // Serialized CRDT data for this subtree
+    // Named stores with independent histories
+    stores: Vec<SubTreeNode> {
+        name: String,              // Store name (e.g., "users", "posts")
+        parents: Vec<ID>,          // Parent entries specific to this store
+        data: RawData,            // Serialized CRDT data for this store
     },
 
     // Authentication and signature information
@@ -72,4 +72,4 @@ type RawData = String;            // JSON-serialized CRDT structures
 type ID = String;                // SHA-256 content hash (hex-encoded)
 ```
 
-This structure enables each Entry to participate in multiple independent histories simultaneously - the main tree history plus any number of named subtree histories.
+This structure enables each Entry to participate in multiple independent histories simultaneously - the main database history plus any number of named store histories.

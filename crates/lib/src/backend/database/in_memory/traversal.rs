@@ -1,4 +1,4 @@
-//! Tree traversal and pathfinding for InMemory database
+//! Database traversal and pathfinding for InMemory database
 //!
 //! This module handles navigation through the DAG structure of trees,
 //! including path building, LCA (Lowest Common Ancestor) algorithms,

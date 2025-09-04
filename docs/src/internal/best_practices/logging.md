@@ -65,7 +65,7 @@ tracing::info!("Sync server started on {}", address);
 Use for detailed operational information:
 
 ```rust,ignore
-tracing::debug!("Syncing {} trees with peer {}", tree_count, peer_id);
+tracing::debug!("Syncing {} databases with peer {}", tree_count, peer_id);
 ```
 
 **When to use:**
@@ -167,16 +167,16 @@ Prefer structured fields over string interpolation:
 ```rust,ignore
 // Good: Structured fields
 tracing::info!(
-    tree_id = %tree.id(),
+    tree_id = %database.id(),
     entry_count = entries.len(),
     peer = %peer_address,
-    "Synchronizing tree"
+    "Synchronizing database"
 );
 
 // Bad: String interpolation
 tracing::info!(
-    "Synchronizing tree {} with {} entries to peer {}",
-    tree.id(), entries.len(), peer_address
+    "Synchronizing database {} with {} entries to peer {}",
+    database.id(), entries.len(), peer_address
 );
 ```
 
@@ -189,7 +189,7 @@ When logging errors, include relevant context:
 tracing::error!(
     error = %e,
     entry_id = %entry.id(),
-    tree_id = %tree.id(),
+    tree_id = %database.id(),
     "Failed to store entry during sync"
 );
 

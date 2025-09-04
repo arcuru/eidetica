@@ -4,8 +4,8 @@ The data flow in Eidetica follows a structured sequence of interactions between 
 
 ### Basic Flow
 
-1. User creates a BaseDB with a database backend
-2. User creates Trees within the database
+1. User creates a Instance with a database backend
+2. User creates Databases within the database
 3. Operations construct immutable Entry objects through EntryBuilder
 4. Entries reference parent entries, forming a directed acyclic graph
 5. Entries are stored and retrieved through the database interface
@@ -26,7 +26,7 @@ This ensures data integrity and access control while maintaining compatibility w
 
 The system uses an efficient caching layer for CRDT state computation:
 
-- Cache lookup using Entry ID and Subtree as the key
+- Cache lookup using Entry ID and Store as the key
 - On cache miss, recursive LCA algorithm computes state and caches the result
 - Cache hits return instantly for subsequent queries
 - Performance scales well due to immutable entries and high cache hit rates

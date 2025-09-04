@@ -3,7 +3,7 @@
 The architecture provides several performance characteristics:
 
 - **Content-addressable storage**: Enables efficient deduplication through SHA-256 content hashing.
-- **Tree structure (DAG)**: Supports partial replication and sparse checkouts. Tip calculation complexity depends on parent relationships.
+- **Database structure (DAG)**: Supports partial replication and sparse checkouts. Tip calculation complexity depends on parent relationships.
 - **InMemoryDatabase**: Provides high-speed operations but is limited by available RAM.
 - **Lock-based concurrency**: May create bottlenecks in high-concurrency write scenarios.
 - **Height calculation**: Uses BFS-based topological sorting with O(V + E) complexity.

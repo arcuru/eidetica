@@ -6,15 +6,15 @@
 //!
 //! Eidetica is built around several key concepts:
 //!
-//! * **Entries (`entry::Entry`)**: The fundamental, content-addressable unit of data. Entries contain data for a main tree and optional named subtrees.
-//! * **Trees (`basedb::Tree`)**: Analogous to tables or branches, representing a history of related entries identified by a root entry ID.
+//! * **Entries (`Entry`)**: The fundamental, content-addressable unit of data. Entries contain data for a main database and optional named stores.
+//! * **Databases (`Database`)**: Like a traditional database or branch, representing a versioned collection of related entries identified by a root entry ID.
 //! * **Backends (`backend::Backend`)**: A pluggable storage layer for persisting entries.
-//! * **BaseDB (`instance::Instance`)**: The main database struct that manages trees and interacts with a backend.
-//! * **CRDTs (`crdt::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and subtree data.
-//! * **SubTrees (`subtree::SubTree`)**: Named data structures within a tree that provide specialized data access patterns:
-//!     * **DocStore (`subtree::DocStore`)**: A document-oriented store for structured data with path-based operations.
-//!     * **Table (`subtree::Table`)**: A record-oriented store with automatic primary key generation, similar to a database table.
-//!     * **YDoc (`subtree::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
+//! * **Instance (`Instance`)**: The main database struct that manages multiple databases and interacts with a backend.
+//! * **CRDTs (`crdt::CRDT`)**: Conflict-free Replicated Data Types used for merging data from different entries, particularly for settings and store data.
+//! * **Stores (`Store`)**: Named data structures within a database that provide specialized data access patterns, analogous to tables:
+//!     * **DocStore (`store::DocStore`)**: A document-oriented store for structured data with path-based operations.
+//!     * **Table (`store::Table`)**: A record-oriented store with automatic primary key generation, similar to a database table.
+//!     * **YDoc (`store::YDoc`)**: A Y-CRDT based store for collaborative data structures (requires the "y-crdt" feature).
 //! * **Merkle-CRDT**: The underlying principle combining Merkle DAGs (formed by entries and parent links) with CRDTs for efficient, decentralized data synchronization.
 
 pub mod transaction;

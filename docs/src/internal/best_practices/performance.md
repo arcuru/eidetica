@@ -44,7 +44,7 @@ Use references and borrowing effectively. Work with references when possible and
 
 ### 1. **State Computation Caching**
 
-Cache expensive CRDT state computations using entry ID and subtree name as cache keys. Immutable entries eliminate cache invalidation concerns.
+Cache expensive CRDT state computations using entry ID and store name as cache keys. Immutable entries eliminate cache invalidation concerns.
 
 ### 2. **Efficient Merge Operations**
 

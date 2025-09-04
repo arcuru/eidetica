@@ -10,7 +10,7 @@ Abstracts underlying storage to allow different backends without changing core l
 
 - Entry storage and retrieval by content-addressable ID
 - Verification status tracking for authentication
-- Tree and subtree tip calculation
+- Database and store tip calculation
 - Topological sorting for consistent entry ordering
 
 ## Current Implementation
@@ -33,11 +33,11 @@ Status determined during commit based on signature validation and permission che
 
 **Entry Storage**: Immutable entries with content-addressable IDs
 
-**Tip Calculation**: Identifies entries with no children in trees/subtrees
+**Tip Calculation**: Identifies entries with no children in databases/stores
 
 **Height Calculation**: Computes topological heights for proper ordering
 
-**Graph Traversal**: Efficient DAG navigation for tree operations
+**Graph Traversal**: Efficient DAG navigation for database operations
 
 ## Custom Backend Implementation
 

@@ -20,29 +20,29 @@ eidetica = "0.1.0"  # Update version as appropriate
 To start using Eidetica, you need to:
 
 1. Choose and initialize a **Database** (storage mechanism)
-2. Create a **BaseDB** instance (the main entry point)
+2. Create a **Instance** instance (the main entry point)
 3. **Add authentication keys** (required for all operations)
-4. Create or access a **Tree** (logical container for data)
+4. Create or access a **Database** (logical container for data)
 
 Here's a simple example:
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::basedb::Instance;
 use eidetica::crdt::Doc;
 use std::path::PathBuf;
 
 // Create a new in-memory database
 let database = InMemory::new();
-let db = BaseDB::new(Box::new(database));
+let db = Instance::new(Box::new(database));
 
 // Add an authentication key (required for all operations)
 db.add_private_key("my_key")?;
 
-// Create a tree to store data
+// Create a database to store data
 let mut settings = Doc::new();
 settings.set("name", "my_tree");
-let tree = db.new_tree(settings, "my_key")?;
+let database = db.new_tree(settings, "my_key")?;
 ```
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
@@ -61,7 +61,7 @@ You can load a previously saved database:
 ```rust,ignore
 let path = PathBuf::from("my_database.json");
 let database = InMemory::load_from_file(&path)?;
-let db = BaseDB::new(Box::new(database));
+let db = Instance::new(Box::new(database));
 
 // Note: Authentication keys are automatically loaded with the database
 ```
@@ -72,7 +72,7 @@ let db = BaseDB::new(Box::new(database));
 
 ## Working with Data
 
-Eidetica uses **Subtrees** to organize data within a tree. One common subtree type is `Table`, which maintains a collection of items with unique IDs.
+Eidetica uses **Stores** to organize data within a database. One common store type is `Table`, which maintains a collection of items with unique IDs.
 
 ### Defining Your Data
 
@@ -96,24 +96,24 @@ All operations in Eidetica happen within an atomic **Operation**:
 
 ```rust,ignore
 // Start an authenticated operation
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 
-// Get or create a Table subtree
-let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
+// Get or create a Table store
+let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Insert a person and get their ID
 let person = Person { name: "Alice".to_string(), age: 30 };
 let id = people.insert(person)?;
 
-// Commit the changes (automatically signed with the tree's default key)
+// Commit the changes (automatically signed with the database's default key)
 op.commit()?;
 ```
 
 **Reading Data:**
 
 ```rust,ignore
-let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
+let op = database.new_operation()?;
+let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Get a single person by ID
 if let Ok(person) = people.get(&id) {
@@ -131,8 +131,8 @@ for result in people.iter()? {
 **Updating Data:**
 
 ```rust,ignore
-let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
+let op = database.new_operation()?;
+let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Get, modify, and update
 if let Ok(mut person) = people.get(&id) {
@@ -146,8 +146,8 @@ op.commit()?;
 **Deleting Data:**
 
 ```rust,ignore
-let op = tree.new_operation()?;
-let people = op.get_subtree::<eidetica::subtree::Table<Person>>("people")?;
+let op = database.new_operation()?;
+let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Remove a person by ID
 people.remove(&id)?;
@@ -165,5 +165,5 @@ After getting familiar with the basics, you might want to explore:
 
 - [Core Concepts](core_concepts.md) to understand Eidetica's unique features
 - Advanced operations like querying and filtering
-- Using different subtree types for various data patterns
+- Using different store types for various data patterns
 - Configuring and optimizing your database

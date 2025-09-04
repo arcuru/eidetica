@@ -1,7 +1,7 @@
-//! Tree module provides functionality for managing collections of related entries.
+//! Database module provides functionality for managing collections of related entries.
 //!
-//! A `Tree` represents a hierarchical structure of entries, similar to a table in a database
-//! or a branch in a version control system. Each tree has a root entry and maintains
+//! A `Database` represents a hierarchical structure of entries, like a traditional database
+//! or a branch in a version control system. Each database has a root entry and maintains
 //! the history and relationships between entries, interfacing with a backend storage system.
 
 use crate::Result;
@@ -22,9 +22,9 @@ use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
 use std::sync::Arc;
 
-/// Represents a collection of related entries, analogous to a table or a branch in a version control system.
+/// Represents a collection of related entries, like a traditional database or a branch in a version control system.
 ///
-/// Each `Tree` is identified by the ID of its root `Entry` and manages the history of data
+/// Each `Database` is identified by the ID of its root `Entry` and manages the history of data
 /// associated with that root. It interacts with the underlying `Backend` for storage.
 #[derive(Clone)]
 pub struct Database {
@@ -37,7 +37,7 @@ pub struct Database {
 }
 
 impl Database {
-    /// Creates a new `Tree` instance.
+    /// Creates a new `Database` instance.
     ///
     /// Initializes the tree by creating a root `Entry` containing the provided settings
     /// and storing it in the backend. All trees must now be created with authentication.
@@ -48,7 +48,7 @@ impl Database {
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
-    /// A `Result` containing the new `Tree` instance or an error.
+    /// A `Result` containing the new `Database` instance or an error.
     pub fn new(
         initial_settings: Doc,
         backend: Arc<dyn BackendDB>,
@@ -90,7 +90,7 @@ impl Database {
             (signing_key_name.to_string(), final_tree_settings)
         };
 
-        // Create the initial root entry using a temporary Tree and AtomicOp
+        // Create the initial root entry using a temporary Database and Transaction
         // This placeholder ID should not exist in the backend, so get_tips will be empty.
         let bootstrap_placeholder_id = format!(
             "bootstrap_root_{}",
@@ -131,17 +131,17 @@ impl Database {
         })
     }
 
-    /// Creates a new `Tree` instance from an existing ID.
+    /// Creates a new `Database` instance from an existing ID.
     ///
     /// This constructor takes an existing `ID` and an `Arc<dyn Backend>`
-    /// and constructs a `Tree` instance with the specified root ID.
+    /// and constructs a `Database` instance with the specified root ID.
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
     /// * `backend` - An `Arc<dyn Backend>` reference to the backend where the tree's entries will be stored.
     ///
     /// # Returns
-    /// A `Result` containing the new `Tree` instance or an error.
+    /// A `Result` containing the new `Database` instance or an error.
     pub(crate) fn new_from_id(id: ID, backend: Arc<dyn BackendDB>) -> Result<Self> {
         Ok(Self {
             root: id,
@@ -222,7 +222,7 @@ impl Database {
     /// * `key_name` - The identifier of the private key to use for signing
     ///
     /// # Returns
-    /// A `Result<AtomicOp>` containing the new authenticated operation
+    /// A `Result<Transaction>` containing the new authenticated operation
     pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<Transaction> {
         let op = self.new_operation()?;
         Ok(op.with_auth(key_name.as_ref()))
@@ -269,7 +269,7 @@ impl Database {
     /// If a default authentication key is set, the operation will use it for signing.
     ///
     /// # Returns
-    /// A `Result<AtomicOp>` containing the new atomic operation
+    /// A `Result<Transaction>` containing the new atomic operation
     pub fn new_operation(&self) -> Result<Transaction> {
         let tips = self.get_tips()?;
         self.new_operation_with_tips(&tips)
@@ -285,7 +285,7 @@ impl Database {
     /// * `tips` - The specific parent tips to use for this operation
     ///
     /// # Returns
-    /// A `Result<AtomicOp>` containing the new atomic operation
+    /// A `Result<Transaction>` containing the new atomic operation
     pub fn new_operation_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
 
@@ -314,11 +314,11 @@ impl Database {
         Ok(id)
     }
 
-    /// Get a SubTree type that will handle accesses to the SubTree
-    /// This will return a SubTree initialized to point at the current state of the tree.
+    /// Get a Store type that will handle accesses to the Store
+    /// This will return a Store initialized to point at the current state of the tree.
     ///
     /// The returned subtree should NOT be used to modify the tree, as it intentionally does not
-    /// expose the AtomicOp.
+    /// expose the Transaction.
     pub fn get_subtree_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
         T: Store,

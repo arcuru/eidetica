@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use uuid::Uuid;
 
-/// A Row-based SubTree
+/// A Row-based Store
 ///
 /// `Table` provides a record-oriented storage abstraction for entries in a subtree,
 /// similar to a database table with automatic primary key generation.

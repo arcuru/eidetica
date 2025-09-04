@@ -10,7 +10,7 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 - **Command-channel communication** between frontend and backend
 - **Automatic change detection** via hook system
 - **Multiple transport protocols** (HTTP, Iroh P2P)
-- **Tree-level sync relationships** for granular control
+- **Database-level sync relationships** for granular control
 - **Authentication and security** using Ed25519 signatures
 - **Persistent state tracking** via DocStore
 
@@ -19,11 +19,11 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 ### 1. Enable Sync on Your Database
 
 ```rust,ignore
-use eidetica::{BaseDB, backend::InMemory};
+use eidetica::{Instance, backend::InMemory};
 
 // Create a database with sync enabled
 let backend = Box::new(InMemory::new());
-let db = BaseDB::new(backend).with_sync()?;
+let db = Instance::new(backend).with_sync()?;
 
 // Add a private key for authentication
 db.add_private_key("device_key")?;
@@ -54,24 +54,24 @@ let peer_pubkey = db.sync_mut()?.connect_to_peer(&remote_addr).await?;
 db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
 ```
 
-### 4. Set Up Tree Synchronization
+### 4. Set Up Database Synchronization
 
 ```rust,ignore
-// Create a tree to sync
-let tree = db.new_tree(Doc::new(), "device_key")?;
-let tree_id = tree.root_id().to_string();
+// Create a database to sync
+let database = db.new_tree(Doc::new(), "device_key")?;
+let tree_id = database.root_id().to_string();
 
-// Configure this tree to sync with the peer
+// Configure this database to sync with the peer
 db.sync_mut()?.add_tree_sync(&peer_pubkey, &tree_id)?;
 ```
 
 ### 5. Automatic Synchronization
 
-Once configured, any changes to the tree will automatically be queued for synchronization:
+Once configured, any changes to the database will automatically be queued for synchronization:
 
 ```rust,ignore
-// Make changes to the tree - these will be auto-synced
-let op = tree.new_operation()?;
+// Make changes to the database - these will be auto-synced
+let op = database.new_operation()?;
 let store = op.get_subtree::<DocStore>("data")?;
 store.set_string("message", "Hello, distributed world!")?;
 op.commit()?; // This triggers sync queue entry
@@ -187,7 +187,7 @@ Once configured, the system handles everything automatically:
 
 ```rust,ignore
 // When you commit changes, they're sent immediately
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 op.commit()?;  // Sync hook sends command to background thread
 
 // Failed sends are retried with exponential backoff
@@ -228,19 +228,19 @@ if let Some(peer_info) = sync.get_peer_info(&peer_key)? {
 }
 ```
 
-### Tree Sync Relationships
+### Database Sync Relationships
 
 ```rust,ignore
-// Add tree to sync relationship
+// Add database to sync relationship
 sync.add_tree_sync(&peer_key, &tree_id)?;
 
-// List all trees synced with a peer
+// List all databases synced with a peer
 let synced_trees = sync.get_peer_trees(&peer_key)?;
 
-// List all peers syncing a specific tree
+// List all peers syncing a specific database
 let syncing_peers = sync.get_tree_peers(&tree_id)?;
 
-// Remove tree from sync relationship
+// Remove database from sync relationship
 sync.remove_tree_sync(&peer_key, &tree_id)?;
 ```
 
@@ -255,8 +255,8 @@ All sync operations use Ed25519 digital signatures:
 // Add additional keys if needed
 db.add_private_key("backup_key")?;
 
-// Set a specific key as default for a tree
-tree.set_default_auth_key("backup_key");
+// Set a specific key as default for a database
+database.set_default_auth_key("backup_key");
 ```
 
 ### Peer Verification
@@ -297,7 +297,7 @@ let server_addr = sync.get_server_address()?;
 ```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
-// Get sync state for a tree-peer relationship
+// Get sync state for a database-peer relationship
 let op = sync.sync_tree().new_operation()?;
 let state_manager = SyncStateManager::new(&op);
 
@@ -368,7 +368,7 @@ struct CustomSyncHook;
 
 impl SyncHook for CustomSyncHook {
     fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()> {
-        println!("Entry {} committed to tree {}", context.entry.id(), context.tree_id);
+        println!("Entry {} committed to database {}", context.entry.id(), context.tree_id);
         // Custom logic here
         Ok(())
     }
@@ -381,12 +381,12 @@ You can run multiple sync-enabled databases in the same process:
 
 ```rust,ignore
 // Database 1
-let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
 db1.sync_mut()?.enable_http_transport()?;
 db1.sync_mut()?.start_server("127.0.0.1:8080")?;
 
 // Database 2
-let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
 db2.sync_mut()?.enable_http_transport()?;
 db2.sync_mut()?.start_server("127.0.0.1:8081")?;
 
@@ -406,7 +406,7 @@ let peer_key = db2.sync_mut()?.connect_to_peer(&addr).await?;
 **Sync not happening:**
 
 - Check peer status is `Active`
-- Verify tree sync relationships are configured
+- Verify database sync relationships are configured
 - Check network connectivity between peers
 
 **Performance issues:**

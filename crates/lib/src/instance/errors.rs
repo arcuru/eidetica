@@ -17,15 +17,15 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum InstanceError {
-    /// Tree not found by name.
-    #[error("Tree not found: {name}")]
+    /// Database not found by name.
+    #[error("Database not found: {name}")]
     TreeNotFound {
         /// The name of the tree that was not found
         name: String,
     },
 
-    /// Tree already exists with the given name.
-    #[error("Tree already exists: {name}")]
+    /// Database already exists with the given name.
+    #[error("Database already exists: {name}")]
     TreeAlreadyExists {
         /// The name of the tree that already exists
         name: String,
@@ -131,8 +131,8 @@ pub enum InstanceError {
         reason: String,
     },
 
-    /// Tree initialization failed.
-    #[error("Tree initialization failed: {reason}")]
+    /// Database initialization failed.
+    #[error("Database initialization failed: {reason}")]
     TreeInitializationFailed {
         /// Description of why tree initialization failed
         reason: String,
@@ -145,8 +145,8 @@ pub enum InstanceError {
         reason: String,
     },
 
-    /// Tree state is corrupted or inconsistent.
-    #[error("Tree state corruption detected: {reason}")]
+    /// Database state is corrupted or inconsistent.
+    #[error("Database state corruption detected: {reason}")]
     TreeStateCorruption {
         /// Description of the corruption detected
         reason: String,

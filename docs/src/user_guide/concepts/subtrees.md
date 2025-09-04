@@ -1,31 +1,31 @@
-# Subtrees
+# Stores
 
-Subtrees provide structured, type-safe access to different kinds of data within a Tree.
+Stores provide structured, type-safe access to different kinds of data within a Database.
 
-## The Subtree Concept
+## The Store Concept
 
-In Eidetica, Subtrees extend the Merkle-CRDT concept by explicitly partitioning data within each Entry. A Subtree:
+In Eidetica, Stores extend the Merkle-CRDT concept by explicitly partitioning data within each Entry. A Store:
 
 - Represents a specific type of data structure (like a key-value store or a collection of records)
-- Has a unique name within its parent Tree
+- Has a unique name within its parent Database
 - Maintains its own history tracking
 - Is strongly typed (via Rust generics)
 
-Subtrees are what make Eidetica practical for real applications, as they provide high-level, data-structure-aware interfaces on top of the core Entry and Tree concepts.
+Stores are what make Eidetica practical for real applications, as they provide high-level, data-structure-aware interfaces on top of the core Entry and Database concepts.
 
-## Why Subtrees?
+## Why Stores?
 
-Subtrees offer several advantages:
+Stores offer several advantages:
 
-- **Type Safety**: Each subtree implementation provides appropriate methods for its data type
-- **Isolation**: Changes to different subtrees can be tracked separately
-- **Composition**: Multiple data structures can exist within a single Tree
-- **Efficiency**: Only relevant subtrees need to be loaded or synchronized
-- **Atomic Operations**: Changes across multiple subtrees can be committed atomically
+- **Type Safety**: Each store implementation provides appropriate methods for its data type
+- **Isolation**: Changes to different stores can be tracked separately
+- **Composition**: Multiple data structures can exist within a single Database
+- **Efficiency**: Only relevant stores need to be loaded or synchronized
+- **Atomic Operations**: Changes across multiple stores can be committed atomically
 
-## Available Subtree Types
+## Available Store Types
 
-Eidetica provides three main subtree types, each optimized for different data patterns:
+Eidetica provides three main store types, each optimized for different data patterns:
 
 | Type          | Purpose               | Key Features                              | Best For                                     |
 | ------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
@@ -35,13 +35,13 @@ Eidetica provides three main subtree types, each optimized for different data pa
 
 ### DocStore (Document-Oriented Storage)
 
-The `DocStore` subtree provides a document-oriented interface for storing and retrieving structured data. It wraps the `crdt::Doc` type to provide ergonomic access patterns with both simple key-value operations and path-based operations for nested data structures.
+The `DocStore` store provides a document-oriented interface for storing and retrieving structured data. It wraps the `crdt::Doc` type to provide ergonomic access patterns with both simple key-value operations and path-based operations for nested data structures.
 
 #### Basic Usage
 
 ```rust,ignore
-// Get a DocStore subtree
-let op = tree.new_operation()?;
+// Get a DocStore store
+let op = database.new_operation()?;
 let store = op.get_subtree::<DocStore>("app_data")?;
 
 // Set simple values
@@ -90,7 +90,7 @@ Use cases for `DocStore`:
 
 ### Table
 
-The `Table<T>` subtree manages collections of serializable items, similar to a table in a database:
+The `Table<T>` store manages collections of serializable items, similar to a table in a database:
 
 ```rust,ignore
 // Define a struct for your data
@@ -101,8 +101,8 @@ struct User {
     active: bool,
 }
 
-// Get a Table subtree
-let op = tree.new_operation()?;
+// Get a Table store
+let op = database.new_operation()?;
 let users = op.get_subtree::<Table<User>>("users")?;
 
 // Insert items (returns a generated UUID)
@@ -142,15 +142,15 @@ Use cases for `Table`:
 
 ### YDoc (Y-CRDT Integration)
 
-The `YDoc` subtree provides integration with Y-CRDT (Yjs) for real-time collaborative editing. This requires the "y-crdt" feature:
+The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborative editing. This requires the "y-crdt" feature:
 
 ```rust,ignore
 // Enable in Cargo.toml: eidetica = { features = ["y-crdt"] }
-use eidetica::subtree::YDoc;
+use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map, Text, Transact};
 
-// Get a YDoc subtree
-let op = tree.new_operation()?;
+// Get a YDoc store
+let op = database.new_operation()?;
 let doc_store = op.get_subtree::<YDoc>("document")?;
 
 // Work with Y-CRDT structures
@@ -188,46 +188,46 @@ Use cases for `YDoc`:
 - Conflict-free data synchronization
 - Applications requiring sophisticated merge algorithms
 
-## Subtree Implementation Details
+## Store Implementation Details
 
-Each Subtree implementation in Eidetica:
+Each Store implementation in Eidetica:
 
 1. Implements the `SubTree` trait
 2. Provides methods appropriate for its data structure
 3. Handles serialization/deserialization of data
-4. Manages the subtree's history within the Tree
+4. Manages the store's history within the Database
 
 The `SubTree` trait defines the minimal interface:
 
 ```rust,ignore
 pub trait SubTree: Sized {
-    fn new(op: &AtomicOp, subtree_name: &str) -> Result<Self>;
+    fn new(op: &Transaction, subtree_name: &str) -> Result<Self>;
     fn name(&self) -> &str;
 }
 ```
 
-Subtree implementations add their own methods on top of this minimal interface.
+Store implementations add their own methods on top of this minimal interface.
 
-## Subtree History and Merging (CRDT Aspects)
+## Store History and Merging (CRDT Aspects)
 
-While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Subtree is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
+While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Store is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
 
-Each Subtree type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the subtree (which involves finding and merging the tips of that subtree's history):
+Each Store type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the store (which involves finding and merging the tips of that store's history):
 
 - **`DocStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using the internal `Doc` type. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly.
 
 - **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 
-**Note:** The CRDT merge logic happens internally when an `Operation` loads the initial state of a Subtree or when a `SubtreeViewer` is created. You typically don't invoke merge logic directly.
+**Note:** The CRDT merge logic happens internally when an `Operation` loads the initial state of a Store or when a `SubtreeViewer` is created. You typically don't invoke merge logic directly.
 
 <!-- TODO: Add links to specific CRDT literature or more detailed internal docs on merge logic if needed -->
 
-## Future Subtree Types
+## Future Store Types
 
-Eidetica's architecture allows for adding new Subtree implementations. Potential future types include:
+Eidetica's architecture allows for adding new Store implementations. Potential future types include:
 
 - **ObjectStore**: For storing large binary blobs.
 
 These are **not yet implemented**. Development is currently focused on the core API and the existing `DocStore` and `Table` types.
 
-<!-- TODO: Update this list if/when new subtree types become available or development starts -->
+<!-- TODO: Update this list if/when new store types become available or development starts -->

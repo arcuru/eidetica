@@ -14,9 +14,9 @@ Error handling in Eidetica follows principles of modularity, locality, and user 
 
 ## Architecture
 
-**Error Hierarchy**: Tree structure where modules define error types aggregated into top-level `Error` enum with variants for Io, Serialize, Auth, Backend, Base, CRDT, Subtree, and AtomicOp errors.
+**Error Hierarchy**: Database structure where modules define error types aggregated into top-level `Error` enum with variants for Io, Serialize, Auth, Backend, Base, CRDT, Store, and Transaction errors.
 
-**Module-Specific Errors**: Each component has domain-specific error enums covering key resolution, storage operations, tree management, merge conflicts, data access, and transaction coordination.
+**Module-Specific Errors**: Each component has domain-specific error enums covering key resolution, storage operations, database management, merge conflicts, data access, and transaction coordination.
 
 **Transparent Conversion**: `#[error(transparent)]` enables zero-cost conversion between module errors and top-level type using `?` operator.
 
@@ -24,7 +24,7 @@ Error handling in Eidetica follows principles of modularity, locality, and user 
 
 **By Nature**: Not found errors (module-specific variants), permission errors (authentication/authorization), validation errors (input/state consistency), operation errors (business logic violations).
 
-**By Layer**: Core errors (fundamental operations), storage layer (database/persistence), data layer (CRDT/subtree operations), application layer (high-level coordination).
+**By Layer**: Core errors (fundamental operations), storage layer (database/persistence), data layer (CRDT/store operations), application layer (high-level coordination).
 
 ## Error Handling Patterns
 

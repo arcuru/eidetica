@@ -28,7 +28,7 @@ pub(crate) fn calculate_heights(
 ) -> Result<HashMap<ID, usize>> {
     match subtree {
         None => {
-            // Tree height calculation with caching
+            // Database height calculation with caching
             let heights_cache = backend.heights.read().unwrap();
             if let Some(tree_cache) = heights_cache.get(tree) {
                 // Try to serve from cache

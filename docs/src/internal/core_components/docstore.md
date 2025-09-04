@@ -1,14 +1,14 @@
 # DocStore
 
-Public subtree implementation providing document-oriented storage with path-based nested data access.
+Public store implementation providing document-oriented storage with path-based nested data access.
 
 ## Overview
 
-DocStore is a publicly available subtree type that provides a document-oriented interface for storing and retrieving data. It wraps the `crdt::Doc` type to provide ergonomic access patterns for nested data structures, making it ideal for configuration, metadata, and structured document storage.
+DocStore is a publicly available store type that provides a document-oriented interface for storing and retrieving data. It wraps the `crdt::Doc` type to provide ergonomic access patterns for nested data structures, making it ideal for configuration, metadata, and structured document storage.
 
 ## Key Characteristics
 
-**Public API**: DocStore is exposed as part of the public subtree API and can be used in applications.
+**Public API**: DocStore is exposed as part of the public store API and can be used in applications.
 
 **Doc CRDT Based**: Wraps the `crdt::Doc` type which uses Node structures internally for deterministic merging of concurrent changes.
 
@@ -90,7 +90,7 @@ if let Some(Value::Node(user_node)) = all_data.get("user") {
 ### Application Configuration
 
 ```rust,ignore
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let config = op.get_subtree::<DocStore>("app_config")?;
 
 // Set configuration values
@@ -176,4 +176,4 @@ The nested structure approach was chosen because:
 
 - [Doc CRDT](../crdt.md) - Underlying CRDT implementation
 - [Sync State Management](../../sync/state.md) - Primary use case for DocStore
-- [SubTree Trait](./subtrees.md) - Base trait for all subtree implementations
+- [SubTree Trait](./stores.md) - Base trait for all store implementations

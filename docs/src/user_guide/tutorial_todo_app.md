@@ -8,36 +8,36 @@ Eidetica organizes data differently from traditional relational databases. Here'
 
 Note: This example uses the Eidetica library from the workspace at `crates/lib/`.
 
-### 1. The Database (`BaseDB`)
+### 1. The Database (`Instance`)
 
-The `BaseDB` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "database") and provides access to data structures called Trees.
+The `Instance` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "database") and provides access to data structures called Databases.
 
 In the Todo example, we initialize or load the database using an `InMemory` database, which can be persisted to a file:
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::basedb::Instance;
 use std::path::PathBuf;
 use anyhow::Result;
 
-fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
+fn load_or_create_db(path: &PathBuf) -> Result<Instance> {
     if path.exists() {
         // Load existing DB from file
         let database = InMemory::load_from_file(path)?;
-        let db = BaseDB::new(Box::new(database));
+        let db = Instance::new(Box::new(database));
         // Authentication keys are automatically loaded with the database
         Ok(db)
     } else {
         // Create a new in-memory database
         let database = InMemory::new();
-        let db = BaseDB::new(Box::new(database));
+        let db = Instance::new(Box::new(database));
         // Add authentication key (required for all operations)
         db.add_private_key("todo_app_key")?;
         Ok(db)
     }
 }
 
-fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
+fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
     let database = db.backend();
     let database_guard = database.lock().unwrap();
 
@@ -56,41 +56,41 @@ fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
 // save_db(&db, &cli.database_path)?;
 ```
 
-### 2. Trees (`Tree`)
+### 2. Databases (`Database`)
 
-A `Tree` is a primary organizational unit within a `BaseDB`. Think of it somewhat like a schema or a logical database within a larger instance. It acts as a container for related data, managed through `Subtrees`. Trees provide versioning and history tracking for the data they contain.
+A `Database` is a primary organizational unit within a `Instance`. Think of it somewhat like a schema or a logical database within a larger instance. It acts as a container for related data, managed through `Stores`. Databases provide versioning and history tracking for the data they contain.
 
-The Todo example uses a single Tree named "todo":
+The Todo example uses a single Database named "todo":
 
 ```rust,ignore
-use eidetica::basedb::BaseDB;
-use eidetica::Tree;
+use eidetica::basedb::Instance;
+use eidetica::Database;
 use anyhow::Result;
 
-fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
+fn load_or_create_todo_tree(db: &Instance) -> Result<Database> {
     let tree_name = "todo";
     let auth_key = "todo_app_key"; // Must match the key added to the database
 
-    // Attempt to find an existing tree by name using find_tree
+    // Attempt to find an existing database by name using find_tree
     match db.find_tree(tree_name) {
-        Ok(mut trees) => {
-            // Found one or more trees with the name.
+        Ok(mut databases) => {
+            // Found one or more databases with the name.
             // We arbitrarily take the first one found.
             // In a real app, you might want specific logic for duplicates.
-            println!("Found existing todo tree.");
-            Ok(trees.pop().unwrap()) // Safe unwrap as find_tree errors if empty
+            println!("Found existing todo database.");
+            Ok(databases.pop().unwrap()) // Safe unwrap as find_tree errors if empty
         }
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
-            println!("No existing todo tree found, creating a new one...");
-            let mut doc = eidetica::crdt::Doc::new(); // Tree settings
+            println!("No existing todo database found, creating a new one...");
+            let mut doc = eidetica::crdt::Doc::new(); // Database settings
             doc.set("name", tree_name);
-            let tree = db.new_tree(doc, auth_key)?;
+            let database = db.new_tree(doc, auth_key)?;
 
-            // No initial commit needed here as subtrees like Table handle
+            // No initial commit needed here as stores like Table handle
             // their creation upon first access within an operation.
 
-            Ok(tree)
+            Ok(database)
         }
         Err(e) => {
             // Handle other potential errors from find_tree
@@ -105,17 +105,17 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
 
 ### 3. Operations (`Operation`)
 
-All modifications to a `Tree`'s data happen within an `Operation`. Operations ensure atomicity – similar to transactions in traditional databases. Changes made within an operation are only applied to the Tree when the operation is successfully committed.
+All modifications to a `Database`'s data happen within an `Operation`. Operations ensure atomicity – similar to transactions in traditional databases. Changes made within an operation are only applied to the Database when the operation is successfully committed.
 
-Every operation is automatically authenticated using the tree's default signing key. This ensures that all changes are cryptographically verified and traceable.
+Every operation is automatically authenticated using the database's default signing key. This ensures that all changes are cryptographically verified and traceable.
 
 ```rust,ignore
-use eidetica::Tree;
+use eidetica::Database;
 use anyhow::Result;
 
-fn some_data_modification(tree: &Tree) -> Result<()> {
+fn some_data_modification(database: &Database) -> Result<()> {
     // Start an authenticated atomic operation
-    let op = tree.new_operation()?; // Automatically uses the tree's default signing key
+    let op = database.new_operation()?; // Automatically uses the database's default signing key
 
     // ... perform data changes using the 'op' handle ...
 
@@ -128,20 +128,20 @@ fn some_data_modification(tree: &Tree) -> Result<()> {
 
 Read-only access also typically uses an `Operation` to ensure a consistent view of the data at a specific point in time.
 
-### 4. Subtrees (`Subtree`)
+### 4. Stores (`Store`)
 
-`Subtrees` are the heart of data storage within a `Tree`. Unlike rigid tables in SQL databases, Subtrees are highly flexible containers.
+`Stores` are the heart of data storage within a `Database`. Unlike rigid tables in SQL databases, Stores are highly flexible containers.
 
-- **Analogy:** You can think of a Subtree _loosely_ like a table or a collection within a Tree.
-- **Flexibility:** Subtrees aren't tied to a single data type or structure. They are generic containers identified by a name (e.g., "todos").
-- **Implementations:** Eidetica provides several `Subtree` implementations for common data patterns. The Todo example uses `Table<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
-- **Extensibility:** You can implement your own `Subtree` types to model complex or domain-specific data structures.
+- **Analogy:** You can think of a Store _loosely_ like a table or a collection within a Database.
+- **Flexibility:** Stores aren't tied to a single data type or structure. They are generic containers identified by a name (e.g., "todos").
+- **Implementations:** Eidetica provides several `Store` implementations for common data patterns. The Todo example uses `Table<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
+- **Extensibility:** You can implement your own `Store` types to model complex or domain-specific data structures.
 
 The Todo example uses a `Table` to store `Todo` structs:
 
 ```rust,ignore
-use eidetica::{Tree, Error};
-use eidetica::subtree::Table;
+use eidetica::{Database, Error};
+use eidetica::store::Table;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use anyhow::{anyhow, Result};
@@ -156,9 +156,9 @@ pub struct Todo {
 }
 // ... impl Todo ...
 
-fn add_todo(tree: &Tree, title: String) -> Result<()> {
-    let op = tree.new_operation()?;
-    // Get a handle to the 'todos' subtree, specifying its type is Table<Todo>
+fn add_todo(database: &Database, title: String) -> Result<()> {
+    let op = database.new_operation()?;
+    // Get a handle to the 'todos' store, specifying its type is Table<Todo>
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     let todo = Todo::new(title);
     // Insert the data - Table assigns an ID
@@ -168,8 +168,8 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
     Ok(())
 }
 
-fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
-    let op = tree.new_operation()?;
+fn complete_todo(database: &Database, id: &str) -> Result<()> {
+    let op = database.new_operation()?;
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     // Get data by ID
     let mut todo = todos_store.get(id).map_err(|e| anyhow!("Get failed: {}", e))?;
@@ -180,10 +180,10 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn list_todos(tree: &Tree) -> Result<()> {
-    let op = tree.new_operation()?;
+fn list_todos(database: &Database) -> Result<()> {
+    let op = database.new_operation()?;
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
-    // Search/scan the subtree
+    // Search/scan the store
     let todos_with_ids = todos_store.search(|_| true)?; // Get all
     // ... print todos ...
     Ok(())
@@ -209,13 +209,13 @@ pub struct Todo {
 The Todo example also demonstrates the use of `YDoc` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
 
 ```rust,ignore
-use eidetica::subtree::YDoc;
+use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map, Transact};
 
-fn set_user_info(tree: &Tree, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
-    let op = tree.new_operation()?;
+fn set_user_info(database: &Database, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_info' YDoc subtree
+    // Get a handle to the 'user_info' YDoc store
     let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
     // Update user information using the Y-CRDT document
@@ -240,10 +240,10 @@ fn set_user_info(tree: &Tree, name: Option<&String>, email: Option<&String>, bio
     Ok(())
 }
 
-fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
-    let op = tree.new_operation()?;
+fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YDoc subtree
+    // Get a handle to the 'user_prefs' YDoc store
     let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
 
     // Update user preference using the Y-CRDT document
@@ -259,9 +259,9 @@ fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
 }
 ```
 
-**Multiple Subtree Types in One Tree:**
+**Multiple Store Types in One Database:**
 
-The Todo example demonstrates how different subtree types can coexist within the same tree:
+The Todo example demonstrates how different store types can coexist within the same database:
 
 - **"todos"** (Table<Todo>): Stores todo items with automatic ID generation
 - **"user_info"** (YDoc): Stores user profile information using Y-CRDT Maps
@@ -290,4 +290,4 @@ cargo run -- list
 
 Refer to the example's [README.md](../../examples/todo/README.md) and [test.sh](../../examples/todo/test.sh) for more usage details.
 
-This walkthrough provides a starting point. Explore the Eidetica documentation and other examples to learn about more advanced features like different subtree types, history traversal, and distributed capabilities.
+This walkthrough provides a starting point. Explore the Eidetica documentation and other examples to learn about more advanced features like different store types, history traversal, and distributed capabilities.

@@ -1,6 +1,6 @@
 //! Sync hooks for detecting entry changes during commit operations.
 //!
-//! This module provides the infrastructure for hooking into AtomicOp commit
+//! This module provides the infrastructure for hooking into Transaction commit
 //! operations to detect when new entries are created that need to be synchronized.
 
 use crate::Result;
@@ -29,7 +29,7 @@ pub struct SyncHookContext {
 pub trait SyncHook: Send + Sync {
     /// Called after an entry has been successfully committed to a tree.
     ///
-    /// This method is called by AtomicOp.commit() after the entry has been
+    /// This method is called by Transaction.commit() after the entry has been
     /// persisted to the backend but before the commit operation returns.
     ///
     /// # Arguments

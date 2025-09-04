@@ -28,7 +28,7 @@ Each design document typically includes:
 ### Implemented
 
 - [Authentication](authentication.md) - Mandatory cryptographic authentication for all entries
-- [Settings Storage](settings_storage.md) - How settings are stored and tracked in trees
+- [Settings Storage](settings_storage.md) - How settings are stored and tracked in databases
 
 ### Proposed
 

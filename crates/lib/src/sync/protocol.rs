@@ -41,14 +41,14 @@ pub struct HandshakeResponse {
 /// Request for tree tips to determine sync state.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GetTipsRequest {
-    /// Tree ID to get tips for
+    /// Database ID to get tips for
     pub tree_id: ID,
 }
 
 /// Response containing tree tips.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GetTipsResponse {
-    /// Tree ID these tips belong to
+    /// Database ID these tips belong to
     pub tree_id: ID,
     /// Current tip entry IDs for the tree
     pub tips: Vec<ID>,
@@ -90,7 +90,7 @@ pub enum SyncResponse {
     Ack,
     /// Number of entries received (for multiple entries)
     Count(usize),
-    /// Tree tips response
+    /// Database tips response
     Tips(GetTipsResponse),
     /// Entries response
     Entries(GetEntriesResponse),

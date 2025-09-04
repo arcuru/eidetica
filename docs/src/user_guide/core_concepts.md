@@ -40,11 +40,11 @@ Eidetica organizes data in a layered architecture:
 +-----------------------+
 | User Application      |
 +-----------------------+
-| BaseDB                |
+| Instance                |
 +-----------------------+
-| Trees                 |
+| Databases                 |
 +----------+------------+
-| Subtrees | Operations |
+| Stores | Operations |
 +----------+------------+
 | Entries (DAG)         |
 +-----------------------+
@@ -56,9 +56,9 @@ Each layer builds on the ones below, providing progressively higher-level abstra
 
 1. **Database Storage**: Physical storage of data (currently InMemory with file persistence)
 2. **Entries**: Immutable, content-addressed objects forming the database's history
-3. **Trees & Subtrees**: Logical organization and typed access to data
-4. **Operations**: Atomic transactions across multiple subtrees
-5. **BaseDB**: The top-level database container and API entry point
+3. **Databases & Stores**: Logical organization and typed access to data
+4. **Operations**: Atomic transactions across multiple stores
+5. **Instance**: The top-level database container and API entry point
 
 ## Entries and the DAG
 
@@ -68,8 +68,8 @@ At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry obj
 
   - A unique ID derived from its content (making it content-addressable)
   - Links to parent entries (forming the graph structure)
-  - Data payloads organized by subtree
-  - Metadata for tree and subtree relationships
+  - Data payloads organized by store
+  - Metadata for database and store relationships
 
 - The DAG enables:
   - Full history tracking (nothing is ever deleted)
@@ -89,43 +89,43 @@ Eidetica's future plans include:
 - Potential IPFS-compatible addressing for distributed storage
 - More efficient synchronization mechanisms than traditional IPFS
 
-## Subtrees: A Core Innovation
+## Stores: A Core Innovation
 
-Eidetica extends the Merkle-CRDT concept with Subtrees, which partition data within each Entry:
+Eidetica extends the Merkle-CRDT concept with Stores, which partition data within each Entry:
 
-- Each subtree is a named, typed data structure within a Tree
-- Subtrees can use different data models and conflict resolution strategies
-- Subtrees maintain their own history tracking within the larger Tree
+- Each store is a named, typed data structure within a Database
+- Stores can use different data models and conflict resolution strategies
+- Stores maintain their own history tracking within the larger Database
 
 This innovation enables:
 
 - Type-safe, structure-specific APIs for data access
-- Efficient partial synchronization (only needed subtrees)
-- Modular features through pluggable subtrees
+- Efficient partial synchronization (only needed stores)
+- Modular features through pluggable stores
 - Atomic operations across different data structures
 
-Planned future subtrees include:
+Planned future stores include:
 
 - Object Storage: Efficiently handling large objects with content-addressable hashing
-- Backup: Archiving tree history for space efficiency
-- Encrypted Subtree: Transparent encrypted data storage
+- Backup: Archiving database history for space efficiency
+- Encrypted Store: Transparent encrypted data storage
 
 ## Atomic Operations and Transactions
 
 All changes in Eidetica happen through atomic Operations:
 
-1. An Operation is created from a Tree
-2. Subtrees are accessed and modified through the Operation
-3. When committed, all changes across all subtrees become a single new Entry
+1. An Operation is created from a Database
+2. Stores are accessed and modified through the Operation
+3. When committed, all changes across all stores become a single new Entry
 4. If the Operation fails, no changes are applied
 
-This transaction-like model ensures data consistency while allowing complex operations across multiple subtrees.
+This transaction-like model ensures data consistency while allowing complex operations across multiple stores.
 
-## Settings as Subtrees
+## Settings as Stores
 
-In Eidetica, even configuration is stored as a subtree:
+In Eidetica, even configuration is stored as a store:
 
-- A Tree's settings are stored in a special "settings" KV Store subtree
+- A Database's settings are stored in a special "settings" KV Store store
 - This approach unifies the data model and allows settings to participate in history tracking
 - It also enables future distributed synchronization of settings
 
@@ -134,7 +134,7 @@ In Eidetica, even configuration is stored as a subtree:
 Eidetica is designed with distributed systems in mind:
 
 - All data structures have CRDT properties for automatic conflict resolution
-- Different subtree types implement appropriate CRDT strategies:
+- Different store types implement appropriate CRDT strategies:
   - DocStore uses last-writer-wins (LWW) with implicit timestamps
   - Table preserves all items, with LWW for updates to the same item
 
@@ -145,7 +145,7 @@ These properties ensure that when Eidetica instances synchronize, they eventuall
 One of Eidetica's most powerful features is comprehensive history tracking:
 
 - All changes are preserved in the Entry DAG
-- "Tips" represent the latest state of a Tree or Subtree
+- "Tips" represent the latest state of a Database or Store
 - Historical states can be reconstructed by traversing the DAG
 
 This design allows for future capabilities like:
@@ -163,19 +163,19 @@ Eidetica is under active development, and some features mentioned in this docume
 
 ### Implemented Features
 
-- Core Entry and Tree structure
+- Core Entry and Database structure
 - In-memory database with file persistence
-- DocStore and Table subtree implementations
+- DocStore and Table store implementations
 - CRDT functionality:
   - Doc (hierarchical nested document structure with recursive merging and tombstone support for deletions)
-- Atomic operations across subtrees
+- Atomic operations across stores
 - Tombstone support for proper deletion handling in distributed environments
 
 ### Planned Features
 
-- Object Storage subtree for efficient handling of large objects
-- Backup subtree for archiving tree history
-- Encrypted subtree for transparent encrypted data storage
+- Object Storage store for efficient handling of large objects
+- Backup store for archiving database history
+- Encrypted store for transparent encrypted data storage
 - IPFS-compatible addressing for distributed storage
 - Enhanced synchronization mechanisms
 - Point-in-time recovery

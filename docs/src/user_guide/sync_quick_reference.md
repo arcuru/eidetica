@@ -7,11 +7,11 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 ### Basic Sync Setup
 
 ```rust,ignore
-use eidetica::{BaseDB, backend::InMemory};
+use eidetica::{Instance, backend::InMemory};
 
 // Create database with sync enabled
 let backend = Box::new(InMemory::new());
-let db = BaseDB::new(backend).with_sync()?;
+let db = Instance::new(backend).with_sync()?;
 
 // Add authentication key
 db.add_private_key("device_key")?;
@@ -94,29 +94,29 @@ if let Some(peer) = db.sync()?.get_peer_info(&peer_key)? {
 db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 ```
 
-## Tree Synchronization
+## Database Synchronization
 
-### Setup Tree Sync Relationships
+### Setup Database Sync Relationships
 
 ```rust,ignore
-// Create tree
-let tree = db.new_tree(Doc::new(), "device_key")?;
-let tree_id = tree.root_id().to_string();
+// Create database
+let database = db.new_tree(Doc::new(), "device_key")?;
+let tree_id = database.root_id().to_string();
 
 // Enable sync with peer
 db.sync_mut()?.add_tree_sync(&peer_key, &tree_id)?;
 
-// List synced trees for peer
-let trees = db.sync()?.get_peer_trees(&peer_key)?;
+// List synced databases for peer
+let databases = db.sync()?.get_peer_trees(&peer_key)?;
 
-// List peers syncing a tree
+// List peers syncing a database
 let peers = db.sync()?.get_tree_peers(&tree_id)?;
 ```
 
 ### Remove Sync Relationships
 
 ```rust,ignore
-// Remove tree from sync with peer
+// Remove database from sync with peer
 db.sync_mut()?.remove_tree_sync(&peer_key, &tree_id)?;
 
 // Remove peer completely
@@ -128,10 +128,10 @@ db.sync_mut()?.remove_peer(&peer_key)?;
 ### Basic Data Changes
 
 ```rust,ignore
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
-// Any tree operation automatically triggers sync
-let op = tree.new_operation()?;
+// Any database operation automatically triggers sync
+let op = database.new_operation()?;
 let store = op.get_subtree::<DocStore>("data")?;
 
 store.set_string("message", "Hello World")?;
@@ -146,7 +146,7 @@ op.commit()?; // Entries queued for sync to all configured peers
 
 ```rust,ignore
 // Multiple operations in single commit
-let op = tree.new_operation()?;
+let op = database.new_operation()?;
 let store = op.get_subtree::<DocStore>("data")?;
 
 for i in 0..100 {
@@ -183,7 +183,7 @@ sync.stop_server()?;
 let op = db.sync()?.sync_tree().new_operation()?;
 let state_manager = SyncStateManager::new(&op);
 
-// Get sync cursor for peer-tree relationship
+// Get sync cursor for peer-database relationship
 let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id)?;
 if let Some(cursor) = cursor {
     println!("Last synced: {:?}", cursor.last_synced_entry);
@@ -203,7 +203,7 @@ if let Some(meta) = metadata {
 ```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
-// Get sync tree operation
+// Get sync database operation
 let op = sync.sync_tree().new_operation()?;
 let state_manager = SyncStateManager::new(&op);
 
@@ -326,11 +326,11 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ```rust,ignore
 // Run multiple sync-enabled databases
-let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
 db1.sync_mut()?.enable_http_transport()?;
 db1.sync_mut()?.start_server("127.0.0.1:8080")?;
 
-let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
 db2.sync_mut()?.enable_http_transport()?;
 db2.sync_mut()?.start_server("127.0.0.1:8081")?;
 
@@ -358,11 +358,11 @@ async fn test_iroh_sync_local() -> Result<()> {
         .build()?;
 
     // Setup databases with local Iroh transport
-    let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
     db1.sync_mut()?.enable_iroh_transport_with_config(transport1)?;
     db1.sync_mut()?.start_server("ignored")?; // Iroh manages its own addresses
 
-    let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
     db2.sync_mut()?.enable_iroh_transport_with_config(transport2)?;
     db2.sync_mut()?.start_server("ignored")?;
 
@@ -385,7 +385,7 @@ async fn test_iroh_sync_local() -> Result<()> {
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
-    let db1 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
     db1.add_private_key("peer1")?;
     db1.sync_mut()?.enable_http_transport()?;
     db1.sync_mut()?.start_server("127.0.0.1:0")?; // Random port
@@ -393,7 +393,7 @@ async fn test_sync_between_peers() -> Result<()> {
     let addr1 = db1.sync()?.get_server_address()?;
 
     // Setup second peer
-    let db2 = BaseDB::new(Box::new(InMemory::new())).with_sync()?;
+    let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
     db2.add_private_key("peer2")?;
     db2.sync_mut()?.enable_http_transport()?;
 
@@ -428,7 +428,7 @@ async fn test_sync_between_peers() -> Result<()> {
 
 ### ✅ Do
 
-- Enable sync before creating trees you want to synchronize
+- Enable sync before creating databases you want to synchronize
 - Use `PeerStatus::Active` only for peers you want to sync with
 - Use Iroh transport for production deployments
 - Monitor sync state and peer connectivity
@@ -437,7 +437,7 @@ async fn test_sync_between_peers() -> Result<()> {
 
 ### ❌ Don't
 
-- Disable sync hooks on trees you want to synchronize
+- Disable sync hooks on databases you want to synchronize
 - Manually manage sync queues (BackgroundSync handles this)
 - Ignore sync errors in production code
 - Use HTTP transport for high-volume production (prefer Iroh)
@@ -449,7 +449,7 @@ async fn test_sync_between_peers() -> Result<()> {
 
    - Check transport is enabled and server started
    - Verify peer status is `Active`
-   - Confirm tree sync relationships configured
+   - Confirm database sync relationships configured
    - Check network connectivity
 
 2. **Performance issues?**

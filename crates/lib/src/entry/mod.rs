@@ -54,7 +54,7 @@ struct SubTreeNode {
 
 /// The fundamental unit of data in Eidetica, representing a finalized, immutable Database Entry.
 ///
-/// An `Entry` represents a snapshot of data within a `Tree` and potentially one or more named `SubTree`s.
+/// An `Entry` represents a snapshot of data within a `Database` and potentially one or more named `Store`s.
 /// It is content-addressable, meaning its `ID` is a cryptographic hash of its contents.
 /// Entries form a Merkle-DAG (Directed Acyclic Graph) structure through parent references.
 ///

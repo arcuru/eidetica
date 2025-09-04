@@ -32,9 +32,9 @@ The system ensures consistent serialization for signature verification by sortin
 
 ## Permission Management
 
-### 1. **Tree-Level Permissions**
+### 1. **Database-Level Permissions**
 
-Each tree maintains fine-grained permissions mapping keys to permission levels. The system checks permissions by looking up key-specific permissions or falling back to default permissions. Admin-only operations include permission updates, with safeguards to prevent self-lockout.
+Each database maintains fine-grained permissions mapping keys to permission levels. The system checks permissions by looking up key-specific permissions or falling back to default permissions. Admin-only operations include permission updates, with safeguards to prevent self-lockout.
 
 ### 2. **Operation-Specific Authorization**
 
@@ -44,7 +44,7 @@ Different operations require different permission levels: reading data requires 
 
 ### 1. **Input Validation**
 
-All inputs undergo validation to prevent injection and malformation attacks. Entry IDs must be valid hex-encoded SHA-256 hashes, key names must contain only safe alphanumeric characters, and subtree names cannot conflict with reserved system names. The system enforces strict size limits and character restrictions.
+All inputs undergo validation to prevent injection and malformation attacks. Entry IDs must be valid hex-encoded SHA-256 hashes, key names must contain only safe alphanumeric characters, and store names cannot conflict with reserved system names. The system enforces strict size limits and character restrictions.
 
 ### 2. **Secure Serialization**
 
@@ -54,7 +54,7 @@ The system prevents deserialization attacks through custom deserializers that va
 
 ### 1. **Denial of Service Protection**
 
-The system implements comprehensive resource limits including maximum entry sizes, subtree counts, and parent node limits. Rate limiting prevents excessive operations per second from any single key, with configurable thresholds to balance security and usability.
+The system implements comprehensive resource limits including maximum entry sizes, store counts, and parent node limits. Rate limiting prevents excessive operations per second from any single key, with configurable thresholds to balance security and usability.
 
 ### 2. **Hash Collision Protection**
 

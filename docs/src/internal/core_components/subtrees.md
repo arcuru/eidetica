@@ -1,12 +1,12 @@
-# Subtrees
+# Stores
 
-Typed data access patterns within trees providing structured interaction with Entry RawData.
+Typed data access patterns within databases providing structured interaction with Entry RawData.
 
 ## Core Concepts
 
-**SubTree Trait**: Interface for typed subtree implementations accessed through Operation handles.
+**SubTree Trait**: Interface for typed store implementations accessed through Operation handles.
 
-**Reserved Names**: Subtree names with underscore prefix (e.g., `_settings`) reserved for internal use.
+**Reserved Names**: Store names with underscore prefix (e.g., `_settings`) reserved for internal use.
 
 **Typed APIs**: Handle serialization/deserialization and provide structured access to raw entry data.
 
@@ -69,16 +69,16 @@ Real-time collaborative editing with sophisticated conflict resolution.
 Requirements:
 
 1. Struct implementing SubTree trait
-2. Handle creation linked to AtomicOp
-3. Custom API methods using AtomicOp interaction:
+2. Handle creation linked to Transaction
+3. Custom API methods using Transaction interaction:
    - get_local_data for staged state
    - get_full_state for merged historical state
    - update_subtree for staging changes
 
 ## Integration
 
-**Operation Context**: All subtrees accessed through atomic operations
+**Operation Context**: All stores accessed through atomic operations
 
-**CRDT Support**: Subtrees can implement CRDT trait for conflict resolution
+**CRDT Support**: Stores can implement CRDT trait for conflict resolution
 
 **Serialization**: Data stored as RawData strings in Entry structure

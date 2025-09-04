@@ -4,7 +4,7 @@
 //! organized by category (database, file, network, cloud).
 //!
 //! The `Database` trait defines the interface for storing and retrieving `Entry` objects.
-//! This allows the core database logic (`BaseDB`, `Tree`) to be independent of the specific storage mechanism.
+//! This allows the core database logic (`Instance`, `Database`) to be independent of the specific storage mechanism.
 
 use crate::Result;
 use crate::entry::{Entry, ID};
@@ -22,7 +22,7 @@ pub use errors::BackendError;
 ///
 /// This enum tracks whether an entry has been cryptographically verified
 /// by the higher-level authentication system. The backend stores this status
-/// but does not perform verification itself - that's handled by the Tree/Operation layers.
+/// but does not perform verification itself - that's handled by the Database/Operation layers.
 ///
 /// Currently all local entries must be authenticated (Verified), but this enum
 /// is designed to support future sync scenarios where entries may be received
@@ -62,7 +62,7 @@ pub enum VerificationStatus {
 /// The database stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
 /// The database itself does not perform verification - it only stores the status
-/// set by the calling code (typically Tree/Operation implementations).
+/// set by the calling code (typically Database/Operation implementations).
 pub trait BackendDB: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
@@ -320,7 +320,7 @@ pub trait BackendDB: Send + Sync + Any {
 
     // === Private Key Storage Methods ===
     //
-    // These methods provide secure local storage for private keys outside of the Tree structures.
+    // These methods provide secure local storage for private keys outside of the Database structures.
     // Private keys are stored separately from the content-addressable entries to maintain security
     // and allow for different storage policies (e.g., encryption, hardware security modules).
 

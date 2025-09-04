@@ -140,7 +140,7 @@ impl YrsBinary {
     }
 }
 
-/// A Y-CRDT based SubTree implementation with efficient differential saving.
+/// A Y-CRDT based Store implementation with efficient differential saving.
 ///
 /// `YDoc` provides a CRDT-based storage abstraction using the yrs library,
 /// which is a Rust port of Yjs. This allows for real-time collaborative editing

@@ -2,25 +2,25 @@
 
 This page provides focused code snippets for common tasks in Eidetica.
 
-_Assumes basic setup like `use eidetica::{BaseDB, Tree, Error, ...};` and error handling (`?`) for brevity._
+_Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and error handling (`?`) for brevity._
 
-## 1. Initializing the Database (`BaseDB`)
+## 1. Initializing the Database (`Instance`)
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::basedb::Instance;
 use std::path::PathBuf;
 
 // Option A: Create a new, empty in-memory database
 let database_new = InMemory::new();
-let db_new = BaseDB::new(Box::new(database_new));
+let db_new = Instance::new(Box::new(database_new));
 
 // Option B: Load from a previously saved file
 let db_path = PathBuf::from("my_database.json");
 if db_path.exists() {
     match InMemory::load_from_file(&db_path) {
         Ok(database_loaded) => {
-            let db_loaded = BaseDB::new(Box::new(database_loaded));
+            let db_loaded = Instance::new(Box::new(database_loaded));
             println!("Database loaded successfully.");
             // Use db_loaded
         }
@@ -35,44 +35,44 @@ if db_path.exists() {
 }
 ```
 
-## 2. Creating or Loading a Tree
+## 2. Creating or Loading a Database
 
 ```rust,ignore
 use eidetica::crdt::Doc;
 
-let db: BaseDB = /* obtained from step 1 */;
+let db: Instance = /* obtained from step 1 */;
 let tree_name = "my_app_data";
 let auth_key = "my_key"; // Must match a key added to the database
 
-let tree = match db.find_tree(tree_name) {
-    Ok(mut trees) => {
-        println!("Found existing tree: {}", tree_name);
-        trees.pop().unwrap() // Assume first one is correct
+let database = match db.find_tree(tree_name) {
+    Ok(mut databases) => {
+        println!("Found existing database: {}", tree_name);
+        databases.pop().unwrap() // Assume first one is correct
     }
     Err(e) if e.is_not_found() => {
-        println!("Creating new tree: {}", tree_name);
+        println!("Creating new database: {}", tree_name);
         let mut doc = Doc::new();
         doc.set("name", tree_name);
-        db.new_tree(doc, auth_key)? // All trees require authentication
+        db.new_tree(doc, auth_key)? // All databases require authentication
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };
 
-println!("Using Tree with root ID: {}", tree.root_id());
+println!("Using Database with root ID: {}", database.root_id());
 ```
 
 ## 3. Writing Data (DocStore Example)
 
 ```rust,ignore
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the tree's default key)
-let op = tree.new_operation()?;
+// Start an authenticated operation (automatically uses the database's default key)
+let op = database.new_operation()?;
 
 {
-    // Get the DocStore subtree handle (scoped)
+    // Get the DocStore store handle (scoped)
     let config_store = op.get_subtree::<DocStore>("configuration")?;
 
     // Set some values
@@ -94,7 +94,7 @@ println!("DocStore changes committed in entry: {}", entry_id);
 ## 4. Writing Data (Table Example)
 
 ```rust,ignore
-use eidetica::subtree::Table;
+use eidetica::store::Table;
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -103,10 +103,10 @@ struct Task {
     completed: bool,
 }
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the tree's default key)
-let op = tree.new_operation()?;
+// Start an authenticated operation (automatically uses the database's default key)
+let op = database.new_operation()?;
 let inserted_id;
 
 {
@@ -143,12 +143,12 @@ println!("Table changes committed in entry: {}", entry_id);
 ## 5. Reading Data (DocStore Viewer)
 
 ```rust,ignore
-use eidetica::subtree::DocStore;
+use eidetica::store::DocStore;
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
 // Get a read-only viewer for the latest state
-let config_viewer = tree.get_subtree_viewer::<DocStore>("configuration")?;
+let config_viewer = database.get_subtree_viewer::<DocStore>("configuration")?;
 
 match config_viewer.get("api_key") {
     Ok(api_key) => println!("Current API Key: {}", api_key),
@@ -169,13 +169,13 @@ match config_viewer.get("retry_count") {
 ## 6. Reading Data (Table Viewer)
 
 ```rust,ignore
-use eidetica::subtree::Table;
+use eidetica::store::Table;
 // Assume Task struct from example 4
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
 // Get a read-only viewer
-let tasks_viewer = tree.get_subtree_viewer::<Table<Task>>("tasks")?;
+let tasks_viewer = database.get_subtree_viewer::<Table<Task>>("tasks")?;
 
 // Get a specific task by ID
 let id_to_find = /* obtained previously, e.g., inserted_id */;
@@ -203,14 +203,14 @@ match tasks_viewer.iter() {
 ## 7. Working with Nested Data (ValueEditor)
 
 ```rust,ignore
-use eidetica::subtree::{DocStore, Value};
+use eidetica::store::{DocStore, Value};
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the tree's default key)
-let op = tree.new_operation()?;
+// Start an authenticated operation (automatically uses the database's default key)
+let op = database.new_operation()?;
 
-// Get the DocStore subtree handle
+// Get the DocStore store handle
 let user_store = op.get_subtree::<DocStore>("users")?;
 
 // Using ValueEditor to create and modify nested structures
@@ -255,7 +255,7 @@ let entry_id = op.commit()?;
 println!("ValueEditor changes committed in entry: {}", entry_id);
 
 // Read back the nested data
-let viewer_op = tree.new_operation()?;
+let viewer_op = database.new_operation()?;
 let viewer_store = viewer_op.get_subtree::<DocStore>("users")?;
 
 // Get the user data and navigate through it
@@ -318,18 +318,18 @@ if let Ok(user_data) = viewer_store.get("user123") {
 
 ## 8. Working with Y-CRDT Documents (YDoc)
 
-The `YDoc` subtree provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
+The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative data structures. This requires the "y-crdt" feature flag.
 
 ```rust,ignore
-use eidetica::subtree::YDoc;
+use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
 
-let tree: Tree = /* obtained from step 2 */;
+let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the tree's default key)
-let op = tree.new_operation()?;
+// Start an authenticated operation (automatically uses the database's default key)
+let op = database.new_operation()?;
 
-// Get the YDoc subtree handle
+// Get the YDoc store handle
 let user_info_store = op.get_subtree::<YDoc>("user_info")?;
 
 // Writing to Y-CRDT document
@@ -349,7 +349,7 @@ let entry_id = op.commit()?;
 println!("YDoc changes committed in entry: {}", entry_id);
 
 // Reading from Y-CRDT document
-let read_op = tree.new_operation()?;
+let read_op = database.new_operation()?;
 let reader_store = read_op.get_subtree::<YDoc>("user_info")?;
 
 reader_store.with_doc(|doc| {
@@ -377,7 +377,7 @@ reader_store.with_doc(|doc| {
 })?;
 
 // Working with nested Y-CRDT maps
-let prefs_op = tree.new_operation()?;
+let prefs_op = database.new_operation()?;
 let prefs_store = prefs_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_store.with_doc_mut(|doc| {
@@ -394,7 +394,7 @@ prefs_store.with_doc_mut(|doc| {
 prefs_op.commit()?;
 
 // Reading preferences
-let prefs_read_op = tree.new_operation()?;
+let prefs_read_op = database.new_operation()?;
 let prefs_read_store = prefs_read_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_read_store.with_doc(|doc| {
@@ -433,7 +433,7 @@ prefs_read_store.with_doc(|doc| {
 use eidetica::backend::database::InMemory;
 use std::path::PathBuf;
 
-let db: BaseDB = /* database instance */;
+let db: Instance = /* database instance */;
 let db_path = PathBuf::from("my_database.json");
 
 // Lock the database mutex

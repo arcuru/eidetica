@@ -65,7 +65,7 @@ Eidetica uses the following log levels:
   - Database loaded/saved
 - **DEBUG**: Detailed operational information
   - Sync protocol details
-  - Tree synchronization progress
+  - Database synchronization progress
   - Hook execution
 - **TRACE**: Very detailed trace information
   - Individual entry processing
@@ -77,7 +77,7 @@ Eidetica uses the following log levels:
 ### Basic Application Logging
 
 ```rust,ignore
-use eidetica::BaseDB;
+use eidetica::Instance;
 use eidetica::backend::database::InMemory;
 use tracing_subscriber::EnvFilter;
 
@@ -91,10 +91,10 @@ fn main() -> eidetica::Result<()> {
         .init();
 
     let backend = Box::new(InMemory::new());
-    let db = BaseDB::new(backend);
+    let db = Instance::new(backend);
 
     // Library operations will now emit log messages
-    let tree = db.new_tree_default("my_key")?;
+    let database = db.new_tree_default("my_key")?;
 
     Ok(())
 }

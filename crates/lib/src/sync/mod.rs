@@ -272,7 +272,7 @@ impl Sync {
         Ok(())
     }
 
-    // === Tree Sync Relationship Methods ===
+    // === Database Sync Relationship Methods ===
 
     /// Add a tree to the sync relationship with a peer.
     ///
@@ -937,7 +937,7 @@ impl Sync {
     /// # Duplicate Prevention Architecture
     ///
     /// Eidetica uses **smart duplicate prevention** in the background sync engine:
-    /// - **Tree sync** (`SyncWithPeer` command): Uses tip comparison for semantic filtering
+    /// - **Database sync** (`SyncWithPeer` command): Uses tip comparison for semantic filtering
     /// - **Direct send** (this method): Trusts caller to provide appropriate entries
     ///
     /// For automatic duplicate prevention, use tree-based sync relationships instead

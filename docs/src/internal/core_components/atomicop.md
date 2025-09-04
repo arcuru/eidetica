@@ -1,19 +1,19 @@
-# AtomicOp
+# Transaction
 
-Atomic transaction mechanism for tree modifications.
+Atomic transaction mechanism for database modifications.
 
 ## Lifecycle
 
-1. **Creation**: Initialize with current tree tips as parents
-2. **Subtree Access**: Get typed handles for data manipulation
+1. **Creation**: Initialize with current database tips as parents
+2. **Store Access**: Get typed handles for data manipulation
 3. **Staging**: Accumulate changes in internal entry
 4. **Commit**: Sign, validate, and store finalized entry
 
 ## Features
 
-- Multiple subtree changes in single commit
-- Automatic authentication using tree's default key
-- Type-safe subtree access
+- Multiple store changes in single commit
+- Automatic authentication using database's default key
+- Type-safe store access
 - Cryptographic signing and validation
 
 ## Integration
@@ -22,6 +22,6 @@ Atomic transaction mechanism for tree modifications.
 
 **Authentication**: Signs operations and validates permissions
 
-**CRDT Support**: Enables subtree conflict resolution
+**CRDT Support**: Enables store conflict resolution
 
 **Backend Storage**: Stores entries with verification status

@@ -117,8 +117,8 @@ pub enum BackendError {
         reason: String,
     },
 
-    /// Tree integrity violation detected.
-    #[error("Tree integrity violation: {reason}")]
+    /// Database integrity violation detected.
+    #[error("Database integrity violation: {reason}")]
     TreeIntegrityViolation {
         /// Description of the integrity violation
         reason: String,

@@ -10,15 +10,15 @@ These components work together to provide Eidetica's unique combination of featu
 
 **[Entry](entry.md)**: The fundamental data unit - immutable, content-addressable, and cryptographically signed
 
-**[Tree](tree.md)**: Collections of related entries with independent history and authentication policies
+**[Database](database.md)**: Collections of related entries with independent history and authentication policies
 
-**[BaseDB](basedb.md)**: The main database orchestration layer managing trees, authentication, and storage
+**[Instance](basedb.md)**: The main database orchestration layer managing databases, authentication, and storage
 
-**[AtomicOp](atomicop.md)**: Transaction mechanism providing atomic operations across multiple subtrees
+**[Transaction](atomicop.md)**: Transaction mechanism providing atomic operations across multiple stores
 
 ## Data Access and Storage
 
-**[Subtrees](subtrees.md)**: Typed data structures (DocStore, Table, YDoc) providing application-friendly interfaces
+**[Stores](stores.md)**: Typed data structures (DocStore, Table, YDoc) providing application-friendly interfaces
 
 **[Backend](backend.md)**: Pluggable storage abstraction supporting different persistence strategies
 

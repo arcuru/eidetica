@@ -10,7 +10,7 @@ The authentication system is deeply integrated with the core database, not merel
 
 ## Architecture
 
-**Storage Location**: Authentication configuration resides in the special `_settings.auth` subtree of each Tree, using Doc CRDT for deterministic conflict resolution.
+**Storage Location**: Authentication configuration resides in the special `_settings.auth` store of each Database, using Doc CRDT for deterministic conflict resolution.
 
 **Validation Component**: The AuthValidator provides centralized entry validation with performance-optimized caching.
 
@@ -46,7 +46,7 @@ Three-tier permission model with integrated priority system:
 
 ### Direct Keys
 
-Ed25519 public keys stored directly in the tree's `_settings.auth`:
+Ed25519 public keys stored directly in the database's `_settings.auth`:
 
 ```json
 {
@@ -76,16 +76,16 @@ This design preserves the integrity of historical data while preventing future u
 Special `*` key enables public access:
 
 - Can grant any permission level (read, write, or admin)
-- Commonly used for world-readable trees
+- Commonly used for world-readable databases
 - Subject to same revocation mechanisms as regular keys
 
 ## Delegation System
 
-Trees can delegate authentication to other trees, enabling powerful authentication patterns without granting administrative privileges on the delegating tree.
+Databases can delegate authentication to other databases, enabling powerful authentication patterns without granting administrative privileges on the delegating database.
 
 ### Core Concepts
 
-**Delegated Tree References**: Any tree can reference another tree as an authentication source:
+**Delegated Database References**: Any database can reference another database as an authentication source:
 
 ```json
 {
@@ -96,7 +96,7 @@ Trees can delegate authentication to other trees, enabling powerful authenticati
           "max": "write:15",
           "min": "read" // optional
         },
-        "tree": {
+        "database": {
           "root": "TREE_ROOT_ID",
           "tips": ["TIP_ID_1", "TIP_ID_2"]
         }
@@ -135,10 +135,10 @@ Multi-level delegation supported with permission clamping at each level:
 
 "Latest known tips" mechanism ensures key revocations are respected:
 
-1. Entries include delegated tree tips at signing time
-2. Tree tracks these as "latest known tips"
+1. Entries include delegated database tips at signing time
+2. Database tracks these as "latest known tips"
 3. Future entries must use equal or newer tips
-4. Prevents using old tree states where revoked keys were valid
+4. Prevents using old database states where revoked keys were valid
 
 ## Authentication Flow
 
@@ -199,6 +199,6 @@ During network splits:
 
 ## See Also
 
-- [Tree](tree.md) - How Trees integrate with authentication
+- [Database](database.md) - How Databases integrate with authentication
 - [Entry](entry.md) - Authentication data in entry structure
 - [Authentication Design](../../design/authentication.md) - Full design specification

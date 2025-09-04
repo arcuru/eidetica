@@ -18,13 +18,13 @@ pub(super) const TREES_SUBTREE: &str = "trees"; // Maps tree ID -> list of peer 
 /// Internal peer manager for the sync module.
 ///
 /// This struct manages all peer-related operations for the sync module,
-/// operating on an AtomicOp to stage changes.
+/// operating on an Transaction to stage changes.
 pub(super) struct PeerManager<'a> {
     op: &'a Transaction,
 }
 
 impl<'a> PeerManager<'a> {
-    /// Create a new PeerManager that operates on the given AtomicOp.
+    /// Create a new PeerManager that operates on the given Transaction.
     pub(super) fn new(op: &'a Transaction) -> Self {
         Self { op }
     }
@@ -381,7 +381,7 @@ impl<'a> PeerManager<'a> {
         Ok(())
     }
 
-    // === Tree Sync Relationship Methods ===
+    // === Database Sync Relationship Methods ===
 
     /// Add a tree to the sync relationship with a peer.
     ///

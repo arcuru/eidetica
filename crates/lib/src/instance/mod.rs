@@ -1,8 +1,8 @@
 //!
-//! Provides the main database structures (`BaseDB` and `Tree`).
+//! Provides the main database structures (`Instance` and `Database`).
 //!
-//! `BaseDB` manages multiple `Tree` instances and interacts with the storage `Database`.
-//! `Tree` represents a single, independent history of data entries, analogous to a table or branch.
+//! `Instance` manages multiple `Database` instances and interacts with the storage `Database`.
+//! `Database` represents a single, independent history of data entries, analogous to a table or branch.
 
 use crate::Database;
 use crate::Result;
@@ -26,11 +26,11 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// Database implementation on top of the storage backend.
 ///
 /// This database is the base DB, other 'overlays' or 'plugins' should be implemented on top of this.
-/// It manages collections of related entries, called `Tree`s, and interacts with a
+/// It manages collections of related entries, called `Database`s, and interacts with a
 /// pluggable `Database` for storage and retrieval.
-/// Each `Tree` represents an independent history of data, identified by a root `Entry`.
+/// Each `Database` represents an independent history of data, identified by a root `Entry`.
 ///
-/// Each BaseDB instance has a unique device identity represented by an Ed25519 keypair.
+/// Each Instance instance has a unique device identity represented by an Ed25519 keypair.
 /// The public key serves as the device ID for sync operations.
 pub struct Instance {
     /// The database storage used by the database.
@@ -50,7 +50,7 @@ impl Instance {
 
         // Ensure device ID is generated during construction
         db.device_id()
-            .expect("Failed to generate device ID during BaseDB construction");
+            .expect("Failed to generate device ID during Instance construction");
 
         db
     }
@@ -62,7 +62,7 @@ impl Instance {
 
     // === Device Identity Management ===
     //
-    // Each BaseDB instance has a unique device identity represented by an Ed25519 keypair.
+    // Each Instance instance has a unique device identity represented by an Ed25519 keypair.
     // The device key is automatically generated on first access and stored persistently.
     // The public key serves as the device ID for identification in sync operations.
 
@@ -110,7 +110,7 @@ impl Instance {
 
     /// Create a new tree in the database.
     ///
-    /// A `Tree` represents a collection of related entries, analogous to a table.
+    /// A `Database` represents a collection of related entries, analogous to a table.
     /// It is initialized with settings defined by a `Doc` CRDT.
     /// All trees must now be created with authentication.
     ///
@@ -119,7 +119,7 @@ impl Instance {
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
-    /// A `Result` containing the newly created `Tree` or an error.
+    /// A `Result` containing the newly created `Database` or an error.
     pub fn new_tree(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Database> {
         let tree = Database::new(settings, Arc::clone(&self.backend), signing_key_name)?;
         Ok(self.configure_tree_sync_hooks(tree))
@@ -132,7 +132,7 @@ impl Instance {
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
     ///
     /// # Returns
-    /// A `Result` containing the newly created `Tree` or an error.
+    /// A `Result` containing the newly created `Database` or an error.
     pub fn new_tree_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
         let mut settings = Doc::new();
 
@@ -158,7 +158,7 @@ impl Instance {
     /// * `root_id` - The content-addressable ID of the root `Entry` of the tree to load.
     ///
     /// # Returns
-    /// A `Result` containing the loaded `Tree` or an error if the root ID is not found.
+    /// A `Result` containing the loaded `Database` or an error if the root ID is not found.
     pub fn load_tree(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
@@ -172,10 +172,10 @@ impl Instance {
     /// Load all trees stored in the backend.
     ///
     /// This retrieves all known root entry IDs from the backend and constructs
-    /// `Tree` instances for each.
+    /// `Database` instances for each.
     ///
     /// # Returns
-    /// A `Result` containing a vector of all `Tree` instances or an error.
+    /// A `Result` containing a vector of all `Database` instances or an error.
     pub fn all_trees(&self) -> Result<Vec<Database>> {
         let root_ids = self.backend.all_roots()?;
         let mut trees = Vec::new();
@@ -197,7 +197,7 @@ impl Instance {
     /// * `name` - The name to search for.
     ///
     /// # Returns
-    /// A `Result` containing a vector of `Tree` instances whose name matches,
+    /// A `Result` containing a vector of `Database` instances whose name matches,
     /// or an error.
     ///
     /// # Errors
@@ -361,7 +361,7 @@ impl Instance {
     /// The sync module will have access to this database's device identity through the backend.
     ///
     /// # Returns
-    /// A `Result` containing a new BaseDB with the sync module initialized.
+    /// A `Result` containing a new Instance with the sync module initialized.
     pub fn with_sync(mut self) -> Result<Self> {
         // Ensure device key exists before creating sync
         self.device_id()?;
@@ -385,7 +385,7 @@ impl Instance {
     /// * `sync_tree_root_id` - The root ID of an existing sync tree
     ///
     /// # Returns
-    /// A `Result` containing a new BaseDB with the sync module loaded.
+    /// A `Result` containing a new Instance with the sync module loaded.
     pub fn with_sync_from_tree(mut self, sync_tree_root_id: &ID) -> Result<Self> {
         // Ensure device key exists before loading sync
         self.device_id()?;
@@ -398,7 +398,7 @@ impl Instance {
     /// Configure a tree with sync hooks if sync is enabled.
     ///
     /// This is a helper method that sets up sync hooks for a tree
-    /// when sync is available in this BaseDB instance.
+    /// when sync is available in this Instance instance.
     ///
     /// # Arguments
     /// * `tree` - The tree to configure with sync hooks

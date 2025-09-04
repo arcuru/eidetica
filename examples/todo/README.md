@@ -1,6 +1,6 @@
 # Todo CLI App
 
-A simple command-line Todo application that demonstrates the usage of Eidetica with multiple subtree types.
+A simple command-line Todo application that demonstrates the usage of Eidetica with multiple store types.
 
 ## Overview
 
@@ -19,7 +19,7 @@ This Todo CLI application demonstrates how Eidetica can be used to build a simpl
 - Set and update user preferences
 - View all user preferences
 
-All data is persisted to a local file using Eidetica's InMemory database with file serialization.
+All data is persisted to a local file using Eidetica's InMemory backend with file serialization.
 To specify which file it persists into, pass the option `--database-path /path/to/file.json`.
 
 ## Usage
@@ -78,23 +78,23 @@ eidetica-todo show-prefs
 
 ## How It Works
 
-This app demonstrates several Eidetica features and subtree types:
+This app demonstrates several Eidetica features and store types:
 
-- **BaseDB**: The main database interface
+- **Instance**: The main database interface
 - **InMemory**: Memory storage with JSON file persistence
-- **Tree**: A hierarchical data structure containing multiple subtrees
-- **Table**: A subtree type for storing record-like data (used for todos)
-- **YDoc**: A Y-CRDT based subtree for collaborative data structures (used for user info and preferences)
+- **Database**: A hierarchical data structure containing multiple stores
+- **Table**: A store type for storing record-like data (used for todos)
+- **YDoc**: A Y-CRDT based store for collaborative data structures (used for user info and preferences)
 
 ### Data Organization
 
-The application uses three separate subtrees within a single tree:
+The application uses three separate stores within a single database:
 
 1. **"todos"** (Table<Todo>): Stores todo items with automatic ID generation
 2. **"user_info"** (YDoc): Stores user profile information using Y-CRDT Maps
 3. **"user_prefs"** (YDoc): Stores user preferences using Y-CRDT Maps
 
-This demonstrates how different subtree types can coexist within the same Eidetica tree, each optimized for their specific use case.
+This demonstrates how different store types can coexist within the same Eidetica database, each optimized for their specific use case.
 
 ## Data Model
 
@@ -111,7 +111,7 @@ The unique ID for each task is provided by the Eidetica Table, which automatical
 
 ### User Information (YDoc)
 
-User information is stored in Y-CRDT Maps within the YDoc subtree:
+User information is stored in Y-CRDT Maps within the YDoc store:
 
 - **user_info**: Contains name, email, bio fields
 - **preferences**: Contains user preference key-value pairs
@@ -139,7 +139,7 @@ A comprehensive automated test script is included that demonstrates:
 ### Persistence and Coexistence Testing
 
 - Verifying data persistence across operations
-- Demonstrating multiple subtree types working together
+- Demonstrating multiple store types working together
 - Simulating collaborative updates
 
 You can run the comprehensive test with:

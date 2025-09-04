@@ -29,7 +29,7 @@ For instance, the `examples/todo/` directory contains a complete Todo applicatio
 
 Eidetica maintains ambitious test coverage targets:
 
-- **Core Data Types**: 95%+ coverage for all core data types (`Entry`, `Tree`, `SubTree`)
+- **Core Data Types**: 95%+ coverage for all core data types (`Entry`, `Database`, `SubTree`)
 - **CRDT Implementations**: 100% coverage for all CRDT implementations
 - **Database Implementations**: 90%+ coverage, including error cases
 - **Public API Methods**: 100% coverage
@@ -50,7 +50,7 @@ We exclusively test through public interfaces. This approach ensures API stabili
 
 ### Test Helpers
 
-Eidetica provides test helpers organized into main helpers (`crates/lib/tests/it/helpers.rs`) for common database and tree setup, and module-specific helpers for specialized testing scenarios. Each test module has its own `helpers.rs` file with utilities specific to that component's testing needs.
+Eidetica provides test helpers organized into main helpers (`crates/lib/tests/it/helpers.rs`) for common database and database setup, and module-specific helpers for specialized testing scenarios. Each test module has its own `helpers.rs` file with utilities specific to that component's testing needs.
 
 ### Standard Test Structure
 
@@ -95,7 +95,7 @@ Run specific test categories:
 cargo test --test it
 
 # Run specific integration tests
-cargo nextest run tests::it::subtree
+cargo nextest run tests::it::store
 ```
 
 Run tests using `cargo test --test it` for all integration tests, or target specific modules with patterns like `cargo test --test it auth::`. The project also supports `cargo nextest` for improved test output and performance.
