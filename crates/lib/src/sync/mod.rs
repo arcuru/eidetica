@@ -519,8 +519,16 @@ impl Sync {
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        rx.await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+        let result = rx
+            .await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?;
+
+        // Clear the transport_enabled flag after successfully stopping the server
+        if result.is_ok() {
+            self.transport_enabled = false;
+        }
+
+        result
     }
 
     /// Enable HTTP transport for network communication.
