@@ -53,6 +53,13 @@ tasks:
       - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
       - cargo test --doc --workspace --all-features --quiet
       - task: book:test
+  test:full:
+    desc: Run all tests including ignored ones
+    aliases: [tf]
+    cmds:
+      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
+      - cargo test --doc --workspace --all-features --quiet
+      - task: book:test
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --quiet
