@@ -80,14 +80,3 @@ Mirrored on [GitHub](https://github.com/arcuru/eidetica) and [Codeberg](https://
 
 For practical reasons GitHub is the official repo, but use either repo to contribute.
 Issues can't be synced so there may be some duplicates.
-
-## Finances
-
-### Sponsors
-
-.
-
-### Costs
-
-- $X,000 in direct costs (hardware, tooling, coffee, etc.)
-- $X00,000 in opportunity costs of invested time
