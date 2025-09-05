@@ -12,9 +12,9 @@ These components work together to provide Eidetica's unique combination of featu
 
 **[Database](database.md)**: User-facing abstraction providing operations over trees of entries with independent history and authentication policies
 
-**[Instance](basedb.md)**: The main database orchestration layer managing databases, authentication, and storage
+**[Instance](instance.md)**: The main database orchestration layer managing databases, authentication, and storage
 
-**[Transaction](atomicop.md)**: Transaction mechanism providing atomic operations across multiple stores
+**[Transaction](transaction.md)**: Transaction mechanism providing atomic operations across multiple stores
 
 ## Data Access and Storage
 

@@ -16,7 +16,7 @@ In the Todo example, we initialize or load the database using an `InMemory` data
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::Instance;
+use eidetica::Instance;
 use std::path::PathBuf;
 use anyhow::Result;
 
@@ -63,7 +63,7 @@ A `Database` is a primary organizational unit within a `Instance`. Think of it s
 The Todo example uses a single Database named "todo":
 
 ```rust,ignore
-use eidetica::basedb::Instance;
+use eidetica::Instance;
 use eidetica::Database;
 use anyhow::Result;
 

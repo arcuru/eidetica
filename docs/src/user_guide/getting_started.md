@@ -28,7 +28,7 @@ Here's a simple example:
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::Instance;
+use eidetica::Instance;
 use eidetica::crdt::Doc;
 use std::path::PathBuf;
 

@@ -8,7 +8,7 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 
 ```rust,ignore
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::Instance;
+use eidetica::Instance;
 use std::path::PathBuf;
 
 // Option A: Create a new, empty in-memory database
