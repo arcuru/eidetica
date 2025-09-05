@@ -81,6 +81,13 @@ Mirrored on [GitHub](https://github.com/arcuru/eidetica) and [Codeberg](https://
 For practical reasons GitHub is the official repo, but use either repo to contribute.
 Issues can't be synced so there may be some duplicates.
 
-## Sponsors
+## Finances
 
-Me. With 4-figures of direct costs and 6-figures of opportunity costs invested prior to v0.2
+### Sponsors
+
+.
+
+### Costs
+
+- $X,000 in direct costs (hardware, tooling, coffee, etc.)
+- $X00,000 in opportunity costs of invested time
