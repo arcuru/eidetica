@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::backend::database::InMemory;
-use eidetica::basedb::BaseDB;
+use eidetica::Instance;
 use eidetica::crdt::Doc;
-use eidetica::subtree::Table;
-use eidetica::subtree::YDoc;
+use eidetica::store::Table;
+use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
-use eidetica::{Result, Tree};
+use eidetica::{Result, Database};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -98,28 +98,28 @@ fn main() -> Result<()> {
     // Load or create the database
     let db = load_or_create_db(&cli.database_path)?;
 
-    // Load or create the todo tree
-    let todo_tree = load_or_create_todo_tree(&db)?;
+    // Load or create the todo database
+    let todo_database = load_or_create_todo_database(&db)?;
 
     // Handle the command with proper error context
     let result = match &cli.command {
         Commands::Add { title } => {
-            add_todo(&todo_tree, title.clone()).map(|_| println!("✓ Task added: {title}"))
+            add_todo(&todo_database, title.clone()).map(|_| println!("✓ Task added: {title}"))
         }
         Commands::Complete { id } => {
-            complete_todo(&todo_tree, id).map(|_| println!("✓ Task completed: {id}"))
+            complete_todo(&todo_database, id).map(|_| println!("✓ Task completed: {id}"))
         }
-        Commands::List => list_todos(&todo_tree),
+        Commands::List => list_todos(&todo_database),
         Commands::SetUser { name, email, bio } => {
-            set_user_info(&todo_tree, name.as_ref(), email.as_ref(), bio.as_ref())
+            set_user_info(&todo_database, name.as_ref(), email.as_ref(), bio.as_ref())
                 .map(|_| println!("✓ User information updated"))
         }
-        Commands::ShowUser => show_user_info(&todo_tree),
+        Commands::ShowUser => show_user_info(&todo_database),
         Commands::SetPref { key, value } => {
-            set_user_preference(&todo_tree, key.clone(), value.clone())
+            set_user_preference(&todo_database, key.clone(), value.clone())
                 .map(|_| println!("✓ User preference set"))
         }
-        Commands::ShowPrefs => show_user_preferences(&todo_tree),
+        Commands::ShowPrefs => show_user_preferences(&todo_database),
     };
 
     // Handle command errors with specific error messages
@@ -142,13 +142,13 @@ fn main() -> Result<()> {
     save_db(&db, &cli.database_path)
 }
 
-fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
+fn load_or_create_db(path: &PathBuf) -> Result<Instance> {
     let db = if path.exists() {
         let backend = InMemory::load_from_file(path)?;
-        BaseDB::new(Box::new(backend))
+        Instance::new(Box::new(backend))
     } else {
         let backend = InMemory::new();
-        BaseDB::new(Box::new(backend))
+        Instance::new(Box::new(backend))
     };
 
     // Ensure the todo app authentication key exists
@@ -178,7 +178,7 @@ fn load_or_create_db(path: &PathBuf) -> Result<BaseDB> {
     Ok(db)
 }
 
-fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
+fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
     let database = db.backend();
 
     // Cast the database to InMemory to access save_to_file
@@ -195,23 +195,23 @@ fn save_db(db: &BaseDB, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
-    let tree_name = "todo";
+fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
+    let database_name = "todo";
 
-    // Try to find the tree by name
-    let mut tree = match db.find_tree(tree_name) {
-        Ok(mut trees) => {
-            // If multiple trees with the same name exist, pop will return one arbitrarily.
+    // Try to find the database by name
+    let mut database = match db.find_database(database_name) {
+        Ok(mut databases) => {
+            // If multiple databases with the same name exist, pop will return one arbitrarily.
             // We might want more robust handling later (e.g., error or config option).
-            trees.pop().unwrap() // unwrap is safe because find_tree errors if empty
+            databases.pop().unwrap() // unwrap is safe because find_database errors if empty
         }
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
-            println!("No existing todo tree found, creating a new one...");
+            println!("No existing todo database found, creating a new one...");
             let mut settings = Doc::new();
-            settings.set_string("name", tree_name);
+            settings.set_string("name", database_name);
 
-            db.new_tree(settings, TODO_APP_KEY_NAME)?
+            db.new_database(settings, TODO_APP_KEY_NAME)?
         }
         Err(e) => {
             // Propagate other errors
@@ -219,19 +219,19 @@ fn load_or_create_todo_tree(db: &BaseDB) -> Result<Tree> {
         }
     };
 
-    // Set the default authentication key for this tree
+    // Set the default authentication key for this database
     // This means all subsequent new_operation() calls will automatically use this key
-    tree.set_default_auth_key(TODO_APP_KEY_NAME);
+    database.set_default_auth_key(TODO_APP_KEY_NAME);
 
-    Ok(tree)
+    Ok(database)
 }
 
-fn add_todo(tree: &Tree, title: String) -> Result<()> {
+fn add_todo(database: &Database, title: String) -> Result<()> {
     // Start an atomic operation (uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'todos' Table subtree
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table store
+    let todos_store = op.get_store::<Table<Todo>>("todos")?;
 
     // Create a new todo
     let todo = Todo::new(title);
@@ -248,20 +248,20 @@ fn add_todo(tree: &Tree, title: String) -> Result<()> {
     Ok(())
 }
 
-fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
+fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Start an atomic operation (uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'todos' Table subtree
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table store
+    let todos_store = op.get_store::<Table<Todo>>("todos")?;
 
     // Get the todo from the Table
     let mut todo = match todos_store.get(id) {
         Ok(todo) => todo,
         Err(e) if e.is_not_found() => {
             // Provide a user-friendly error message for not found
-            return Err(eidetica::subtree::SubtreeError::KeyNotFound {
-                subtree: "todos".to_string(),
+            return Err(eidetica::store::StoreError::KeyNotFound {
+                store: "todos".to_string(),
                 key: id.to_string(),
             }.into());
         }
@@ -283,12 +283,12 @@ fn complete_todo(tree: &Tree, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn list_todos(tree: &Tree) -> Result<()> {
+fn list_todos(database: &Database) -> Result<()> {
     // Start an atomic operation (for read-only, uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'todos' Table subtree
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
+    // Get a handle to the 'todos' Table store
+    let todos_store = op.get_store::<Table<Todo>>("todos")?;
 
     // Search for all todos (predicate always returns true)
     let todos_with_ids = todos_store.search(|_| true)?;
@@ -312,16 +312,16 @@ fn list_todos(tree: &Tree) -> Result<()> {
 }
 
 fn set_user_info(
-    tree: &Tree,
+    database: &Database,
     name: Option<&String>,
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
     // Start an atomic operation (uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_info' YDoc subtree
-    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
+    // Get a handle to the 'user_info' YDoc store
+    let user_info_store = op.get_store::<YDoc>("user_info")?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -347,12 +347,12 @@ fn set_user_info(
     Ok(())
 }
 
-fn show_user_info(tree: &Tree) -> Result<()> {
+fn show_user_info(database: &Database) -> Result<()> {
     // Start an atomic operation (for read-only, uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_info' YDoc subtree
-    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
+    // Get a handle to the 'user_info' YDoc store
+    let user_info_store = op.get_store::<YDoc>("user_info")?;
 
     // Read user information from the Y-CRDT document
     user_info_store.with_doc(|doc| {
@@ -382,12 +382,12 @@ fn show_user_info(tree: &Tree) -> Result<()> {
     Ok(())
 }
 
-fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
+fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
     // Start an atomic operation (uses default auth key)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YDoc subtree
-    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
+    // Get a handle to the 'user_prefs' YDoc store
+    let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;
 
     // Update user preference using the Y-CRDT document
     user_prefs_store.with_doc_mut(|doc| {
@@ -403,12 +403,12 @@ fn set_user_preference(tree: &Tree, key: String, value: String) -> Result<()> {
     Ok(())
 }
 
-fn show_user_preferences(tree: &Tree) -> Result<()> {
+fn show_user_preferences(database: &Database) -> Result<()> {
     // Start an atomic operation (for read-only)
-    let op = tree.new_operation()?;
+    let op = database.new_operation()?;
 
-    // Get a handle to the 'user_prefs' YDoc subtree
-    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
+    // Get a handle to the 'user_prefs' YDoc store
+    let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;
 
     // Read user preferences from the Y-CRDT document
     user_prefs_store.with_doc(|doc| {

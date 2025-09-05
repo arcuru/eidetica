@@ -94,7 +94,7 @@ fn main() -> eidetica::Result<()> {
     let db = Instance::new(backend);
 
     // Library operations will now emit log messages
-    let database = db.new_tree_default("my_key")?;
+    let database = db.new_database_default("my_key")?;
 
     Ok(())
 }

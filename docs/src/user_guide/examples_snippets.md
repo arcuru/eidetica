@@ -44,7 +44,7 @@ let db: Instance = /* obtained from step 1 */;
 let tree_name = "my_app_data";
 let auth_key = "my_key"; // Must match a key added to the database
 
-let database = match db.find_tree(tree_name) {
+let database = match db.find_database(tree_name) {
     Ok(mut databases) => {
         println!("Found existing database: {}", tree_name);
         databases.pop().unwrap() // Assume first one is correct
@@ -53,7 +53,7 @@ let database = match db.find_tree(tree_name) {
         println!("Creating new database: {}", tree_name);
         let mut doc = Doc::new();
         doc.set("name", tree_name);
-        db.new_tree(doc, auth_key)? // All databases require authentication
+        db.new_database(doc, auth_key)? // All databases require authentication
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };

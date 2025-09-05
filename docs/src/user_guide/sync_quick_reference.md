@@ -100,7 +100,7 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 
 ```rust,ignore
 // Create database
-let database = db.new_tree(Doc::new(), "device_key")?;
+let database = db.new_database(Doc::new(), "device_key")?;
 let tree_id = database.root_id().to_string();
 
 // Enable sync with peer
@@ -403,8 +403,8 @@ async fn test_sync_between_peers() -> Result<()> {
     db2.sync_mut()?.update_peer_status(&peer1_key, PeerStatus::Active)?;
 
     // Setup sync relationship
-    let tree1 = db1.new_tree(Doc::new(), "peer1")?;
-    let tree2 = db2.new_tree(Doc::new(), "peer2")?;
+    let tree1 = db1.new_database(Doc::new(), "peer1")?;
+    let tree2 = db2.new_database(Doc::new(), "peer2")?;
 
     db2.sync_mut()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
 

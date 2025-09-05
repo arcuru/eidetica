@@ -71,21 +71,21 @@ fn load_or_create_todo_tree(db: &Instance) -> Result<Database> {
     let tree_name = "todo";
     let auth_key = "todo_app_key"; // Must match the key added to the database
 
-    // Attempt to find an existing database by name using find_tree
-    match db.find_tree(tree_name) {
+    // Attempt to find an existing database by name using find_database
+    match db.find_database(tree_name) {
         Ok(mut databases) => {
             // Found one or more databases with the name.
             // We arbitrarily take the first one found.
             // In a real app, you might want specific logic for duplicates.
             println!("Found existing todo database.");
-            Ok(databases.pop().unwrap()) // Safe unwrap as find_tree errors if empty
+            Ok(databases.pop().unwrap()) // Safe unwrap as find_database errors if empty
         }
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo database found, creating a new one...");
             let mut doc = eidetica::crdt::Doc::new(); // Database settings
             doc.set("name", tree_name);
-            let database = db.new_tree(doc, auth_key)?;
+            let database = db.new_database(doc, auth_key)?;
 
             // No initial commit needed here as stores like Table handle
             // their creation upon first access within an operation.
@@ -93,14 +93,14 @@ fn load_or_create_todo_tree(db: &Instance) -> Result<Database> {
             Ok(database)
         }
         Err(e) => {
-            // Handle other potential errors from find_tree
+            // Handle other potential errors from find_database
             Err(e.into())
         }
     }
 }
 
 // Usage in main:
-// let todo_tree = load_or_create_todo_tree(&db)?;
+// let todo_database = load_or_create_todo_database(&db)?;
 ```
 
 ### 3. Operations (`Operation`)

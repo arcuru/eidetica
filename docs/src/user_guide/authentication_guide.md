@@ -19,8 +19,8 @@ db.add_private_key("my_key")?;
 
 // Create a database using that key
 let mut settings = Doc::new();
-settings.set("name", "my_tree");
-let database = db.new_tree(settings, "my_key")?;
+settings.set("name", "my_database");
+let database = db.new_database(settings, "my_key")?;
 
 // All operations are now authenticated
 let op = database.new_operation()?;

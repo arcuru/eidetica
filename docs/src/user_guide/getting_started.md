@@ -41,8 +41,8 @@ db.add_private_key("my_key")?;
 
 // Create a database to store data
 let mut settings = Doc::new();
-settings.set("name", "my_tree");
-let database = db.new_tree(settings, "my_key")?;
+settings.set("name", "my_database");
+let database = db.new_database(settings, "my_key")?;
 ```
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:

@@ -7,7 +7,7 @@
 - [Welcome](user_guide/index.md)
 - [Getting Started](user_guide/getting_started.md)
 - [Core Concepts](user_guide/core_concepts.md)
-  - [Entries & Databases](user_guide/concepts/entries_trees.md)
+  - [Entries & Databases](user_guide/concepts/entries_databases.md)
   - [Database Storage](user_guide/concepts/backends.md)
   - [Stores](user_guide/concepts/stores.md)
   - [Operations](user_guide/operations.md)

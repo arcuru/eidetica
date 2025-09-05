@@ -35,7 +35,7 @@ This User Guide is organized to help you learn and use Eidetica effectively:
 - [Getting Started](getting_started.md): Quick setup and basic operations
 - [Core Concepts](core_concepts.md): Understanding Eidetica's architecture
 - Subtopic pages on specific concepts:
-  - [Entries & Databases](concepts/entries_trees.md)
+  - [Entries & Databases](concepts/entries_databases.md)
   - [Backends](concepts/backends.md)
   - [Stores](concepts/stores.md)
 - [Examples](examples_snippets.md): Real-world usage examples

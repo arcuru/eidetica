@@ -58,7 +58,7 @@ db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
 
 ```rust,ignore
 // Create a database to sync
-let database = db.new_tree(Doc::new(), "device_key")?;
+let database = db.new_database(Doc::new(), "device_key")?;
 let tree_id = database.root_id().to_string();
 
 // Configure this database to sync with the peer

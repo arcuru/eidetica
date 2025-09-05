@@ -7,8 +7,8 @@ Welcome to the Eidetica User Guide. This guide will help you understand and use 
 Eidetica is a Rust library for managing structured data with built-in history tracking. It combines concepts from distributed systems, Merkle-CRDTs, and traditional databases to provide a unique approach to data management:
 
 - **Efficient data storage** with customizable [Databases](concepts/backends.md)
-- **History tracking** for all changes via immutable [Entries](concepts/entries_trees.md) forming a DAG
-- **Structured data types** via named, typed [Stores](concepts/stores.md) within logical [Databases](concepts/entries_trees.md)
+- **History tracking** for all changes via immutable [Entries](concepts/entries_databases.md) forming a DAG
+- **Structured data types** via named, typed [Stores](concepts/stores.md) within logical [Databases](concepts/entries_databases.md)
 - **Atomic changes** across multiple data structures using [Operations](operations.md)
 - **Designed for distribution** (future capability)
 
@@ -19,7 +19,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
 1.  [**Getting Started**](getting_started.md): Installation, basic setup, and your first steps.
 2.  [**Basic Usage Pattern**](#basic-usage-pattern): A quick look at the typical workflow.
 3.  [**Core Concepts**](core_concepts.md): Understand the fundamental building blocks:
-    - [Entries & Databases](concepts/entries_trees.md): The core DAG structure.
+    - [Entries & Databases](concepts/entries_databases.md): The core DAG structure.
     - [Databases](concepts/backends.md): How data is stored.
     - [Stores](concepts/stores.md): Where structured data lives (`DocStore`, `Table`, `YDoc`).
     - [Operations](operations.md): How atomic changes are made.
@@ -57,13 +57,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add authentication key (required for all operations)
     db.add_private_key("my_key")?;
 
-    // 3. Create/Load Database (e.g., named "my_tree")
-    let database = match db.find_tree("my_tree") {
+    // 3. Create/Load Database (e.g., named "my_database")
+    let database = match db.find_database("my_database") {
         Ok(mut databases) => databases.pop().unwrap(), // Found existing
         Err(e) if e.is_not_found() => {
             let mut doc = eidetica::crdt::Doc::new();
-            doc.set("name", "my_tree");
-            db.new_tree(doc, "my_key")? // Create new with auth
+            doc.set("name", "my_database");
+            db.new_database(doc, "my_key")? // Create new with auth
         }
         Err(e) => return Err(e.into()),
     };
