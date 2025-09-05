@@ -15,16 +15,16 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum TransactionError {
-    /// Operation has already been committed and cannot be used again
-    #[error("Operation has already been committed")]
-    OperationAlreadyCommitted,
+    /// Transaction has already been committed and cannot be used again
+    #[error("Transaction has already been committed")]
+    TransactionAlreadyCommitted,
 
-    /// Tips array cannot be empty when creating an operation
-    #[error("Empty tips array not allowed for operation")]
+    /// Tips array cannot be empty when creating a transaction
+    #[error("Empty tips array not allowed for transaction")]
     EmptyTipsNotAllowed,
 
-    /// Invalid tip provided to operation
-    #[error("Invalid tip for operation: {tip_id}")]
+    /// Invalid tip provided to transaction
+    #[error("Invalid tip for transaction: {tip_id}")]
     InvalidTip { tip_id: String },
 
     /// Entry construction failed during commit
@@ -67,7 +67,7 @@ pub enum TransactionError {
 impl TransactionError {
     /// Check if this error indicates the operation was already committed
     pub fn is_already_committed(&self) -> bool {
-        matches!(self, TransactionError::OperationAlreadyCommitted)
+        matches!(self, TransactionError::TransactionAlreadyCommitted)
     }
 
     /// Check if this error is authentication-related
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_already_committed() {
-        let err = TransactionError::OperationAlreadyCommitted;
+        let err = TransactionError::TransactionAlreadyCommitted;
         assert!(err.is_already_committed());
     }
 

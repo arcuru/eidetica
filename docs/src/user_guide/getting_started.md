@@ -96,7 +96,7 @@ All operations in Eidetica happen within an atomic **Operation**:
 
 ```rust,ignore
 // Start an authenticated operation
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 
 // Get or create a Table store
 let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
@@ -112,7 +112,7 @@ op.commit()?;
 **Reading Data:**
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Get a single person by ID
@@ -131,7 +131,7 @@ for result in people.iter()? {
 **Updating Data:**
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Get, modify, and update
@@ -146,7 +146,7 @@ op.commit()?;
 **Deleting Data:**
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
 
 // Remove a person by ID

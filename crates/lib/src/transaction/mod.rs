@@ -35,10 +35,10 @@ struct EntryMetadata {
 ///
 /// An `Transaction` encapsulates a mutable `EntryBuilder` being constructed. Users interact with
 /// specific `Store` instances obtained via `Transaction::get_store` to stage changes.
-/// All staged changes across different subtrees within the operation are recorded
+/// All staged changes across different subtrees within the transaction are recorded
 /// in the internal `EntryBuilder`.
 ///
-/// When `commit()` is called, the operation:
+/// When `commit()` is called, the transaction:
 /// 1. Finalizes the `EntryBuilder` by building an immutable `Entry`
 /// 2. Calculates the entry's content-addressable ID
 /// 3. Ensures the correct parent links are set based on the tree's state
@@ -46,12 +46,12 @@ struct EntryMetadata {
 /// 5. Signs the entry if authentication is configured
 /// 6. Persists the resulting immutable `Entry` to the backend
 ///
-/// `Transaction` instances are typically created via `Database::new_operation()`.
+/// `Transaction` instances are typically created via `Database::new_transaction()`.
 #[derive(Clone)]
 pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
-    /// The database this operation belongs to
+    /// The database this transaction belongs to
     db: Database,
     /// Optional authentication key ID for signing entries
     auth_key_name: Option<String>,
@@ -60,21 +60,21 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Creates a new atomic operation for a specific `Database` with custom parent tips.
+    /// Creates a new atomic transaction for a specific `Database` with custom parent tips.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
     /// specified tips instead of the current database tips. This allows creating
-    /// operations that branch from specific points in the database history.
+    /// transactions that branch from specific points in the database history.
     ///
     /// This enables creating diamond patterns and other complex DAG structures
     /// for testing and advanced use cases.
     ///
     /// # Arguments
-    /// * `database` - The `Database` this operation will modify.
-    /// * `tips` - The specific parent tips to use for this operation. Must contain at least one tip.
+    /// * `database` - The `Database` this transaction will modify.
+    /// * `tips` - The specific parent tips to use for this transaction. Must contain at least one tip.
     ///
     /// # Returns
-    /// A `Result<Self>` containing the new operation or an error if tips are empty or invalid.
+    /// A `Result<Self>` containing the new transaction or an error if tips are empty or invalid.
     pub(crate) fn new_with_tips(database: &Database, tips: &[ID]) -> Result<Self> {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
@@ -99,7 +99,7 @@ impl Transaction {
         }
 
         // Start with a basic entry linked to the database's root.
-        // Data and parents will be filled based on the operation type.
+        // Data and parents will be filled based on the transaction type.
         let mut builder = Entry::builder(database.root_id().clone());
 
         // Use the provided tips as parents (only if not empty)
@@ -115,9 +115,9 @@ impl Transaction {
         })
     }
 
-    /// Set the authentication key ID for signing entries created by this operation.
+    /// Set the authentication key ID for signing entries created by this transaction.
     ///
-    /// If set, the operation will attempt to sign the entry with the specified
+    /// If set, the transaction will attempt to sign the entry with the specified
     /// private key during commit. The private key must be available in the backend's
     /// local key storage.
     ///
@@ -131,7 +131,7 @@ impl Transaction {
         self
     }
 
-    /// Set sync hooks for this operation.
+    /// Set sync hooks for this transaction.
     ///
     /// Sync hooks are called after successful commit to notify the sync system
     /// about new entries that may need to be synchronized.
@@ -146,7 +146,7 @@ impl Transaction {
         self
     }
 
-    /// Set sync hooks for this operation (mutable version).
+    /// Set sync hooks for this transaction (mutable version).
     ///
     /// # Arguments
     /// * `hooks` - The sync hook collection to execute after commit
@@ -154,7 +154,7 @@ impl Transaction {
         self.sync_hooks = Some(hooks);
     }
 
-    /// Set the authentication key ID for this operation (mutable version).
+    /// Set the authentication key ID for this transaction (mutable version).
     ///
     /// # Arguments
     /// * `key_name` - The identifier of the private key to use for signing
@@ -162,23 +162,23 @@ impl Transaction {
         self.auth_key_name = Some(key_name.into());
     }
 
-    /// Get the current authentication key ID for this operation.
+    /// Get the current authentication key ID for this transaction.
     pub fn auth_key_name(&self) -> Option<&str> {
         self.auth_key_name.as_deref()
     }
 
-    /// Get a DocStore handle for the settings subtree within this operation.
+    /// Get a DocStore handle for the settings subtree within this transaction.
     ///
     /// This method returns a `DocStore` that provides access to the `_settings` subtree,
-    /// allowing you to read and modify settings data within this atomic operation.
+    /// allowing you to read and modify settings data within this atomic transaction.
     /// The DocStore automatically merges historical settings from the database with any
-    /// staged changes in this operation.
+    /// staged changes in this transaction.
     ///
     /// # Returns
     ///
     /// Returns a `Result<DocStore>` that can be used to:
     /// - Read current settings values (including both historical and staged data)
-    /// - Stage new settings changes within this operation
+    /// - Stage new settings changes within this transaction
     /// - Access nested settings structures
     ///
     /// # Example
@@ -186,7 +186,7 @@ impl Transaction {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let settings = op.get_settings()?;
     ///
     /// // Read a setting
@@ -220,18 +220,18 @@ impl Transaction {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(TransactionError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
         builder.set_root_mut(root.into());
         Ok(())
     }
 
-    /// Stages an update for a specific subtree within this atomic operation.
+    /// Stages an update for a specific subtree within this atomic transaction.
     ///
     /// This method is primarily intended for internal use by `Store` implementations
     /// (like `DocStore::set`). It records the serialized `data` for the given `subtree`
-    /// name within the operation's internal `EntryBuilder`.
+    /// name within the transaction's internal `EntryBuilder`.
     ///
-    /// If this is the first modification to the named subtree within this operation,
+    /// If this is the first modification to the named subtree within this transaction,
     /// it also fetches and records the current tips of that subtree from the backend
     /// to set the correct `subtree_parents` for the new entry.
     ///
@@ -251,7 +251,7 @@ impl Transaction {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(TransactionError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
@@ -271,14 +271,14 @@ impl Transaction {
         Ok(())
     }
 
-    /// Gets a handle to a specific `Store` for modification within this operation.
+    /// Gets a handle to a specific `Store` for modification within this transaction.
     ///
     /// This method creates and returns an instance of the specified `Store` type `T`,
     /// associated with this `Transaction`. The returned `Store` handle can be used to
     /// stage changes (e.g., using `DocStore::set`).
     /// These changes are recorded within this `Transaction`.
     ///
-    /// If this is the first time this subtree is accessed within the operation,
+    /// If this is the first time this subtree is accessed within the transaction,
     /// its parent tips will be fetched and stored.
     ///
     /// # Type Parameters
@@ -298,13 +298,13 @@ impl Transaction {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref
                 .as_mut()
-                .ok_or(TransactionError::OperationAlreadyCommitted)?;
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
             // If we haven't cached the tips for this subtree yet, get them now
             let subtrees = builder.subtrees();
 
             if !subtrees.contains(&subtree_name) {
-                // Check if this operation was created with custom tips vs current tips
+                // Check if this transaction was created with custom tips vs current tips
                 let main_parents = builder.parents().unwrap_or_default();
                 let current_database_tips = self.db.backend().get_tips(self.db.root_id())?;
 
@@ -313,7 +313,7 @@ impl Transaction {
                         .backend()
                         .get_store_tips(self.db.root_id(), &subtree_name)?
                 } else {
-                    // This operation uses custom tips - use special handler
+                    // This transaction uses custom tips - use special handler
                     self.db.backend().get_store_tips_up_to_entries(
                         self.db.root_id(),
                         &subtree_name,
@@ -329,7 +329,7 @@ impl Transaction {
         T::new(self, subtree_name)
     }
 
-    /// Gets the currently staged data for a specific subtree within this operation.
+    /// Gets the currently staged data for a specific subtree within this transaction.
     ///
     /// This is intended for use by `Store` implementations to retrieve the data
     /// they have staged locally within the `Transaction` before potentially merging
@@ -343,7 +343,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the deserialized staged data. Returns `Ok(T::default())`
-    /// if no data has been staged for this subtree in this operation yet.
+    /// if no data has been staged for this subtree in this transaction yet.
     ///
     /// # Behavior
     /// - If the subtree doesn't exist, returns `T::default()`
@@ -360,7 +360,7 @@ impl Transaction {
         let builder_ref = self.entry_builder.borrow();
         let builder = builder_ref
             .as_ref()
-            .ok_or(TransactionError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         if let Ok(data) = builder.data(subtree_name) {
             if data.trim().is_empty() {
@@ -381,11 +381,11 @@ impl Transaction {
         }
     }
 
-    /// Gets the fully merged historical state of a subtree up to the point this operation began.
+    /// Gets the fully merged historical state of a subtree up to the point this transaction began.
     ///
     /// This retrieves all relevant historical entries for the `subtree_name` from the backend,
     /// considering the parent tips recorded when this `Transaction` was created (or when the
-    /// subtree was first accessed within the operation). It deserializes the data from each
+    /// subtree was first accessed within the transaction). It deserializes the data from each
     /// relevant entry into the CRDT type `T` and merges them according to `T`'s `CRDT::merge`
     /// implementation.
     ///
@@ -400,7 +400,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the merged historical data of type `T`. Returns `Ok(T::default())`
-    /// if the subtree has no history prior to this operation.
+    /// if the subtree has no history prior to this transaction.
     pub(crate) fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: CRDT + Default,
@@ -410,12 +410,12 @@ impl Transaction {
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
-            .ok_or(TransactionError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         // If we haven't cached the tips for this subtree yet, get them now
         let subtrees = builder.subtrees();
         if !subtrees.contains(&subtree_name.to_string()) {
-            // Check if this operation was created with custom tips vs current tips
+            // Check if this transaction was created with custom tips vs current tips
             let main_parents = builder.parents().unwrap_or_default();
             let current_database_tips = self.db.backend().get_tips(self.db.root_id())?;
 
@@ -424,7 +424,7 @@ impl Transaction {
                     .backend()
                     .get_store_tips(self.db.root_id(), subtree_name)?
             } else {
-                // This operation uses custom tips - use special handler
+                // This transaction uses custom tips - use special handler
                 self.db.backend().get_store_tips_up_to_entries(
                     self.db.root_id(),
                     subtree_name,
@@ -643,7 +643,7 @@ impl Transaction {
         Ok(state)
     }
 
-    /// Commits the operation, finalizing and persisting the entry to the backend.
+    /// Commits the transaction, finalizing and persisting the entry to the backend.
     ///
     /// This method:
     /// 1. Takes ownership of the `EntryBuilder` from the internal `Option`
@@ -657,7 +657,7 @@ impl Transaction {
     /// 9. Persists the entry to the backend
     /// 10. Returns the ID of the newly created entry
     ///
-    /// After commit, the operation cannot be used again, as the internal
+    /// After commit, the transaction cannot be used again, as the internal
     /// `EntryBuilder` has been consumed.
     ///
     /// # Returns
@@ -668,7 +668,7 @@ impl Transaction {
             let builder_cell = self.entry_builder.borrow();
             let builder = builder_cell
                 .as_ref()
-                .ok_or(TransactionError::OperationAlreadyCommitted)?;
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
             builder.subtrees().contains(&SETTINGS.to_string())
         };
 
@@ -698,7 +698,7 @@ impl Transaction {
         let builder_cell = self.entry_builder.borrow_mut();
         let builder_from_cell = builder_cell
             .as_ref()
-            .ok_or(TransactionError::OperationAlreadyCommitted)?;
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         // Clone the builder since we can't easily take ownership from RefCell<Option<>>
         let mut builder = builder_from_cell.clone();
@@ -809,7 +809,7 @@ impl Transaction {
 
         // Get the final settings state for validation
         // IMPORTANT: For permission checking, we must use the historical auth configuration
-        // (before this operation), not the auth configuration from the current entry.
+        // (before this transaction), not the auth configuration from the current entry.
         // This prevents operations from modifying their own permission requirements.
         let settings_for_validation = effective_settings_for_validation.clone();
 

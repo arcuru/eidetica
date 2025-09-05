@@ -59,7 +59,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
-    let op = tree.new_operation().expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     {
         let settings_store = op
             .get_store::<DocStore>("_settings")

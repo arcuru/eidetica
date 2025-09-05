@@ -32,7 +32,7 @@ pub fn create_database_with_settings(
         .new_database_default(key_name)
         .expect("Failed to create tree");
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     {
         let settings = op
             .get_store::<DocStore>(SETTINGS)
@@ -73,7 +73,7 @@ pub fn create_tree_with_data(
         .new_database_default(key_name)
         .expect("Failed to create tree");
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     {
         let data_store = op
             .get_store::<DocStore>(subtree_name)
@@ -136,7 +136,7 @@ pub fn setup_trees_for_find_testing(db: &Instance, key_name: &str) -> Vec<Databa
 
 /// Set multiple settings in a tree
 pub fn set_tree_settings(tree: &Database, settings_data: &[(&str, &str)]) -> ID {
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     {
         let settings = op
             .get_store::<DocStore>(SETTINGS)
@@ -167,7 +167,7 @@ pub fn perform_basic_subtree_operations(
     subtree_name: &str,
     operations: &[(&str, &str)],
 ) -> ID {
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     {
         let data_store = op
             .get_store::<DocStore>(subtree_name)

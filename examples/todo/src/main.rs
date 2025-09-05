@@ -220,15 +220,15 @@ fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
     };
 
     // Set the default authentication key for this database
-    // This means all subsequent new_operation() calls will automatically use this key
+    // This means all subsequent new_transaction() calls will automatically use this key
     database.set_default_auth_key(TODO_APP_KEY_NAME);
 
     Ok(database)
 }
 
 fn add_todo(database: &Database, title: String) -> Result<()> {
-    // Start an atomic operation (uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
     let todos_store = op.get_store::<Table<Todo>>("todos")?;
@@ -240,7 +240,7 @@ fn add_todo(database: &Database, title: String) -> Result<()> {
     // The Table will generate a unique ID for it
     let todo_id = todos_store.insert(todo)?;
 
-    // Commit the operation
+    // Commit the transaction
     op.commit()?;
 
     println!("Added todo with ID: {todo_id}");
@@ -249,8 +249,8 @@ fn add_todo(database: &Database, title: String) -> Result<()> {
 }
 
 fn complete_todo(database: &Database, id: &str) -> Result<()> {
-    // Start an atomic operation (uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
     let todos_store = op.get_store::<Table<Todo>>("todos")?;
@@ -277,15 +277,15 @@ fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Update the todo in the Table
     todos_store.set(id, todo)?;
 
-    // Commit the operation
+    // Commit the transaction
     op.commit()?;
 
     Ok(())
 }
 
 fn list_todos(database: &Database) -> Result<()> {
-    // Start an atomic operation (for read-only, uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (for read-only, uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
     let todos_store = op.get_store::<Table<Todo>>("todos")?;
@@ -317,8 +317,8 @@ fn set_user_info(
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
-    // Start an atomic operation (uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
     let user_info_store = op.get_store::<YDoc>("user_info")?;
@@ -341,15 +341,15 @@ fn set_user_info(
         Ok(())
     })?;
 
-    // Commit the operation
+    // Commit the transaction
     op.commit()?;
 
     Ok(())
 }
 
 fn show_user_info(database: &Database) -> Result<()> {
-    // Start an atomic operation (for read-only, uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (for read-only, uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
     let user_info_store = op.get_store::<YDoc>("user_info")?;
@@ -383,8 +383,8 @@ fn show_user_info(database: &Database) -> Result<()> {
 }
 
 fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
-    // Start an atomic operation (uses default auth key)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (uses default auth key)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_prefs' YDoc store
     let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;
@@ -397,15 +397,15 @@ fn set_user_preference(database: &Database, key: String, value: String) -> Resul
         Ok(())
     })?;
 
-    // Commit the operation
+    // Commit the transaction
     op.commit()?;
 
     Ok(())
 }
 
 fn show_user_preferences(database: &Database) -> Result<()> {
-    // Start an atomic operation (for read-only)
-    let op = database.new_operation()?;
+    // Start an atomic transaction (for read-only)
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_prefs' YDoc store
     let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;

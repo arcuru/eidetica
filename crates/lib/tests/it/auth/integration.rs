@@ -54,7 +54,7 @@ fn test_operation_auth_methods() {
     assert_eq!(op1.auth_key_name(), Some("KEY1"));
 
     // Test set_auth_key method (mutable) - overrides default auth key
-    let mut op2 = tree.new_operation().expect("Failed to create operation");
+    let mut op2 = tree.new_transaction().expect("Failed to create operation");
     assert_eq!(op2.auth_key_name(), Some("TEST_KEY")); // Gets default auth key
     op2.set_auth_key("KEY2");
     assert_eq!(op2.auth_key_name(), Some("KEY2")); // Override with KEY2
@@ -68,7 +68,7 @@ fn test_tree_default_authentication() {
     assert_eq!(tree.default_auth_key(), Some("DEFAULT_KEY"));
 
     // Operations should inherit the default key
-    let op = tree.new_operation().expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     assert_eq!(op.auth_key_name(), Some("DEFAULT_KEY"));
 
     // Change the default to a different key
@@ -77,7 +77,7 @@ fn test_tree_default_authentication() {
     tree.set_default_auth_key("OTHER_KEY");
     assert_eq!(tree.default_auth_key(), Some("OTHER_KEY"));
 
-    let op2 = tree.new_operation().expect("Failed to create operation");
+    let op2 = tree.new_transaction().expect("Failed to create operation");
     assert_eq!(op2.auth_key_name(), Some("OTHER_KEY"));
 
     // Clear the default
@@ -85,7 +85,7 @@ fn test_tree_default_authentication() {
     assert_eq!(tree.default_auth_key(), None);
 
     // New operations should not have a key and should fail at commit
-    let op3 = tree.new_operation().expect("Failed to create operation");
+    let op3 = tree.new_transaction().expect("Failed to create operation");
     assert_eq!(op3.auth_key_name(), None);
 
     // Try to use the operation - should fail at commit
@@ -102,7 +102,7 @@ fn test_mandatory_authentication() {
     let (_db, tree) = setup_db_and_tree_with_key("TEST_KEY");
 
     // Create an operation - should automatically get the default auth key
-    let op = tree.new_operation().expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
 
     // Should have the default auth key ID set automatically
     assert_eq!(op.auth_key_name(), Some("TEST_KEY"));

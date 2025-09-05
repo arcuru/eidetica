@@ -47,12 +47,12 @@ pub enum InstanceError {
         entry_id: ID,
     },
 
-    /// Operation has already been committed and cannot be modified.
-    #[error("Operation has already been committed")]
-    OperationAlreadyCommitted,
+    /// Transaction has already been committed and cannot be modified.
+    #[error("Transaction has already been committed")]
+    TransactionAlreadyCommitted,
 
-    /// Cannot create operation with empty tips.
-    #[error("Cannot create operation with empty tips")]
+    /// Cannot create transaction with empty tips.
+    #[error("Cannot create transaction with empty tips")]
     EmptyTipsNotAllowed,
 
     /// Tip entry does not belong to the specified database.
@@ -186,7 +186,7 @@ impl InstanceError {
     pub fn is_operation_error(&self) -> bool {
         matches!(
             self,
-            InstanceError::OperationAlreadyCommitted
+            InstanceError::TransactionAlreadyCommitted
                 | InstanceError::EmptyTipsNotAllowed
                 | InstanceError::InvalidOperation { .. }
         )
@@ -276,7 +276,7 @@ mod tests {
         let err = InstanceError::AuthenticationRequired;
         assert!(err.is_authentication_error());
 
-        let err = InstanceError::OperationAlreadyCommitted;
+        let err = InstanceError::TransactionAlreadyCommitted;
         assert!(err.is_operation_error());
 
         let err = InstanceError::InvalidDataType {

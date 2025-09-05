@@ -118,7 +118,7 @@ fn test_multiple_authenticated_entries() {
 
     // Clear default auth to test unsigned operation (should fail)
     tree.clear_default_auth_key();
-    let op1 = tree.new_operation().expect("Failed to create operation");
+    let op1 = tree.new_transaction().expect("Failed to create operation");
     let store1 = op1
         .get_store::<DocStore>("data")
         .expect("Failed to get subtree");

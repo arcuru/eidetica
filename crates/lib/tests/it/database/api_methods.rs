@@ -89,7 +89,7 @@ fn test_tree_validation_rejects_foreign_entries() {
 
     // Create an entry in tree1
     let op1 = tree1
-        .new_operation()
+        .new_transaction()
         .expect("Failed to create operation in tree1");
     let store1 = op1
         .get_store::<DocStore>("data")
@@ -101,7 +101,7 @@ fn test_tree_validation_rejects_foreign_entries() {
 
     // Create an entry in tree2
     let op2 = tree2
-        .new_operation()
+        .new_transaction()
         .expect("Failed to create operation in tree2");
     let store2 = op2
         .get_store::<DocStore>("data")
@@ -152,7 +152,7 @@ fn test_tree_validation_get_entries() {
     let mut tree1_entries = Vec::new();
     for i in 0..2 {
         let op = tree1
-            .new_operation()
+            .new_transaction()
             .expect("Failed to create operation in tree1");
         let store = op
             .get_store::<DocStore>("data")
@@ -166,7 +166,7 @@ fn test_tree_validation_get_entries() {
 
     // Create an entry in tree2
     let op2 = tree2
-        .new_operation()
+        .new_transaction()
         .expect("Failed to create operation in tree2");
     let store2 = op2
         .get_store::<DocStore>("data")
@@ -316,7 +316,7 @@ fn test_tree_queries() {
     // Create a few entries
     let mut entry_ids = Vec::new();
     for i in 0..3 {
-        let op = tree.new_operation().expect("Failed to create operation");
+        let op = tree.new_transaction().expect("Failed to create operation");
         let store = op
             .get_store::<DocStore>("data")
             .expect("Failed to get subtree");
@@ -346,7 +346,7 @@ fn test_batch_vs_individual_retrieval() {
     // Create multiple entries
     let mut entry_ids = Vec::new();
     for i in 0..5 {
-        let op = tree.new_operation().expect("Failed to create operation");
+        let op = tree.new_transaction().expect("Failed to create operation");
         let store = op
             .get_store::<DocStore>("data")
             .expect("Failed to get subtree");

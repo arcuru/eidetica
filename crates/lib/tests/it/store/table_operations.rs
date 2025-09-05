@@ -21,7 +21,7 @@ fn test_table_basic_crud_operations() {
     let primary_key = &keys[0];
 
     // Test CRUD operations within an operation
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let table = op
         .get_store::<Table<TestRecord>>("test_records")
         .expect("Failed to get Table");
@@ -193,7 +193,7 @@ fn test_table_multiple_operations() {
 #[test]
 fn test_table_empty_search() {
     let tree = setup_tree();
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     {
         let table = op
@@ -242,7 +242,7 @@ fn test_table_with_authenticated_tree() {
         .new_database_default("table_auth_key")
         .expect("Failed to create authenticated tree");
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     let primary_key = {
         let table = op

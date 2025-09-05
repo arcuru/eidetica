@@ -281,7 +281,7 @@ impl BackgroundSync {
         // Get peer address from sync tree (extract and drop operation before await)
         let address = {
             let sync_tree = self.get_sync_tree()?;
-            let op = sync_tree.new_operation()?;
+            let op = sync_tree.new_transaction()?;
             let peer_info = PeerManager::new(&op)
                 .get_peer_info(peer)?
                 .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
@@ -366,7 +366,7 @@ impl BackgroundSync {
 
         // Get all peers from sync tree
         let peers = match self.get_sync_tree() {
-            Ok(sync_tree) => match sync_tree.new_operation() {
+            Ok(sync_tree) => match sync_tree.new_transaction() {
                 Ok(op) => match PeerManager::new(&op).list_peers() {
                     Ok(peers) => {
                         // Extract peer list and drop the operation before awaiting
@@ -407,7 +407,7 @@ impl BackgroundSync {
             // Get peer info and tree list from sync tree (extract and drop operation before await)
             let (address, sync_trees) = {
                 let sync_tree = self.get_sync_tree()?;
-                let op = sync_tree.new_operation()?;
+                let op = sync_tree.new_transaction()?;
                 let peer_manager = PeerManager::new(&op);
 
                 let peer_info = peer_manager
@@ -813,7 +813,7 @@ impl BackgroundSync {
 
                 // Add peer to sync tree
                 let sync_tree = self.get_sync_tree()?;
-                let op = sync_tree.new_operation()?;
+                let op = sync_tree.new_transaction()?;
                 let peer_manager = PeerManager::new(&op);
 
                 peer_manager.register_peer(

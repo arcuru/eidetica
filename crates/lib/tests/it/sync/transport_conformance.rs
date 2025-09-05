@@ -130,13 +130,13 @@ where
         setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey)?;
 
     // Create entries in DB1 - these should automatically sync via hooks
-    let op1 = tree1.new_operation()?;
+    let op1 = tree1.new_transaction()?;
     let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
     docstore1.set("name", "Alice")?;
     docstore1.set("age", "30")?;
     let entry_id1 = op1.commit()?;
 
-    let op2 = tree1.new_operation()?;
+    let op2 = tree1.new_transaction()?;
     let docstore1_2 = op2.get_store::<eidetica::store::DocStore>("data")?;
     docstore1_2.set("name", "Bob")?;
     docstore1_2.set("age", "25")?;
@@ -205,13 +205,13 @@ where
         setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey)?;
 
     // Create entry in DB1
-    let op1 = tree1.new_operation()?;
+    let op1 = tree1.new_transaction()?;
     let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
     docstore1.set("origin", "db1")?;
     let entry_from_db1 = op1.commit()?;
 
     // Create entry in DB2
-    let op2 = tree2.new_operation()?;
+    let op2 = tree2.new_transaction()?;
     let docstore2 = op2.get_store::<eidetica::store::DocStore>("data")?;
     docstore2.set("origin", "db2")?;
     let entry_from_db2 = op2.commit()?;

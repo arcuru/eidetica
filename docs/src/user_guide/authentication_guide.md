@@ -23,7 +23,7 @@ settings.set("name", "my_database");
 let database = db.new_database(settings, "my_key")?;
 
 // All operations are now authenticated
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 // ... make changes ...
 op.commit()?;  // Automatically signed
 ```
@@ -49,7 +49,7 @@ Give other users access to your database:
 ```rust,ignore
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let auth = op.auth_settings()?;
 
 // Add a user with write access
@@ -68,7 +68,7 @@ op.commit()?;
 Allow anyone to read your database:
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let auth = op.auth_settings()?;
 
 // Wildcard key for public read access
@@ -87,7 +87,7 @@ op.commit()?;
 Remove a user's access:
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let auth = op.auth_settings()?;
 
 // Revoke the key
@@ -105,7 +105,7 @@ Note: Historical entries created by revoked keys remain valid.
 
 ```rust,ignore
 // Initial setup with admin hierarchy
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let auth = op.auth_settings()?;
 
 // Super admin (priority 0 - highest)

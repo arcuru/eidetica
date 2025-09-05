@@ -19,7 +19,7 @@ fn setup_tree_with_entries(entry_count: usize) -> eidetica::Database {
     let tree = setup_tree();
 
     for i in 0..entry_count {
-        let op = tree.new_operation().expect("Failed to start operation");
+        let op = tree.new_transaction().expect("Failed to start operation");
         let doc_store = op
             .get_store::<DocStore>("data")
             .expect("Failed to get DocStore");
@@ -48,7 +48,7 @@ fn bench_add_entries(c: &mut Criterion) {
                 b.iter_with_setup(
                     || setup_tree_with_entries(tree_size),
                     |tree| {
-                        let op = tree.new_operation().expect("Failed to start operation");
+                        let op = tree.new_transaction().expect("Failed to start operation");
                         let doc_store = op
                             .get_store::<DocStore>("data")
                             .expect("Failed to get DocStore");
@@ -83,7 +83,7 @@ fn bench_batch_add_entries(c: &mut Criterion) {
             batch_size,
             |b, &batch_size| {
                 b.iter_with_setup(setup_tree, |tree| {
-                    let op = tree.new_operation().expect("Failed to start operation");
+                    let op = tree.new_transaction().expect("Failed to start operation");
                     let doc_store = op
                         .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
@@ -122,7 +122,7 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
                 let mut counter = initial_size;
 
                 b.iter(|| {
-                    let op = tree.new_operation().expect("Failed to start operation");
+                    let op = tree.new_transaction().expect("Failed to start operation");
                     let doc_store = op
                         .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
@@ -159,7 +159,7 @@ fn bench_access_entries(c: &mut Criterion) {
                 let target_key = format!("key_{}", tree_size / 2);
 
                 b.iter(|| {
-                    let op = tree.new_operation().expect("Failed to start operation");
+                    let op = tree.new_transaction().expect("Failed to start operation");
                     let doc_store = op
                         .get_store::<DocStore>("data")
                         .expect("Failed to get DocStore");
@@ -202,7 +202,7 @@ fn bench_tree_operations(c: &mut Criterion) {
                 let tree = setup_tree_with_entries(tree_size);
 
                 b.iter(|| {
-                    let _op = black_box(tree.new_operation().expect("Failed to start operation"));
+                    let _op = black_box(tree.new_transaction().expect("Failed to start operation"));
                 });
             },
         );

@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Writing Data ---
     // 4. Start an Operation
-    let op_write = database.new_operation()?;
+    let op_write = database.new_transaction()?;
     { // Scope for store handles
         // 5. Get Store handles
         let config = op_write.get_subtree::<DocStore>("config")?;

@@ -36,7 +36,7 @@ You interact with Databases through Operations:
 
 ```rust,ignore
 // Create a new operation
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 
 // Access stores and perform actions
 let settings = op.get_store::<DocStore>("settings")?;

@@ -16,7 +16,7 @@ use eidetica::store::DocStore;
 
 /// Create operation and add data to specific subtree
 pub fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
-    let op = tree.new_operation().expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     {
         let store = op
             .get_store::<DocStore>(subtree_name)
@@ -57,7 +57,7 @@ pub fn create_branch_from_entry(
     data: &[(&str, &str)],
 ) -> ID {
     let op = tree
-        .new_operation_with_tips(std::slice::from_ref(entry_id))
+        .new_transaction_with_tips(std::slice::from_ref(entry_id))
         .expect("Failed to create branch operation");
     {
         let store = op
@@ -154,7 +154,7 @@ pub fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)]) -> (I
     // Create merge entry (D) from both branches
     let merge_tips = vec![branch_b_id.clone(), branch_c_id.clone()];
     let op = tree
-        .new_operation_with_tips(&merge_tips)
+        .new_transaction_with_tips(&merge_tips)
         .expect("Failed to create merge operation");
     {
         let store = op

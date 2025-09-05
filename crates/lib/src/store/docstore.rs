@@ -225,7 +225,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.profile.name"), "Alice")?;
@@ -286,7 +286,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set("name", "Alice")?;
@@ -321,7 +321,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Assuming nested structure exists
@@ -375,7 +375,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will set default
@@ -430,7 +430,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set("count", 5)?;
@@ -478,7 +478,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Key doesn't exist - will create with default then modify
@@ -526,7 +526,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure and set default
@@ -575,7 +575,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
@@ -656,7 +656,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Set nested values, creating structure as needed
@@ -736,7 +736,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// store.set_path(path!("user.score"), 100)?;
@@ -790,7 +790,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation().unwrap();
+    /// let op = database.new_transaction().unwrap();
     /// let store = op.get_store::<DocStore>("my_data").unwrap();
     ///
     /// // First set a value
@@ -846,7 +846,7 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// // Using set_path creates nested structure
@@ -903,7 +903,7 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_key("missing")); // Key doesn't exist
@@ -954,7 +954,7 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # let database: Database = unimplemented!();
-    /// let op = database.new_operation()?;
+    /// let op = database.new_transaction()?;
     /// let store = op.get_store::<DocStore>("data")?;
     ///
     /// assert!(!store.contains_path(path!("user.name"))); // Path doesn't exist

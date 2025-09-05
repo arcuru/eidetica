@@ -13,11 +13,11 @@ fn test_insert_into_tree() {
     let tree = setup_tree();
 
     // Create and commit first entry using an atomic operation
-    let op1 = tree.new_operation().expect("Failed to create operation");
+    let op1 = tree.new_transaction().expect("Failed to create operation");
     let id1 = op1.commit().expect("Failed to commit operation");
 
     // Create and commit second entry
-    let op2 = tree.new_operation().expect("Failed to create operation");
+    let op2 = tree.new_transaction().expect("Failed to create operation");
     let id2 = op2.commit().expect("Failed to commit operation");
 
     // Verify tips include id2
@@ -55,7 +55,7 @@ fn test_subtree_operations() {
     let tree = setup_tree();
 
     // Create and commit the initial data with operation
-    let op1 = tree.new_operation().expect("Failed to create operation");
+    let op1 = tree.new_transaction().expect("Failed to create operation");
     {
         let users_store = op1
             .get_store::<DocStore>("users")
@@ -96,7 +96,9 @@ fn test_subtree_operations() {
     );
 
     // --- Create another operation modifying only the users subtree ---
-    let op2 = tree.new_operation().expect("Failed to create operation 2");
+    let op2 = tree
+        .new_transaction()
+        .expect("Failed to create operation 2");
     {
         let users_store2 = op2
             .get_store::<DocStore>("users")
@@ -148,7 +150,7 @@ fn test_get_name_from_settings() {
     assert_eq!(name, "TestTree");
 
     // Update the name using an operation
-    let op = tree.new_operation().expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     {
         let settings_store = op
             .get_store::<DocStore>(SETTINGS)
@@ -169,7 +171,7 @@ fn test_atomic_op_scenarios() {
     let tree = setup_tree();
 
     // --- 1. Modify multiple subtrees in one op and read staged data ---
-    let op1 = tree.new_operation().expect("Op1: Failed to start");
+    let op1 = tree.new_transaction().expect("Op1: Failed to start");
     let initial_tip = tree.get_tips().unwrap()[0].clone();
     {
         let store_a = op1
@@ -220,7 +222,7 @@ fn test_atomic_op_scenarios() {
     );
 
     // --- 2. Commit an empty operation ---
-    let op_empty = tree.new_operation().expect("OpEmpty: Failed to start");
+    let op_empty = tree.new_transaction().expect("OpEmpty: Failed to start");
     let commit_empty_result = op_empty.commit();
     // If it's not an error, check the tip is still changed to the empty commit
     assert!(commit_empty_result.is_ok());
@@ -231,7 +233,7 @@ fn test_atomic_op_scenarios() {
     );
 
     // --- 3. Attempt to commit the same op twice ---
-    let op3 = tree.new_operation().expect("Op3: Failed to start");
+    let op3 = tree.new_transaction().expect("Op3: Failed to start");
     {
         let store_a = op3
             .get_store::<DocStore>("sub_a")
@@ -249,7 +251,7 @@ fn test_get_store_viewer() {
     let tree = setup_tree();
 
     // --- Initial state ---
-    let op1 = tree.new_operation().expect("Op1: Failed start");
+    let op1 = tree.new_transaction().expect("Op1: Failed start");
     {
         let store = op1
             .get_store::<DocStore>("my_data")
@@ -274,7 +276,7 @@ fn test_get_store_viewer() {
     );
 
     // --- Second operation ---
-    let op2 = tree.new_operation().expect("Op2: Failed start");
+    let op2 = tree.new_transaction().expect("Op2: Failed start");
     {
         let store = op2
             .get_store::<DocStore>("my_data")
@@ -383,7 +385,7 @@ fn test_get_tips() {
 }
 
 #[test]
-fn test_new_operation_with_tips() {
+fn test_new_transaction_with_tips() {
     let tree = setup_tree();
 
     // Create first entry using helper
@@ -394,7 +396,7 @@ fn test_new_operation_with_tips() {
 
     // Verify that normal operations use current tips (should see both keys)
     let normal_op = tree
-        .new_operation()
+        .new_transaction()
         .expect("Failed to create normal operation");
     let normal_store = normal_op
         .get_store::<DocStore>("data")
@@ -411,7 +413,7 @@ fn test_new_operation_with_tips() {
 
     // Create operation with custom tips (using entry1 instead of current tip)
     let custom_op = tree
-        .new_operation_with_tips([entry1_id.clone()])
+        .new_transaction_with_tips([entry1_id.clone()])
         .expect("Failed to create custom operation");
     let custom_store = custom_op
         .get_store::<DocStore>("data")
@@ -448,7 +450,7 @@ fn test_new_operation_with_tips() {
 
     // Create a merge operation that should see both branches
     let merge_op = tree
-        .new_operation()
+        .new_transaction()
         .expect("Failed to create merge operation");
     let merge_store = merge_op
         .get_store::<DocStore>("data")
@@ -465,7 +467,7 @@ fn test_new_operation_with_tips() {
 }
 
 #[test]
-fn test_new_operation_with_specific_tips() {
+fn test_new_transaction_with_specific_tips() {
     let tree = setup_tree();
 
     // Create a chain of entries: A -> B -> C using helpers
@@ -475,7 +477,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry A (should see only A)
     let op_from_a = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
         .expect("Failed to create op from A");
     let store_from_a = op_from_a
         .get_store::<DocStore>("data")
@@ -497,7 +499,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry B (should see A and B but not C)
     let op_from_b = tree
-        .new_operation_with_tips([entry_b_id])
+        .new_transaction_with_tips([entry_b_id])
         .expect("Failed to create op from B");
     let store_from_b = op_from_b
         .get_store::<DocStore>("data")
@@ -519,7 +521,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Create operation starting from entry C (should see all)
     let op_from_c = tree
-        .new_operation_with_tips([entry_c_id])
+        .new_transaction_with_tips([entry_c_id])
         .expect("Failed to create op from C");
     let store_from_c = op_from_c
         .get_store::<DocStore>("data")
@@ -549,7 +551,7 @@ fn test_new_operation_with_specific_tips() {
 
     // Verify the branch only sees data from A
     let op_verify_branch = tree
-        .new_operation_with_tips([branch_id])
+        .new_transaction_with_tips([branch_id])
         .expect("Failed to create verify op");
     let store_verify_branch = op_verify_branch
         .get_store::<DocStore>("data")
@@ -577,7 +579,7 @@ fn test_new_operation_with_specific_tips() {
 }
 
 #[test]
-fn test_new_operation_with_multiple_tips() {
+fn test_new_transaction_with_multiple_tips() {
     let tree = setup_tree();
 
     // Create initial entry using helper
@@ -591,7 +593,7 @@ fn test_new_operation_with_multiple_tips() {
     // Create operation with multiple tips (merge operation)
     let merge_tips = vec![branch1_id.clone(), branch2_id.clone()];
     let op_merge = tree
-        .new_operation_with_tips(&merge_tips)
+        .new_transaction_with_tips(&merge_tips)
         .expect("Failed to create merge operation");
     let store_merge = op_merge
         .get_store::<DocStore>("data")

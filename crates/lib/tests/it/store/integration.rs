@@ -50,7 +50,7 @@ fn test_mixed_subtree_operations() {
     let tree = setup_tree();
 
     // Create operations that use multiple subtree types in one operation
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     let table_key = {
         // Use Table subtree
@@ -100,7 +100,7 @@ fn test_subtree_persistence_across_operations() {
     let tree = setup_tree();
 
     // Operation 1: Create data in multiple subtrees
-    let op1 = tree.new_operation().expect("Op1: Failed to start");
+    let op1 = tree.new_transaction().expect("Op1: Failed to start");
     let table_key = {
         let table = op1
             .get_store::<Table<SimpleRecord>>("data")
@@ -121,7 +121,7 @@ fn test_subtree_persistence_across_operations() {
     op1.commit().expect("Op1: Failed to commit");
 
     // Operation 2: Update existing data and add new data
-    let op2 = tree.new_operation().expect("Op2: Failed to start");
+    let op2 = tree.new_transaction().expect("Op2: Failed to start");
     {
         let table = op2
             .get_store::<Table<SimpleRecord>>("data")
@@ -172,7 +172,7 @@ fn test_subtree_concurrent_access_patterns() {
     let tree = setup_tree();
 
     // Create base entry with both Doc and Table data
-    let op_base = tree.new_operation().expect("Base: Failed to start");
+    let op_base = tree.new_transaction().expect("Base: Failed to start");
     let base_table_key = {
         let table = op_base
             .get_store::<Table<TestRecord>>("shared_data")
@@ -197,7 +197,7 @@ fn test_subtree_concurrent_access_patterns() {
 
     // Branch A: Modify Table data
     let op_branch_a = tree
-        .new_operation_with_tips([base_entry_id.clone()])
+        .new_transaction_with_tips([base_entry_id.clone()])
         .expect("Branch A: Failed to start");
     {
         let table = op_branch_a
@@ -217,7 +217,7 @@ fn test_subtree_concurrent_access_patterns() {
 
     // Branch B: Modify Doc data (parallel to Branch A)
     let op_branch_b = tree
-        .new_operation_with_tips([base_entry_id])
+        .new_transaction_with_tips([base_entry_id])
         .expect("Branch B: Failed to start");
     {
         let dict = op_branch_b
@@ -232,7 +232,7 @@ fn test_subtree_concurrent_access_patterns() {
     op_branch_b.commit().expect("Branch B: Failed to commit");
 
     // Merge operation: Read the merged state
-    let op_merge = tree.new_operation().expect("Merge: Failed to start");
+    let op_merge = tree.new_transaction().expect("Merge: Failed to start");
     let (merged_record, merged_status) = {
         let table = op_merge
             .get_store::<Table<TestRecord>>("shared_data")

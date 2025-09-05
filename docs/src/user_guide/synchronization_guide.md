@@ -71,7 +71,7 @@ Once configured, any changes to the database will automatically be queued for sy
 
 ```rust,ignore
 // Make changes to the database - these will be auto-synced
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let store = op.get_subtree::<DocStore>("data")?;
 store.set_string("message", "Hello, distributed world!")?;
 op.commit()?; // This triggers sync queue entry
@@ -187,7 +187,7 @@ Once configured, the system handles everything automatically:
 
 ```rust,ignore
 // When you commit changes, they're sent immediately
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 op.commit()?;  // Sync hook sends command to background thread
 
 // Failed sends are retried with exponential backoff

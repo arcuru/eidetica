@@ -31,7 +31,7 @@ pub fn setup_complete_test_env(
     subtree_name: &str,
 ) -> eidetica::Result<(Instance, Database, Transaction, DocStore)> {
     let (db, tree) = setup_db_and_tree()?;
-    let op = tree.new_operation()?;
+    let op = tree.new_transaction()?;
     let dict = setup_dict_subtree(&op, subtree_name)?;
     Ok((db, tree, op, dict))
 }

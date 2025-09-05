@@ -286,7 +286,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     ]);
 
     // Add self-referencing delegation to the tree
-    let op = tree.new_operation()?.with_auth("admin");
+    let op = tree.new_transaction()?.with_auth("admin");
     let _dict = op.get_store::<eidetica::store::DocStore>("_settings")?;
 
     // This should be detectable as a potential circular reference

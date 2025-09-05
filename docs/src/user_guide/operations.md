@@ -23,7 +23,7 @@ Using an `Operation` follows a distinct lifecycle:
 1.  **Creation**: Start an authenticated operation from a `Database` instance.
     ```rust,ignore
     let database: Database = /* obtain Database instance */;
-    let op = database.new_operation()?; // Automatically uses the database's default signing key
+    let op = database.new_transaction()?; // Automatically uses the database's default signing key
     ```
 2.  **Store Access**: Get handles to the specific `Store`s you want to interact with. This implicitly loads the current state (tips) of that store into the operation if accessed for the first time.
     ```rust,ignore

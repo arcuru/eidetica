@@ -218,7 +218,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     op.commit()?;
 
     // Verify after commit
-    let viewer_op = tree.new_operation()?;
+    let viewer_op = tree.new_transaction()?;
     let viewer_dict = setup_dict_subtree(&viewer_op, "editor_test_store")?;
     assert_not_found_error(viewer_dict.get("key1"));
     assert_eq!(viewer_dict.get_string("key2")?, "value2");
@@ -271,7 +271,7 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     op.commit()?;
 
     // Verify after commit
-    let viewer_op = tree.new_operation()?;
+    let viewer_op = tree.new_transaction()?;
     let viewer_dict = setup_dict_subtree(&viewer_op, "editor_test_store")?;
 
     // User exists but has no role or profile

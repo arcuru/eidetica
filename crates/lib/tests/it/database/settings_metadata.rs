@@ -26,7 +26,7 @@ fn test_settings_tips_in_metadata() {
     let tree = db.new_database(settings, key_id).unwrap();
 
     // Create an operation to add some data
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let kv = op1.get_store::<eidetica::store::DocStore>("data").unwrap();
     kv.set("key1", "value1").unwrap();
     let entry1_id = op1.commit().unwrap();
@@ -46,7 +46,7 @@ fn test_settings_tips_in_metadata() {
     );
 
     // Create another operation to modify settings
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let settings_store = op2
         .get_store::<eidetica::store::DocStore>("_settings")
         .unwrap();
@@ -54,7 +54,7 @@ fn test_settings_tips_in_metadata() {
     let entry2_id = op2.commit().unwrap();
 
     // Create a third operation that doesn't modify settings
-    let op3 = tree.new_operation().unwrap();
+    let op3 = tree.new_transaction().unwrap();
     let kv3 = op3.get_store::<eidetica::store::DocStore>("data").unwrap();
     kv3.set("key2", "value2").unwrap();
     let entry3_id = op3.commit().unwrap();
@@ -131,7 +131,7 @@ fn test_entry_get_settings_from_subtree() {
     }
 
     // Transaction should be able to get settings properly
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let op_settings = op.get_settings().unwrap();
     match op_settings.get("name").unwrap() {
         Value::Text(s) => assert_eq!(s, "test_tree"),
@@ -154,13 +154,13 @@ fn test_settings_tips_propagation() {
     let tree = db.new_database(settings, key_id).unwrap();
 
     // Create a chain of entries
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let kv = op1.get_store::<eidetica::store::DocStore>("data").unwrap();
     kv.set("entry", "1").unwrap();
     let entry1_id = op1.commit().unwrap();
 
     // Modify settings
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let settings_store = op2
         .get_store::<eidetica::store::DocStore>("_settings")
         .unwrap();
@@ -168,7 +168,7 @@ fn test_settings_tips_propagation() {
     let entry2_id = op2.commit().unwrap();
 
     // Create another entry after settings change
-    let op3 = tree.new_operation().unwrap();
+    let op3 = tree.new_transaction().unwrap();
     let kv = op3.get_store::<eidetica::store::DocStore>("data").unwrap();
     kv.set("entry", "3").unwrap();
     let entry3_id = op3.commit().unwrap();
@@ -234,7 +234,7 @@ fn test_settings_metadata_with_complex_operations() {
     // Create several data operations
     let mut data_entry_ids = Vec::new();
     for i in 0..3 {
-        let op = tree.new_operation().unwrap();
+        let op = tree.new_transaction().unwrap();
         let data_store = op.get_store::<eidetica::store::DocStore>("data").unwrap();
         data_store.set("counter", i.to_string()).unwrap();
         data_store
@@ -245,7 +245,7 @@ fn test_settings_metadata_with_complex_operations() {
     }
 
     // Update settings
-    let settings_op = tree.new_operation().unwrap();
+    let settings_op = tree.new_transaction().unwrap();
     let settings_store = settings_op
         .get_store::<eidetica::store::DocStore>("_settings")
         .unwrap();
@@ -258,7 +258,7 @@ fn test_settings_metadata_with_complex_operations() {
     // Create more data operations after settings update
     let mut post_settings_entry_ids = Vec::new();
     for i in 3..6 {
-        let op = tree.new_operation().unwrap();
+        let op = tree.new_transaction().unwrap();
         let data_store = op.get_store::<eidetica::store::DocStore>("data").unwrap();
         data_store.set("counter", i.to_string()).unwrap();
         data_store
@@ -324,7 +324,7 @@ fn test_settings_metadata_with_branching() {
     let tree = db.new_database(Doc::new(), key_id).unwrap();
 
     // Create base entry
-    let base_op = tree.new_operation().unwrap();
+    let base_op = tree.new_transaction().unwrap();
     let base_store = base_op
         .get_store::<eidetica::store::DocStore>("data")
         .unwrap();
@@ -333,7 +333,7 @@ fn test_settings_metadata_with_branching() {
 
     // Create two branches from base
     let branch1_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let branch1_store = branch1_op
         .get_store::<eidetica::store::DocStore>("data")
@@ -342,7 +342,7 @@ fn test_settings_metadata_with_branching() {
     let branch1_id = branch1_op.commit().unwrap();
 
     let branch2_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let branch2_store = branch2_op
         .get_store::<eidetica::store::DocStore>("data")
@@ -352,7 +352,7 @@ fn test_settings_metadata_with_branching() {
 
     // Update settings on one branch
     let settings_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&branch1_id))
+        .new_transaction_with_tips(std::slice::from_ref(&branch1_id))
         .unwrap();
     let settings_store = settings_op
         .get_store::<eidetica::store::DocStore>("_settings")
@@ -362,7 +362,7 @@ fn test_settings_metadata_with_branching() {
 
     // Create merge operation
     let merge_tips = vec![settings_id.clone(), branch2_id.clone()];
-    let merge_op = tree.new_operation_with_tips(&merge_tips).unwrap();
+    let merge_op = tree.new_transaction_with_tips(&merge_tips).unwrap();
     let merge_store = merge_op
         .get_store::<eidetica::store::DocStore>("data")
         .unwrap();
@@ -413,7 +413,7 @@ fn test_metadata_consistency_across_operations() {
     let auth_id = auth_op.commit().unwrap();
 
     // Create regular operation
-    let regular_op = tree.new_operation().unwrap();
+    let regular_op = tree.new_transaction().unwrap();
     let regular_store = regular_op
         .get_store::<eidetica::store::DocStore>("regular_data")
         .unwrap();

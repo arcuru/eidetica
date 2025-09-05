@@ -95,7 +95,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     let tree = setup_tree();
 
     // Operation 1: Create initial state
-    let op1 = tree.new_operation().expect("Op1: Failed to start");
+    let op1 = tree.new_transaction().expect("Op1: Failed to start");
     {
         let ydoc = op1
             .get_store::<YDoc>("yrs_multi")
@@ -115,7 +115,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     op1.commit().expect("Op1: Failed to commit");
 
     // Operation 2: Update existing data
-    let op2 = tree.new_operation().expect("Op2: Failed to start");
+    let op2 = tree.new_transaction().expect("Op2: Failed to start");
     {
         let ydoc = op2
             .get_store::<YDoc>("yrs_multi")
@@ -137,7 +137,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
     op2.commit().expect("Op2: Failed to commit");
 
     // Operation 3: Add more data
-    let op3 = tree.new_operation().expect("Op3: Failed to start");
+    let op3 = tree.new_transaction().expect("Op3: Failed to start");
     {
         let ydoc = op3
             .get_store::<YDoc>("yrs_multi")
@@ -196,7 +196,7 @@ fn test_ydoc_apply_external_update() {
     let external_update = create_external_ydoc_update("External change");
 
     // Apply the external update to our YDoc
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     {
         let ydoc = op
             .get_store::<YDoc>("yrs_external")

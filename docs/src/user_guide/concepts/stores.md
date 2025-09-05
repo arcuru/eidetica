@@ -41,7 +41,7 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 
 ```rust,ignore
 // Get a DocStore store
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("app_data")?;
 
 // Set simple values
@@ -102,7 +102,7 @@ struct User {
 }
 
 // Get a Table store
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let users = op.get_store::<Table<User>>("users")?;
 
 // Insert items (returns a generated UUID)
@@ -150,7 +150,7 @@ use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map, Text, Transact};
 
 // Get a YDoc store
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let doc_store = op.get_store::<YDoc>("document")?;
 
 // Work with Y-CRDT structures

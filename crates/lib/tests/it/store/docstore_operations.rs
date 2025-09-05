@@ -18,7 +18,7 @@ fn test_dict_set_and_get_via_op() {
     create_dict_operation(&tree, "my_kv", initial_data);
 
     // Test operation-level modifications
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("my_kv")
         .expect("Failed to get Doc");
@@ -98,7 +98,7 @@ fn test_dict_get_all_empty() {
 #[test]
 fn test_dict_delete() {
     let tree = setup_tree();
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     {
         let dict = op
@@ -165,7 +165,7 @@ fn test_dict_list_basic_operations() {
 #[test]
 fn test_dict_list_nonexistent_key() {
     let tree = setup_tree();
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     {
         let dict = op
@@ -201,7 +201,7 @@ fn test_dict_list_persistence() {
     let tree = setup_tree();
 
     // Create list in first operation
-    let op1 = tree.new_operation().expect("Failed to start op1");
+    let op1 = tree.new_transaction().expect("Failed to start op1");
     {
         let dict = op1
             .get_store::<DocStore>("my_kv")
@@ -217,7 +217,7 @@ fn test_dict_list_persistence() {
     op1.commit().expect("Failed to commit op1");
 
     // Modify list in second operation
-    let op2 = tree.new_operation().expect("Failed to start op2");
+    let op2 = tree.new_transaction().expect("Failed to start op2");
     {
         let dict = op2
             .get_store::<DocStore>("my_kv")
@@ -248,7 +248,7 @@ fn test_dict_update_nested_value() {
     let tree = setup_tree();
 
     // First operation: Create initial nested structure
-    let op1 = tree.new_operation().expect("Op1: Failed to start");
+    let op1 = tree.new_transaction().expect("Op1: Failed to start");
     {
         let dict = op1
             .get_store::<DocStore>("nested_test")
@@ -263,7 +263,7 @@ fn test_dict_update_nested_value() {
     op1.commit().expect("Op1: Failed to commit");
 
     // Second operation: Update with another structure
-    let op2 = tree.new_operation().expect("Op2: Failed to start");
+    let op2 = tree.new_transaction().expect("Op2: Failed to start");
     {
         let dict = op2
             .get_store::<DocStore>("nested_test")
@@ -321,7 +321,7 @@ fn test_dict_update_nested_value() {
 #[test]
 fn test_dict_comprehensive_operations() {
     let tree = setup_tree();
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
 
     {
         let dict = op
@@ -384,7 +384,7 @@ fn test_docstore_path_based_access() {
     let tree = setup_tree();
 
     // Create operation and set up nested data structure
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("path_test")
         .expect("Failed to get DocStore");
@@ -530,7 +530,7 @@ fn test_docstore_path_mixed_with_staging() {
 
     // Create initial committed data
     {
-        let op = tree.new_operation().expect("Failed to start operation");
+        let op = tree.new_transaction().expect("Failed to start operation");
         let dict = op
             .get_store::<DocStore>("staging_test")
             .expect("Failed to get DocStore");
@@ -546,7 +546,7 @@ fn test_docstore_path_mixed_with_staging() {
     }
 
     // Now test staging behavior with paths
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("staging_test")
         .expect("Failed to get DocStore");
@@ -616,7 +616,7 @@ fn test_docstore_path_mixed_with_staging() {
 fn test_docstore_set_path() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("set_path_test")
         .expect("Failed to get DocStore");
@@ -707,7 +707,7 @@ fn test_docstore_set_path() {
 fn test_docstore_modify_path() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("modify_path_test")
         .expect("Failed to get DocStore");
@@ -776,7 +776,7 @@ fn test_docstore_modify_path() {
 fn test_docstore_get_or_insert_path() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("get_or_insert_path_test")
         .expect("Failed to get DocStore");
@@ -867,7 +867,7 @@ fn test_docstore_get_or_insert_path() {
 fn test_docstore_modify_or_insert_path() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("modify_or_insert_path_test")
         .expect("Failed to get DocStore");
@@ -988,7 +988,7 @@ fn test_docstore_modify_or_insert_path() {
 fn test_docstore_path_mutation_interoperability() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("interop_test")
         .expect("Failed to get DocStore");
@@ -1084,7 +1084,7 @@ fn test_docstore_path_mutation_interoperability() {
 fn test_docstore_contains_key() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("contains_key_test")
         .expect("Failed to get DocStore");
@@ -1126,7 +1126,7 @@ fn test_docstore_contains_key() {
 
     // Test with new operation on committed data
     let op2 = tree
-        .new_operation()
+        .new_transaction()
         .expect("Failed to start second operation");
     let dict2 = op2
         .get_store::<DocStore>("contains_key_test")
@@ -1156,7 +1156,7 @@ fn test_docstore_contains_key() {
 fn test_docstore_contains_path() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("contains_path_test")
         .expect("Failed to get DocStore");
@@ -1236,7 +1236,7 @@ fn test_docstore_contains_path() {
 
     // Test with new operation adding more paths
     let op2 = tree
-        .new_operation()
+        .new_transaction()
         .expect("Failed to start second operation");
     let dict2 = op2
         .get_store::<DocStore>("contains_path_test")
@@ -1270,7 +1270,7 @@ fn test_docstore_contains_path() {
 fn test_docstore_contains_methods_consistency() {
     let tree = setup_tree();
 
-    let op = tree.new_operation().expect("Failed to start operation");
+    let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("consistency_test")
         .expect("Failed to get DocStore");

@@ -115,7 +115,7 @@ use anyhow::Result;
 
 fn some_data_modification(database: &Database) -> Result<()> {
     // Start an authenticated atomic operation
-    let op = database.new_operation()?; // Automatically uses the database's default signing key
+    let op = database.new_transaction()?; // Automatically uses the database's default signing key
 
     // ... perform data changes using the 'op' handle ...
 
@@ -157,7 +157,7 @@ pub struct Todo {
 // ... impl Todo ...
 
 fn add_todo(database: &Database, title: String) -> Result<()> {
-    let op = database.new_operation()?;
+    let op = database.new_transaction()?;
     // Get a handle to the 'todos' store, specifying its type is Table<Todo>
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     let todo = Todo::new(title);
@@ -169,7 +169,7 @@ fn add_todo(database: &Database, title: String) -> Result<()> {
 }
 
 fn complete_todo(database: &Database, id: &str) -> Result<()> {
-    let op = database.new_operation()?;
+    let op = database.new_transaction()?;
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     // Get data by ID
     let mut todo = todos_store.get(id).map_err(|e| anyhow!("Get failed: {}", e))?;
@@ -181,7 +181,7 @@ fn complete_todo(database: &Database, id: &str) -> Result<()> {
 }
 
 fn list_todos(database: &Database) -> Result<()> {
-    let op = database.new_operation()?;
+    let op = database.new_transaction()?;
     let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
     // Search/scan the store
     let todos_with_ids = todos_store.search(|_| true)?; // Get all
@@ -213,7 +213,7 @@ use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map, Transact};
 
 fn set_user_info(database: &Database, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
-    let op = database.new_operation()?;
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
     let user_info_store = op.get_subtree::<YDoc>("user_info")?;
@@ -241,7 +241,7 @@ fn set_user_info(database: &Database, name: Option<&String>, email: Option<&Stri
 }
 
 fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
-    let op = database.new_operation()?;
+    let op = database.new_transaction()?;
 
     // Get a handle to the 'user_prefs' YDoc store
     let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;

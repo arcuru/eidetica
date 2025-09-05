@@ -36,7 +36,7 @@ pub fn create_dict_operation(
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     for (key, value) in data {
@@ -51,7 +51,7 @@ pub fn create_dict_with_nested_map(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> eidetica::entry::ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     // Set regular string
@@ -71,7 +71,7 @@ pub fn create_dict_with_list(
     subtree_name: &str,
     list_items: &[&str],
 ) -> eidetica::entry::ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let dict = op.get_store::<DocStore>(subtree_name).unwrap();
 
     let mut fruits = eidetica::crdt::doc::List::new();
@@ -91,7 +91,7 @@ pub fn test_dict_persistence(
     let mut entry_ids = Vec::new();
 
     // Op 1: Initial data
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     {
         let dict = op1.get_store::<DocStore>(subtree_name).unwrap();
         dict.set("key_a", "val_a").unwrap();
@@ -100,7 +100,7 @@ pub fn test_dict_persistence(
     entry_ids.push(op1.commit().unwrap());
 
     // Op 2: Update one, add another
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     {
         let dict = op2.get_store::<DocStore>(subtree_name).unwrap();
         dict.set("key_b", "val_b_updated").unwrap();
@@ -176,7 +176,7 @@ pub fn create_ydoc_text_operation(
     subtree_name: &str,
     text_content: &str,
 ) -> eidetica::entry::ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
 
     ydoc.with_doc_mut(|doc| {
@@ -197,7 +197,7 @@ pub fn create_ydoc_map_operation(
     subtree_name: &str,
     map_data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
 
     ydoc.with_doc_mut(|doc| {
@@ -220,7 +220,7 @@ pub fn test_ydoc_incremental_updates(
     subtree_name: &str,
 ) -> (usize, usize) {
     // Large initial content
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let first_diff_size = {
         let ydoc = op1.get_store::<YDoc>(subtree_name).unwrap();
         ydoc.with_doc_mut(|doc| {
@@ -239,7 +239,7 @@ pub fn test_ydoc_incremental_updates(
     op1.commit().unwrap();
 
     // Small incremental change
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let second_diff_size = {
         let ydoc = op2.get_store::<YDoc>(subtree_name).unwrap();
         ydoc.with_doc_mut(|doc| {
@@ -322,7 +322,7 @@ pub fn create_table_operation(
     subtree_name: &str,
     records: &[TestRecord],
 ) -> Vec<String> {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let table = op.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
     let mut keys = Vec::new();
@@ -341,7 +341,7 @@ pub fn create_simple_table_operation(
     subtree_name: &str,
     values: &[i32],
 ) -> Vec<String> {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let table = op.get_store::<Table<SimpleRecord>>(subtree_name).unwrap();
 
     let mut keys = Vec::new();
@@ -361,7 +361,7 @@ pub fn test_table_multi_operations(
     subtree_name: &str,
 ) -> (String, String, String) {
     // Op 1: Insert initial records
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let (key1, key2) = {
         let table = op1.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
@@ -383,7 +383,7 @@ pub fn test_table_multi_operations(
     op1.commit().unwrap();
 
     // Op 2: Update and add
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let key3 = {
         let table = op2.get_store::<Table<TestRecord>>(subtree_name).unwrap();
 
@@ -487,7 +487,7 @@ pub fn test_table_concurrent_modifications(
     subtree_name: &str,
 ) -> (String, TestRecord) {
     // Create base entry
-    let op_base = tree.new_operation().unwrap();
+    let op_base = tree.new_transaction().unwrap();
     let key1 = {
         let table = op_base
             .get_store::<Table<TestRecord>>(subtree_name)
@@ -503,7 +503,7 @@ pub fn test_table_concurrent_modifications(
 
     // Branch A: Concurrent modification
     let op_branch_a = tree
-        .new_operation_with_tips([base_entry_id.clone()])
+        .new_transaction_with_tips([base_entry_id.clone()])
         .unwrap();
     {
         let table = op_branch_a
@@ -519,7 +519,7 @@ pub fn test_table_concurrent_modifications(
     }
 
     // Branch B: Parallel modification
-    let op_branch_b = tree.new_operation_with_tips([base_entry_id]).unwrap();
+    let op_branch_b = tree.new_transaction_with_tips([base_entry_id]).unwrap();
     {
         let table = op_branch_b
             .get_store::<Table<TestRecord>>(subtree_name)
@@ -534,7 +534,7 @@ pub fn test_table_concurrent_modifications(
     }
 
     // Get merged result
-    let op_merge = tree.new_operation().unwrap();
+    let op_merge = tree.new_transaction().unwrap();
     let merged_record = {
         let table = op_merge
             .get_store::<Table<TestRecord>>(subtree_name)

@@ -90,7 +90,7 @@ if let Some(Value::Node(user_node)) = all_data.get("user") {
 ### Application Configuration
 
 ```rust,ignore
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let config = op.get_subtree::<DocStore>("app_config")?;
 
 // Set configuration values

@@ -121,7 +121,7 @@ impl Sync {
     /// * `key` - The setting key
     /// * `value` - The setting value
     pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE)?;
         sync_settings.set_string(key, value)?;
         op.commit()?;
@@ -206,7 +206,7 @@ impl Sync {
         let pubkey_str = pubkey.into();
 
         // Store in sync tree via PeerManager
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).register_peer(&pubkey_str, display_name)?;
         op.commit()?;
 
@@ -227,7 +227,7 @@ impl Sync {
         pubkey: impl AsRef<str>,
         status: PeerStatus,
     ) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).update_peer_status(pubkey.as_ref(), status)?;
         op.commit()?;
         Ok(())
@@ -241,7 +241,7 @@ impl Sync {
     /// # Returns
     /// The peer information if found, None otherwise.
     pub fn get_peer_info(&self, pubkey: impl AsRef<str>) -> Result<Option<PeerInfo>> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).get_peer_info(pubkey.as_ref())
         // No commit - just reading
     }
@@ -251,7 +251,7 @@ impl Sync {
     /// # Returns
     /// A vector of all registered peer information.
     pub fn list_peers(&self) -> Result<Vec<PeerInfo>> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).list_peers()
         // No commit - just reading
     }
@@ -266,7 +266,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub fn remove_peer(&mut self, pubkey: impl AsRef<str>) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).remove_peer(pubkey)?;
         op.commit()?;
         Ok(())
@@ -287,7 +287,7 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).add_tree_sync(peer_pubkey, tree_root_id)?;
         op.commit()?;
         Ok(())
@@ -306,7 +306,7 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).remove_tree_sync(peer_pubkey, tree_root_id)?;
         op.commit()?;
         Ok(())
@@ -320,7 +320,7 @@ impl Sync {
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
     pub fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).get_peer_trees(peer_pubkey)
         // No commit - just reading
     }
@@ -333,7 +333,7 @@ impl Sync {
     /// # Returns
     /// A vector of peer public keys that sync this tree.
     pub fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).get_tree_peers(tree_root_id)
         // No commit - just reading
     }
@@ -376,7 +376,7 @@ impl Sync {
         pubkey: impl AsRef<str>,
         state: ConnectionState,
     ) -> Result<()> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         let peer_manager = PeerManager::new(&op);
 
         // Get current peer info
@@ -408,7 +408,7 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey, tree_root_id)
         // No commit - just reading
     }
@@ -431,7 +431,7 @@ impl Sync {
         let peer_pubkey_str = peer_pubkey.as_ref();
 
         // Update sync tree via PeerManager
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).add_address(peer_pubkey_str, address)?;
         op.commit()?;
 
@@ -452,7 +452,7 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         address: &Address,
     ) -> Result<bool> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         let result = PeerManager::new(&op).remove_address(peer_pubkey.as_ref(), address)?;
         op.commit()?;
         Ok(result)
@@ -471,7 +471,7 @@ impl Sync {
         peer_pubkey: impl AsRef<str>,
         transport_type: Option<&str>,
     ) -> Result<Vec<Address>> {
-        let op = self.sync_tree.new_operation()?;
+        let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).get_addresses(peer_pubkey.as_ref(), transport_type)
         // No commit - just reading
     }

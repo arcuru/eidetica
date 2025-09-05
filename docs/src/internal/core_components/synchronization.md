@@ -341,7 +341,7 @@ sequenceDiagram
     participant Cmd as Command Channel
     participant BG as BackgroundSync
 
-    App->>Database: new_operation()
+    App->>Database: new_transaction()
     Database->>Transaction: create with sync hooks
     App->>Transaction: modify data
     App->>Transaction: commit()

@@ -69,7 +69,7 @@ use eidetica::store::DocStore;
 let database: Database = /* obtained from step 2 */;
 
 // Start an authenticated operation (automatically uses the database's default key)
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 
 {
     // Get the DocStore store handle (scoped)
@@ -106,7 +106,7 @@ struct Task {
 let database: Database = /* obtained from step 2 */;
 
 // Start an authenticated operation (automatically uses the database's default key)
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let inserted_id;
 
 {
@@ -208,7 +208,7 @@ use eidetica::store::{DocStore, Value};
 let database: Database = /* obtained from step 2 */;
 
 // Start an authenticated operation (automatically uses the database's default key)
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 
 // Get the DocStore store handle
 let user_store = op.get_subtree::<DocStore>("users")?;
@@ -255,7 +255,7 @@ let entry_id = op.commit()?;
 println!("ValueEditor changes committed in entry: {}", entry_id);
 
 // Read back the nested data
-let viewer_op = database.new_operation()?;
+let viewer_op = database.new_transaction()?;
 let viewer_store = viewer_op.get_subtree::<DocStore>("users")?;
 
 // Get the user data and navigate through it
@@ -327,7 +327,7 @@ use eidetica::y_crdt::{Map as YMap, Transact};
 let database: Database = /* obtained from step 2 */;
 
 // Start an authenticated operation (automatically uses the database's default key)
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 
 // Get the YDoc store handle
 let user_info_store = op.get_subtree::<YDoc>("user_info")?;
@@ -349,7 +349,7 @@ let entry_id = op.commit()?;
 println!("YDoc changes committed in entry: {}", entry_id);
 
 // Reading from Y-CRDT document
-let read_op = database.new_operation()?;
+let read_op = database.new_transaction()?;
 let reader_store = read_op.get_subtree::<YDoc>("user_info")?;
 
 reader_store.with_doc(|doc| {
@@ -377,7 +377,7 @@ reader_store.with_doc(|doc| {
 })?;
 
 // Working with nested Y-CRDT maps
-let prefs_op = database.new_operation()?;
+let prefs_op = database.new_transaction()?;
 let prefs_store = prefs_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_store.with_doc_mut(|doc| {
@@ -394,7 +394,7 @@ prefs_store.with_doc_mut(|doc| {
 prefs_op.commit()?;
 
 // Reading preferences
-let prefs_read_op = database.new_operation()?;
+let prefs_read_op = database.new_transaction()?;
 let prefs_read_store = prefs_read_op.get_subtree::<YDoc>("user_prefs")?;
 
 prefs_read_store.with_doc(|doc| {

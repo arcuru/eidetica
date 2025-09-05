@@ -466,7 +466,7 @@ mod tests {
         // Get the sync instance and its tree
         let sync = db.sync().unwrap();
         let sync_tree = &sync.sync_tree;
-        let op = sync_tree.new_operation().unwrap();
+        let op = sync_tree.new_transaction().unwrap();
 
         let state_manager = SyncStateManager::new(&op);
         let peer_pubkey = "test_peer";
@@ -495,7 +495,7 @@ mod tests {
         op.commit().unwrap();
 
         // Create a new operation on the sync tree and test that the history is persisted
-        let op2 = sync_tree.new_operation().unwrap();
+        let op2 = sync_tree.new_transaction().unwrap();
         let state_manager2 = SyncStateManager::new(&op2);
         let history = state_manager2
             .get_sync_history(peer_pubkey, Some(10))

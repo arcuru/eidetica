@@ -108,8 +108,8 @@ impl Database {
             sync_hooks: None,
         };
 
-        // Create the operation. If we have an auth key, it will be used automatically
-        let op = temp_database_for_bootstrap.new_operation()?;
+        // Create the transaction. If we have an auth key, it will be used automatically
+        let op = temp_database_for_bootstrap.new_transaction()?;
 
         // IMPORTANT: For the root entry, we need to set the database root to empty string
         // so that is_toplevel_root() returns true and all_roots() can find it
@@ -153,7 +153,7 @@ impl Database {
 
     /// Set the default authentication key ID for operations on this database.
     ///
-    /// When set, all operations created via `new_operation()` will automatically
+    /// When set, all operations created via `new_transaction()` will automatically
     /// use this key for signing unless explicitly overridden.
     ///
     /// # Parameters
@@ -193,8 +193,8 @@ impl Database {
 
     /// Set sync hooks for this database.
     ///
-    /// When sync hooks are set, all operations created via `new_operation()` and
-    /// `new_operation_with_tips()` will automatically include these hooks and execute
+    /// When sync hooks are set, all operations created via `new_transaction()` and
+    /// `new_transaction_with_tips()` will automatically include these hooks and execute
     /// them after successful commits.
     ///
     /// # Arguments
@@ -213,18 +213,18 @@ impl Database {
         self.sync_hooks.as_ref()
     }
 
-    /// Create a new atomic operation on this database with authentication.
+    /// Create a new atomic transaction on this database with authentication.
     ///
-    /// This is a convenience method that creates an operation and sets the authentication
+    /// This is a convenience method that creates a transaction and sets the authentication
     /// key in one call.
     ///
     /// # Arguments
     /// * `key_name` - The identifier of the private key to use for signing
     ///
     /// # Returns
-    /// A `Result<Transaction>` containing the new authenticated operation
+    /// A `Result<Transaction>` containing the new authenticated transaction
     pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<Transaction> {
-        let op = self.new_operation()?;
+        let op = self.new_transaction()?;
         Ok(op.with_auth(key_name.as_ref()))
     }
 
@@ -262,31 +262,31 @@ impl Database {
         settings.get_string("name")
     }
 
-    /// Create a new atomic operation on this database
+    /// Create a new atomic transaction on this database
     ///
-    /// This creates a new atomic operation containing a new Entry.
-    /// The atomic operation will be initialized with the current state of the database.
-    /// If a default authentication key is set, the operation will use it for signing.
+    /// This creates a new atomic transaction containing a new Entry.
+    /// The atomic transaction will be initialized with the current state of the database.
+    /// If a default authentication key is set, the transaction will use it for signing.
     ///
     /// # Returns
-    /// A `Result<Transaction>` containing the new atomic operation
-    pub fn new_operation(&self) -> Result<Transaction> {
+    /// A `Result<Transaction>` containing the new atomic transaction
+    pub fn new_transaction(&self) -> Result<Transaction> {
         let tips = self.get_tips()?;
-        self.new_operation_with_tips(&tips)
+        self.new_transaction_with_tips(&tips)
     }
 
-    /// Create a new atomic operation on this database with specific parent tips
+    /// Create a new atomic transaction on this database with specific parent tips
     ///
-    /// This creates a new atomic operation that will have the specified entries as parents
+    /// This creates a new atomic transaction that will have the specified entries as parents
     /// instead of using the current database tips. This allows creating complex DAG structures
     /// like diamond patterns for testing and advanced use cases.
     ///
     /// # Arguments
-    /// * `tips` - The specific parent tips to use for this operation
+    /// * `tips` - The specific parent tips to use for this transaction
     ///
     /// # Returns
-    /// A `Result<Transaction>` containing the new atomic operation
-    pub fn new_operation_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
+    /// A `Result<Transaction>` containing the new atomic transaction
+    pub fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
 
         // Set default authentication if configured
@@ -323,7 +323,7 @@ impl Database {
     where
         T: Store,
     {
-        let op = self.new_operation()?;
+        let op = self.new_transaction()?;
         T::new(&op, name)
     }
 
@@ -372,7 +372,7 @@ impl Database {
     /// # let db = Instance::new(backend);
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
-    /// # let op = tree.new_operation()?;
+    /// # let op = tree.new_transaction()?;
     /// let entry_id = op.commit()?;
     /// let entry = tree.get_entry(&entry_id)?;           // Using &String
     /// let entry = tree.get_entry("some_entry_id")?;     // Using &str

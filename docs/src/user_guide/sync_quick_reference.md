@@ -131,7 +131,7 @@ db.sync_mut()?.remove_peer(&peer_key)?;
 use eidetica::store::DocStore;
 
 // Any database operation automatically triggers sync
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let store = op.get_subtree::<DocStore>("data")?;
 
 store.set_string("message", "Hello World")?;
@@ -146,7 +146,7 @@ op.commit()?; // Entries queued for sync to all configured peers
 
 ```rust,ignore
 // Multiple operations in single commit
-let op = database.new_operation()?;
+let op = database.new_transaction()?;
 let store = op.get_subtree::<DocStore>("data")?;
 
 for i in 0..100 {
@@ -409,7 +409,7 @@ async fn test_sync_between_peers() -> Result<()> {
     db2.sync_mut()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
 
     // Test sync
-    let op1 = tree1.new_operation()?;
+    let op1 = tree1.new_transaction()?;
     let store1 = op1.get_subtree::<DocStore>("data")?;
     store1.set_string("test", "value")?;
     op1.commit()?;

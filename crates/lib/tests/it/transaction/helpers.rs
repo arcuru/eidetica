@@ -18,7 +18,7 @@ pub fn create_simple_operation(
     key: &str,
     value: &str,
 ) -> ID {
-    let operation = tree.new_operation().unwrap();
+    let operation = tree.new_transaction().unwrap();
     let dict = DocStore::new(&operation, subtree_name).unwrap();
     dict.set(key, value).unwrap();
     operation.commit().unwrap()
@@ -29,7 +29,7 @@ pub fn create_multi_subtree_operation(
     tree: &eidetica::Database,
     subtree_data: &[(&str, &[(&str, &str)])],
 ) -> ID {
-    let operation = tree.new_operation().unwrap();
+    let operation = tree.new_transaction().unwrap();
 
     for (subtree_name, data) in subtree_data {
         let dict = DocStore::new(&operation, *subtree_name).unwrap();
@@ -53,14 +53,14 @@ pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetic
 /// Create a diamond pattern: base -> (left, right) -> merge
 pub fn create_diamond_pattern(tree: &eidetica::Database) -> DiamondIds {
     // Create base
-    let base_op = tree.new_operation().unwrap();
+    let base_op = tree.new_transaction().unwrap();
     let base_store = base_op.get_store::<DocStore>("data").unwrap();
     base_store.set("base", "initial").unwrap();
     let base_id = base_op.commit().unwrap();
 
     // Create left branch
     let left_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let left_store = left_op.get_store::<DocStore>("data").unwrap();
     left_store.set("left", "left_value").unwrap();
@@ -68,7 +68,7 @@ pub fn create_diamond_pattern(tree: &eidetica::Database) -> DiamondIds {
     let left_id = left_op.commit().unwrap();
 
     // Create right branch
-    let right_op = tree.new_operation_with_tips([base_id.clone()]).unwrap();
+    let right_op = tree.new_transaction_with_tips([base_id.clone()]).unwrap();
     let right_store = right_op.get_store::<DocStore>("data").unwrap();
     right_store.set("right", "right_value").unwrap();
     right_store.set("shared", "right_version").unwrap();
@@ -91,7 +91,7 @@ pub struct DiamondIds {
 /// Create a merge operation from diamond pattern
 pub fn create_merge_from_diamond(tree: &eidetica::Database, diamond: &DiamondIds) -> ID {
     let merge_op = tree
-        .new_operation_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
         .unwrap();
     let merge_store = merge_op.get_store::<DocStore>("data").unwrap();
     merge_store.set("merged", "merge_value").unwrap();
@@ -136,7 +136,7 @@ pub fn test_delete_operation(
     subtree_name: &str,
     key_to_delete: &str,
 ) -> ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let dict = DocStore::new(&op, subtree_name).unwrap();
     dict.delete(key_to_delete).unwrap();
     op.commit().unwrap()
@@ -180,7 +180,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
 
 /// Setup operation with nested Map values
 pub fn create_operation_with_nested_data(tree: &eidetica::Database) -> ID {
-    let op = tree.new_operation().unwrap();
+    let op = tree.new_transaction().unwrap();
     let store = DocStore::new(&op, "data").unwrap();
 
     // Set regular string value
@@ -222,14 +222,14 @@ pub fn assert_nested_data(
 /// Create complex LCA scenario for path finding tests
 pub fn create_lca_test_scenario(tree: &eidetica::Database) -> LcaTestIds {
     // Create LCA
-    let lca_op = tree.new_operation().unwrap();
+    let lca_op = tree.new_transaction().unwrap();
     let lca_store = lca_op.get_store::<DocStore>("data").unwrap();
     lca_store.set("base", "LCA").unwrap();
     let lca_id = lca_op.commit().unwrap();
 
     // Create branch A
     let a_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
     let a_store = a_op.get_store::<DocStore>("data").unwrap();
     a_store.set("branch_a", "modification_A").unwrap();
@@ -237,7 +237,7 @@ pub fn create_lca_test_scenario(tree: &eidetica::Database) -> LcaTestIds {
 
     // Create branch B (parallel to A)
     let b_op = tree
-        .new_operation_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
         .unwrap();
     let b_store = b_op.get_store::<DocStore>("data").unwrap();
     b_store.set("branch_b", "modification_B").unwrap();
@@ -245,14 +245,14 @@ pub fn create_lca_test_scenario(tree: &eidetica::Database) -> LcaTestIds {
 
     // Create merge tip
     let merge_op = tree
-        .new_operation_with_tips([a_id.clone(), b_id.clone()])
+        .new_transaction_with_tips([a_id.clone(), b_id.clone()])
         .unwrap();
     let merge_store = merge_op.get_store::<DocStore>("data").unwrap();
     merge_store.set("tip", "merged").unwrap();
     let merge_id = merge_op.commit().unwrap();
 
     // Create independent tip
-    let indep_op = tree.new_operation_with_tips([lca_id.clone()]).unwrap();
+    let indep_op = tree.new_transaction_with_tips([lca_id.clone()]).unwrap();
     let indep_store = indep_op.get_store::<DocStore>("data").unwrap();
     indep_store.set("independent", "tip").unwrap();
     let indep_id = indep_op.commit().unwrap();
@@ -275,7 +275,7 @@ pub fn assert_lca_path_completeness(
     tips: &[ID],
     expected_keys: &[&str],
 ) {
-    let op = tree.new_operation_with_tips(tips).unwrap();
+    let op = tree.new_transaction_with_tips(tips).unwrap();
     let store = op.get_store::<DocStore>("data").unwrap();
     let state = store.get_all().unwrap();
 
@@ -294,7 +294,7 @@ pub fn test_deterministic_operations(tree: &eidetica::Database, tips: &[ID], ite
     let mut results = Vec::new();
 
     for _i in 0..iterations {
-        let op = tree.new_operation_with_tips(tips).unwrap();
+        let op = tree.new_transaction_with_tips(tips).unwrap();
         let store = op.get_store::<DocStore>("data").unwrap();
         let state = store.get_all().unwrap();
         results.push(state);

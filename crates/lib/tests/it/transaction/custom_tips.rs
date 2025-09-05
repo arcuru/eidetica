@@ -13,27 +13,27 @@ fn test_transaction_with_custom_tips() {
     let tree = setup_tree();
 
     // Create a chain of operations: A -> B -> C
-    let op_a = tree.new_operation().unwrap();
+    let op_a = tree.new_transaction().unwrap();
     let store_a = op_a.get_store::<DocStore>("data").unwrap();
     store_a.set("step", "A").unwrap();
     store_a.set("a_data", "value_a").unwrap();
     let entry_a_id = op_a.commit().unwrap();
 
-    let op_b = tree.new_operation().unwrap();
+    let op_b = tree.new_transaction().unwrap();
     let store_b = op_b.get_store::<DocStore>("data").unwrap();
     store_b.set("step", "B").unwrap();
     store_b.set("b_data", "value_b").unwrap();
     let _entry_b_id = op_b.commit().unwrap();
 
-    let op_c = tree.new_operation().unwrap();
+    let op_c = tree.new_transaction().unwrap();
     let store_c = op_c.get_store::<DocStore>("data").unwrap();
     store_c.set("step", "C").unwrap();
     store_c.set("c_data", "value_c").unwrap();
     let _entry_c_id = op_c.commit().unwrap();
 
-    // Create operation from entry A using new_operation_with_tips
+    // Create operation from entry A using new_transaction_with_tips
     let op_from_a = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
     let store_from_a = op_from_a.get_store::<DocStore>("data").unwrap();
 
@@ -62,7 +62,7 @@ fn test_transaction_multiple_subtrees_with_custom_tips() {
     let tree = setup_tree();
 
     // Create base entry with multiple subtrees
-    let op_base = tree.new_operation().unwrap();
+    let op_base = tree.new_transaction().unwrap();
     let users_base = op_base.get_store::<DocStore>("users").unwrap();
     let posts_base = op_base.get_store::<DocStore>("posts").unwrap();
 
@@ -72,21 +72,21 @@ fn test_transaction_multiple_subtrees_with_custom_tips() {
 
     // Create branch that only modifies users
     let op_users = tree
-        .new_operation_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .unwrap();
     let users_branch = op_users.get_store::<DocStore>("users").unwrap();
     users_branch.set("user2", "bob").unwrap();
     let users_id = op_users.commit().unwrap();
 
     // Create branch that only modifies posts
-    let op_posts = tree.new_operation_with_tips([base_id]).unwrap();
+    let op_posts = tree.new_transaction_with_tips([base_id]).unwrap();
     let posts_branch = op_posts.get_store::<DocStore>("posts").unwrap();
     posts_branch.set("post2", "world").unwrap();
     let posts_id = op_posts.commit().unwrap();
 
     // Create merge operation
     let op_merge = tree
-        .new_operation_with_tips([users_id.clone(), posts_id.clone()])
+        .new_transaction_with_tips([users_id.clone(), posts_id.clone()])
         .unwrap();
     let users_merge = op_merge.get_store::<DocStore>("users").unwrap();
     let posts_merge = op_merge.get_store::<DocStore>("posts").unwrap();
@@ -104,7 +104,7 @@ fn test_transaction_multiple_subtrees_with_custom_tips() {
     let merge_id = op_merge.commit().unwrap();
 
     // Verify final state has all data
-    let op_final = tree.new_operation_with_tips([merge_id]).unwrap();
+    let op_final = tree.new_transaction_with_tips([merge_id]).unwrap();
     let users_final = op_final.get_store::<DocStore>("users").unwrap();
     let posts_final = op_final.get_store::<DocStore>("posts").unwrap();
 
@@ -124,21 +124,21 @@ fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     let tree = setup_tree();
 
     // Create base entry with subtree data
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let store1 = op1.get_store::<DocStore>("data").unwrap();
     store1.set("key1", "value1").unwrap();
     let entry1_id = op1.commit().unwrap();
 
     // Create a parallel branch that also has subtree data
     let op2 = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry1_id))
+        .new_transaction_with_tips(std::slice::from_ref(&entry1_id))
         .unwrap();
     let store2 = op2.get_store::<DocStore>("data").unwrap();
     store2.set("key2", "value2").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another branch that does NOT touch the "data" subtree at all
-    let op3 = tree.new_operation_with_tips([entry1_id]).unwrap();
+    let op3 = tree.new_transaction_with_tips([entry1_id]).unwrap();
     // Only touch a different subtree
     let settings3 = op3.get_store::<DocStore>("settings").unwrap();
     settings3.set("config", "value").unwrap();
@@ -147,7 +147,7 @@ fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     // Create a merge operation using both branches as tips
     // entry2_id has subtree data, entry3_id does NOT have subtree data
     let op4 = tree
-        .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
+        .new_transaction_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
     let store4 = op4.get_store::<DocStore>("data").unwrap();
 
@@ -177,20 +177,20 @@ fn test_transaction_custom_tips_no_subtree_data_in_tips() {
     let tree = setup_tree();
 
     // Create entry with subtree data
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let store1 = op1.get_store::<DocStore>("data").unwrap();
     store1.set("original", "value").unwrap();
     let _entry1_id = op1.commit().unwrap();
 
     // Create entry that does NOT modify the "data" subtree
     // This simulates the case where we have tree evolution but no subtree changes
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let settings2 = op2.get_store::<DocStore>("settings").unwrap();
     settings2.set("config1", "value1").unwrap();
     let entry2_id = op2.commit().unwrap();
 
     // Create another entry that also doesn't modify "data" subtree
-    let op3 = tree.new_operation().unwrap();
+    let op3 = tree.new_transaction().unwrap();
     let metadata3 = op3.get_store::<DocStore>("metadata").unwrap();
     metadata3.set("info", "some info").unwrap();
     let entry3_id = op3.commit().unwrap();
@@ -198,7 +198,7 @@ fn test_transaction_custom_tips_no_subtree_data_in_tips() {
     // Now use ONLY the entries that don't have "data" subtree as custom tips
     // The "data" subtree should still be accessible from their common ancestor (entry1)
     let op4 = tree
-        .new_operation_with_tips([entry2_id.clone(), entry3_id.clone()])
+        .new_transaction_with_tips([entry2_id.clone(), entry3_id.clone()])
         .unwrap();
     let store4 = op4.get_store::<DocStore>("data").unwrap();
 

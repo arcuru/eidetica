@@ -47,7 +47,7 @@ fn test_end_to_end_data_workflow() -> eidetica::Result<()> {
     op.commit()?;
 
     // Test 8: Verify persistence after commit
-    let viewer_op = tree.new_operation()?;
+    let viewer_op = tree.new_transaction()?;
     let viewer_dict = setup_dict_subtree(&viewer_op, "integration_test")?;
     assert_text_value(&viewer_dict.get_at_path(&["user", "profile", "name"])?, "Alice");
     assert_not_found_error(viewer_dict.get_at_path(&["user", "settings", "theme"]));

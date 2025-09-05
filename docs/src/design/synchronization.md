@@ -275,7 +275,7 @@ graph LR
 #### 1. Entry Commit Flow
 
 ```text
-1. Application calls database.new_operation().commit()
+1. Application calls database.new_transaction().commit()
 2. Transaction stores entry in backend
 3. Transaction executes sync hooks
 4. SyncHookImpl creates QueueEntry command

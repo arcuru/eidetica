@@ -494,7 +494,7 @@ async fn test_sync_protocol_implementation() {
 
     // Add test data to tree1
     let test_entry_id = {
-        let op = tree1.new_operation().unwrap();
+        let op = tree1.new_transaction().unwrap();
         let doc_store = op.get_store::<DocStore>("data").unwrap();
         doc_store.set_string("test_key", "test_value").unwrap();
         doc_store.set_string("protocol", "implemented").unwrap();
@@ -584,7 +584,7 @@ async fn test_sync_protocol_implementation() {
 
     // Now add MORE data to tree1 and sync again to truly test the sync protocol
     let second_entry_id = {
-        let op = tree1.new_operation().unwrap();
+        let op = tree1.new_transaction().unwrap();
         let doc_store = op.get_store::<DocStore>("data").unwrap();
         doc_store.set_string("second_key", "second_value").unwrap();
         doc_store

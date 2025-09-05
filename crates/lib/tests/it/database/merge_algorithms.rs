@@ -14,21 +14,21 @@ fn test_simple_linear_chain() {
     let tree = setup_tree();
 
     // Create entry A with initial data
-    let op_a = tree.new_operation().unwrap();
+    let op_a = tree.new_transaction().unwrap();
     let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
     subtree_a.set("counter", "1").unwrap();
     subtree_a.set("name", "alice").unwrap();
     op_a.commit().unwrap();
 
     // Create entry B as child of A
-    let op_b = tree.new_operation().unwrap();
+    let op_b = tree.new_transaction().unwrap();
     let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
     subtree_b.set("counter", "2").unwrap(); // Update counter
     subtree_b.set("age", "25").unwrap(); // Add new field
     op_b.commit().unwrap();
 
     // Create entry C as child of B
-    let op_c = tree.new_operation().unwrap();
+    let op_c = tree.new_transaction().unwrap();
     let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
     subtree_c.set("counter", "3").unwrap(); // Update counter again
     subtree_c.set("city", "nyc").unwrap(); // Add another field
@@ -71,17 +71,17 @@ fn test_caching_consistency() {
     let tree = setup_tree();
 
     // Create a simple chain to have some data to cache
-    let op_a = tree.new_operation().unwrap();
+    let op_a = tree.new_transaction().unwrap();
     let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
     subtree_a.set("value", "1").unwrap();
     op_a.commit().unwrap();
 
-    let op_b = tree.new_operation().unwrap();
+    let op_b = tree.new_transaction().unwrap();
     let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
     subtree_b.set("value", "2").unwrap();
     op_b.commit().unwrap();
 
-    let op_c = tree.new_operation().unwrap();
+    let op_c = tree.new_transaction().unwrap();
     let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
     subtree_c.set("value", "3").unwrap();
     op_c.commit().unwrap();
@@ -115,14 +115,14 @@ fn test_parent_merge_semantics() {
     let tree = setup_tree();
 
     // Create base entry with shared data
-    let op_base = tree.new_operation().unwrap();
+    let op_base = tree.new_transaction().unwrap();
     let subtree_base = op_base.get_store::<DocStore>("data").unwrap();
     subtree_base.set("base_field", "base_value").unwrap();
     subtree_base.set("shared_field", "original").unwrap();
     op_base.commit().unwrap();
 
     // Create child entry that updates shared field and adds new field
-    let op_child = tree.new_operation().unwrap();
+    let op_child = tree.new_transaction().unwrap();
     let subtree_child = op_child.get_store::<DocStore>("data").unwrap();
     subtree_child.set("shared_field", "updated").unwrap();
     subtree_child.set("child_field", "child_value").unwrap();
@@ -158,7 +158,7 @@ fn test_deep_chain_performance() {
     const CHAIN_LENGTH: u32 = 50;
 
     for i in 1..=CHAIN_LENGTH {
-        let op = tree.new_operation().unwrap();
+        let op = tree.new_transaction().unwrap();
         let subtree = op.get_store::<DocStore>("data").unwrap();
         subtree.set("step", i.to_string()).unwrap();
         subtree
@@ -194,13 +194,13 @@ fn test_multiple_reads_consistency() {
     let tree = setup_tree();
 
     // Create some test data
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let subtree1 = op1.get_store::<DocStore>("data").unwrap();
     subtree1.set("key1", "value1").unwrap();
     subtree1.set("key2", "value2").unwrap();
     op1.commit().unwrap();
 
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let subtree2 = op2.get_store::<DocStore>("data").unwrap();
     subtree2.set("key1", "updated1").unwrap();
     subtree2.set("key3", "value3").unwrap();
@@ -251,7 +251,7 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Create a sequence of operations that build up a complex state
     // Step 1: Initial state with multiple fields
-    let op1 = tree.new_operation().unwrap();
+    let op1 = tree.new_transaction().unwrap();
     let subtree1 = op1.get_store::<DocStore>("data").unwrap();
     subtree1.set("count", "1").unwrap();
     subtree1.set("name", "initial").unwrap();
@@ -259,14 +259,14 @@ fn test_incorrect_parent_merging_would_fail() {
     op1.commit().unwrap();
 
     // Step 2: Update some fields, add new ones
-    let op2 = tree.new_operation().unwrap();
+    let op2 = tree.new_transaction().unwrap();
     let subtree2 = op2.get_store::<DocStore>("data").unwrap();
     subtree2.set("count", "2").unwrap(); // Update existing
     subtree2.set("category", "type_a").unwrap(); // Add new
     op2.commit().unwrap();
 
     // Step 3: More updates with overlapping and new fields
-    let op3 = tree.new_operation().unwrap();
+    let op3 = tree.new_transaction().unwrap();
     let subtree3 = op3.get_store::<DocStore>("data").unwrap();
     subtree3.set("count", "3").unwrap(); // Update again
     subtree3.set("name", "updated").unwrap(); // Update existing
@@ -274,7 +274,7 @@ fn test_incorrect_parent_merging_would_fail() {
     op3.commit().unwrap();
 
     // Step 4: Final operation with more field changes
-    let op4 = tree.new_operation().unwrap();
+    let op4 = tree.new_transaction().unwrap();
     let subtree4 = op4.get_store::<DocStore>("data").unwrap();
     subtree4.set("count", "4").unwrap(); // Final count update
     subtree4.set("status", "completed").unwrap(); // Update status
@@ -382,7 +382,7 @@ fn test_true_diamond_pattern() {
     let tree = setup_tree();
 
     // Step 1: Create entry A (common ancestor)
-    let op_a = tree.new_operation().unwrap();
+    let op_a = tree.new_transaction().unwrap();
     let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
     subtree_a.set("base", "A").unwrap();
     subtree_a.set("shared", "original").unwrap();
@@ -399,7 +399,7 @@ fn test_true_diamond_pattern() {
 
     // Create operation B - starts from A
     let op_b = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
     let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
     subtree_b.set("shared", "from_B").unwrap(); // Override shared field
@@ -408,7 +408,7 @@ fn test_true_diamond_pattern() {
 
     // Create operation C - also starts from A (same parent!)
     let op_c = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
         .unwrap();
     let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
     subtree_c.set("shared", "from_C").unwrap(); // Override shared field differently
@@ -457,7 +457,7 @@ fn test_true_diamond_pattern() {
     tree.backend().clear_crdt_cache().unwrap();
 
     // Step 3: Create merge operation D that automatically gets both B and C as parents
-    let op_d = tree.new_operation().unwrap(); // Uses current tips [B, C]
+    let op_d = tree.new_transaction().unwrap(); // Uses current tips [B, C]
     let subtree_d = op_d.get_store::<DocStore>("data").unwrap();
     subtree_d.set("merge_marker", "D_created").unwrap();
     subtree_d.set("final_data", "merged").unwrap();

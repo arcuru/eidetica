@@ -19,7 +19,7 @@ fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
-        let op = tree.new_operation().expect("Failed to create op");
+        let op = tree.new_transaction().expect("Failed to create op");
         let kv = op
             .get_store::<DocStore>("data")
             .expect("Failed to get DocStore");
@@ -35,7 +35,7 @@ fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
 /// Create a diamond pattern for testing merge scenarios
 fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
     // Create root A
-    let op_a = tree.new_operation().expect("Failed to create op");
+    let op_a = tree.new_transaction().expect("Failed to create op");
     let kv_a = op_a
         .get_store::<DocStore>("data")
         .expect("Failed to get DocStore");
@@ -44,7 +44,7 @@ fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
 
     // Create B and C from A
     let op_b = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a))
         .expect("Failed to create op");
     let kv_b = op_b
         .get_store::<DocStore>("data")
@@ -53,7 +53,7 @@ fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
     let entry_b = op_b.commit().expect("Failed to commit");
 
     let op_c = tree
-        .new_operation_with_tips(std::slice::from_ref(&entry_a))
+        .new_transaction_with_tips(std::slice::from_ref(&entry_a))
         .expect("Failed to create op");
     let kv_c = op_c
         .get_store::<DocStore>("data")
@@ -89,7 +89,7 @@ fn create_branching_tree(
 
         for entry_idx in 0..entries_per_branch {
             let op = tree
-                .new_operation_with_tips([current_tip])
+                .new_transaction_with_tips([current_tip])
                 .expect("Failed to create op");
             let kv = op
                 .get_store::<DocStore>("data")
@@ -114,7 +114,7 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
     match structure {
         "linear" => {
             for i in 0..num_entries {
-                let op = tree.new_operation().expect("Failed to create op");
+                let op = tree.new_transaction().expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
                     .expect("Failed to get DocStore");
@@ -139,7 +139,7 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
 
             for i in 0..num_entries {
                 let op = tree
-                    .new_operation_with_tips(std::slice::from_ref(&root_entry))
+                    .new_transaction_with_tips(std::slice::from_ref(&root_entry))
                     .expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
@@ -154,7 +154,7 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
         _ => {
             // Default to linear
             for i in 0..num_entries {
-                let op = tree.new_operation().expect("Failed to create op");
+                let op = tree.new_transaction().expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
                     .expect("Failed to get DocStore");
@@ -395,7 +395,7 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                     },
                     |(tree, tip_entry)| {
                         let op = tree
-                            .new_operation_with_tips([tip_entry])
+                            .new_transaction_with_tips([tip_entry])
                             .expect("Failed to create op");
                         let kv = op
                             .get_store::<DocStore>("data")

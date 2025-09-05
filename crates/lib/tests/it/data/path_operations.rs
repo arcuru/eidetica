@@ -21,7 +21,7 @@ fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
     op.commit()?;
 
     // Verify after commit
-    let viewer_op = tree.new_operation()?;
+    let viewer_op = tree.new_transaction()?;
     let viewer_dict = setup_path_test_dict(&viewer_op)?;
     assert_eq!(viewer_dict.get_at_path(path)?, value);
     assert_text_value(&viewer_dict.get("simple_key")?, "simple_value");
@@ -50,7 +50,7 @@ fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
     op.commit()?;
 
     // Verify after commit
-    let viewer_op = tree.new_operation()?;
+    let viewer_op = tree.new_transaction()?;
     let viewer_dict = setup_path_test_dict(&viewer_op)?;
     assert_eq!(viewer_dict.get_at_path(path)?, value);
 

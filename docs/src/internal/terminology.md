@@ -101,7 +101,7 @@ builder.set_subtree_data_mut()  // Working with subtree data structures
 
 ```rust,ignore
 // Correct - user-facing abstractions
-database.new_operation()  // Database operations
+database.new_transaction()  // Database operations
 transaction.get_store::<DocStore>("users")  // Store access
 instance.create_database("mydata")  // Database management
 ```
