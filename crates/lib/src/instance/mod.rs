@@ -108,14 +108,14 @@ impl Instance {
         Ok(self.backend.get_private_key(DEVICE_KEY_NAME)?.is_some())
     }
 
-    /// Create a new tree in the database.
+    /// Create a new database in the instance.
     ///
     /// A `Database` represents a collection of related entries, analogous to a table.
     /// It is initialized with settings defined by a `Doc` CRDT.
-    /// All trees must now be created with authentication.
+    /// All databases must now be created with authentication.
     ///
     /// # Arguments
-    /// * `settings` - The initial settings for the tree, typically including metadata like a name.
+    /// * `settings` - The initial settings for the database, typically including metadata like a name.
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all databases.
     ///
     /// # Returns
@@ -130,7 +130,7 @@ impl Instance {
     }
 
     /// Create a new database with default empty settings
-    /// All trees must now be created with authentication.
+    /// All databases must now be created with authentication.
     ///
     /// # Arguments
     /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all databases.
@@ -140,18 +140,18 @@ impl Instance {
     pub fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
         let mut settings = Doc::new();
 
-        // Add a unique tree identifier to ensure each tree gets a unique root ID
-        // This prevents content-addressable collision when creating multiple trees
+        // Add a unique database identifier to ensure each database gets a unique root ID
+        // This prevents content-addressable collision when creating multiple databases
         // with identical settings
         let unique_id = format!(
-            "tree_{}",
+            "database_{}",
             rand::thread_rng()
                 .sample_iter(&rand::distributions::Alphanumeric)
                 .take(16)
                 .map(char::from)
                 .collect::<String>()
         );
-        settings.set_string("tree_id", unique_id);
+        settings.set_string("database_id", unique_id);
 
         self.new_database(settings, signing_key_name)
     }
@@ -360,7 +360,7 @@ impl Instance {
 
     /// Initialize the Sync module for this database.
     ///
-    /// Creates a new sync settings tree and initializes the sync module.
+    /// Creates a new sync settings database and initializes the sync module.
     /// This method should be called once per database instance to enable sync functionality.
     /// The sync module will have access to this database's device identity through the backend.
     ///
@@ -383,7 +383,7 @@ impl Instance {
         self.sync.as_ref()
     }
 
-    /// Load an existing Sync module from a sync tree root ID.
+    /// Load an existing Sync module from a sync database root ID.
     ///
     /// # Arguments
     /// * `sync_database_root_id` - The root ID of an existing sync database

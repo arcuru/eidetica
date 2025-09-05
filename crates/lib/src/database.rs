@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub struct Database {
     root: ID,
     backend: Arc<dyn BackendDB>,
-    /// Default authentication key name for operations on this tree
+    /// Default authentication key name for operations on this database
     default_auth_key: Option<String>,
     /// Optional sync hooks to execute after successful commits
     sync_hooks: Option<Arc<SyncHookCollection>>,
@@ -39,13 +39,13 @@ pub struct Database {
 impl Database {
     /// Creates a new `Database` instance.
     ///
-    /// Initializes the tree by creating a root `Entry` containing the provided settings
-    /// and storing it in the backend. All trees must now be created with authentication.
+    /// Initializes the database by creating a root `Entry` containing the provided settings
+    /// and storing it in the backend. All databases must now be created with authentication.
     ///
     /// # Arguments
-    /// * `settings` - A `Doc` CRDT containing the initial settings for the tree.
-    /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the tree's entries will be stored.
-    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all trees.
+    /// * `settings` - A `Doc` CRDT containing the initial settings for the database.
+    /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the database's entries will be stored.
+    /// * `signing_key_name` - Authentication key name to use for the initial commit. Required for all databases.
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
@@ -58,7 +58,7 @@ impl Database {
         // Check if auth is configured in the initial settings
         let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
 
-        let (super_user_key_name, final_tree_settings) = if auth_configured {
+        let (super_user_key_name, final_database_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key
             (signing_key_name.to_string(), initial_settings)
         } else {
@@ -83,11 +83,11 @@ impl Database {
             };
             auth_settings_handler.add_key(signing_key_name, super_user_auth_key)?;
 
-            // Prepare final tree settings for the initial commit
-            let mut final_tree_settings = initial_settings.clone();
-            final_tree_settings.set_node("auth", auth_settings_handler.as_doc().clone());
+            // Prepare final database settings for the initial commit
+            let mut final_database_settings = initial_settings.clone();
+            final_database_settings.set_node("auth", auth_settings_handler.as_doc().clone());
 
-            (signing_key_name.to_string(), final_tree_settings)
+            (signing_key_name.to_string(), final_database_settings)
         };
 
         // Create the initial root entry using a temporary Database and Transaction
@@ -101,7 +101,7 @@ impl Database {
                 .collect::<String>()
         );
 
-        let temp_tree_for_bootstrap = Database {
+        let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
             default_auth_key: Some(super_user_key_name.clone()),
@@ -109,20 +109,20 @@ impl Database {
         };
 
         // Create the operation. If we have an auth key, it will be used automatically
-        let op = temp_tree_for_bootstrap.new_operation()?;
+        let op = temp_database_for_bootstrap.new_operation()?;
 
-        // IMPORTANT: For the root entry, we need to set the tree root to empty string
+        // IMPORTANT: For the root entry, we need to set the database root to empty string
         // so that is_toplevel_root() returns true and all_roots() can find it
         op.set_entry_root("")?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        op.update_subtree(SETTINGS, &serde_json::to_string(&final_tree_settings)?)?;
+        op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)?;
         op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
 
         // Commit the initial entry
         let new_root_id = op.commit()?;
 
-        // Now create the real tree with the new_root_id
+        // Now create the real database with the new_root_id
         Ok(Self {
             root: new_root_id,
             backend,
@@ -138,7 +138,7 @@ impl Database {
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
-    /// * `backend` - An `Arc<dyn Backend>` reference to the backend where the tree's entries will be stored.
+    /// * `backend` - An `Arc<dyn Backend>` reference to the backend where the database's entries will be stored.
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
@@ -151,7 +151,7 @@ impl Database {
         })
     }
 
-    /// Set the default authentication key ID for operations on this tree.
+    /// Set the default authentication key ID for operations on this database.
     ///
     /// When set, all operations created via `new_operation()` will automatically
     /// use this key for signing unless explicitly overridden.
@@ -170,10 +170,10 @@ impl Database {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::new(backend);
     /// # db.add_private_key("test_key")?;
-    /// # let mut tree = db.new_database(Doc::new(), "test_key")?;
-    /// tree.set_default_auth_key("my_key");                    // &str
-    /// tree.set_default_auth_key(String::from("my_key"));      // String
-    /// tree.set_default_auth_key(&String::from("my_key"));     // &String
+    /// # let mut database = db.new_database(Doc::new(), "test_key")?;
+    /// database.set_default_auth_key("my_key");                    // &str
+    /// database.set_default_auth_key(String::from("my_key"));      // String
+    /// database.set_default_auth_key(&String::from("my_key"));     // &String
     /// # Ok(())
     /// # }
     /// ```
@@ -181,39 +181,39 @@ impl Database {
         self.default_auth_key = Some(key_name.into());
     }
 
-    /// Clear the default authentication key for this tree.
+    /// Clear the default authentication key for this database.
     pub fn clear_default_auth_key(&mut self) {
         self.default_auth_key = None;
     }
 
-    /// Get the default authentication key ID for this tree.
+    /// Get the default authentication key ID for this database.
     pub fn default_auth_key(&self) -> Option<&str> {
         self.default_auth_key.as_deref()
     }
 
-    /// Set sync hooks for this tree.
+    /// Set sync hooks for this database.
     ///
     /// When sync hooks are set, all operations created via `new_operation()` and
     /// `new_operation_with_tips()` will automatically include these hooks and execute
     /// them after successful commits.
     ///
     /// # Arguments
-    /// * `hooks` - The sync hook collection to use for operations on this tree
+    /// * `hooks` - The sync hook collection to use for operations on this database
     pub fn set_sync_hooks(&mut self, hooks: Arc<SyncHookCollection>) {
         self.sync_hooks = Some(hooks);
     }
 
-    /// Clear sync hooks for this tree.
+    /// Clear sync hooks for this database.
     pub fn clear_sync_hooks(&mut self) {
         self.sync_hooks = None;
     }
 
-    /// Get the sync hooks for this tree.
+    /// Get the sync hooks for this database.
     pub fn sync_hooks(&self) -> Option<&Arc<SyncHookCollection>> {
         self.sync_hooks.as_ref()
     }
 
-    /// Create a new atomic operation on this tree with authentication.
+    /// Create a new atomic operation on this database with authentication.
     ///
     /// This is a convenience method that creates an operation and sets the authentication
     /// key in one call.
@@ -243,9 +243,9 @@ impl Database {
         self.backend.get(&self.root)
     }
 
-    /// Get a settings store for the tree.
+    /// Get a settings store for the database.
     ///
-    /// Returns a DocStore subtree for managing the tree's settings.
+    /// Returns a DocStore for managing the database's settings.
     ///
     /// # Returns
     /// A `Result` containing the `DocStore` for settings or an error.
@@ -253,19 +253,19 @@ impl Database {
         self.get_store_viewer::<DocStore>(SETTINGS)
     }
 
-    /// Get the name of the tree from its settings subtree
+    /// Get the name of the database from its settings store
     pub fn get_name(&self) -> Result<String> {
-        // Get the settings subtree
+        // Get the settings store
         let settings = self.get_settings()?;
 
         // Get the name from the settings
         settings.get_string("name")
     }
 
-    /// Create a new atomic operation on this tree
+    /// Create a new atomic operation on this database
     ///
     /// This creates a new atomic operation containing a new Entry.
-    /// The atomic operation will be initialized with the current state of the tree.
+    /// The atomic operation will be initialized with the current state of the database.
     /// If a default authentication key is set, the operation will use it for signing.
     ///
     /// # Returns
@@ -275,10 +275,10 @@ impl Database {
         self.new_operation_with_tips(&tips)
     }
 
-    /// Create a new atomic operation on this tree with specific parent tips
+    /// Create a new atomic operation on this database with specific parent tips
     ///
     /// This creates a new atomic operation that will have the specified entries as parents
-    /// instead of using the current tree tips. This allows creating complex DAG structures
+    /// instead of using the current database tips. This allows creating complex DAG structures
     /// like diamond patterns for testing and advanced use cases.
     ///
     /// # Arguments
@@ -302,7 +302,7 @@ impl Database {
         Ok(op)
     }
 
-    /// Insert an entry into the tree without modifying it.
+    /// Insert an entry into the database without modifying it.
     /// This is primarily for testing purposes or when you need full control over the entry.
     /// Note: Since all entries must now be authenticated, this method assumes the entry
     /// is already properly signed and verified.
@@ -315,9 +315,9 @@ impl Database {
     }
 
     /// Get a Store type that will handle accesses to the Store
-    /// This will return a Store initialized to point at the current state of the tree.
+    /// This will return a Store initialized to point at the current state of the database.
     ///
-    /// The returned subtree should NOT be used to modify the tree, as it intentionally does not
+    /// The returned store should NOT be used to modify the database, as it intentionally does not
     /// expose the Transaction.
     pub fn get_store_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
@@ -327,9 +327,9 @@ impl Database {
         T::new(&op, name)
     }
 
-    /// Get the current tips (leaf entries) of the main tree branch.
+    /// Get the current tips (leaf entries) of the main database branch.
     ///
-    /// Tips represent the latest entries in the tree's main history, forming the heads of the DAG.
+    /// Tips represent the latest entries in the database's main history, forming the heads of the DAG.
     ///
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
@@ -337,7 +337,7 @@ impl Database {
         self.backend.get_tips(&self.root)
     }
 
-    /// Get the full `Entry` objects for the current tips of the main tree branch.
+    /// Get the full `Entry` objects for the current tips of the main database branch.
     ///
     /// # Returns
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
@@ -347,19 +347,19 @@ impl Database {
         entries
     }
 
-    /// Get a single entry by ID from this tree.
+    /// Get a single entry by ID from this database.
     ///
     /// This is the primary method for retrieving entries after commit operations.
     /// It provides safe, high-level access to entry data without exposing backend details.
     ///
-    /// The method verifies that the entry belongs to this tree by checking its root ID.
-    /// If the entry exists but belongs to a different tree, an error is returned.
+    /// The method verifies that the entry belongs to this database by checking its root ID.
+    /// If the entry exists but belongs to a different database, an error is returned.
     ///
     /// # Arguments
     /// * `entry_id` - The ID of the entry to retrieve (accepts anything that converts to ID/String)
     ///
     /// # Returns
-    /// A `Result` containing the `Entry` or an error if not found or not part of this tree
+    /// A `Result` containing the `Entry` or an error if not found or not part of this database
     ///
     /// # Example
     /// ```rust,no_run
@@ -385,7 +385,7 @@ impl Database {
         let id = entry_id.into();
         let entry = self.backend.get(&id)?;
 
-        // Check if the entry belongs to this tree
+        // Check if the entry belongs to this database
         if !entry.in_tree(&self.root) {
             return Err(InstanceError::EntryNotInDatabase {
                 entry_id: id,
@@ -402,15 +402,15 @@ impl Database {
     /// This method retrieves multiple entries more efficiently than multiple `get_entry()` calls
     /// by minimizing conversion overhead and pre-allocating the result vector.
     ///
-    /// The method verifies that all entries belong to this tree by checking their root IDs.
-    /// If any entry exists but belongs to a different tree, an error is returned.
+    /// The method verifies that all entries belong to this database by checking their root IDs.
+    /// If any entry exists but belongs to a different database, an error is returned.
     ///
     /// # Parameters
     /// * `entry_ids` - An iterable of entry IDs to retrieve. Accepts any string or ID types
     ///   that can be converted to `ID` (`&str`, `String`, `&ID`, etc.)
     ///
     /// # Returns
-    /// A `Result` containing a vector of `Entry` objects or an error if any entry is not found or not part of this tree
+    /// A `Result` containing a vector of `Entry` objects or an error if any entry is not found or not part of this database
     ///
     /// # Example
     /// ```rust,no_run
@@ -440,7 +440,7 @@ impl Database {
         for id in ids {
             let entry = self.backend.get(&id)?;
 
-            // Check if the entry belongs to this tree
+            // Check if the entry belongs to this database
             if !entry.in_tree(&self.root) {
                 return Err(InstanceError::EntryNotInDatabase {
                     entry_id: id,
@@ -457,11 +457,11 @@ impl Database {
 
     // === AUTHENTICATION HELPERS ===
 
-    /// Verify an entry's signature and authentication against the tree's configuration that was valid at the time of entry creation.
+    /// Verify an entry's signature and authentication against the database's configuration that was valid at the time of entry creation.
     ///
     /// This method validates that:
-    /// 1. The entry belongs to this tree
-    /// 2. The entry is properly signed with a key that was authorized in the tree's authentication settings at the time the entry was created
+    /// 1. The entry belongs to this database
+    /// 2. The entry is properly signed with a key that was authorized in the database's authentication settings at the time the entry was created
     /// 3. The signature is cryptographically valid
     ///
     /// The method uses the entry's metadata to determine which authentication settings were active when the entry was signed,
@@ -476,7 +476,7 @@ impl Database {
     /// # Errors
     /// Returns an error if:
     /// - The entry is not found
-    /// - The entry does not belong to this tree
+    /// - The entry does not belong to this database
     /// - The entry's metadata cannot be parsed
     /// - The historical authentication settings cannot be retrieved
     pub fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
@@ -521,15 +521,15 @@ impl Database {
         settings.get_all()
     }
 
-    // === TREE QUERIES ===
+    // === DATABASE QUERIES ===
 
-    /// Get all entries in this tree.
+    /// Get all entries in this database.
     ///
-    /// ⚠️ **Warning**: This method loads all entries into memory. Use with caution on large trees.
+    /// ⚠️ **Warning**: This method loads all entries into memory. Use with caution on large databases.
     /// Consider using `get_tips()` or `get_tip_entries()` for more efficient access patterns.
     ///
     /// # Returns
-    /// A `Result` containing a vector of all `Entry` objects in the tree
+    /// A `Result` containing a vector of all `Entry` objects in the database
     pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
         self.backend.get_tree(&self.root)
     }

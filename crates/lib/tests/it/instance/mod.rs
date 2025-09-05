@@ -5,8 +5,8 @@
 //! for better maintainability.
 
 mod basic_operations;
+mod database_management;
 mod database_operations;
 mod helpers;
 mod settings_operations;
 mod sync_integration;
-mod tree_management;
