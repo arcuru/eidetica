@@ -10,8 +10,10 @@ I wanted to search my email, so I started by building a decentralized database.
 
 It made sense at the time...
 
-Eidetica allows you to write a [local-first](https://www.inkandswitch.com/essay/local-first), peer-to-peer, decentralized application just by storing your data here.
+Eidetica will allow you to write a [local-first](https://www.inkandswitch.com/essay/local-first), peer-to-peer, decentralized application just by storing your data here.
 An app developer does not need to deal with anything else, just use the database interface provided here to store data, add a user flow to initialize sync and "login" to the network, and everything else will be handled for you.
+
+It's not _quite_ all there yet, but I'm working on it. Peer-to-Peer connectivity is only minimal at the moment.
 
 [Extensive docs are maintained under docs/, linked here.](https://arcuru.github.io/eidetica)
 
