@@ -653,20 +653,17 @@ The current system uses entry metadata to reference settings tips. With authenti
 #### Core Components
 
 1. **AuthValidator** (`auth/validation.rs`): Validates entries and resolves authentication
-
    - Direct key resolution and validation
    - Signature verification
    - Permission checking
    - Caching for performance
 
 2. **Crypto Module** (`auth/crypto.rs`): Cryptographic operations
-
    - Ed25519 key generation and parsing
    - Entry signing and verification
    - Key format: `ed25519:<base64-encoded-public-key>`
 
 3. **AuthSettings** (`auth/settings.rs`): Settings management interface
-
    - Add/update/get authentication keys
    - Convert between settings storage and auth types
    - Validate authentication operations

@@ -446,21 +446,18 @@ async fn test_sync_between_peers() -> Result<()> {
 ### 🔧 Troubleshooting Checklist
 
 1. **Sync not working?**
-
    - Check transport is enabled and server started
    - Verify peer status is `Active`
    - Confirm database sync relationships configured
    - Check network connectivity
 
 2. **Performance issues?**
-
    - Consider using Iroh transport
    - Check for network bottlenecks
    - Verify retry queue isn't growing unbounded
    - Monitor peer connectivity status
 
 3. **Memory usage high?**
-
    - Check for dead/unresponsive peers
    - Verify retry queue is processing correctly
    - Consider restarting sync to clear state

@@ -65,7 +65,6 @@ Each layer builds on the ones below, providing progressively higher-level abstra
 At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry objects:
 
 - Each Entry represents a point-in-time snapshot of data and has:
-
   - A unique ID derived from its content (making it content-addressable)
   - Links to parent entries (forming the graph structure)
   - Data payloads organized by store

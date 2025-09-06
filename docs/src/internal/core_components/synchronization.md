@@ -615,13 +615,11 @@ graph LR
 **Connection Triggers:**
 
 1. **Periodic Sync** (every 5 minutes):
-
    - BackgroundSync scans all active peers from sync database
    - Attempts to sync with each peer's registered databases
    - Connections established as needed during sync
 
 2. **Manual Sync Commands**:
-
    - `SyncWithPeer` command triggers immediate connection
    - `SendEntries` command establishes connection for data transfer
 

@@ -18,7 +18,6 @@ Understanding this distinction is crucial for maintaining consistency in code, d
 These are the fundamental building blocks of the Merkle-DAG, defined within the `Entry` module:
 
 - **`TreeNode`**: The internal representation of the main tree node within an Entry
-
   - Contains the root ID, parent references, and metadata
   - Represents the core structural data of the Merkle-DAG
   - Always singular per Entry
@@ -43,7 +42,6 @@ These are the fundamental building blocks of the Merkle-DAG, defined within the 
 These represent the current high-level abstraction layer that users interact with:
 
 - **`Database`**: A collection of related entries with shared authentication and history
-
   - Provides a view over a tree of entries
   - Manages operations, authentication, and synchronization
   - What users think of as a "database" or "collection"
