@@ -1,5 +1,4 @@
-use crate::Result;
-use crate::Transaction;
+use crate::{Result, Transaction};
 
 mod errors;
 pub use errors::StoreError;

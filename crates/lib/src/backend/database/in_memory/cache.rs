@@ -3,11 +3,14 @@
 //! This module handles computation and caching of tree/subtree heights,
 //! as well as CRDT state caching for improved performance.
 
-use super::InMemory;
-use crate::Result;
-use crate::backend::errors::BackendError;
-use crate::entry::{Entry, ID};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use super::InMemory;
+use crate::{
+    Result,
+    backend::errors::BackendError,
+    entry::{Entry, ID},
+};
 
 /// Calculate the heights of all entries within a tree or subtree.
 ///

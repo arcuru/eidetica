@@ -4,23 +4,26 @@
 //! or a branch in a version control system. Each database has a root entry and maintains
 //! the history and relationships between entries, interfacing with a backend storage system.
 
-use crate::Result;
-use crate::Transaction;
-use crate::backend::BackendDB;
-use crate::constants::{ROOT, SETTINGS};
-use crate::crdt::Doc;
-use crate::crdt::doc::Value;
-use crate::entry::{Entry, ID};
-use crate::instance::errors::InstanceError;
-use crate::store::{DocStore, Store};
+use std::sync::Arc;
 
-use crate::auth::crypto::format_public_key;
-use crate::auth::settings::AuthSettings;
-use crate::auth::types::{AuthKey, KeyStatus, Permission};
-use crate::sync::hooks::SyncHookCollection;
 use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
-use std::sync::Arc;
+
+use crate::{
+    Result, Transaction,
+    auth::{
+        crypto::format_public_key,
+        settings::AuthSettings,
+        types::{AuthKey, KeyStatus, Permission},
+    },
+    backend::BackendDB,
+    constants::{ROOT, SETTINGS},
+    crdt::{Doc, doc::Value},
+    entry::{Entry, ID},
+    instance::errors::InstanceError,
+    store::{DocStore, Store},
+    sync::hooks::SyncHookCollection,
+};
 
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
 ///

@@ -1,10 +1,10 @@
-pub mod transaction;
 pub mod auth;
 pub mod backend;
-pub mod instance;
 pub mod crdt;
 pub mod data;
+pub mod database;
 pub mod entry;
+pub mod instance;
 pub mod store;
 pub mod sync;
-pub mod database;
+pub mod transaction;

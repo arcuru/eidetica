@@ -1,5 +1,6 @@
-use super::helpers::*;
 use eidetica::Entry;
+
+use super::helpers::*;
 
 #[test]
 fn test_entry_id_determinism() {

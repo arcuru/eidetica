@@ -3,9 +3,13 @@
 //! These tests cover boundary conditions, overflow scenarios, and complex
 //! permission clamping edge cases in the flat delegation structure.
 
-use eidetica::Result;
-use eidetica::auth::permission::{clamp_permission, validate_permission_bounds};
-use eidetica::auth::types::{Permission, PermissionBounds};
+use eidetica::{
+    Result,
+    auth::{
+        permission::{clamp_permission, validate_permission_bounds},
+        types::{Permission, PermissionBounds},
+    },
+};
 
 /// Test permission clamping with invalid bounds (min > max)
 #[test]

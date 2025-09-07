@@ -3,17 +3,19 @@
 //! This module handles resolving authentication keys, both direct keys
 //! and delegation paths.
 
-use crate::Result;
-use crate::auth::crypto::parse_public_key;
-use crate::auth::errors::AuthError;
-use crate::auth::types::{AuthKey, ResolvedAuth, SigKey};
-use crate::backend::BackendDB;
-use crate::crdt::Doc;
-use crate::crdt::doc::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::delegation::DelegationResolver;
+use crate::{
+    Result,
+    auth::{
+        crypto::parse_public_key,
+        errors::AuthError,
+        types::{AuthKey, ResolvedAuth, SigKey},
+    },
+    backend::BackendDB,
+    crdt::{Doc, doc::Value},
+};
 
 /// Key resolver for handling both direct and delegated key resolution
 pub struct KeyResolver {

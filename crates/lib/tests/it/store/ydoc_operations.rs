@@ -4,13 +4,14 @@
 //! text operations, map operations, incremental updates, and external updates.
 
 #[cfg(feature = "y-crdt")]
-use super::helpers::*;
-#[cfg(feature = "y-crdt")]
-use crate::helpers::*;
-#[cfg(feature = "y-crdt")]
 use eidetica::store::YDoc;
 #[cfg(feature = "y-crdt")]
 use yrs::{GetString, Map as YrsMapTrait, Text, Transact};
+
+#[cfg(feature = "y-crdt")]
+use super::helpers::*;
+#[cfg(feature = "y-crdt")]
+use crate::helpers::*;
 
 #[cfg(feature = "y-crdt")]
 #[test]

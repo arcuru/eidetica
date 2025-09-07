@@ -3,8 +3,9 @@
 //! This module tests the value editor API for manipulating nested data structures
 //! through a fluent interface.
 
-use super::helpers::*;
 use eidetica::crdt::doc::Value;
+
+use super::helpers::*;
 
 #[test]
 fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {

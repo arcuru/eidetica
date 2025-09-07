@@ -3,10 +3,11 @@
 //! This module contains tests for settings metadata management including
 //! settings tips tracking, metadata propagation, and historical validation.
 
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
+use eidetica::{
+    Instance,
+    backend::database::InMemory,
+    crdt::{Doc, doc::Value},
+};
 
 #[test]
 fn test_settings_tips_in_metadata() {

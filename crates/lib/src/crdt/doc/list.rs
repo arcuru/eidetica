@@ -3,15 +3,13 @@
 //! This module provides both the Position type for stable list ordering
 //! and the List type itself for ordered collections in CRDT documents.
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use uuid::Uuid;
+use std::{cmp::Ordering, collections::BTreeMap};
 
-use crate::crdt::CRDTError;
-use crate::crdt::traits::Data;
+use uuid::Uuid;
 
 // Import Value from the value module
 use super::value::Value;
+use crate::crdt::{CRDTError, traits::Data};
 
 /// Represents a position in a CRDT list using rational numbers.
 ///
@@ -550,8 +548,9 @@ impl<'de> serde::Deserialize<'de> for List {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de::{SeqAccess, Visitor};
         use std::fmt;
+
+        use serde::de::{SeqAccess, Visitor};
 
         struct ListVisitor;
 

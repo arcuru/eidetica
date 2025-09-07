@@ -9,16 +9,21 @@ mod persistence;
 mod storage;
 mod traversal;
 
-use crate::Result;
-use crate::backend::errors::BackendError;
-use crate::backend::{BackendDB, VerificationStatus};
-use crate::entry::{Entry, ID};
+use std::{
+    any::Any,
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::RwLock,
+};
+
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::RwLock;
+
+use crate::{
+    Result,
+    backend::{BackendDB, VerificationStatus, errors::BackendError},
+    entry::{Entry, ID},
+};
 
 /// Heights cache: entry_id -> (tree_height, subtree_name -> subtree_height)
 pub(crate) type TreeHeightsCache = HashMap<ID, (usize, HashMap<String, usize>)>;

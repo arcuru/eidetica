@@ -3,8 +3,9 @@
 //! This module defines transport-agnostic message types that can be
 //! used across different network transports (HTTP, Iroh, Bluetooth, etc.).
 
-use crate::entry::{Entry, ID};
 use serde::{Deserialize, Serialize};
+
+use crate::entry::{Entry, ID};
 
 /// Handshake request sent when establishing a peer connection.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

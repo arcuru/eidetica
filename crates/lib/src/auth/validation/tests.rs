@@ -1,12 +1,14 @@
 //! Tests for authentication validation
 
 use super::entry::AuthValidator;
-use crate::Entry;
-use crate::auth::crypto::{format_public_key, generate_keypair, sign_entry};
-use crate::auth::types::{
-    AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey,
+use crate::{
+    Entry,
+    auth::{
+        crypto::{format_public_key, generate_keypair, sign_entry},
+        types::{AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey},
+    },
+    crdt::Doc,
 };
-use crate::crdt::Doc;
 
 fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
     let mut settings = Doc::new();
@@ -315,9 +317,11 @@ fn test_basic_delegated_tree_resolution() {
 
 #[test]
 fn test_complete_delegation_workflow() {
-    use crate::Instance;
-    use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::database::InMemory;
+    use crate::{
+        Instance,
+        auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+        backend::database::InMemory,
+    };
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
@@ -415,9 +419,11 @@ fn test_complete_delegation_workflow() {
 
 #[test]
 fn test_delegated_tree_requires_tips() {
-    use crate::Instance;
-    use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::database::InMemory;
+    use crate::{
+        Instance,
+        auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+        backend::database::InMemory,
+    };
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
@@ -494,9 +500,11 @@ fn test_delegated_tree_requires_tips() {
 
 #[test]
 fn test_nested_delegation_with_permission_clamping() {
-    use crate::Instance;
-    use crate::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
-    use crate::backend::database::InMemory;
+    use crate::{
+        Instance,
+        auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+        backend::database::InMemory,
+    };
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());

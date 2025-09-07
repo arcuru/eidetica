@@ -3,10 +3,10 @@
 //! This module contains tests for fundamental Tree operations including
 //! entry creation, subtree operations, atomic operations, and tip management.
 
+use eidetica::{constants::SETTINGS, store::DocStore};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::constants::SETTINGS;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_insert_into_tree() {

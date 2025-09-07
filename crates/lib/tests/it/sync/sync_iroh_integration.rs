@@ -1,6 +1,8 @@
-use crate::sync::helpers;
-use eidetica::sync::{Address, Sync};
 use std::sync::Arc;
+
+use eidetica::sync::{Address, Sync};
+
+use crate::sync::helpers;
 
 #[tokio::test]
 async fn test_sync_iroh_transport_integration() {

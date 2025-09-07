@@ -4,10 +4,12 @@
 //! serde functionality, and serialization/deserialization behavior for
 //! Map, List, and Value types.
 
+use eidetica::crdt::{
+    Doc,
+    doc::{List, Node, Value, list::Position, path},
+};
+
 use crate::crdt::helpers::*;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::list::Position;
-use eidetica::crdt::doc::{List, Node, Value, path};
 
 // ===== JSON STRING SERIALIZATION TESTS =====
 

@@ -1,8 +1,13 @@
+use eidetica::{
+    auth::{
+        crypto::format_public_key,
+        types::{KeyStatus, Permission, SigKey},
+    },
+    crdt::Doc,
+};
+
 use super::helpers::{setup_authenticated_tree, setup_db as auth_setup_db};
 use crate::helpers::*;
-use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{KeyStatus, Permission, SigKey};
-use eidetica::crdt::Doc;
 
 #[test]
 fn test_key_management() {

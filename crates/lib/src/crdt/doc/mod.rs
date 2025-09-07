@@ -37,8 +37,10 @@
 
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use crate::crdt::CRDTError;
-use crate::crdt::traits::{CRDT, Data};
+use crate::crdt::{
+    CRDTError,
+    traits::{CRDT, Data},
+};
 
 // Submodules
 pub mod list;
@@ -49,14 +51,14 @@ pub mod path;
 pub mod value;
 
 // Path re-exports (no conflicts)
-pub use path::{Path, PathBuf, PathError};
-// Re-export the macro from crate root
-pub use crate::path;
-
 // Convenience re-exports for core Doc types
 pub use list::List;
 pub use node::Node;
+pub use path::{Path, PathBuf, PathError};
 pub use value::Value;
+
+// Re-export the macro from crate root
+pub use crate::path;
 
 /// The main CRDT document type for Eidetica.
 ///

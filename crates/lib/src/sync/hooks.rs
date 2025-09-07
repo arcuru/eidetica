@@ -3,12 +3,15 @@
 //! This module provides the infrastructure for hooking into Transaction commit
 //! operations to detect when new entries are created that need to be synchronized.
 
-use crate::Result;
-use crate::entry::{Entry, ID};
 use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use super::background::SyncCommand;
+use crate::{
+    Result,
+    entry::{Entry, ID},
+};
 
 /// Context information passed to sync hooks during commit operations.
 #[derive(Debug, Clone)]

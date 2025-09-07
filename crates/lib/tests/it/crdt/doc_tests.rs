@@ -4,9 +4,13 @@
 //! on Map functionality, including basic operations, path operations, iterators,
 //! builder pattern, CRDT merge operations, tombstone handling, and JSON serialization.
 
-use eidetica::crdt::doc::{List, Node, Value};
-use eidetica::crdt::{CRDT, Doc};
-use eidetica::path;
+use eidetica::{
+    crdt::{
+        CRDT, Doc,
+        doc::{List, Node, Value},
+    },
+    path,
+};
 
 // ===== BASIC MAP OPERATIONS =====
 

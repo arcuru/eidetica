@@ -12,10 +12,9 @@ pub mod permissions;
 mod tests;
 
 // Re-export all types for backward compatibility
-pub use delegation::*;
-pub use keys::*;
-pub use permissions::*;
-
 // Re-export string conversions when needed
 #[allow(unused_imports)]
 pub use conversions::*;
+pub use delegation::*;
+pub use keys::*;
+pub use permissions::*;

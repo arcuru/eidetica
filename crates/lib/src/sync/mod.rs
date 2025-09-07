@@ -3,9 +3,9 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
-use crate::auth::crypto::format_public_key;
-use crate::{Database, Entry, Result, crdt::Doc, store::DocStore};
 use std::sync::Arc;
+
+use crate::{Database, Entry, Result, auth::crypto::format_public_key, crdt::Doc, store::DocStore};
 
 pub mod background;
 pub mod error;
@@ -18,12 +18,11 @@ pub mod state;
 pub mod transports;
 pub mod utils;
 
-pub use error::SyncError;
-pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
-
 use background::{BackgroundSync, SyncCommand};
+pub use error::SyncError;
 use hooks::SyncHook;
 use peer_manager::PeerManager;
+pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use protocol::{GetEntriesRequest, GetTipsRequest, SyncRequest, SyncResponse};
 use tokio::sync::{mpsc, oneshot};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};

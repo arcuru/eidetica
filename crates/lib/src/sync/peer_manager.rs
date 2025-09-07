@@ -3,13 +3,13 @@
 //! This module handles all peer registration, status tracking, and tree-peer
 //! sync relationships. It operates on the sync tree but doesn't own it.
 
-use super::error::SyncError;
-use super::peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
-use crate::Transaction;
-use crate::crdt::doc::path;
-use crate::store::DocStore;
-use crate::{Error, Result};
 use tracing::{debug, info, warn};
+
+use super::{
+    error::SyncError,
+    peer_types::{Address, ConnectionState, PeerInfo, PeerStatus},
+};
+use crate::{Error, Result, Transaction, crdt::doc::path, store::DocStore};
 
 /// Private constants for peer management subtree names
 pub(super) const PEERS_SUBTREE: &str = "peers"; // Maps peer pubkey -> PeerInfo

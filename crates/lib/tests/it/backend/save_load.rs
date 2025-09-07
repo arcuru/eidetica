@@ -1,8 +1,9 @@
-use eidetica::Entry;
-use eidetica::backend::{BackendDB, database::InMemory};
-use std::fs;
-use std::io::Write;
-use std::path::PathBuf;
+use std::{fs, io::Write, path::PathBuf};
+
+use eidetica::{
+    Entry,
+    backend::{BackendDB, database::InMemory},
+};
 
 #[test]
 fn test_in_memory_backend_save_and_load() {

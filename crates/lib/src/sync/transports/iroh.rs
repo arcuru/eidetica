@@ -3,22 +3,28 @@
 //! This module provides peer-to-peer sync communication using
 //! Iroh's QUIC-based networking with hole punching and relay servers.
 
-use super::{SyncTransport, shared::*};
-use crate::Result;
-use crate::sync::error::SyncError;
-use crate::sync::handler::SyncHandler;
-use crate::sync::peer_types::Address;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
+use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
+
 use async_trait::async_trait;
-use iroh::endpoint::{Connection, RecvStream, SendStream};
-use iroh::{Endpoint, NodeAddr, RelayMode, Watcher};
+use iroh::{
+    Endpoint, NodeAddr, RelayMode, Watcher,
+    endpoint::{Connection, RecvStream, SendStream},
+};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use std::net::SocketAddr;
-use std::sync::Arc;
 #[allow(unused_imports)] // Used by write_all method on streams
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
+
+use super::{SyncTransport, shared::*};
+use crate::{
+    Result,
+    sync::{
+        error::SyncError,
+        handler::SyncHandler,
+        peer_types::Address,
+        protocol::{SyncRequest, SyncResponse},
+    },
+};
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
 

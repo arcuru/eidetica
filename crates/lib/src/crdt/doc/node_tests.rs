@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod test_node {
-    use crate::crdt::doc::list::Position;
-    use crate::crdt::doc::{List, Node, Value};
-    use crate::crdt::{CRDTError, Doc};
+    use crate::crdt::{
+        CRDTError, Doc,
+        doc::{List, Node, Value, list::Position},
+    };
 
     // Minimal unit tests for internal implementation details not accessible from integration tests
     // Most functionality is now comprehensively tested in integration tests under tests/it/crdt/

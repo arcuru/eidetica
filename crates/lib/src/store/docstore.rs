@@ -1,11 +1,13 @@
-use crate::Result;
-use crate::Store;
-use crate::Transaction;
-use crate::crdt::doc::{List, Node, Value};
-use crate::crdt::doc::{Path, PathBuf, PathError};
-use crate::crdt::{CRDT, Doc};
-use crate::store::errors::StoreError;
 use std::str::FromStr;
+
+use crate::{
+    Result, Store, Transaction,
+    crdt::{
+        CRDT, Doc,
+        doc::{List, Node, Path, PathBuf, PathError, Value},
+    },
+    store::errors::StoreError,
+};
 
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///

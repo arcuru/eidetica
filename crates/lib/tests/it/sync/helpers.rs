@@ -3,13 +3,18 @@
 //! This module provides utilities for testing Sync functionality including
 //! setup operations, common test patterns, transport factories, and assertion helpers.
 
-use eidetica::sync::handler::{SyncHandler, SyncHandlerImpl};
-use eidetica::sync::peer_types::Address;
-use eidetica::sync::transports::iroh::IrohTransport;
-use eidetica::{Instance, Result, sync::Sync};
+use std::{sync::Arc, time::Duration};
+
+use eidetica::{
+    Instance, Result,
+    sync::{
+        Sync,
+        handler::{SyncHandler, SyncHandlerImpl},
+        peer_types::Address,
+        transports::iroh::IrohTransport,
+    },
+};
 use iroh::RelayMode;
-use std::sync::Arc;
-use std::time::Duration;
 
 // ===== SETUP HELPERS =====
 

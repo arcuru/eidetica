@@ -3,9 +3,10 @@
 //! This module contains tests for fundamental Transaction functionality including
 //! Doc operations, multiple subtrees, empty subtree handling, and parent relationships.
 
+use eidetica::store::{DocStore, Store};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::store::{DocStore, Store};
 
 #[test]
 fn test_transaction_through_dict() {

@@ -1,11 +1,13 @@
-use crate::Result;
-use crate::Store;
-use crate::Transaction;
-use crate::crdt::{CRDT, Doc};
-use crate::store::errors::StoreError;
-use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::{
+    Result, Store, Transaction,
+    crdt::{CRDT, Doc},
+    store::errors::StoreError,
+};
 
 /// A Row-based Store
 ///

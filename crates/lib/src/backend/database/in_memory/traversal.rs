@@ -4,11 +4,10 @@
 //! including path building, LCA (Lowest Common Ancestor) algorithms,
 //! parent-child relationships, and tip finding.
 
-use super::InMemory;
-use crate::Result;
-use crate::backend::errors::BackendError;
-use crate::entry::ID;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use super::InMemory;
+use crate::{Result, backend::errors::BackendError, entry::ID};
 
 /// Build the complete path from tree/subtree root to a target entry
 ///

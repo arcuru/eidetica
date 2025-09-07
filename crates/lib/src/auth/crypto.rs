@@ -3,11 +3,12 @@
 //! This module provides Ed25519 signature generation and verification
 //! for authenticating entries in the database.
 
-use super::errors::AuthError;
-use crate::Entry;
 use base64ct::{Base64, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand;
+
+use super::errors::AuthError;
+use crate::Entry;
 
 /// Size of Ed25519 public keys in bytes
 pub const ED25519_PUBLIC_KEY_SIZE: usize = 32;

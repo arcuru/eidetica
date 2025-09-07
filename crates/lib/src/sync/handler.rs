@@ -4,15 +4,19 @@
 //! sync requests and generate responses. These handlers can be
 //! used by any transport implementation through the SyncHandler trait.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use tracing::{Instrument, debug, error, info, info_span, trace, warn};
+
 use super::protocol::{
     GetEntriesRequest, GetEntriesResponse, GetTipsRequest, GetTipsResponse, HandshakeRequest,
     HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse,
 };
-use crate::auth::crypto::{create_challenge_response, format_public_key, generate_challenge};
-use crate::backend::BackendDB;
-use async_trait::async_trait;
-use std::sync::Arc;
-use tracing::{Instrument, debug, error, info, info_span, trace, warn};
+use crate::{
+    auth::crypto::{create_challenge_response, format_public_key, generate_challenge},
+    backend::BackendDB,
+};
 
 /// Trait for handling sync requests with database access.
 ///

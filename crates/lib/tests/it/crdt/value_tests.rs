@@ -4,10 +4,15 @@
 //! on Value enum functionality, including type checking, accessors, merging,
 //! and PartialEq implementations.
 
+use eidetica::{
+    crdt::{
+        Doc,
+        doc::{List, Node, Value},
+    },
+    path,
+};
+
 use super::helpers::*;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{List, Node, Value};
-use eidetica::path;
 
 // ===== VALUE TYPE TESTS =====
 

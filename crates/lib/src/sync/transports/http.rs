@@ -3,12 +3,8 @@
 //! This module provides HTTP-based sync communication using a single
 //! JSON endpoint (/api/v0) with axum for the server and reqwest for the client.
 
-use super::{SyncTransport, shared::*};
-use crate::Result;
-use crate::sync::error::SyncError;
-use crate::sync::handler::SyncHandler;
-use crate::sync::peer_types::Address;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
+use std::{net::SocketAddr, sync::Arc};
+
 use async_trait::async_trait;
 use axum::{
     Router,
@@ -16,9 +12,18 @@ use axum::{
     response::Json,
     routing::post,
 };
-use std::net::SocketAddr;
-use std::sync::Arc;
 use tokio::sync::oneshot;
+
+use super::{SyncTransport, shared::*};
+use crate::{
+    Result,
+    sync::{
+        error::SyncError,
+        handler::SyncHandler,
+        peer_types::Address,
+        protocol::{SyncRequest, SyncResponse},
+    },
+};
 
 /// HTTP transport implementation using axum and reqwest.
 pub struct HttpTransport {

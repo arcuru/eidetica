@@ -3,10 +3,10 @@
 //! This module contains tests for database management operations including
 //! database listing, finding databases by name, and handling multiple databases.
 
+use eidetica::{Instance, backend::database::InMemory};
+
 use super::helpers::*;
 use crate::helpers::setup_db_with_key;
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
 
 const TEST_KEY: &str = "test_key";
 

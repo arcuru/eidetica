@@ -20,16 +20,17 @@
 //!
 //! This module is only available when the "y-crdt" feature is enabled.
 
-use crate::Result;
-use crate::Store;
-use crate::Transaction;
-use crate::crdt::{CRDT, Data};
-use crate::store::errors::StoreError;
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use yrs::updates::decoder::Decode;
-use yrs::{Doc, ReadTxn, Transact, Update};
+use yrs::{Doc, ReadTxn, Transact, Update, updates::decoder::Decode};
+
+use crate::{
+    Result, Store, Transaction,
+    crdt::{CRDT, Data},
+    store::errors::StoreError,
+};
 
 /// Errors specific to Y-CRDT operations
 #[derive(Debug, Error)]

@@ -3,12 +3,14 @@
 //! This module contains tests focused on data manipulation including
 //! deletes, nested values, and staging isolation.
 
+use eidetica::{
+    constants::SETTINGS,
+    crdt::{Doc, doc::Value},
+    store::{DocStore, Store},
+};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::constants::SETTINGS;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::store::{DocStore, Store};
 
 #[test]
 fn test_transaction_with_delete() {

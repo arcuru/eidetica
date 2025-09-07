@@ -3,9 +3,10 @@
 //! This module contains tests for Table subtree functionality including
 //! CRUD operations, search functionality, UUID generation, and multiple operations.
 
+use eidetica::store::Table;
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::store::Table;
 
 #[test]
 fn test_table_basic_crud_operations() {

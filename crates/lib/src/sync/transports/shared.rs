@@ -3,9 +3,12 @@
 //! This module provides common functionality used across different transport
 //! implementations to reduce code duplication and ensure consistency.
 
-use crate::sync::error::SyncError;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
 use tokio::sync::oneshot;
+
+use crate::sync::{
+    error::SyncError,
+    protocol::{SyncRequest, SyncResponse},
+};
 
 /// Manages server state common to all transport implementations.
 /// Since transports are owned exclusively by Sync instances and all operations

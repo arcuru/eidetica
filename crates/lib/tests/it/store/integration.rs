@@ -3,9 +3,10 @@
 //! This module contains tests for complex integration scenarios including
 //! concurrent modifications, merging, authentication, and cross-subtree operations.
 
+use eidetica::store::{DocStore, Table};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::store::{DocStore, Table};
 
 #[test]
 fn test_table_complex_data_merging() {

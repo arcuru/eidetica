@@ -1,13 +1,17 @@
+use eidetica::{
+    auth::{
+        crypto::{format_public_key, verify_entry_signature},
+        types::{AuthKey, KeyStatus, Permission},
+    },
+    crdt::{Doc, doc::Value},
+    store::DocStore,
+};
+
 use super::helpers::{
     assert_operation_permissions, setup_authenticated_tree, setup_db as auth_setup_db,
     setup_test_db_with_keys, test_operation_fails, test_operation_succeeds,
 };
 use crate::create_auth_keys;
-use eidetica::auth::crypto::{format_public_key, verify_entry_signature};
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_authentication_validation_revoked_key() {

@@ -3,12 +3,14 @@
 //! This module provides structures and functionality for tracking sync state
 //! between peers, including sync cursors, metadata, and history.
 
-use crate::Result;
-use crate::Transaction;
-use crate::crdt::doc::{Value, path};
-use crate::entry::ID;
-use crate::store::DocStore;
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    Result, Transaction,
+    crdt::doc::{Value, path},
+    entry::ID,
+    store::DocStore,
+};
 
 /// Tracks the synchronization position for a specific peer-tree relationship.
 ///
@@ -407,9 +409,7 @@ impl<'a> SyncStateManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Entry;
-    use crate::Instance;
-    use crate::backend::database::InMemory;
+    use crate::{Entry, Instance, backend::database::InMemory};
 
     #[test]
     fn test_sync_cursor() {

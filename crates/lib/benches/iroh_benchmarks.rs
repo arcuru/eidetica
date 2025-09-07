@@ -1,10 +1,11 @@
+use std::{sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use eidetica::entry::{Entry, ID};
-use eidetica::sync::peer_types::Address;
-use eidetica::sync::transports::iroh::IrohTransport;
+use eidetica::{
+    entry::{Entry, ID},
+    sync::{peer_types::Address, transports::iroh::IrohTransport},
+};
 use iroh::RelayMode;
-use std::sync::Arc;
-use std::time::Duration;
 
 // Helper function to create test entries
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
@@ -23,9 +24,7 @@ async fn setup_iroh_sync_pair() -> (
     eidetica::sync::Sync,
     Address,
 ) {
-    use eidetica::Instance;
-    use eidetica::backend::database::InMemory;
-    use eidetica::sync::Sync;
+    use eidetica::{Instance, backend::database::InMemory, sync::Sync};
 
     // Create databases
     let base_db1 = Arc::new(Instance::new(Box::new(InMemory::new())));

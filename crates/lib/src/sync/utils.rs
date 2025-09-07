@@ -3,11 +3,14 @@
 //! This module contains DAG traversal algorithms and other utilities
 //! specific to the synchronization protocol.
 
-use crate::Result;
-use crate::backend::BackendDB;
-use crate::entry::{Entry, ID};
-use crate::sync::error::SyncError;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use crate::{
+    Result,
+    backend::BackendDB,
+    entry::{Entry, ID},
+    sync::error::SyncError,
+};
 
 /// Collect all missing ancestors for given entry IDs using DAG traversal.
 ///
@@ -164,10 +167,10 @@ pub fn collect_ancestors_to_send(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::Entry;
-    use crate::backend::database::InMemory;
     use std::sync::Arc;
+
+    use super::*;
+    use crate::{Entry, backend::database::InMemory};
 
     fn create_test_backend() -> Arc<InMemory> {
         Arc::new(InMemory::new())

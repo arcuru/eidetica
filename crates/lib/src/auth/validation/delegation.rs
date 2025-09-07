@@ -3,19 +3,20 @@
 //! This module handles the complex logic of resolving delegation paths,
 //! including multi-tree traversal and permission clamping.
 
-use crate::Database;
-use crate::Result;
-use crate::auth::crypto::parse_public_key;
-use crate::auth::errors::AuthError;
-use crate::auth::permission::clamp_permission;
-use crate::auth::types::{
-    AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth,
-};
-use crate::backend::BackendDB;
-use crate::crdt::Doc;
-use crate::crdt::doc::Value;
-use crate::entry::ID;
 use std::sync::Arc;
+
+use crate::{
+    Database, Result,
+    auth::{
+        crypto::parse_public_key,
+        errors::AuthError,
+        permission::clamp_permission,
+        types::{AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth},
+    },
+    backend::BackendDB,
+    crdt::{Doc, doc::Value},
+    entry::ID,
+};
 
 /// Delegation resolver for handling complex delegation paths
 pub struct DelegationResolver;

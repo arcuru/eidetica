@@ -2,10 +2,10 @@
 //!
 //! This module defines types related to tree delegation and reference management.
 
-use crate::entry::ID;
 use serde::{Deserialize, Serialize};
 
 use super::permissions::PermissionBounds;
+use crate::entry::ID;
 
 /// Reference to a Merkle-DAG tree (for delegated trees)
 /// TODO: May standardize on this format across the codebase instead of just for delegation

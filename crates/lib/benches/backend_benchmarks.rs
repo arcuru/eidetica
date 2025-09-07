@@ -1,8 +1,10 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use eidetica::Instance;
-use eidetica::backend::{BackendDB, database::InMemory};
-use eidetica::entry::ID;
-use eidetica::store::DocStore;
+use eidetica::{
+    Instance,
+    backend::{BackendDB, database::InMemory},
+    entry::ID,
+    store::DocStore,
+};
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Database {

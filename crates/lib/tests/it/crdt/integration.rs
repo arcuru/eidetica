@@ -3,9 +3,12 @@
 //! These tests focus on high-level scenarios that combine multiple CRDT types
 //! and test their interaction with the broader Eidetica system.
 
+use eidetica::crdt::{
+    CRDT, Doc,
+    doc::{Value, path},
+};
+
 use super::helpers::*;
-use eidetica::crdt::doc::{Value, path};
-use eidetica::crdt::{CRDT, Doc};
 
 #[test]
 fn test_crdt_map_basic_operations() {

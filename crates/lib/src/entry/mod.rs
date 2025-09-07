@@ -8,13 +8,11 @@
 pub mod id;
 
 pub use id::ID;
-
-use crate::Result;
-use crate::auth::types::SigInfo;
-use crate::constants::ROOT;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::{Result, auth::types::SigInfo, constants::ROOT};
 
 /// Represents serialized data, typically JSON, provided by the user.
 ///

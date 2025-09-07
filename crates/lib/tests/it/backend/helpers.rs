@@ -1,6 +1,9 @@
-use eidetica::backend::{BackendDB, database::InMemory};
-use eidetica::entry::{Entry, ID};
 use std::collections::HashMap;
+
+use eidetica::{
+    backend::{BackendDB, database::InMemory},
+    entry::{Entry, ID},
+};
 
 /// Create a new test backend
 pub fn create_test_backend() -> InMemory {

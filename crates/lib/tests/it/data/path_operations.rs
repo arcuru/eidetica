@@ -3,8 +3,9 @@
 //! This module tests the path-based API for accessing and modifying nested data
 //! structures using string paths.
 
-use super::helpers::*;
 use eidetica::crdt::doc::Value;
+
+use super::helpers::*;
 
 #[test]
 fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {

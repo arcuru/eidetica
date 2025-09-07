@@ -1,10 +1,14 @@
+use eidetica::{
+    auth::{
+        crypto::format_public_key,
+        types::{AuthKey, KeyStatus, Permission},
+    },
+    crdt::{Doc, doc::Value},
+    store::DocStore,
+};
+
 use super::helpers::*;
 use crate::create_auth_keys;
-use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_authenticated_operations() {

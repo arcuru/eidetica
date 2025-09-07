@@ -1,5 +1,6 @@
-use super::helpers::*;
 use eidetica::sync::Address;
+
+use super::helpers::*;
 
 #[tokio::test]
 async fn test_sync_with_http_transport() {

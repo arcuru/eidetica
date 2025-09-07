@@ -3,19 +3,22 @@
 //! These tests cover error propagation, validation failures, backend issues,
 //! and security edge cases in the delegation system.
 
-use super::helpers::*;
-use eidetica::Instance;
-use eidetica::Result;
-use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{
-    AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds, SigKey,
-    TreeReference,
+use eidetica::{
+    Instance, Result,
+    auth::{
+        crypto::format_public_key,
+        types::{
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
+            SigKey, TreeReference,
+        },
+        validation::AuthValidator,
+    },
+    backend::database::InMemory,
+    crdt::{Doc, doc::Value},
+    entry::ID,
 };
-use eidetica::auth::validation::AuthValidator;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::entry::ID;
+
+use super::helpers::*;
 
 /// Test delegation resolution with missing backend
 #[test]
@@ -542,8 +545,7 @@ fn test_error_message_consistency() {
 /// Test concurrent validation scenarios (basic thread safety)
 #[test]
 fn test_concurrent_validation_basic() -> Result<()> {
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let db = Arc::new(Instance::new(Box::new(InMemory::new())));
 

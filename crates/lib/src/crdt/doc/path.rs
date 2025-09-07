@@ -31,10 +31,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
-use std::borrow::Borrow;
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use std::{borrow::Borrow, fmt, ops::Deref, str::FromStr};
+
 use thiserror::Error;
 
 /// Error type for path validation failures.

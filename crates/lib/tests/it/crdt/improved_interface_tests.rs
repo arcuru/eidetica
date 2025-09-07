@@ -5,9 +5,13 @@
 //! - Generic get_as<T>() methods
 //! - Convenience methods for common patterns (extract, try_extract, etc.)
 
-use eidetica::Result;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{Node, Value, path};
+use eidetica::{
+    Result,
+    crdt::{
+        Doc,
+        doc::{Node, Value, path},
+    },
+};
 
 #[test]
 fn test_tryfrom_value_implementations() {

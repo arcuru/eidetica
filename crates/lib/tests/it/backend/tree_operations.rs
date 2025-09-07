@@ -1,6 +1,9 @@
+use eidetica::{
+    backend::{BackendDB, database::InMemory},
+    entry::{Entry, ID},
+};
+
 use super::helpers::*;
-use eidetica::backend::{BackendDB, database::InMemory};
-use eidetica::entry::{Entry, ID};
 
 #[test]
 fn test_in_memory_backend_tree_operations() {

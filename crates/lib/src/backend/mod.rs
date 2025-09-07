@@ -6,10 +6,14 @@
 //! The `Database` trait defines the interface for storing and retrieving `Entry` objects.
 //! This allows the core database logic (`Instance`, `Database`) to be independent of the specific storage mechanism.
 
-use crate::Result;
-use crate::entry::{Entry, ID};
-use ed25519_dalek::SigningKey;
 use std::any::Any;
+
+use ed25519_dalek::SigningKey;
+
+use crate::{
+    Result,
+    entry::{Entry, ID},
+};
 
 // Category modules
 pub mod database;

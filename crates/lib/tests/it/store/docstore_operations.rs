@@ -3,11 +3,16 @@
 //! This module contains tests for DocStore subtree functionality including
 //! basic CRUD operations, path-based access, nested values, and persistence.
 
+use eidetica::{
+    crdt::{
+        Doc,
+        doc::{Value, path},
+    },
+    store::DocStore,
+};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{Value, path};
-use eidetica::store::DocStore;
 
 #[test]
 fn test_dict_set_and_get_via_op() {

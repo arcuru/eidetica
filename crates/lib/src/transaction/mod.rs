@@ -1,25 +1,23 @@
 pub mod errors;
 
-use crate::Database;
-use crate::Result;
-use crate::Store;
-use crate::auth::crypto::sign_entry;
-use crate::auth::types::{Operation, SigInfo, SigKey};
-use crate::auth::validation::AuthValidator;
-use crate::constants::SETTINGS;
-use crate::crdt::CRDT;
-use crate::crdt::Doc;
-use crate::crdt::doc::Value;
-use crate::entry::{Entry, EntryBuilder, ID};
-use crate::store::DocStore;
-use crate::sync::hooks::{SyncHookCollection, SyncHookContext};
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
-
-use serde::{Deserialize, Serialize};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub use errors::TransactionError;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    Database, Result, Store,
+    auth::{
+        crypto::sign_entry,
+        types::{Operation, SigInfo, SigKey},
+        validation::AuthValidator,
+    },
+    constants::SETTINGS,
+    crdt::{CRDT, Doc, doc::Value},
+    entry::{Entry, EntryBuilder, ID},
+    store::DocStore,
+    sync::hooks::{SyncHookCollection, SyncHookContext},
+};
 
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]

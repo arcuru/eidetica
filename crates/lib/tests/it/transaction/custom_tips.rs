@@ -3,10 +3,10 @@
 //! This module contains tests for operations using custom tips including
 //! branching, parallel operations, and tip-based state management.
 
+use eidetica::{crdt::doc::Value, store::DocStore};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::crdt::doc::Value;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_transaction_with_custom_tips() {

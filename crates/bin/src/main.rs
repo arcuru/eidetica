@@ -1,12 +1,14 @@
-use eidetica::Database;
-use eidetica::Entry;
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
+use std::{
+    collections::HashMap,
+    io::{self, BufRead, Write},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use eidetica::{Database, Entry, Instance, backend::database::InMemory};
 use signal_hook::flag as signal_flag;
-use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::EnvFilter;
 
 const DB_FILE: &str = "eidetica.json";

@@ -4,11 +4,9 @@
 //! for syncing entries between Instance instances.
 
 use std::time::Duration;
-use tokio::time::sleep;
 
-use eidetica::Instance;
-use eidetica::Result;
-use eidetica::backend::database::InMemory;
+use eidetica::{Instance, Result, backend::database::InMemory};
+use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
 

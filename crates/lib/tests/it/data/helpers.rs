@@ -3,13 +3,15 @@
 //! This module provides utility functions for testing CRDT Doc operations,
 //! value editors, path operations, and merge scenarios.
 
-use eidetica::Database;
-use eidetica::Instance;
-use eidetica::Transaction;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{Node, Value};
-use eidetica::store::DocStore;
+use eidetica::{
+    Database, Instance, Transaction,
+    backend::database::InMemory,
+    crdt::{
+        Doc,
+        doc::{Node, Value},
+    },
+    store::DocStore,
+};
 
 // ===== BASIC SETUP HELPERS =====
 

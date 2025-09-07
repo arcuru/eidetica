@@ -1,6 +1,9 @@
+use eidetica::auth::{
+    settings::AuthSettings,
+    types::{AuthKey, KeyStatus, Permission, ResolvedAuth},
+};
+
 use super::helpers::*;
-use eidetica::auth::settings::AuthSettings;
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission, ResolvedAuth};
 
 // ===== SECURITY ENFORCEMENT TESTS =====
 // These tests verify that security measures are properly enforced in the auth system

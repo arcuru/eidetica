@@ -1,9 +1,11 @@
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
-use eidetica::sync::{
-    Address, Sync,
-    protocol::{SyncRequest, SyncResponse},
-    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+use eidetica::{
+    Instance,
+    backend::database::InMemory,
+    sync::{
+        Address, Sync,
+        protocol::{SyncRequest, SyncResponse},
+        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+    },
 };
 
 /// Test that both HTTP and Iroh transports use the same message handler

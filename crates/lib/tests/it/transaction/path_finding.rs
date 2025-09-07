@@ -3,9 +3,10 @@
 //! This module contains tests for complex scenarios involving LCA (Lowest Common Ancestor)
 //! computation, path finding, and deterministic ordering in diamond and merge patterns.
 
+use eidetica::store::DocStore;
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_transaction_diamond_pattern() {

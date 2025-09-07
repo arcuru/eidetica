@@ -3,11 +3,16 @@
 //! This module provides utilities for testing Transaction functionality including
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
+use eidetica::{
+    crdt::{
+        Doc,
+        doc::{Value, node::Node as Map},
+    },
+    entry::ID,
+    store::{DocStore, Store},
+};
+
 use crate::helpers::*;
-use eidetica::crdt::doc::Value;
-use eidetica::crdt::{Doc, doc::node::Node as Map};
-use eidetica::entry::ID;
-use eidetica::store::{DocStore, Store};
 
 // ===== BASIC OPERATION HELPERS =====
 

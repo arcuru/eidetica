@@ -1,8 +1,7 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::crdt::Doc;
-use crate::entry::ID;
+use crate::{crdt::Doc, entry::ID};
 
 #[test]
 fn test_permission_min_max() {

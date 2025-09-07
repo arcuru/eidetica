@@ -7,12 +7,10 @@
 
 use std::fmt;
 
-use crate::crdt::CRDTError;
-use crate::crdt::traits::Data;
-
 // Forward declarations for types defined in other modules
 use super::list::List;
 use super::node::Node;
+use crate::crdt::{CRDTError, traits::Data};
 
 /// Values that can be stored in CRDT documents.
 ///

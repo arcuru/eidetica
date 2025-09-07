@@ -5,15 +5,20 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
-use super::errors::AuthError;
-use crate::auth::types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey};
-use crate::auth::validation::AuthValidator;
-use crate::backend::BackendDB;
-use crate::crdt::Doc;
-use crate::{Error, Result};
+use std::{collections::HashMap, sync::Arc};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use super::errors::AuthError;
+use crate::{
+    Error, Result,
+    auth::{
+        types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey},
+        validation::AuthValidator,
+    },
+    backend::BackendDB,
+    crdt::Doc,
+};
 
 /// Authentication settings view/interface over Doc data
 ///
@@ -240,8 +245,10 @@ impl Default for AuthSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::types::{KeyStatus, Permission};
-    use crate::crdt::CRDT;
+    use crate::{
+        auth::types::{KeyStatus, Permission},
+        crdt::CRDT,
+    };
 
     #[test]
     fn test_auth_settings_basic_operations() {

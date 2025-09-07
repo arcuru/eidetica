@@ -3,9 +3,9 @@
 //! This module tests advanced CRDT Doc operations including merge semantics,
 //! tombstone handling, recursive merging, and complex conflict resolution.
 
+use eidetica::crdt::{CRDT, doc::Value};
+
 use super::helpers::*;
-use eidetica::crdt::CRDT;
-use eidetica::crdt::doc::Value;
 
 #[test]
 fn test_doc_basic_operations() {

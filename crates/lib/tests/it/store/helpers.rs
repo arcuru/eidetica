@@ -3,16 +3,17 @@
 //! This module provides utilities for testing Doc, YDoc, and Table subtree functionality
 //! including basic operations, CRUD operations, search functionality, and integration scenarios.
 
-use crate::helpers::*;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::store::{DocStore, Table};
-use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "y-crdt")]
 use eidetica::store::YDoc;
+use eidetica::{
+    crdt::{Doc, doc::Value},
+    store::{DocStore, Table},
+};
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "y-crdt")]
 use yrs::{GetString, Map as YrsMapTrait, ReadTxn, Text, Transact};
+
+use crate::helpers::*;
 
 // ===== TEST DATA STRUCTURES =====
 

@@ -1,5 +1,7 @@
-use eidetica::backend::{BackendDB, VerificationStatus, database::InMemory};
-use eidetica::entry::{Entry, ID};
+use eidetica::{
+    backend::{BackendDB, VerificationStatus, database::InMemory},
+    entry::{Entry, ID},
+};
 
 #[test]
 fn test_verification_status_basic_operations() {

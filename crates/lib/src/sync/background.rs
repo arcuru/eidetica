@@ -4,27 +4,35 @@
 //! in a single background thread, removing circular dependency issues and providing
 //! automatic retry, periodic sync, and reconnection handling.
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::interval;
-
-use super::DEVICE_KEY_NAME;
-use super::error::SyncError;
-use super::handler::SyncHandlerImpl;
-use super::peer_manager::PeerManager;
-use super::peer_types::{Address, PeerInfo};
-use super::protocol::{
-    GetEntriesRequest, GetTipsRequest, HandshakeRequest, PROTOCOL_VERSION, SyncRequest,
-    SyncResponse,
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
 };
-use super::transports::SyncTransport;
-use crate::Database;
-use crate::Result;
-use crate::auth::crypto::{format_public_key, generate_challenge, verify_challenge_response};
-use crate::backend::BackendDB;
-use crate::entry::{Entry, ID};
+
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::interval,
+};
 use tracing::{Instrument, debug, info, info_span, trace};
+
+use super::{
+    DEVICE_KEY_NAME,
+    error::SyncError,
+    handler::SyncHandlerImpl,
+    peer_manager::PeerManager,
+    peer_types::{Address, PeerInfo},
+    protocol::{
+        GetEntriesRequest, GetTipsRequest, HandshakeRequest, PROTOCOL_VERSION, SyncRequest,
+        SyncResponse,
+    },
+    transports::SyncTransport,
+};
+use crate::{
+    Database, Result,
+    auth::crypto::{format_public_key, generate_challenge, verify_challenge_response},
+    backend::BackendDB,
+    entry::{Entry, ID},
+};
 
 /// Commands that can be sent to the background sync engine
 #[derive(Debug)]

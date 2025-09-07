@@ -1,5 +1,7 @@
-use eidetica::backend::{BackendDB, database::InMemory};
-use eidetica::entry::{Entry, ID};
+use eidetica::{
+    backend::{BackendDB, database::InMemory},
+    entry::{Entry, ID},
+};
 
 #[test]
 fn test_in_memory_backend_subtree_operations() {

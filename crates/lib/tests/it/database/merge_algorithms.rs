@@ -3,10 +3,10 @@
 //! This module contains tests for complex merging scenarios including
 //! LCA computation, diamond patterns, and parent-aware state resolution.
 
+use eidetica::{crdt::doc::Value, store::DocStore};
+
 use super::helpers::*;
 use crate::helpers::*;
-use eidetica::crdt::doc::Value;
-use eidetica::store::DocStore;
 
 #[test]
 fn test_simple_linear_chain() {

@@ -1,10 +1,11 @@
 //! Core storage operations for InMemory database
 
 use super::{InMemory, TreeHeightsCache};
-use crate::Result;
-use crate::backend::VerificationStatus;
-use crate::backend::errors::BackendError;
-use crate::entry::{Entry, ID};
+use crate::{
+    Result,
+    backend::{VerificationStatus, errors::BackendError},
+    entry::{Entry, ID},
+};
 
 /// Retrieves an entry by ID from the internal `HashMap`.
 /// Used internally by traversal functions.

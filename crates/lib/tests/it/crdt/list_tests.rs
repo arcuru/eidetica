@@ -4,10 +4,12 @@
 //! including basic operations, position handling, merging, insertion, and
 //! JSON serialization.
 
+use eidetica::crdt::{
+    CRDTError, Doc,
+    doc::{List, Value, list::Position},
+};
+
 use crate::crdt::helpers::*;
-use eidetica::crdt::doc::list::Position;
-use eidetica::crdt::doc::{List, Value};
-use eidetica::crdt::{CRDTError, Doc};
 
 // ===== BASIC LIST OPERATIONS =====
 

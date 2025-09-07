@@ -1,6 +1,9 @@
+use eidetica::{
+    Entry,
+    backend::{BackendDB, database::InMemory},
+};
+
 use super::helpers::*;
-use eidetica::Entry;
-use eidetica::backend::{BackendDB, database::InMemory};
 
 #[test]
 fn test_calculate_entry_height() {

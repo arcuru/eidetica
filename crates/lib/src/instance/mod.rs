@@ -4,16 +4,19 @@
 //! `Instance` manages multiple `Database` instances and interacts with the storage `Database`.
 //! `Database` represents a single, independent history of data entries, analogous to a table or branch.
 
-use crate::Database;
-use crate::Result;
-use crate::auth::crypto::{format_public_key, generate_keypair};
-use crate::backend::BackendDB;
-use crate::crdt::Doc;
-use crate::entry::ID;
-use crate::sync::Sync;
+use std::sync::Arc;
+
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::Rng;
-use std::sync::Arc;
+
+use crate::{
+    Database, Result,
+    auth::crypto::{format_public_key, generate_keypair},
+    backend::BackendDB,
+    crdt::Doc,
+    entry::ID,
+    sync::Sync,
+};
 
 pub mod errors;
 

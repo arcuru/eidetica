@@ -1,16 +1,19 @@
 use ed25519_dalek::VerifyingKey;
-use eidetica::Database;
-use eidetica::Instance;
-use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{
-    AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds, SigKey,
-    TreeReference,
+use eidetica::{
+    Database, Instance,
+    auth::{
+        crypto::format_public_key,
+        types::{
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
+            SigKey, TreeReference,
+        },
+        validation::AuthValidator,
+    },
+    backend::database::InMemory,
+    crdt::Doc,
+    entry::ID,
+    store::DocStore,
 };
-use eidetica::auth::validation::AuthValidator;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::entry::ID;
-use eidetica::store::DocStore;
 
 // Helper functions for auth testing
 //

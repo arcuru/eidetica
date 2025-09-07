@@ -3,14 +3,17 @@
 //! These tests cover edge cases, error conditions, and boundary scenarios
 //! for the flat delegation structure implementation.
 
-use eidetica::Instance;
-use eidetica::Result;
-use eidetica::auth::crypto::format_public_key;
-use eidetica::auth::types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey};
-use eidetica::auth::validation::AuthValidator;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::entry::ID;
+use eidetica::{
+    Instance, Result,
+    auth::{
+        crypto::format_public_key,
+        types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey},
+        validation::AuthValidator,
+    },
+    backend::database::InMemory,
+    crdt::Doc,
+    entry::ID,
+};
 
 /// Test SigKey with empty delegation path
 #[test]

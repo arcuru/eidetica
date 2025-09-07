@@ -1,7 +1,8 @@
 //! Tests for peer management functionality in the sync module.
 
-use super::helpers::*;
 use eidetica::sync::{Address, PeerStatus};
+
+use super::helpers::*;
 
 const TEST_PEER_PUBKEY: &str = "ed25519:test_peer_key_123";
 const TEST_PEER_PUBKEY_2: &str = "ed25519:test_peer_key_456";

@@ -3,13 +3,12 @@
 //! This module provides utilities for testing Instance functionality including
 //! database operations, tree management, settings configuration, and basic operations.
 
+use eidetica::{
+    Database, Instance, backend::database::InMemory, constants::SETTINGS, entry::ID,
+    store::DocStore,
+};
+
 use crate::helpers::setup_db_with_key;
-use eidetica::Database;
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
-use eidetica::constants::SETTINGS;
-use eidetica::entry::ID;
-use eidetica::store::DocStore;
 
 // ===== DATABASE SETUP HELPERS =====
 

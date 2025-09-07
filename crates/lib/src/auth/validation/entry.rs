@@ -3,17 +3,18 @@
 //! This module provides the main entry point for validating entries
 //! and the AuthValidator struct that coordinates all validation operations.
 
-use crate::Entry;
-use crate::Result;
-use crate::auth::crypto::verify_entry_signature;
-use crate::auth::types::{KeyStatus, Operation, ResolvedAuth, SigKey};
-use crate::backend::BackendDB;
-use crate::crdt::Doc;
-use crate::crdt::doc::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use super::resolver::KeyResolver;
+use crate::{
+    Entry, Result,
+    auth::{
+        crypto::verify_entry_signature,
+        types::{KeyStatus, Operation, ResolvedAuth, SigKey},
+    },
+    backend::BackendDB,
+    crdt::{Doc, doc::Value},
+};
 
 /// Authentication validator for validating entries and resolving auth information
 pub struct AuthValidator {

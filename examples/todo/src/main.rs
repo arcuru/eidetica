@@ -1,12 +1,12 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::backend::database::InMemory;
 use eidetica::Instance;
+use eidetica::backend::database::InMemory;
 use eidetica::crdt::Doc;
 use eidetica::store::Table;
 use eidetica::store::YDoc;
 use eidetica::y_crdt::{Map as YMap, Transact};
-use eidetica::{Result, Database};
+use eidetica::{Database, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -187,7 +187,7 @@ fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
         .downcast_ref::<InMemory>()
         .ok_or_else(|| {
             eidetica::Error::Io(std::io::Error::other(
-                "Failed to downcast database to InMemory"
+                "Failed to downcast database to InMemory",
             ))
         })?;
 
@@ -263,7 +263,8 @@ fn complete_todo(database: &Database, id: &str) -> Result<()> {
             return Err(eidetica::store::StoreError::KeyNotFound {
                 store: "todos".to_string(),
                 key: id.to_string(),
-            }.into());
+            }
+            .into());
         }
         Err(e) => {
             // For other errors, just propagate

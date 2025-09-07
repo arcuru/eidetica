@@ -4,13 +4,18 @@
 //! implementations must implement, allowing the sync module to
 //! work over various protocols (HTTP, Iroh, Bluetooth, etc.).
 
-use crate::Entry;
-use crate::Result;
-use crate::sync::handler::SyncHandler;
-use crate::sync::peer_types::Address;
-use crate::sync::protocol::{SyncRequest, SyncResponse};
-use async_trait::async_trait;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::{
+    Entry, Result,
+    sync::{
+        handler::SyncHandler,
+        peer_types::Address,
+        protocol::{SyncRequest, SyncResponse},
+    },
+};
 
 pub mod http;
 pub mod iroh;

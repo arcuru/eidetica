@@ -3,18 +3,18 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use super::{InMemory, TreeHeightsCache, TreeTipsCache};
-use crate::auth::crypto::ED25519_PRIVATE_KEY_SIZE;
-use crate::backend::VerificationStatus;
-use crate::backend::errors::BackendError;
-use crate::entry::{Entry, ID};
-use crate::{Error, Result};
+use std::{collections::HashMap, fs, path::Path, sync::RwLock};
+
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-use std::sync::RwLock;
+
+use super::{InMemory, TreeHeightsCache, TreeTipsCache};
+use crate::{
+    Error, Result,
+    auth::crypto::ED25519_PRIVATE_KEY_SIZE,
+    backend::{VerificationStatus, errors::BackendError},
+    entry::{Entry, ID},
+};
 
 /// Serializable version of InMemory database for persistence
 #[derive(Serialize, Deserialize)]

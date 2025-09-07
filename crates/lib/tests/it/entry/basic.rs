@@ -1,6 +1,6 @@
+use eidetica::{Entry, constants::ROOT};
+
 use super::helpers::*;
-use eidetica::Entry;
-use eidetica::constants::ROOT;
 
 #[test]
 fn test_entry_creation() {

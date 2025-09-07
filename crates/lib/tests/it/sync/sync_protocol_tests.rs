@@ -3,10 +3,12 @@
 //! This module tests the core synchronization protocol functionality including
 //! tip exchange, entry retrieval, and validation.
 
+use eidetica::{
+    entry::{Entry, ID},
+    sync::{Sync, protocol::*},
+};
+
 use super::helpers;
-use eidetica::entry::{Entry, ID};
-use eidetica::sync::Sync;
-use eidetica::sync::protocol::*;
 
 /// Create a test sync instance with sample data.
 async fn create_test_sync_with_data() -> (Sync, ID, Vec<Entry>) {

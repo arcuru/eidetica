@@ -3,9 +3,12 @@
 //! This module tests the serialization behavior of Doc structures,
 //! including handling of nested documents and tombstones.
 
+use eidetica::crdt::{
+    Doc,
+    doc::{Node, Value},
+};
+
 use super::helpers::*;
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::{Node, Value};
 
 #[test]
 fn test_doc_serialization() {

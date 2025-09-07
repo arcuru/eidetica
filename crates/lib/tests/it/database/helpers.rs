@@ -3,14 +3,15 @@
 //! This module provides utilities for testing Tree functionality including
 //! core operations, API methods, merging algorithms, and settings management.
 
+use eidetica::{
+    Database, Instance,
+    auth::types::{AuthKey, KeyStatus, Permission},
+    crdt::{Doc, doc::Value},
+    entry::ID,
+    store::DocStore,
+};
+
 use crate::helpers::*;
-use eidetica::Database;
-use eidetica::Instance;
-use eidetica::auth::types::{AuthKey, KeyStatus, Permission};
-use eidetica::crdt::Doc;
-use eidetica::crdt::doc::Value;
-use eidetica::entry::ID;
-use eidetica::store::DocStore;
 
 // ===== OPERATION HELPERS =====
 

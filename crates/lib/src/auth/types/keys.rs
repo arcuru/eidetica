@@ -3,10 +3,10 @@
 //! This module defines types related to authentication keys, signatures,
 //! and key resolution.
 
-use crate::entry::ID;
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{KeyStatus, Permission};
+use crate::entry::ID;
 
 /// Authentication key configuration stored in _settings.auth
 #[derive(Debug, Clone, Serialize, Deserialize)]

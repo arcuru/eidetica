@@ -3,8 +3,9 @@
 //! This module defines structured error types for tree operations, entry management,
 //! and database operations, providing better error context and type safety compared to string-based errors.
 
-use crate::entry::ID;
 use thiserror::Error;
+
+use crate::entry::ID;
 
 /// Errors that can occur during base database operations.
 ///

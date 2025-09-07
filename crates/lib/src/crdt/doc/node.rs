@@ -4,17 +4,19 @@
 //! structure of CRDT documents. This type is primarily internal and users
 //! should interact with the Doc type instead.
 
-use std::collections::HashMap;
-use std::fmt;
-
-use crate::Result;
-use crate::crdt::CRDTError;
-use crate::crdt::doc::path::Path;
-use crate::crdt::traits::{CRDT, Data};
+use std::{collections::HashMap, fmt};
 
 // Import types from other modules
 use super::list::List;
 use super::value::Value;
+use crate::{
+    Result,
+    crdt::{
+        CRDTError,
+        doc::path::Path,
+        traits::{CRDT, Data},
+    },
+};
 
 /// Internal node structure for CRDT trees.
 ///

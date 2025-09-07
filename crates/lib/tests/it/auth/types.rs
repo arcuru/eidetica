@@ -1,5 +1,6 @@
-use eidetica::auth::types::Permission::{self, Admin, Read, Write};
 use std::cmp::{max, min};
+
+use eidetica::auth::types::Permission::{self, Admin, Read, Write};
 
 #[test]
 fn test_permission_ordering_comprehensive() {
@@ -113,8 +114,10 @@ fn test_permission_validation_operations() {
 
 #[test]
 fn test_permission_hierarchical_key_modification() {
-    use eidetica::auth::settings::AuthSettings;
-    use eidetica::auth::types::{KeyStatus, ResolvedAuth};
+    use eidetica::auth::{
+        settings::AuthSettings,
+        types::{KeyStatus, ResolvedAuth},
+    };
 
     let mut settings = AuthSettings::new();
 

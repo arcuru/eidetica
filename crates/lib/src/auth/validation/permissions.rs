@@ -3,8 +3,10 @@
 //! This module provides utilities for checking if resolved authentication
 //! has sufficient permissions for specific operations.
 
-use crate::Result;
-use crate::auth::types::{Operation, ResolvedAuth};
+use crate::{
+    Result,
+    auth::types::{Operation, ResolvedAuth},
+};
 
 /// Check if a resolved authentication has sufficient permissions for an operation
 pub fn check_permissions(resolved: &ResolvedAuth, operation: &Operation) -> Result<bool> {

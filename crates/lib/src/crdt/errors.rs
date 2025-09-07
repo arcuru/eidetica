@@ -4,8 +4,9 @@
 //! operations, providing detailed context for merge failures, serialization issues,
 //! and type mismatches that can occur during CRDT operations.
 
-use crate::crdt::doc::PathError;
 use thiserror::Error;
+
+use crate::crdt::doc::PathError;
 
 /// Structured error types for CRDT operations.
 ///

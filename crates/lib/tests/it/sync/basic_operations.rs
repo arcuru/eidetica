@@ -1,5 +1,6 @@
-use super::helpers::*;
 use std::sync::Arc;
+
+use super::helpers::*;
 
 #[test]
 fn test_sync_creation() {

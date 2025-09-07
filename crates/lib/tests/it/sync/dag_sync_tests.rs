@@ -3,17 +3,20 @@
 //! This module tests the new BackgroundSync DAG traversal methods that ensure
 //! proper parent-child ordering during synchronization.
 
-use super::helpers;
-use eidetica::Database;
-use eidetica::entry::{Entry, ID};
-use eidetica::store::DocStore;
-use eidetica::sync::{
-    Address,
-    protocol::{SyncRequest, SyncResponse},
-    transports::{SyncTransport, http::HttpTransport},
+use std::{collections::HashSet, time::Duration};
+
+use eidetica::{
+    Database,
+    entry::{Entry, ID},
+    store::DocStore,
+    sync::{
+        Address,
+        protocol::{SyncRequest, SyncResponse},
+        transports::{SyncTransport, http::HttpTransport},
+    },
 };
-use std::collections::HashSet;
-use std::time::Duration;
+
+use super::helpers;
 
 /// Helper to create a test entry with specific parents
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {

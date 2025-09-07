@@ -3,9 +3,10 @@
 
 use std::time::Duration;
 
-use eidetica::entry::{Entry, ID};
-use eidetica::sync::peer_types::Address;
-use eidetica::sync::transports::iroh::IrohTransport;
+use eidetica::{
+    entry::{Entry, ID},
+    sync::{peer_types::Address, transports::iroh::IrohTransport},
+};
 use iroh::RelayMode;
 
 use super::helpers;
