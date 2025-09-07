@@ -6,20 +6,20 @@
 
     crane.url = "github:ipetkov/crane";
 
+    # Needed because rust-overlay, normally used by crane, doesn't have llvm-tools for coverage
     fenix = {
-      # Needed because rust-overlay, normally used by crane, doesn't have llvm-tools for coverage
       url = "github:nix-community/fenix";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.rust-analyzer-src.follows = "";
     };
 
+    # Rust dependency security advisories
     advisory-db = {
-      # Rust dependency security advisories
       url = "github:rustsec/advisory-db";
       flake = false;
     };
 
-    # Flake helper for better organization with modules.
+    # Flake helper for better organization with modules
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -32,22 +32,19 @@
     };
   };
 
-  outputs = inputs @ {
-    self,
-    flake-parts,
-    ...
-  }:
+  outputs = inputs @ {flake-parts, ...}:
     flake-parts.lib.mkFlake {inherit inputs;} {
+      # Import flakes that have a flake-parts module
+      imports = [
+        inputs.flake-parts.flakeModules.easyOverlay
+        inputs.treefmt-nix.flakeModule
+      ];
+
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
         "x86_64-darwin"
         "x86_64-linux"
-      ];
-
-      imports = [
-        flake-parts.flakeModules.easyOverlay
-        inputs.treefmt-nix.flakeModule
       ];
 
       perSystem = {
@@ -56,20 +53,19 @@
         pkgs,
         ...
       }: let
-        # Use the stable rust tools from fenix
+        # Rust toolchain configuration using fenix
         fenixStable = inputs.fenix.packages.${system}.complete;
         rustSrc = fenixStable.rust-src;
         toolChain = fenixStable.toolchain;
 
-        # Use the toolchain with the crane helper functions
+        # Crane library with custom Rust toolchain
         craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolChain;
 
-        # Common arguments for mkCargoDerivation, a helper for the crane functions
-        # Arguments can be included here even if they aren't used, but we only
-        # place them here if they would otherwise show up in multiple places
+        # Common arguments for all cargo derivations
+        # These arguments are shared across build phases to maintain consistency
         commonArgs = {
           inherit cargoArtifacts;
-          # Clean the src to only have the Rust-relevant files
+          # Clean source to include only Rust-relevant files
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
           nativeBuildInputs = with pkgs; [
@@ -80,91 +76,115 @@
           ];
         };
 
-        # Build only the cargo dependencies so we can cache them all when running in CI
+        # Build cargo dependencies separately for better caching
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        # Build the actual crate itself, reusing the cargoArtifacts
+        # Main package build
         eidetica = craneLib.buildPackage (commonArgs
           // {
-            doCheck = false; # Tests are run as a separate build with nextest
-            meta.mainProgram = "eidetica";
+            cargoExtraArgs = "--workspace --all-targets --all-features";
+            doCheck = false; # Tests run separately with nextest
+            meta = {
+              description = "A P2P decentralized database";
+              mainProgram = "eidetica";
+            };
           });
       in {
+        # Package definitions
         packages = {
           default = eidetica;
           eidetica = eidetica;
 
+          # Development and Quality Assurance packages
+
           # Check code coverage with tarpaulin
-          # This is currently broken because the tests require the running database
           coverage = craneLib.cargoTarpaulin (commonArgs
             // {
-              # Use lcov output as thats far more widely supported
+              # Use lcov output format for wider tool support
               cargoTarpaulinExtraArgs = "--skip-clean --include-tests --output-dir $out --out lcov";
             });
 
-          # Run clippy (and deny all warnings) on the crate source
+          # Run clippy with strict warnings
           clippy = craneLib.cargoClippy (commonArgs
             // {
-              cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+              cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
             });
 
-          # Cargo Deny to check licenses
+          # License compliance checking
           deny = craneLib.cargoDeny commonArgs;
 
-          # Check docs build successfully
-          doc = craneLib.cargoDoc commonArgs;
+          # Documentation generation
+          doc = craneLib.cargoDoc (commonArgs
+            // {
+              cargoDocExtraArgs = "--workspace --all-features";
+            });
 
-          # Check formatting
-          fmt = craneLib.cargoFmt commonArgs;
+          # Code formatting check
+          fmt = craneLib.cargoFmt (commonArgs
+            // {
+              cargoExtraArgs = "--all";
+            });
 
-          # Run tests with cargo-nextest
-          test = craneLib.cargoNextest commonArgs;
+          # Test execution with nextest
+          test = craneLib.cargoNextest (commonArgs
+            // {
+              cargoNextestExtraArgs = "--workspace --all-features --no-fail-fast";
+            });
 
-          # Audit dependencies
-          # This only runs when Cargo.lock files change
+          # Security audit of dependencies
           audit = craneLib.cargoAudit (commonArgs
             // {
               inherit (inputs) advisory-db;
             });
         };
 
+        # CI checks - packages that run during `nix flake check`
         checks = {
           inherit eidetica;
-          # Build almost every package in checks, with exceptions:
-          # - coverage: Expensive, so only run explicitly
-          # - audit: Requires remote access
-          inherit (self.packages.${system}) clippy doc deny fmt test;
+          # Include most packages in CI checks
+          # Excluded: coverage (expensive)
+          inherit (config.packages) audit clippy doc deny fmt test;
         };
 
-        # This also sets up `nix fmt` to run all formatters
+        # Formatting configuration via treefmt
         treefmt = {
           projectRootFile = "flake.nix";
           programs = {
+            # Nix formatting
             alejandra.enable = true;
+
+            # Markdown, JSON, YAML formatting
             prettier = {
               enable = true;
               excludes = [
-                "docs/mermaid.min.js"
                 "docs/book/\\.html"
               ];
             };
-            rustfmt = {
-              enable = false; # Temporary disabled due to formatting conflicts
-              package = toolChain;
-            };
+
+            # Rust formatting
+            rustfmt.enable = true;
+
+            # Shell script formatting
             shfmt.enable = true;
           };
         };
 
+        # Application definitions
         apps = rec {
           default = eidetica;
-          eidetica.program = self.packages.${system}.eidetica;
+          eidetica = {
+            type = "app";
+            program = config.packages.eidetica;
+            meta.description = "Run the Eidetica database";
+          };
         };
 
+        # Overlay attributes for easy access to packages
         overlayAttrs = {
           inherit (config.packages) eidetica;
         };
 
+        # Development shell configuration
         devShells.default = pkgs.mkShell {
           name = "eidetica";
           shellHook = ''
@@ -173,44 +193,47 @@
             echo ---------------------
           '';
 
-          # Include the packages from the defined checks and packages
-          # Installs the full cargo toolchain and the extra tools, e.g. cargo-tarpaulin.
+          # Inherit build environments from all packages and checks
+          # This ensures all build dependencies are available in the dev shell
           inputsFrom =
-            (builtins.attrValues self.checks.${system})
-            ++ (builtins.attrValues self.packages.${system});
+            (builtins.attrValues config.checks)
+            ++ (builtins.attrValues config.packages);
 
-          # Extra inputs can be added here
+          # Additional development tools
           packages = with pkgs; [
-            act # For running Github Actions locally
-            go-task # Taskfile
+            # CI/CD tools
+            act # Run GitHub Actions locally
+            go-task # Task runner
 
-            # Nix code analysis
-            deadnix
-            statix
+            # Nix development tools
+            deadnix # Find dead Nix code
+            statix # Lint Nix code
 
-            # Formattiing
-            alejandra
-            nodePackages.prettier
+            # Code formatting
+            alejandra # Nix formatter
+            nodePackages.prettier # General formatter
 
-            # Releasing
-            release-plz
-            git-cliff
+            # Release management
+            release-plz # Automated releases
+            git-cliff # Changelog generation
 
-            # Profiling
-            cargo-flamegraph
+            # Performance analysis
+            cargo-flamegraph # Profiling
 
             # Documentation
-            mdbook
-            mdbook-mermaid
+            mdbook # Book generation
+            mdbook-mermaid # Mermaid diagrams
           ];
 
-          # Many tools read this to find the sources for rust stdlib
+          # Environment variables
+
+          # Rust standard library sources for tools like rust-analyzer
           RUST_SRC_PATH = "${rustSrc}/lib/rustlib/src/rust/library";
 
-          # Enable debug symbols in release builds
+          # Enable debug symbols in release builds for better profiling
           CARGO_PROFILE_RELEASE_DEBUG = true;
 
-          # Set the debug level for this crate while developing
+          # Default logging level for development
           RUST_LOG = "eidetica=debug";
         };
       };
