@@ -26,44 +26,58 @@ To start using Eidetica, you need to:
 
 Here's a simple example:
 
-```rust,ignore
-use eidetica::backend::database::InMemory;
-use eidetica::Instance;
-use eidetica::crdt::Doc;
-use std::path::PathBuf;
+```rust
+# extern crate eidetica;
+use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 
-// Create a new in-memory database
-let database = InMemory::new();
-let db = Instance::new(Box::new(database));
+fn main() -> eidetica::Result<()> {
+    // Create a new in-memory database
+    let database = InMemory::new();
+    let db = Instance::new(Box::new(database));
 
-// Add an authentication key (required for all operations)
-db.add_private_key("my_key")?;
+    // Add an authentication key (required for all operations)
+    db.add_private_key("my_private_key")?;
 
-// Create a database to store data
-let mut settings = Doc::new();
-settings.set("name", "my_database");
-let database = db.new_database(settings, "my_key")?;
+    // Create a database to store data
+    let mut settings = Doc::new();
+    settings.set_string("name", "my_database");
+    let _database = db.new_database(settings, "my_private_key")?;
+
+    Ok(())
+}
 ```
 
 The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
 
-```rust,ignore
-// Save the database to a file
-let path = PathBuf::from("my_database.json");
-let database_guard = db.backend().lock().unwrap();
-if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
-    in_memory.save_to_file(&path)?;
+```rust
+# extern crate eidetica;
+use eidetica::{Instance, backend::database::InMemory};
+use std::path::PathBuf;
+
+fn save_db(db: &Instance) -> eidetica::Result<()> {
+    // Save the database to a file
+    let path = PathBuf::from("my_database.json");
+    let database_guard = db.backend();
+    if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
+        in_memory.save_to_file(&path)?;
+    }
+    Ok(())
 }
 ```
 
 You can load a previously saved database:
 
-```rust,ignore
-let path = PathBuf::from("my_database.json");
-let database = InMemory::load_from_file(&path)?;
-let db = Instance::new(Box::new(database));
+```rust
+# extern crate eidetica;
+use eidetica::{Instance, backend::database::InMemory};
+use std::path::PathBuf;
 
-// Note: Authentication keys are automatically loaded with the database
+fn load_instance() -> eidetica::Result<Instance> {
+    let path = PathBuf::from("my_database.json");
+    let database = InMemory::load_from_file(&path)?;
+    // Note: Authentication keys are automatically loaded with the database if they exist
+    Ok(Instance::new(Box::new(database)))
+}
 ```
 
 ## Authentication Requirements
@@ -78,81 +92,126 @@ Eidetica uses **Stores** to organize data within a database. One common store ty
 
 Any data you store must be serializable with `serde`:
 
-```rust,ignore
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Person {
-    name: String,
-    age: u32,
-}
-```
-
 ### Basic Operations
 
 All operations in Eidetica happen within an atomic **Operation**:
 
 **Inserting Data:**
 
-```rust,ignore
-// Start an authenticated operation
-let op = database.new_transaction()?;
+```rust
+# extern crate eidetica;
+# extern crate serde;
+use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+use serde::{Serialize, Deserialize};
 
-// Get or create a Table store
-let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
 
-// Insert a person and get their ID
-let person = Person { name: "Alice".to_string(), age: 30 };
-let id = people.insert(person)?;
+fn insert_alice(database: &Database) -> eidetica::Result<()> {
+    // Start an authenticated operation
+    let op = database.new_transaction()?;
 
-// Commit the changes (automatically signed with the database's default key)
-op.commit()?;
+    // Get or create a Table store
+    let people = op.get_store::<Table<Person>>("people")?;
+
+    // Insert a person and get their ID
+    let person = Person { name: "Alice".to_string(), age: 30 };
+    let _id = people.insert(person)?;
+
+    // Commit the changes (automatically signed with the database's default key)
+    op.commit()?;
+    Ok(())
+}
 ```
 
 **Reading Data:**
 
-```rust,ignore
-let op = database.new_transaction()?;
-let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
+```rust
+# extern crate eidetica;
+# extern crate serde;
+use eidetica::{Database, store::Table};
+use serde::{Serialize, Deserialize};
 
-// Get a single person by ID
-if let Ok(person) = people.get(&id) {
-    println!("Found: {} ({})", person.name, person.age);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
 }
 
-// List all people
-for result in people.iter()? {
-    if let Ok((id, person)) = result {
+fn read(database: &Database, id: &str) -> eidetica::Result<()> {
+    let op = database.new_transaction()?;
+    let people = op.get_store::<Table<Person>>("people")?;
+
+    // Get a single person by ID
+    if let Ok(person) = people.get(id) {
+        println!("Found: {} ({})", person.name, person.age);
+    }
+
+    // Search for all people (using a predicate that always returns true)
+    let all_people = people.search(|_| true)?;
+    for (id, person) in all_people {
         println!("ID: {}, Name: {}, Age: {}", id, person.name, person.age);
     }
+    Ok(())
 }
 ```
 
 **Updating Data:**
 
-```rust,ignore
-let op = database.new_transaction()?;
-let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
+```rust
+# extern crate eidetica;
+# extern crate serde;
+use eidetica::{Database, store::Table};
+use serde::{Serialize, Deserialize};
 
-// Get, modify, and update
-if let Ok(mut person) = people.get(&id) {
-    person.age += 1;
-    people.set(&id, person)?;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
 }
 
-op.commit()?;
+fn update(database: &Database, id: &str) -> eidetica::Result<()> {
+    let op = database.new_transaction()?;
+    let people = op.get_store::<Table<Person>>("people")?;
+
+    // Get, modify, and update
+    if let Ok(mut person) = people.get(id) {
+        person.age += 1;
+        people.set(id, person)?;
+    }
+
+    op.commit()?;
+    Ok(())
+}
 ```
 
 **Deleting Data:**
 
-```rust,ignore
-let op = database.new_transaction()?;
-let people = op.get_subtree::<eidetica::store::Table<Person>>("people")?;
+```rust
+# extern crate eidetica;
+# extern crate serde;
+use eidetica::{Database, store::Table};
+use serde::{Serialize, Deserialize};
 
-// Remove a person by ID
-people.remove(&id)?;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
 
-op.commit()?;
+fn delete(database: &Database, id: &str) -> eidetica::Result<()> {
+    let op = database.new_transaction()?;
+    let people = op.get_store::<Table<Person>>("people")?;
+
+    // Note: Table doesn't currently support deletion
+    // You can overwrite with a "deleted" marker or use other approaches
+
+    op.commit()?;
+    Ok(())
+}
 ```
 
 ## A Complete Example

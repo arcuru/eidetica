@@ -37,57 +37,57 @@ Eidetica revolves around a few key components working together:
 5.  **`Store`**: Within an `Operation`, you get handles to named `Store`s (like `DocStore` or `Table<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
 6.  **`Commit`**: Changes made via `Store` handles within the `Operation` are staged. Calling `commit()` on the `Operation` finalizes these changes atomically, creating a new historical `Entry` in the `Database`.
 
-## Basic Usage Pattern (Conceptual Code)
+## Basic Usage Pattern
 
-```rust,ignore
-use eidetica::{Instance, Database, Error};
-use eidetica::backend::database::InMemory;
-use eidetica::store::{DocStore, Table};
+Here's a quick examplee showing loading a database and writing new data.
+
+```rust
+# extern crate eidetica;
+# extern crate serde;
+use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{DocStore, Table}};
 use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, Clone)]
-struct MyData { /* fields */ }
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct MyData {
+    name: String,
+}
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Create Database
-    let database = InMemory::new();
-    // 2. Create Instance
-    let db = Instance::new(Box::new(database));
+fn main() -> eidetica::Result<()> {
+    let backend = InMemory::new();
+    let db = Instance::new(Box::new(backend));
+    db.add_private_key("my_private_key")?;
 
-    // Add authentication key (required for all operations)
-    db.add_private_key("my_key")?;
-
-    // 3. Create/Load Database (e.g., named "my_database")
+    // Create/Load Database
     let database = match db.find_database("my_database") {
         Ok(mut databases) => databases.pop().unwrap(), // Found existing
         Err(e) if e.is_not_found() => {
-            let mut doc = eidetica::crdt::Doc::new();
-            doc.set("name", "my_database");
-            db.new_database(doc, "my_key")? // Create new with auth
+            let mut doc = Doc::new();
+            doc.set_string("name", "my_database");
+            db.new_database(doc, "my_private_key")?
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e),
     };
 
     // --- Writing Data ---
-    // 4. Start an Operation
-    let op_write = database.new_transaction()?;
-    { // Scope for store handles
-        // 5. Get Store handles
-        let config = op_write.get_subtree::<DocStore>("config")?;
-        let items = op_write.get_subtree::<Table<MyData>>("items")?;
+    // Start a Transaction
+    let txn = database.new_transaction()?;
+    let inserted_id = { // Scope for store handles
+        // Get Store handles
+        let config = txn.get_store::<DocStore>("config")?;
+        let items = txn.get_store::<Table<MyData>>("items")?;
 
-        // 6. Use Store methods
+        // Use Store methods
         config.set("version", "1.0")?;
-        items.insert(MyData { /* ... */ })?;
-    } // Handles drop, changes are staged in op_write
-    // 7. Commit changes
-    let new_entry_id = op_write.commit()?;
+        items.insert(MyData { name: "example".to_string() })?
+    }; // Handles drop, changes are staged in txn
+    // Commit changes
+    let new_entry_id = txn.commit()?;
     println!("Committed changes, new entry ID: {}", new_entry_id);
 
     // --- Reading Data ---
-    // Use Database::get_subtree_viewer for reads outside an Operation
-    let items_viewer = database.get_subtree_viewer::<Table<MyData>>("items")?;
-    if let Some(item) = items_viewer.get(&some_id)? {
+    // Use Database::get_store_viewer for a read-only view
+    let items_viewer = database.get_store_viewer::<Table<MyData>>("items")?;
+    if let Ok(item) = items_viewer.get(&inserted_id) {
        println!("Read item: {:?}", item);
     }
 

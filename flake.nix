@@ -131,6 +131,33 @@
               cargoNextestExtraArgs = "--workspace --all-features --no-fail-fast";
             });
 
+          # Documentation examples testing
+          book-test = craneLib.mkCargoDerivation (commonArgs
+            // {
+              pname = "book-test";
+              inherit cargoArtifacts;
+              # Include entire source for docs directory access
+              src = ./.;
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.mdbook];
+
+              buildPhaseCargoCommand = "cargo build -p eidetica --features full";
+
+              checkPhase = ''
+                runHook preCheck
+                RUST_LOG=warn mdbook test docs -L target/debug/deps
+                runHook postCheck
+              '';
+
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out
+                echo "Documentation examples tested successfully" > $out/result
+                runHook postInstall
+              '';
+
+              doCheck = true;
+            });
+
           # Security audit of dependencies
           audit = craneLib.cargoAudit (commonArgs
             // {
@@ -143,7 +170,7 @@
           inherit eidetica;
           # Include most packages in CI checks
           # Excluded: coverage (expensive)
-          inherit (config.packages) audit clippy doc deny fmt test;
+          inherit (config.packages) audit clippy doc deny fmt test book-test;
         };
 
         # Formatting configuration via treefmt

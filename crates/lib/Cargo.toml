@@ -12,6 +12,7 @@ description.workspace = true
 [features]
 default = []
 y-crdt = ["yrs"]
+full = ["y-crdt"]
 
 [dependencies]
 chrono = { workspace = true }

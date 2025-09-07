@@ -2,8 +2,12 @@
 authors = ["Patrick Jackson"]
 title = "Eidetica Documentation"
 language = "en"
+src = "src"
 
 [output.html]
 default-theme = "light"
 additional-js = ["mermaid-init.js"]
 git-repository-url = "https://github.com/arcuru/eidetica"
+
+[rust]
+edition = "2024"

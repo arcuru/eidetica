@@ -96,7 +96,11 @@ tasks:
   book:test:
     desc: Test code examples in the mdbook
     cmds:
-      - RUST_LOG=warn mdbook test docs
+      # The book tests require a single copy of libeidetica target/debug/deps
+      # This is a workaround to remove and rebuild only 1
+      - rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
+      - cargo build -p eidetica --features full
+      - RUST_LOG=warn mdbook test docs -L target/debug/deps
   book:clean:
     desc: Clean the mdbook build directory
     cmds:
