@@ -1507,9 +1507,19 @@ impl Sync {
     ) -> Result<()> {
         use peer_types::Address;
 
-        let address = Address {
-            transport_type: "http".to_string(),
-            address: peer_address.to_string(),
+        // Auto-detect transport type from address format
+        let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
+            // JSON format indicates Iroh NodeAddr
+            Address {
+                transport_type: "iroh".to_string(),
+                address: peer_address.to_string(),
+            }
+        } else {
+            // Default to HTTP for traditional host:port format
+            Address {
+                transport_type: "http".to_string(),
+                address: peer_address.to_string(),
+            }
         };
 
         // Connect to peer if not already connected
@@ -1711,9 +1721,19 @@ impl Sync {
             .into());
         }
 
-        let address = Address {
-            transport_type: "http".to_string(),
-            address: peer_address.to_string(),
+        // Auto-detect transport type from address format
+        let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
+            // JSON format indicates Iroh NodeAddr
+            Address {
+                transport_type: "iroh".to_string(),
+                address: peer_address.to_string(),
+            }
+        } else {
+            // Default to HTTP for traditional host:port format
+            Address {
+                transport_type: "http".to_string(),
+                address: peer_address.to_string(),
+            }
         };
 
         // Connect to peer if not already connected
