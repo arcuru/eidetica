@@ -26,6 +26,15 @@ pub(crate) fn put(
     let entry_id = entry.id();
     let tree_id = entry.root();
 
+    // SPECIAL CASE: For root entries (entry.root() == ""), we also need to update
+    // tips for the tree whose ID is the entry's ID itself, since the root entry
+    // becomes the root of a new tree.
+    let additional_tree_id = if tree_id.is_empty() {
+        Some(entry_id.clone())
+    } else {
+        None
+    };
+
     // Store the entry
     {
         let mut entries = backend.entries.write().unwrap();
@@ -46,10 +55,24 @@ pub(crate) fn put(
         }
     }
 
-    // Smart cache update for tips
-    {
-        let mut tips_cache = backend.tips.write().unwrap();
-        if let Some(cache) = tips_cache.get_mut(&tree_id) {
+    // FIXME: The tip tracking logic below assumes entries arrive in correct order
+    // (parents before children). However, during sync operations, entries may arrive
+    // out of order (children before parents). This causes incorrect tip tracking where:
+    // 1. A child entry arrives first and is marked as a tip
+    // 2. Its parent arrives later and is also marked as a tip
+    // 3. The child should retroactively remove the parent from tips
+    //
+    // We need to handle this by:
+    // - Checking if any existing tips are actually parents of the new entry
+    // - Checking if the new entry is a parent of any existing tips
+    // - Properly updating the tip set in both cases
+
+    // Helper function to update tips for a given tree ID
+    let update_tips_for_tree =
+        |tips_cache: &mut std::collections::HashMap<ID, super::TreeTipsCache>,
+         target_tree_id: &ID| {
+            let cache = tips_cache.entry(target_tree_id.clone()).or_default();
+
             // Update tree tips
             if let Ok(parents) = entry.parents() {
                 if parents.is_empty() {
@@ -58,29 +81,63 @@ pub(crate) fn put(
                 } else {
                     // Remove parents from tips if they exist (they're no longer tips)
                     for parent in &parents {
-                        cache.tree_tips.remove(parent);
+                        let was_tip = cache.tree_tips.remove(parent);
+                        if was_tip {}
                     }
                     // Add the new entry as a tip (it has no children yet)
                     cache.tree_tips.insert(entry_id.clone());
                 }
             }
 
-            // Update subtree tips for each subtree
-            for subtree_name in entry.subtrees() {
-                if let Some(subtree_tips) = cache.subtree_tips.get_mut(&subtree_name)
-                    && let Ok(store_parents) = entry.subtree_parents(&subtree_name)
-                {
-                    if store_parents.is_empty() {
-                        // Root subtree entry is also a tip initially
-                        subtree_tips.insert(entry_id.clone());
-                    } else {
-                        // Remove parents from tips if they exist (they're no longer tips)
-                        for parent in &store_parents {
-                            subtree_tips.remove(parent);
+            // IMPORTANT: Check if the new entry is actually a parent of any existing tips
+            // This handles out-of-order arrival where children arrive before parents
+            let tips_to_check: Vec<ID> = cache.tree_tips.iter().cloned().collect();
+            for existing_tip_id in tips_to_check {
+                // Skip if it's the entry we just added
+                if existing_tip_id == entry_id {
+                    continue;
+                }
+
+                // Get the existing tip entry to check its parents
+                if let Ok(existing_tip) = get(backend, &existing_tip_id) {
+                    if let Ok(tip_parents) = existing_tip.parents() {
+                        // If the new entry is a parent of this tip, remove the new entry from tips
+                        if tip_parents.contains(&entry_id) {
+                            cache.tree_tips.remove(&entry_id);
+                            break; // An entry can only be removed once
                         }
-                        // Add the new entry as a tip (it has no children yet)
-                        subtree_tips.insert(entry_id.clone());
                     }
+                }
+            }
+        };
+
+    // Smart cache update for tips - ALWAYS update, creating cache if needed
+    {
+        let mut tips_cache = backend.tips.write().unwrap();
+
+        // Update tips for the entry's declared tree
+        update_tips_for_tree(&mut tips_cache, &tree_id);
+
+        // SPECIAL CASE: For root entries, also update tips for the tree named after the entry ID
+        if let Some(ref additional_tree) = additional_tree_id {
+            update_tips_for_tree(&mut tips_cache, additional_tree);
+        }
+
+        // Update subtree tips for each subtree (for the main tree only)
+        let cache = tips_cache.entry(tree_id.clone()).or_default();
+        for subtree_name in entry.subtrees() {
+            let subtree_tips = cache.subtree_tips.entry(subtree_name.clone()).or_default();
+            if let Ok(store_parents) = entry.subtree_parents(&subtree_name) {
+                if store_parents.is_empty() {
+                    // Root subtree entry is also a tip initially
+                    subtree_tips.insert(entry_id.clone());
+                } else {
+                    // Remove parents from tips if they exist (they're no longer tips)
+                    for parent in &store_parents {
+                        subtree_tips.remove(parent);
+                    }
+                    // Add the new entry as a tip (it has no children yet)
+                    subtree_tips.insert(entry_id.clone());
                 }
             }
         }

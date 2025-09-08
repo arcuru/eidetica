@@ -640,6 +640,32 @@ The current validation process:
 
 Eidetica servers require proof of read permissions before allowing database synchronization. The server challenges the client to sign a random nonce, then validates the signature against the database's authentication configuration.
 
+### Authenticated Bootstrap Protocol
+
+The authenticated bootstrap protocol enables devices to join existing databases without prior local state while requesting authentication access:
+
+**Bootstrap Flow**:
+
+1. **Bootstrap Detection**: Empty tips in SyncTreeRequest signals bootstrap needed
+2. **Auth Request**: Client includes requesting key, key name, and requested permission
+3. **Auto-approval**: Server automatically approves keys (configurable for manual approval)
+4. **Key Addition**: Server adds requesting key to database's authentication settings
+5. **Database Transfer**: Complete database state sent with key approval confirmation
+6. **Access Granted**: Client receives database and can make authenticated operations
+
+**Protocol Extensions**:
+
+- `SyncTreeRequest` includes: `requesting_key`, `requesting_key_name`, `requested_permission`
+- `BootstrapResponse` includes: `key_approved`, `granted_permission`
+- New sync API: `sync_with_peer_for_bootstrap()` for authenticated bootstrap scenarios
+
+**Security**:
+
+- Ed25519 key cryptography for secure identity
+- Permission levels maintained (Read/Write/Admin)
+- Auto-approval for testing, manual approval for production (future)
+- Immutable audit trail of all key additions in database history
+
 ### CRDT Metadata Considerations
 
 The current system uses entry metadata to reference settings tips. With authentication:

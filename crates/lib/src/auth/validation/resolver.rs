@@ -53,6 +53,23 @@ impl KeyResolver {
         self.resolve_sig_key_with_depth(sig_key, settings, backend, 0)
     }
 
+    /// Resolve authentication identifier with pubkey override for global permissions
+    ///
+    /// # Arguments  
+    /// * `sig_key` - The signature key identifier to resolve
+    /// * `settings` - Document settings containing auth configuration
+    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
+    pub fn resolve_sig_key_with_pubkey(
+        &mut self,
+        sig_key: &SigKey,
+        settings: &Doc,
+        backend: Option<&Arc<dyn BackendDB>>,
+        pubkey_override: Option<&str>,
+    ) -> Result<ResolvedAuth> {
+        self.resolve_sig_key_with_depth_and_pubkey(sig_key, settings, backend, 0, pubkey_override)
+    }
+
     /// Resolve authentication identifier with recursion depth tracking
     ///
     /// This internal method tracks delegation depth to prevent infinite loops
@@ -64,6 +81,21 @@ impl KeyResolver {
         backend: Option<&Arc<dyn BackendDB>>,
         depth: usize,
     ) -> Result<ResolvedAuth> {
+        self.resolve_sig_key_with_depth_and_pubkey(sig_key, settings, backend, depth, None)
+    }
+
+    /// Resolve authentication identifier with recursion depth tracking and pubkey override
+    ///
+    /// This internal method tracks delegation depth to prevent infinite loops
+    /// and ensures that delegation chains don't exceed reasonable limits.
+    pub fn resolve_sig_key_with_depth_and_pubkey(
+        &mut self,
+        sig_key: &SigKey,
+        settings: &Doc,
+        backend: Option<&Arc<dyn BackendDB>>,
+        depth: usize,
+        pubkey_override: Option<&str>,
+    ) -> Result<ResolvedAuth> {
         // Prevent infinite recursion and overly deep delegation chains
         const MAX_DELEGATION_DEPTH: usize = 10;
         if depth >= MAX_DELEGATION_DEPTH {
@@ -74,7 +106,9 @@ impl KeyResolver {
         }
 
         match sig_key {
-            SigKey::Direct(key_name) => self.resolve_direct_key(key_name, settings),
+            SigKey::Direct(key_name) => {
+                self.resolve_direct_key_with_pubkey(key_name, settings, pubkey_override)
+            }
             SigKey::DelegationPath(steps) => {
                 let backend = backend.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
@@ -87,6 +121,16 @@ impl KeyResolver {
 
     /// Resolve a direct key reference from the main tree's auth settings
     pub fn resolve_direct_key(&mut self, key_name: &str, settings: &Doc) -> Result<ResolvedAuth> {
+        self.resolve_direct_key_with_pubkey(key_name, settings, None)
+    }
+
+    /// Resolve a direct key reference with optional pubkey override for global permissions
+    pub fn resolve_direct_key_with_pubkey(
+        &mut self,
+        key_name: &str,
+        settings: &Doc,
+        pubkey_override: Option<&str>,
+    ) -> Result<ResolvedAuth> {
         // First get the auth section from settings
         let auth_section = settings
             .get("auth")
@@ -110,7 +154,18 @@ impl KeyResolver {
             }
         })?;
 
-        let public_key = parse_public_key(&auth_key.pubkey)?;
+        // Handle global "*" permission case
+        let public_key = if key_name == "*" && auth_key.pubkey == "*" {
+            // For global "*" permission, we must use the pubkey from the SigInfo
+            let pubkey_str =
+                pubkey_override.ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                    reason: "Global '*' permission requires pubkey field in SigInfo".to_string(),
+                })?;
+            parse_public_key(pubkey_str)?
+        } else {
+            // For regular keys, use the pubkey from the auth configuration
+            parse_public_key(&auth_key.pubkey)?
+        };
 
         Ok(ResolvedAuth {
             public_key,

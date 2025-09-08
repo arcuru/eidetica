@@ -31,58 +31,80 @@ db.add_private_key("device_key")?;
 
 ### 2. Enable a Transport Protocol
 
-<!-- TODO: Example uses sync API that doesn't match current implementation - sync_mut() method doesn't exist on Instance/Database -->
-
 ```rust,ignore
+// Get mutable access to sync module
+let sync = db.sync_mut().unwrap();
+
 // Enable HTTP transport
-db.sync_mut()?.enable_http_transport()?;
+sync.enable_http_transport()?;
 
 // Start a server to accept connections
-db.sync_mut()?.start_server("127.0.0.1:8080")?;
+sync.start_server_async("127.0.0.1:8080").await?;
 ```
 
-### 3. Connect to a Remote Peer
+### 3. Authenticated Bootstrap (Recommended)
 
-<!-- TODO: Example uses sync API methods that don't exist in current implementation -->
+For new devices joining existing databases, use authenticated bootstrap to request access:
 
 ```rust,ignore
-use eidetica::sync::{Address, peer_types::PeerStatus};
+// On another device - connect and bootstrap with authentication
+let client_sync = client_db.sync_mut().unwrap();
+client_sync.enable_http_transport()?;
 
-// Create an address for the remote peer
-let remote_addr = Address::http("192.168.1.100:8080")?;
-
-// Connect and perform handshake
-let peer_pubkey = db.sync_mut()?.connect_to_peer(&remote_addr).await?;
-
-// Activate the peer for syncing
-db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
+// Bootstrap with authentication - automatically requests write permission
+client_sync.sync_with_peer_for_bootstrap(
+    "127.0.0.1:8080",
+    &tree_id,
+    "device_key",                          // Your local key name
+    eidetica::auth::Permission::Write      // Requested permission level
+).await?;
 ```
 
-### 4. Set Up Database Synchronization
+### 4. Simplified Sync API (Legacy/Existing Databases)
 
-<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
+For existing databases or when authentication isn't needed:
 
 ```rust,ignore
-// Create a database to sync
-let database = db.new_database(Doc::new(), "device_key")?;
-let tree_id = database.root_id().to_string();
-
-// Configure this database to sync with the peer
-db.sync_mut()?.add_tree_sync(&peer_pubkey, &tree_id)?;
+// This call automatically detects bootstrap vs incremental sync
+client_sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
 ```
 
-### 5. Automatic Synchronization
-
-Once configured, any changes to the database will automatically be queued for synchronization:
-
-<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
+### 5. Database Creation and Sharing
 
 ```rust,ignore
-// Make changes to the database - these will be auto-synced
+// Create a database to share
+use eidetica::crdt::Doc;
+let mut settings = Doc::new();
+settings.set_string("name", "My Shared Room");
+let database = db.new_database(settings, "device_key")?;
+let tree_id = database.root_id();
+
+// Add some data
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("data")?;
-store.set_string("message", "Hello, distributed world!")?;
-op.commit()?; // This triggers sync queue entry
+let store = op.get_subtree::<DocStore>("messages")?;
+store.set_string("welcome", "Hello, distributed world!")?;
+op.commit()?;
+
+// Share the tree_id with other devices
+println!("Share this room ID: {}", tree_id);
+```
+
+### 6. Discovering Available Rooms
+
+You can discover what databases are available on a peer:
+
+```rust,ignore
+// Discover available trees on a peer
+let available_trees = sync.discover_peer_trees("127.0.0.1:8080").await?;
+for tree in available_trees {
+    println!("Available room: {} ({} entries)",
+             tree.tree_id, tree.entry_count);
+}
+
+// Bootstrap from a specific discovered tree
+if let Some(tree) = available_trees.first() {
+    sync.sync_with_peer("127.0.0.1:8080", Some(&tree.tree_id)).await?;
+}
 ```
 
 ## Transport Protocols
@@ -91,25 +113,24 @@ op.commit()?; // This triggers sync queue entry
 
 The HTTP transport uses REST APIs for synchronization:
 
-<!-- TODO: Example uses sync API methods that don't match current implementation -->
-
 ```rust,ignore
 // Enable HTTP transport
 sync.enable_http_transport()?;
 
-// Start server
-sync.start_server("127.0.0.1:8080")?;
+// Start server (async)
+sync.start_server_async("127.0.0.1:8080").await?;
 
-// Connect to remote peer
-let addr = Address::http("peer.example.com:8080")?;
-let peer_key = sync.connect_to_peer(&addr).await?;
+// Get server address for sharing
+let server_addr = sync.get_server_address_async().await?;
+println!("Server running at: {}", server_addr);
+
+// Connect and sync with remote peer (handles handshake automatically)
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 ```
 
 ### Iroh P2P Transport (Recommended)
 
 Iroh provides direct peer-to-peer connectivity with NAT traversal:
-
-<!-- TODO: Example uses sync API methods that don't match current implementation -->
 
 ```rust,ignore
 // Enable Iroh transport with production defaults (uses n0's relay servers)
@@ -145,21 +166,22 @@ let transport = IrohTransport::builder()
 sync.enable_iroh_transport_with_config(transport)?;
 
 // Start the Iroh server (binds to its own ports)
-sync.start_server("ignored")?; // Iroh manages its own addressing
+sync.start_server_async("ignored").await?; // Iroh manages its own addressing
 
 // Get the server address for sharing with peers
-let my_address = sync.get_server_address()?;
+let my_address = sync.get_server_address_async().await?;
 // This returns a JSON string containing:
 // - node_id: Your cryptographic node identity
 // - direct_addresses: Socket addresses where you can be reached
 
-// Connect to a peer using their address
-let addr = Address::iroh(&peer_address_json)?;
-let peer_key = sync.connect_to_peer(&addr).await?;
+// Connect and sync with peer using bootstrap-first protocol
+sync.sync_with_peer(&peer_address_json, Some(&tree_id)).await?;
 
-// Or if you only have the node ID (will use relays to discover)
-let addr = Address::iroh(peer_node_id)?;
-let peer_key = sync.connect_to_peer(&addr).await?;
+// Or discover available trees first
+let available_trees = sync.discover_peer_trees(&peer_address_json).await?;
+if let Some(tree) = available_trees.first() {
+    sync.sync_with_peer(&peer_address_json, Some(&tree.tree_id)).await?;
+}
 ```
 
 **Relay Modes:**
@@ -212,7 +234,29 @@ op.commit()?;  // Sync hook sends command to background thread
 
 ## Peer Management
 
-### Registering Peers
+### Simplified Sync API (Recommended)
+
+The new `sync_with_peer()` method handles peer management automatically:
+
+```rust,ignore
+// Automatic peer connection, handshake, and sync in one call
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+
+// This automatically:
+// 1. Performs handshake with the peer
+// 2. Registers the peer if not already known
+// 3. Bootstraps the database if it doesn't exist locally
+// 4. Performs incremental sync if database exists locally
+// 5. Stores peer information for future sync operations
+
+// For subsequent sync operations with the same peer
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+// Reuses existing peer registration and performs incremental sync
+```
+
+### Manual Peer Management (Advanced)
+
+For advanced use cases, you can manage peers manually:
 
 ```rust,ignore
 // Register a peer manually
@@ -221,39 +265,39 @@ sync.register_peer("ed25519:abc123...", Some("Alice's Device"))?;
 // Add multiple addresses for the same peer
 sync.add_peer_address(&peer_key, Address::http("192.168.1.100:8080")?)?;
 sync.add_peer_address(&peer_key, Address::iroh("iroh://peer_id@relay")?)?;
+
+// Use low-level sync method with registered peers
+sync.sync_tree_with_peer(&peer_key, &tree_id).await?;
 ```
 
-### Peer Status Management
+### Peer Information and Status
 
 ```rust,ignore
-use eidetica::sync::peer_types::PeerStatus;
-
-// Activate peer for syncing
-sync.update_peer_status(&peer_key, PeerStatus::Active)?;
-
-// Pause syncing with a peer
-sync.update_peer_status(&peer_key, PeerStatus::Inactive)?;
-
-// Get peer information
+// Get peer information (after connecting)
 if let Some(peer_info) = sync.get_peer_info(&peer_key)? {
-    println!("Peer: {} ({})", peer_info.display_name.unwrap_or("Unknown".to_string()), peer_info.status);
+    println!("Peer: {} ({})",
+             peer_info.display_name.unwrap_or("Unknown".to_string()),
+             peer_info.status);
+}
+
+// List all registered peers
+let peers = sync.list_peers()?;
+for peer in peers {
+    println!("Peer: {} - {}", peer.pubkey, peer.display_name.unwrap_or("Unknown".to_string()));
 }
 ```
 
-### Database Sync Relationships
+### Database Discovery
 
 ```rust,ignore
-// Add database to sync relationship
-sync.add_tree_sync(&peer_key, &tree_id)?;
+// Discover what databases are available on a peer
+let available_trees = sync.discover_peer_trees("peer.example.com:8080").await?;
+for tree in available_trees {
+    println!("Available database: {} ({} entries)", tree.tree_id, tree.entry_count);
 
-// List all databases synced with a peer
-let synced_trees = sync.get_peer_trees(&peer_key)?;
-
-// List all peers syncing a specific database
-let syncing_peers = sync.get_tree_peers(&tree_id)?;
-
-// Remove database from sync relationship
-sync.remove_tree_sync(&peer_key, &tree_id)?;
+    // Bootstrap any interesting databases
+    sync.sync_with_peer("peer.example.com:8080", Some(&tree.tree_id)).await?;
+}
 ```
 
 ## Security
@@ -270,6 +314,38 @@ db.add_private_key("backup_key")?;
 // Set a specific key as default for a database
 database.set_default_auth_key("backup_key");
 ```
+
+#### Bootstrap Authentication Flow
+
+When joining a new database, the authenticated bootstrap protocol handles permission requests:
+
+1. **Client Request**: Device requests access with its public key and desired permission level
+2. **Server Evaluation**: Server evaluates the request (auto-approved by default)
+3. **Key Addition**: Server adds the requesting key to the database's authentication settings
+4. **Database Transfer**: Complete database state transferred to the client
+5. **Access Granted**: Client can immediately make authenticated operations
+
+```rust,ignore
+// Bootstrap authentication example
+sync.sync_with_peer_for_bootstrap(
+    "peer_address",
+    &tree_id,
+    "my_device_key",
+    Permission::Write  // Request write access
+).await?;
+
+// After successful bootstrap, the device can write to the database
+let op = database.new_authenticated_operation("my_device_key")?;
+// ... make changes ...
+op.commit()?;
+```
+
+**Security Considerations**:
+
+- Current implementation auto-approves all keys for testing convenience
+- Future versions will support manual approval workflows
+- All key additions are recorded in the immutable database history
+- Permission levels are enforced (Read/Write/Admin)
 
 ### Peer Verification
 
@@ -341,29 +417,110 @@ match sync.connect_to_peer(&addr).await {
 }
 ```
 
+## Bootstrap-First Sync Protocol
+
+Eidetica now supports a **bootstrap-first sync protocol** that enables devices to join existing databases (rooms/channels) without requiring pre-existing local state.
+
+### Key Features
+
+**Unified API:** Single `sync_with_peer()` method handles both bootstrap and incremental sync
+
+```rust,ignore
+// Works whether you have the database locally or not
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+```
+
+**Automatic Detection:** The protocol automatically detects whether bootstrap or incremental sync is needed:
+
+- **Bootstrap sync:** If you don't have the database locally, the peer sends the complete database
+- **Incremental sync:** If you already have the database, only new changes are transferred
+
+**True Bidirectional Sync:** Both peers exchange data in a single sync operation - no separate client/server roles needed
+
+### Protocol Flow
+
+1. **Handshake:** Peers exchange device identities and establish trust
+2. **Tree Discovery:** Client requests information about available trees
+3. **Tip Comparison:** Compare local vs remote database tips to detect missing data
+4. **Bidirectional Transfer:** Both peers send missing entries to each other in a single sync operation
+   - Client receives missing entries from server
+   - Client automatically detects what server is missing and sends those entries back
+   - Uses existing `IncrementalResponse.their_tips` field to enable true bidirectional sync
+5. **Verification:** Validate received entries and update local database
+
+### Use Cases
+
+**Joining Chat Rooms:**
+
+```rust,ignore
+// Join a chat room by ID
+let room_id = "abc123...";
+sync.sync_with_peer("chat.example.com", Some(&room_id)).await?;
+// Now you have the full chat history and can participate
+```
+
+**Document Collaboration:**
+
+```rust,ignore
+// Join a collaborative document
+let doc_id = "def456...";
+sync.sync_with_peer("docs.example.com", Some(&doc_id)).await?;
+// You now have the full document and can make edits
+```
+
+**Data Synchronization:**
+
+```rust,ignore
+// Sync application data to a new device
+sync.sync_with_peer("my-server.com", Some(&app_data_id)).await?;
+// All your application data is now available locally
+```
+
 ## Best Practices
 
-### 1. **Use Iroh Transport for Production**
+### 1. **Use the New Simplified API**
+
+Prefer `sync_with_peer()` over manual peer management:
+
+```rust,ignore
+// ✅ Recommended: Automatic connection and sync
+sync.sync_with_peer("peer.example.com", Some(&tree_id)).await?;
+
+// ❌ Avoid: Manual peer setup (unless you need fine control)
+sync.register_peer(&pubkey, Some("Alice"))?;
+sync.add_peer_address(&pubkey, addr)?;
+sync.sync_tree_with_peer(&pubkey, &tree_id).await?;
+```
+
+### 2. **Use Iroh Transport for Production**
 
 Iroh provides better NAT traversal and P2P capabilities than HTTP.
 
-### 2. **Understand Automatic Sync Behavior**
+### 3. **Leverage Database Discovery**
 
-The BackgroundSync engine handles operations automatically:
+Use `discover_peer_trees()` to find available databases before syncing:
 
-- Entries sync immediately when committed
-- Failed sends retry with exponential backoff (2^attempts seconds)
-- Periodic sync runs every 5 minutes for all peers
-
-### 3. **Monitor Sync Health**
-
-Regularly check sync statistics and peer status to ensure healthy operation.
+```rust,ignore
+let available = sync.discover_peer_trees("peer.example.com").await?;
+for tree in available {
+    if tree.name == "My Project" {
+        sync.sync_with_peer("peer.example.com", Some(&tree.tree_id)).await?;
+        break;
+    }
+}
+```
 
 ### 4. **Handle Network Failures Gracefully**
 
 The sync system automatically retries failed operations, but your application should handle temporary disconnections.
 
-### 5. **Secure Your Private Keys**
+### 5. **Understand Bootstrap vs Incremental Behavior**
+
+- **First sync** with a database = Bootstrap (full data transfer)
+- **Subsequent syncs** = Incremental (only changes)
+- **No manual state management** needed
+
+### 6. **Secure Your Private Keys**
 
 Store device keys securely and use different keys for different purposes when appropriate.
 

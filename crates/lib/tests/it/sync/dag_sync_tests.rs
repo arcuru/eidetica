@@ -9,11 +9,7 @@ use eidetica::{
     Database,
     entry::{Entry, ID},
     store::DocStore,
-    sync::{
-        Address,
-        protocol::{SyncRequest, SyncResponse},
-        transports::{SyncTransport, http::HttpTransport},
-    },
+    sync::Address,
 };
 
 use super::helpers;
@@ -481,9 +477,9 @@ async fn test_sync_protocol_implementation() {
     sync1.enable_http_transport().unwrap();
     sync2.enable_http_transport().unwrap();
 
-    // Start server on sync2
-    sync2.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = sync2.get_server_address_async().await.unwrap();
+    // Start server on sync1 (which has the data)
+    sync1.start_server_async("127.0.0.1:0").await.unwrap();
+    let server_addr = sync1.get_server_address_async().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create a tree with data in database 1
@@ -493,7 +489,7 @@ async fn test_sync_protocol_implementation() {
     let tree_root_id = tree1.root_id().clone();
 
     // Get the root entry to verify it exists
-    let root_entry = base_db1.backend().get(&tree_root_id).unwrap();
+    let _root_entry = base_db1.backend().get(&tree_root_id).unwrap();
 
     // Add test data to tree1
     let test_entry_id = {
@@ -520,63 +516,41 @@ async fn test_sync_protocol_implementation() {
         "Tree root should not exist in db2 yet"
     );
 
-    // Setup peer registration for bidirectional sync
-    let sync1_pubkey = sync1.get_device_public_key().unwrap();
-    let sync2_pubkey = sync2.get_device_public_key().unwrap();
+    // Debug: Check trees available on server (sync1 is the server now)
+    let available_trees = sync2.discover_peer_trees(&server_addr).await.unwrap();
+    println!("🧪 DEBUG: Available trees on server: {:?}", available_trees);
 
-    // sync1 registers sync2 as a peer
-    sync1.register_peer(&sync2_pubkey, Some("peer2")).unwrap();
-    sync1
-        .add_peer_address(&sync2_pubkey, Address::http(&server_addr))
-        .unwrap();
-    sync1.add_tree_sync(&sync2_pubkey, &tree_root_id).unwrap();
-
-    // sync2 registers sync1 as a peer (for bidirectional sync)
-    sync2.register_peer(&sync1_pubkey, Some("peer1")).unwrap();
-    sync2.add_tree_sync(&sync1_pubkey, &tree_root_id).unwrap();
-
-    // First, manually send the root entry to bootstrap the tree in db2
-    // This simulates initial tree sharing while we figure out the bootstrap flow
-    // TODO: Fix bootstrapping flow
-    {
-        let transport = HttpTransport::new().unwrap();
-        let request = SyncRequest::SendEntries(vec![root_entry]);
-        let response = transport
-            .send_request(&Address::http(&server_addr), &request)
-            .await
-            .unwrap();
-        assert_eq!(
-            response,
-            SyncResponse::Ack,
-            "Root entry should be acknowledged"
-        );
-    }
-
-    // Now verify the tree root exists in db2
-    assert!(
-        base_db2.backend().get(&tree_root_id).is_ok(),
-        "Tree root should now exist in db2 after bootstrap"
-    );
-
-    // Load the tree in db2 now that it has the root
-    let _tree2_initial = base_db2.load_database(&tree_root_id).unwrap();
-
-    // Verify the first entry doesn't exist in db2 yet
-    assert!(
-        base_db2.backend().get(&test_entry_id).is_err(),
-        "First data entry should not exist in db2 before sync"
-    );
-
-    // Perform the sync - this tests GetTips, GetEntries, and SendEntries for the data entry
-    let result = sync1
-        .sync_tree_with_peer(&sync2_pubkey, &tree_root_id)
+    // Use the new bootstrap-first sync protocol (sync2 bootstraps from sync1)
+    println!("🧪 DEBUG: Starting sync for tree_root_id: {}", tree_root_id);
+    let result = sync2
+        .sync_with_peer(&server_addr, Some(&tree_root_id))
         .await;
 
     // The sync should succeed with properly implemented protocol methods
     assert!(result.is_ok(), "Sync should succeed: {:?}", result.err());
+    println!("🧪 DEBUG: Sync completed successfully");
 
     // Wait a moment for async processing
     tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Debug: check what entries exist in both databases
+    println!("🧪 DEBUG: Checking what entries exist:");
+    println!(
+        "  - db1 has tree root: {}",
+        base_db1.backend().get(&tree_root_id).is_ok()
+    );
+    println!(
+        "  - db1 has test entry: {}",
+        base_db1.backend().get(&test_entry_id).is_ok()
+    );
+    println!(
+        "  - db2 has tree root: {}",
+        base_db2.backend().get(&tree_root_id).is_ok()
+    );
+    println!(
+        "  - db2 has test entry: {}",
+        base_db2.backend().get(&test_entry_id).is_ok()
+    );
 
     // Verify the data was actually synced to db2
     let synced_entry = base_db2.backend().get(&test_entry_id);
@@ -606,9 +580,9 @@ async fn test_sync_protocol_implementation() {
         "Second entry should not exist in db2 before second sync"
     );
 
-    // Perform another sync to transfer the new entry
-    let result2 = sync1
-        .sync_tree_with_peer(&sync2_pubkey, &tree_root_id)
+    // Perform another sync to transfer the new entry (incremental sync)
+    let result2 = sync2
+        .sync_with_peer(&server_addr, Some(&tree_root_id))
         .await;
     assert!(
         result2.is_ok(),
@@ -648,7 +622,7 @@ async fn test_sync_protocol_implementation() {
     println!("✅ Successfully synced multiple entries across two sync operations!");
 
     // Clean up
-    sync2.stop_server_async().await.unwrap();
+    sync1.stop_server_async().await.unwrap();
 }
 
 #[tokio::test]

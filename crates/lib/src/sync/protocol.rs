@@ -22,6 +22,19 @@ pub struct HandshakeRequest {
     pub challenge: Vec<u8>,
 }
 
+/// Information about a tree available for sync
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct TreeInfo {
+    /// The root ID of the tree
+    pub tree_id: ID,
+    /// Optional human-readable name for the tree
+    pub name: Option<String>,
+    /// Number of entries in the tree
+    pub entry_count: usize,
+    /// Unix timestamp of last modification
+    pub last_modified: u64,
+}
+
 /// Handshake response sent in reply to a handshake request.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HandshakeResponse {
@@ -37,36 +50,49 @@ pub struct HandshakeResponse {
     pub challenge_response: Vec<u8>,
     /// New challenge for mutual authentication
     pub new_challenge: Vec<u8>,
+    /// Trees available for synchronization
+    pub available_trees: Vec<TreeInfo>,
 }
 
-/// Request for tree tips to determine sync state.
+/// Unified sync request for both bootstrap and incremental sync
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct GetTipsRequest {
-    /// Database ID to get tips for
+pub struct SyncTreeRequest {
+    /// Database ID to sync
     pub tree_id: ID,
+    /// Our current tips (empty vec signals bootstrap needed)
+    pub our_tips: Vec<ID>,
+    /// Authentication key requesting access (for bootstrap)
+    pub requesting_key: Option<String>,
+    /// Key name/identifier for the requesting key
+    pub requesting_key_name: Option<String>,
+    /// Desired permission level for bootstrap
+    pub requested_permission: Option<crate::auth::Permission>,
 }
 
-/// Response containing tree tips.
+/// Bootstrap response containing complete tree state
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct GetTipsResponse {
-    /// Database ID these tips belong to
+pub struct BootstrapResponse {
+    /// Database ID being bootstrapped
     pub tree_id: ID,
-    /// Current tip entry IDs for the tree
-    pub tips: Vec<ID>,
+    /// The root entry of the tree
+    pub root_entry: Entry,
+    /// All entries in the tree (excluding root)
+    pub all_entries: Vec<Entry>,
+    /// Whether the requesting key was approved and added
+    pub key_approved: bool,
+    /// The permission level granted (if approved)
+    pub granted_permission: Option<crate::auth::Permission>,
 }
 
-/// Request for specific entries.
+/// Incremental sync response for existing trees
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct GetEntriesRequest {
-    /// Entry IDs to retrieve
-    pub entry_ids: Vec<ID>,
-}
-
-/// Response containing requested entries.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct GetEntriesResponse {
-    /// The requested entries
-    pub entries: Vec<Entry>,
+pub struct IncrementalResponse {
+    /// Database ID being synced
+    pub tree_id: ID,
+    /// Peer's current tips
+    pub their_tips: Vec<ID>,
+    /// Entries missing from our tree
+    pub missing_entries: Vec<Entry>,
 }
 
 /// Request messages that can be sent to a sync peer.
@@ -74,12 +100,10 @@ pub struct GetEntriesResponse {
 pub enum SyncRequest {
     /// Initial handshake request
     Handshake(HandshakeRequest),
-    /// Send entries for synchronization
+    /// Unified tree sync request (handles both bootstrap and incremental)
+    SyncTree(SyncTreeRequest),
+    /// Send entries for synchronization (backward compatibility)
     SendEntries(Vec<Entry>),
-    /// Request tree tips
-    GetTips(GetTipsRequest),
-    /// Request specific entries
-    GetEntries(GetEntriesRequest),
 }
 
 /// Response messages returned from a sync peer.
@@ -87,17 +111,17 @@ pub enum SyncRequest {
 pub enum SyncResponse {
     /// Handshake response
     Handshake(HandshakeResponse),
+    /// Full database bootstrap for new peers
+    Bootstrap(BootstrapResponse),
+    /// Incremental sync for existing peers
+    Incremental(IncrementalResponse),
     /// Acknowledgment that entries were received successfully
     Ack,
     /// Number of entries received (for multiple entries)
     Count(usize),
-    /// Database tips response
-    Tips(GetTipsResponse),
-    /// Entries response
-    Entries(GetEntriesResponse),
     /// Error response
     Error(String),
 }
 
-/// Current protocol version
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Current protocol version - 0 indicates unstable
+pub const PROTOCOL_VERSION: u32 = 0;

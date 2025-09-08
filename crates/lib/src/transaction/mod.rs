@@ -838,10 +838,11 @@ impl Transaction {
                             Operation::WriteData // Default to write for other data modifications
                         };
 
-                        let resolved_auth = validator.resolve_sig_key(
+                        let resolved_auth = validator.resolve_sig_key_with_pubkey(
                             &entry.sig.key,
                             &settings_for_validation,
                             Some(self.db.backend()),
+                            entry.sig.pubkey.as_deref(),
                         )?;
 
                         let has_permission =

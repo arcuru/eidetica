@@ -344,13 +344,15 @@ pub(crate) fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
     // Check if we have cached tree tips
     let tips_cache = backend.tips.read().unwrap();
     if let Some(cache) = tips_cache.get(tree) {
-        return Ok(cache.tree_tips.iter().cloned().collect());
+        let cached_tips: Vec<ID> = cache.tree_tips.iter().cloned().collect();
+        return Ok(cached_tips);
     }
     drop(tips_cache);
 
     // Compute tips lazily
     let mut tips = Vec::new();
     let entries = backend.entries.read().unwrap();
+
     for (id, entry) in entries.iter() {
         if entry.root() == tree && super::storage::is_tip(backend, tree, id) {
             tips.push(id.clone());

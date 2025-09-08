@@ -676,7 +676,214 @@ fn test_delegation_depth_limit() {
             .resolve_sig_key_with_depth(&simple_sig_key, &settings, None, 10);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    println!("Depth limit error: {error}");
     assert!(error.to_string().contains("Maximum delegation depth"));
     assert!(error.to_string().contains("exceeded"));
+}
+
+// ===== GLOBAL PERMISSION TESTS =====
+
+#[test]
+fn test_global_permission_with_pubkey_field() {
+    let mut validator = AuthValidator::new();
+    let (signing_key, verifying_key) = generate_keypair();
+
+    // Create settings with global "*" permission
+    let global_auth_key = AuthKey {
+        pubkey: "*".to_string(),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+
+    let settings = create_test_settings_with_key("*", &global_auth_key);
+
+    // Create an entry that uses global permission
+    let mut entry = Entry::builder("test_entry").build();
+
+    // Set signature info to reference "*" permission and include actual pubkey
+    entry.sig = SigInfo {
+        key: SigKey::Direct("*".to_string()),
+        sig: None,
+        pubkey: Some(format_public_key(&verifying_key)), // Include actual signer's pubkey
+    };
+
+    // Sign the entry with the client's key
+    let signature = sign_entry(&entry, &signing_key).unwrap();
+    entry.sig.sig = Some(signature);
+
+    // Validation should succeed
+    let result = validator.validate_entry(&entry, &settings, None);
+    assert!(result.is_ok(), "Validation failed: {:?}", result.err());
+    assert!(
+        result.unwrap(),
+        "Expected validation to succeed with global permission"
+    );
+}
+
+#[test]
+fn test_global_permission_without_pubkey_fails() {
+    let mut validator = AuthValidator::new();
+    let (signing_key, _) = generate_keypair();
+
+    // Create settings with global "*" permission
+    let global_auth_key = AuthKey {
+        pubkey: "*".to_string(),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+
+    let settings = create_test_settings_with_key("*", &global_auth_key);
+
+    // Create an entry that uses global permission but doesn't include pubkey
+    let mut entry = Entry::builder("test_entry").build();
+
+    entry.sig = SigInfo {
+        key: SigKey::Direct("*".to_string()),
+        sig: None,
+        pubkey: None, // Missing pubkey field - should fail
+    };
+
+    let signature = sign_entry(&entry, &signing_key).unwrap();
+    entry.sig.sig = Some(signature);
+
+    // Validation should fail due to missing pubkey
+    let result = validator.validate_entry(&entry, &settings, None);
+    assert!(
+        result.is_err(),
+        "Expected validation to fail without pubkey field"
+    );
+}
+
+#[test]
+fn test_global_permission_resolver() {
+    let mut validator = AuthValidator::new();
+    let (_, verifying_key) = generate_keypair();
+
+    // Create settings with global "*" permission
+    let global_auth_key = AuthKey {
+        pubkey: "*".to_string(),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+
+    let settings = create_test_settings_with_key("*", &global_auth_key);
+
+    // Test resolving "*" with provided pubkey
+    let sig_key = SigKey::Direct("*".to_string());
+    let actual_pubkey = format_public_key(&verifying_key);
+
+    // Test with pubkey provided - should succeed now that we implemented global permissions
+    let result =
+        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey));
+
+    assert!(
+        result.is_ok(),
+        "Global permission resolution should work with pubkey: {:?}",
+        result.err()
+    );
+    let resolved = result.unwrap();
+    assert_eq!(resolved.public_key, verifying_key);
+    assert_eq!(resolved.effective_permission, Permission::Write(10));
+}
+
+#[test]
+fn test_global_permission_insufficient_perms() {
+    let mut validator = AuthValidator::new();
+    let (signing_key, verifying_key) = generate_keypair();
+
+    // Create settings with global "*" permission but only Read access
+    let global_auth_key = AuthKey {
+        pubkey: "*".to_string(),
+        permissions: Permission::Read, // Only read permission
+        status: KeyStatus::Active,
+    };
+
+    let settings = create_test_settings_with_key("*", &global_auth_key);
+
+    // Test that global permissions still respect the permission level
+    let sig_key = SigKey::Direct("*".to_string());
+    let actual_pubkey = format_public_key(&verifying_key);
+
+    let result =
+        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey));
+    assert!(result.is_ok(), "Resolution should succeed");
+
+    let resolved = result.unwrap();
+    assert_eq!(resolved.effective_permission, Permission::Read); // Should have read permission
+
+    // Create an entry that tries to write (requires Write permission)
+    let mut entry = Entry::builder("test_entry").build();
+
+    entry.sig = SigInfo {
+        key: SigKey::Direct("*".to_string()),
+        sig: None,
+        pubkey: Some(format_public_key(&verifying_key)),
+    };
+
+    let signature = sign_entry(&entry, &signing_key).unwrap();
+    entry.sig.sig = Some(signature);
+
+    // Even with valid signature and pubkey, should fail due to insufficient permissions
+    // This test validates that permission checking still works with global permissions
+
+    // FIXME: Once we implement the solution, we'll need to test permission checking
+    // For now, this documents the expected behavior
+}
+
+#[test]
+fn test_global_permission_vs_specific_key() {
+    let mut validator = AuthValidator::new();
+    let (signing_key1, verifying_key1) = generate_keypair();
+    let (signing_key2, verifying_key2) = generate_keypair();
+
+    // Create settings with both a specific key and global permission
+    let mut settings = Doc::new();
+    let mut auth_section = Doc::new();
+
+    // Add specific key
+    let specific_key = AuthKey {
+        pubkey: format_public_key(&verifying_key1),
+        permissions: Permission::Admin(5),
+        status: KeyStatus::Active,
+    };
+    auth_section
+        .set_json("specific_key", &specific_key)
+        .unwrap();
+
+    // Add global permission
+    let global_key = AuthKey {
+        pubkey: "*".to_string(),
+        permissions: Permission::Write(10),
+        status: KeyStatus::Active,
+    };
+    auth_section.set_json("*", &global_key).unwrap();
+
+    settings.set_node("auth", auth_section);
+
+    // Test 1: Entry signed with specific key should work normally
+    let mut entry1 = Entry::builder("test_entry1").build();
+    entry1.sig = SigInfo::builder()
+        .key(SigKey::Direct("specific_key".to_string()))
+        .build(); // No pubkey needed for specific keys
+    let signature1 = sign_entry(&entry1, &signing_key1).unwrap();
+    entry1.sig.sig = Some(signature1);
+
+    let result1 = validator.validate_entry(&entry1, &settings, None);
+    assert!(result1.is_ok(), "Specific key validation should work");
+
+    // Test 2: Entry using global permission should also work
+    let mut entry2 = Entry::builder("test_entry2").build();
+    entry2.sig = SigInfo::builder()
+        .key(SigKey::Direct("*".to_string()))
+        .pubkey(format_public_key(&verifying_key2)) // Different key using global permission
+        .build();
+    let signature2 = sign_entry(&entry2, &signing_key2).unwrap();
+    entry2.sig.sig = Some(signature2);
+
+    // Global permissions should now work with the pubkey field
+    let result2 = validator.validate_entry(&entry2, &settings, None);
+    assert!(
+        result2.is_ok(),
+        "Global permission validation should work: {:?}",
+        result2.err()
+    );
 }

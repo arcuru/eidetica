@@ -6,8 +6,6 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 
 ### Basic Sync Setup
 
-<!-- TODO: Example uses sync API that doesn't match current implementation - sync_mut() and with_sync() methods don't exist -->
-
 ```rust,ignore
 use eidetica::{Instance, backend::InMemory};
 
@@ -19,8 +17,9 @@ let db = Instance::new(backend).with_sync()?;
 db.add_private_key("device_key")?;
 
 // Enable transport
-db.sync_mut()?.enable_http_transport()?;
-db.sync_mut()?.start_server("127.0.0.1:8080")?;
+let sync = db.sync_mut().unwrap();
+sync.enable_http_transport()?;
+sync.start_server_async("127.0.0.1:8080").await?;
 ```
 
 ### Understanding BackgroundSync
@@ -42,37 +41,69 @@ db.sync_mut()?.enable_http_transport()?; // Starts background thread
 
 ## Peer Management
 
-### Connect to Remote Peer
+### Authenticated Bootstrap (Recommended for New Databases)
 
 ```rust,ignore
-use eidetica::sync::{Address, peer_types::PeerStatus};
+// For new devices joining existing databases with authentication
+sync.sync_with_peer_for_bootstrap(
+    "peer.example.com:8080",
+    &tree_id,
+    "device_key",                    // Local authentication key
+    eidetica::auth::Permission::Write // Requested permission level
+).await?;
 
-// HTTP connection
-let addr = Address::http("192.168.1.100:8080")?;
-let peer_key = db.sync_mut()?.connect_to_peer(&addr).await?;
-
-// Iroh P2P connection
-let addr = Address::iroh("iroh://peer_id@relay.example.com")?;
-let peer_key = db.sync_mut()?.connect_to_peer(&addr).await?;
-
-// Activate peer
-db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Active)?;
+// This automatically:
+// 1. Connects to peer and performs handshake
+// 2. Requests database access with specified permission level
+// 3. Receives auto-approved access (or manual approval in production)
+// 4. Downloads complete database state
+// 5. Grants authenticated write access
 ```
 
-### Manual Peer Registration
+### Simplified Sync (Legacy/Existing Databases)
 
 ```rust,ignore
-// Register peer manually
+// Single call handles connection, handshake, and sync detection
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+
+// This automatically:
+// 1. Connects to peer and performs handshake
+// 2. Bootstraps database if you don't have it locally
+// 3. Syncs incrementally if you already have the database
+// 4. Handles peer registration internally
+```
+
+### Database Discovery
+
+```rust,ignore
+// Discover available databases on a peer
+let available_trees = sync.discover_peer_trees("peer.example.com:8080").await?;
+for tree in available_trees {
+    println!("Available: {} ({} entries)", tree.tree_id, tree.entry_count);
+}
+
+// Bootstrap from discovered database
+if let Some(tree) = available_trees.first() {
+    sync.sync_with_peer("peer.example.com:8080", Some(&tree.tree_id)).await?;
+}
+```
+
+### Manual Peer Registration (Advanced)
+
+```rust,ignore
+// Register peer manually (for advanced use cases)
 let peer_key = "ed25519:abc123...";
-db.sync_mut()?.register_peer(peer_key, Some("Alice's Device"))?;
+sync.register_peer(peer_key, Some("Alice's Device"))?;
 
 // Add addresses
-db.sync_mut()?.add_peer_address(peer_key, Address::http("192.168.1.100:8080")?)?;
-db.sync_mut()?.add_peer_address(peer_key, Address::iroh("iroh://peer_id")?)?;
+sync.add_peer_address(peer_key, Address::http("192.168.1.100:8080")?)?;
+sync.add_peer_address(peer_key, Address::iroh("iroh://peer_id")?)?;
 
-// Note: Registration does NOT immediately connect to the peer
-// Connection happens lazily during next sync operation or periodic sync (5 min)
-// Use connect_to_peer() for immediate connection if needed
+// Use low-level sync with registered peer
+sync.sync_tree_with_peer(&peer_key, &tree_id).await?;
+
+// Note: Manual registration is usually unnecessary
+// The sync_with_peer() method handles registration automatically
 ```
 
 ### Peer Status Management
@@ -100,31 +131,69 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 
 ## Database Synchronization
 
-### Setup Database Sync Relationships
+### Create and Share Database
 
 ```rust,ignore
-// Create database
-let database = db.new_database(Doc::new(), "device_key")?;
-let tree_id = database.root_id().to_string();
+// Create a database to share
+use eidetica::crdt::Doc;
+let mut settings = Doc::new();
+settings.set_string("name", "My Chat Room");
+settings.set_string("description", "A room for team discussions");
 
-// Enable sync with peer
-db.sync_mut()?.add_tree_sync(&peer_key, &tree_id)?;
+let database = db.new_database(settings, "device_key")?;
+let tree_id = database.root_id();
 
-// List synced databases for peer
-let databases = db.sync()?.get_peer_trees(&peer_key)?;
+// Add some initial data
+let op = database.new_transaction()?;
+let store = op.get_subtree::<DocStore>("messages")?;
+store.set_string("welcome", "Welcome to the room!")?;
+op.commit()?;
 
-// List peers syncing a database
-let peers = db.sync()?.get_tree_peers(&tree_id)?;
+// Share the tree_id with others
+println!("Room ID: {}", tree_id);
 ```
 
-### Remove Sync Relationships
+### Bootstrap from Shared Database
 
 ```rust,ignore
-// Remove database from sync with peer
-db.sync_mut()?.remove_tree_sync(&peer_key, &tree_id)?;
+// Join someone else's database using the tree_id
+let room_id = "abc123..."; // Received from another user
+sync.sync_with_peer("peer.example.com:8080", Some(&room_id)).await?;
 
-// Remove peer completely
-db.sync_mut()?.remove_peer(&peer_key)?;
+// You now have the full database locally
+let database = db.load_database(&room_id)?;
+let op = database.new_transaction()?;
+let store = op.get_subtree::<DocStore>("messages")?;
+println!("Welcome message: {}", store.get_string("welcome")?);
+```
+
+### Ongoing Synchronization
+
+```rust,ignore
+// All changes automatically sync after bootstrap
+let op = database.new_transaction()?;
+let store = op.get_subtree::<DocStore>("messages")?;
+store.set_string("my_message", "Hello everyone!")?;
+op.commit()?; // Automatically syncs to all connected peers
+
+// Manually sync to get latest changes
+sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+```
+
+### Advanced: Manual Sync Relationships
+
+```rust,ignore
+// For fine-grained control (usually not needed)
+sync.add_tree_sync(&peer_key, &tree_id)?;
+
+// List synced databases for peer
+let databases = sync.get_peer_trees(&peer_key)?;
+
+// List peers syncing a database
+let peers = sync.get_tree_peers(&tree_id)?;
+
+// Remove sync relationship
+sync.remove_tree_sync(&peer_key, &tree_id)?;
 ```
 
 ## Data Operations (Auto-Sync)
@@ -432,20 +501,30 @@ async fn test_sync_between_peers() -> Result<()> {
 
 ### ✅ Do
 
-- Enable sync before creating databases you want to synchronize
-- Use `PeerStatus::Active` only for peers you want to sync with
-- Use Iroh transport for production deployments
-- Monitor sync state and peer connectivity
-- Handle network failures gracefully
-- Let BackgroundSync handle retry logic automatically
+- **Use `sync_with_peer()`** for most synchronization needs
+- **Enable sync before creating** databases you want to synchronize
+- **Use Iroh transport** for production deployments (better NAT traversal)
+- **Use `discover_peer_trees()`** to find available databases before syncing
+- **Share tree IDs** to allow others to bootstrap from your databases
+- **Handle network failures** gracefully (sync system auto-retries)
+- **Let BackgroundSync** handle retry logic automatically
 
 ### ❌ Don't
 
-- Disable sync hooks on databases you want to synchronize
-- Manually manage sync queues (BackgroundSync handles this)
-- Ignore sync errors in production code
-- Use HTTP transport for high-volume production (prefer Iroh)
-- Assume sync is instantaneous (it's eventually consistent)
+- **Manually manage peers** unless you need fine control (use `sync_with_peer()` instead)
+- **Disable sync hooks** on databases you want to synchronize
+- **Manually manage sync queues** (BackgroundSync handles this)
+- **Ignore sync errors** in production code
+- **Use HTTP transport** for high-volume production (prefer Iroh)
+- **Assume sync is instantaneous** (it's eventually consistent)
+
+### 🚀 New Bootstrap-First Features
+
+- **Zero-state joining**: Join rooms/databases without any local setup
+- **Automatic protocol detection**: Bootstrap vs incremental sync handled automatically
+- **Simplified API**: Single `sync_with_peer()` call handles everything
+- **Database discovery**: Find available databases on peers
+- **Bidirectional sync**: Both devices can share and receive databases
 
 ### 🔧 Troubleshooting Checklist
 

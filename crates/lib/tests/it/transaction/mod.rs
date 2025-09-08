@@ -7,5 +7,6 @@
 mod basic_operations;
 mod custom_tips;
 mod data_operations;
+mod global_permissions;
 mod helpers;
 mod path_finding;

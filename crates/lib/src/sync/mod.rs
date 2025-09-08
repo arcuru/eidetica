@@ -4,6 +4,7 @@
 //! storing its configuration in a dedicated tree within the database.
 
 use std::sync::Arc;
+use tracing::{debug, info};
 
 use crate::{Database, Entry, Result, auth::crypto::format_public_key, crdt::Doc, store::DocStore};
 
@@ -23,7 +24,7 @@ pub use error::SyncError;
 use hooks::SyncHook;
 use peer_manager::PeerManager;
 pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
-use protocol::{GetEntriesRequest, GetTipsRequest, SyncRequest, SyncResponse};
+use protocol::{SyncRequest, SyncResponse, SyncTreeRequest};
 use tokio::sync::{mpsc, oneshot};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 
@@ -701,122 +702,177 @@ impl Sync {
             .first()
             .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
 
-        // Step 1: Get our current tips for this tree
+        // Get our current tips for this tree (empty if tree doesn't exist)
         let our_tips = self
             .backend
             .get_tips(tree_id)
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
-        // Step 2: Get peer's tips for this tree
-        let their_tips = self.get_peer_tips(peer_pubkey, tree_id, address).await?;
+        // Send unified sync request
+        let request = SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree_id.clone(),
+            our_tips,
+            requesting_key: None, // TODO: Add auth support for direct sync
+            requesting_key_name: None,
+            requested_permission: None,
+        });
 
-        // Step 3: Pull - Find entries we don't have and fetch them
-        let missing_entries = self.find_missing_entries(&our_tips, &their_tips)?;
+        // Send request via background sync command
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(SyncCommand::SendRequest {
+                address: address.clone(),
+                request,
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        if !missing_entries.is_empty() {
-            // Step 4: Fetch missing entries from peer
-            let entries = self
-                .fetch_entries_from_peer(peer_pubkey, address, &missing_entries)
-                .await?;
+        let response = rx
+            .await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
 
-            // Step 5: Validate and store received entries
-            self.store_received_entries(tree_id, entries).await?;
-        }
-
-        // Step 6: Push - Find entries peer doesn't have and send them
-        let entries_to_send = self.find_entries_to_send(&our_tips, &their_tips)?;
-
-        if !entries_to_send.is_empty() {
-            // Step 7: Send our entries that peer is missing
-            self.send_entries_to_peer(peer_pubkey, entries_to_send)
-                .await?;
+        match response {
+            SyncResponse::Bootstrap(bootstrap_response) => {
+                self.handle_bootstrap_response(bootstrap_response).await?;
+            }
+            SyncResponse::Incremental(incremental_response) => {
+                self.handle_incremental_response(incremental_response, address)
+                    .await?;
+            }
+            SyncResponse::Error(msg) => {
+                return Err(SyncError::SyncProtocolError(format!("Sync error: {msg}")).into());
+            }
+            _ => {
+                return Err(SyncError::UnexpectedResponse {
+                    expected: "Bootstrap or Incremental",
+                    actual: format!("{response:?}"),
+                }
+                .into());
+            }
         }
 
         Ok(())
     }
 
-    /// Get tips from a peer for a specific tree.
-    async fn get_peer_tips(
+    /// Handle bootstrap response by storing root and all entries
+    async fn handle_bootstrap_response(&self, response: protocol::BootstrapResponse) -> Result<()> {
+        tracing::info!(tree_id = %response.tree_id, "Processing bootstrap response");
+
+        // Store root entry first
+
+        // Store the root entry
+        self.backend
+            .put_verified(response.root_entry.clone())
+            .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
+
+        // Store all other entries using existing method
+        self.store_received_entries(&response.tree_id, response.all_entries)
+            .await?;
+
+        tracing::info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
+        Ok(())
+    }
+
+    /// Handle incremental response by storing missing entries and sending back what server is missing
+    async fn handle_incremental_response(
         &self,
-        peer_pubkey: &str,
+        response: protocol::IncrementalResponse,
+        peer_address: &peer_types::Address,
+    ) -> Result<()> {
+        tracing::debug!(tree_id = %response.tree_id, "Processing incremental response");
+
+        // Step 1: Store missing entries
+        self.store_received_entries(&response.tree_id, response.missing_entries)
+            .await?;
+
+        // Step 2: Check if server is missing entries from us
+        let our_tips = self.backend.get_tips(&response.tree_id)?;
+        let their_tips = &response.their_tips;
+
+        // Find tips they don't have
+        let missing_tip_ids: Vec<_> = our_tips
+            .iter()
+            .filter(|tip_id| !their_tips.contains(tip_id))
+            .cloned()
+            .collect();
+
+        if !missing_tip_ids.is_empty() {
+            tracing::debug!(
+                tree_id = %response.tree_id,
+                missing_tips = missing_tip_ids.len(),
+                "Server is missing some of our entries, sending them back"
+            );
+
+            // Collect entries server is missing
+            let entries_for_server = crate::sync::utils::collect_ancestors_to_send(
+                self.backend.as_ref(),
+                &missing_tip_ids,
+                their_tips,
+            )?;
+
+            if !entries_for_server.is_empty() {
+                // Send these entries back to server
+                self.send_missing_entries_to_peer(
+                    peer_address,
+                    &response.tree_id,
+                    entries_for_server,
+                )
+                .await?;
+            }
+        }
+
+        tracing::debug!(tree_id = %response.tree_id, "Incremental sync completed");
+        Ok(())
+    }
+
+    /// Send entries that the server is missing back to complete bidirectional sync
+    async fn send_missing_entries_to_peer(
+        &self,
+        peer_address: &peer_types::Address,
         tree_id: &crate::entry::ID,
-        address: &Address,
-    ) -> Result<Vec<crate::entry::ID>> {
-        let request = SyncRequest::GetTips(GetTipsRequest {
-            tree_id: tree_id.clone(),
-        });
+        entries: Vec<Entry>,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
 
-        let response = self.send_request_async(&request, address).await?;
+        tracing::debug!(
+            tree_id = %tree_id,
+            entry_count = entries.len(),
+            "Sending missing entries back to peer for bidirectional sync"
+        );
+
+        let request = protocol::SyncRequest::SendEntries(entries);
+
+        // Send via command channel
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.command_tx
+            .send(SyncCommand::SendRequest {
+                address: peer_address.clone(),
+                request,
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        // Wait for acknowledgment
+        let response = rx
+            .await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+            .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
 
         match response {
-            SyncResponse::Tips(tips_response) => Ok(tips_response.tips),
-            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
-                "Peer {peer_pubkey} returned error for GetTips: {msg}"
-            ))
-            .into()),
-            _ => Err(SyncError::UnexpectedResponse {
-                expected: "Tips",
-                actual: format!("{response:?}"),
+            protocol::SyncResponse::Ack | protocol::SyncResponse::Count(_) => {
+                tracing::debug!(tree_id = %tree_id, "Server acknowledged receipt of missing entries");
+                Ok(())
             }
-            .into()),
-        }
-    }
-
-    /// Find entries that we're missing compared to the peer's tips.
-    fn find_missing_entries(
-        &self,
-        _our_tips: &[crate::entry::ID],
-        their_tips: &[crate::entry::ID],
-    ) -> Result<Vec<crate::entry::ID>> {
-        let mut missing = Vec::new();
-
-        for tip_id in their_tips {
-            // Check if we have this entry locally
-            match self.backend.get(tip_id) {
-                Ok(_) => {
-                    // We have this entry, nothing to do
-                }
-                Err(e) if e.is_not_found() => {
-                    // We don't have this entry, add it to missing list
-                    missing.push(tip_id.clone());
-                }
-                Err(e) => {
-                    return Err(SyncError::BackendError(format!(
-                        "Failed to check for entry {tip_id}: {e}"
-                    ))
-                    .into());
-                }
+            protocol::SyncResponse::Error(e) => {
+                Err(SyncError::Network(format!("Server error receiving entries: {e}")).into())
             }
-        }
-
-        Ok(missing)
-    }
-
-    /// Fetch specific entries from a peer.
-    async fn fetch_entries_from_peer(
-        &self,
-        peer_pubkey: &str,
-        address: &Address,
-        entry_ids: &[crate::entry::ID],
-    ) -> Result<Vec<Entry>> {
-        if entry_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let request = SyncRequest::GetEntries(GetEntriesRequest {
-            entry_ids: entry_ids.to_vec(),
-        });
-
-        let response = self.send_request_async(&request, address).await?;
-
-        match response {
-            SyncResponse::Entries(entries_response) => Ok(entries_response.entries),
-            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
-                "Peer {peer_pubkey} returned error for GetEntries: {msg}"
-            ))
-            .into()),
             _ => Err(SyncError::UnexpectedResponse {
-                expected: "Entries",
+                expected: "Ack or Count",
                 actual: format!("{response:?}"),
             }
             .into()),
@@ -850,37 +906,6 @@ impl Sync {
         }
 
         Ok(())
-    }
-
-    /// Find entries that we have but the peer is missing.
-    fn find_entries_to_send(
-        &self,
-        our_tips: &[crate::entry::ID],
-        their_tips: &[crate::entry::ID],
-    ) -> Result<Vec<Entry>> {
-        let mut entries_to_send = Vec::new();
-
-        for tip_id in our_tips {
-            // Check if peer has this entry by seeing if it's in their tips
-            let peer_has_entry = their_tips.contains(tip_id);
-
-            if !peer_has_entry {
-                // Peer doesn't have this entry, get it from backend
-                match self.backend.get(tip_id) {
-                    Ok(entry) => {
-                        entries_to_send.push(entry);
-                    }
-                    Err(e) => {
-                        return Err(SyncError::BackendError(format!(
-                            "Failed to get entry {tip_id} to send: {e}"
-                        ))
-                        .into());
-                    }
-                }
-            }
-        }
-
-        Ok(entries_to_send)
     }
 
     /// Send a batch of entries to a sync peer (async version).
@@ -998,14 +1023,247 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
-    /// Test helper: Find entries to send to a peer.
-    #[cfg(test)]
-    pub fn test_find_entries_to_send(
+    /// Discover available trees from a peer (simplified API).
+    ///
+    /// This method connects to a peer and retrieves the list of trees they're willing to sync.
+    /// This is useful for discovering what can be synced before setting up sync relationships.
+    ///
+    /// # Arguments
+    /// * `peer_address` - The address of the peer to connect to (format: "host:port")
+    ///
+    /// # Returns
+    /// A vector of TreeInfo describing available trees, or an error.
+    pub async fn discover_peer_trees(
+        &mut self,
+        peer_address: &str,
+    ) -> Result<Vec<protocol::TreeInfo>> {
+        use peer_types::Address;
+
+        let address = Address {
+            transport_type: "http".to_string(),
+            address: peer_address.to_string(),
+        };
+
+        // Connect and get handshake info
+        let _peer_pubkey = self.connect_to_peer(&address).await?;
+
+        // The handshake already contains the tree list, but we need to get it again
+        // since connect_to_peer doesn't return it. For now, return empty list
+        // TODO: Enhance this to actually return the tree list from handshake
+
+        tracing::warn!(
+            "discover_peer_trees not fully implemented - handshake contains tree info but API needs enhancement"
+        );
+        Ok(vec![])
+    }
+
+    /// Sync with a peer using simplified one-shot API.
+    ///
+    /// This method automatically handles bootstrap vs incremental sync and doesn't require
+    /// pre-configured sync relationships. If the tree doesn't exist locally, it will be
+    /// bootstrapped from the peer.
+    ///
+    /// # Arguments
+    /// * `peer_address` - The address of the peer (format: "host:port")
+    /// * `tree_id` - Optional tree ID to sync. If None, sync all available trees.
+    ///
+    /// # Returns
+    /// A Result indicating success or failure.
+    pub async fn sync_with_peer(
+        &mut self,
+        peer_address: &str,
+        tree_id: Option<&crate::entry::ID>,
+    ) -> Result<()> {
+        use peer_types::Address;
+
+        let address = Address {
+            transport_type: "http".to_string(),
+            address: peer_address.to_string(),
+        };
+
+        // Connect to peer if not already connected
+        let peer_pubkey = self.connect_to_peer(&address).await?;
+
+        // Store the address for this peer (needed for sync_tree_with_peer)
+        self.add_peer_address(&peer_pubkey, address.clone())?;
+
+        if let Some(tree_id) = tree_id {
+            // Sync specific tree
+            self.sync_tree_with_peer(&peer_pubkey, tree_id).await?;
+        } else {
+            // TODO: Sync all available trees
+            tracing::warn!(
+                "Syncing all trees not yet implemented - need to enhance discover_peer_trees first"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sync a specific tree with a peer, with optional authentication for bootstrap.
+    ///
+    /// This is a lower-level method that allows specifying authentication parameters
+    /// for bootstrap scenarios where access needs to be requested.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The public key of the peer to sync with
+    /// * `tree_id` - The ID of the tree to sync
+    /// * `requesting_key` - Optional public key requesting access (for bootstrap)
+    /// * `requesting_key_name` - Optional name/ID of the requesting key
+    /// * `requested_permission` - Optional permission level being requested
+    ///
+    /// # Returns
+    /// A Result indicating success or failure.
+    pub async fn sync_tree_with_peer_auth(
         &self,
-        our_tips: &[crate::entry::ID],
-        their_tips: &[crate::entry::ID],
-    ) -> Result<Vec<Entry>> {
-        self.find_entries_to_send(our_tips, their_tips)
+        peer_pubkey: &str,
+        tree_id: &crate::entry::ID,
+        requesting_key: Option<&str>,
+        requesting_key_name: Option<&str>,
+        requested_permission: Option<crate::auth::Permission>,
+    ) -> Result<()> {
+        // Get peer information and address
+        let peer_info = self
+            .get_peer_info(peer_pubkey)?
+            .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+
+        let address = peer_info
+            .addresses
+            .first()
+            .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
+
+        // Get our current tips for this tree (empty if tree doesn't exist)
+        let our_tips = self
+            .backend
+            .get_tips(tree_id)
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+
+        // Send unified sync request with auth parameters
+        let request = SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree_id.clone(),
+            our_tips,
+            requesting_key: requesting_key.map(|k| k.to_string()),
+            requesting_key_name: requesting_key_name.map(|k| k.to_string()),
+            requested_permission,
+        });
+
+        // Send request via background sync command
+        let (tx, rx) = oneshot::channel();
+        self.command_tx
+            .send(SyncCommand::SendRequest {
+                address: address.clone(),
+                request,
+                response: tx,
+            })
+            .await
+            .map_err(|_| {
+                SyncError::CommandSendError("Background sync command channel closed".to_string())
+            })?;
+
+        // Wait for response
+        let response = rx
+            .await
+            .map_err(|_| {
+                SyncError::CommandSendError("Background sync response channel closed".to_string())
+            })?
+            .map_err(|e| SyncError::Network(format!("Sync request failed: {e}")))?;
+
+        // Handle the response (same logic as existing sync_tree_with_peer)
+        match response {
+            SyncResponse::Bootstrap(bootstrap_response) => {
+                info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
+
+                // Store the root entry
+                self.backend.put_verified(bootstrap_response.root_entry)?;
+
+                // Store all other entries
+                for entry in bootstrap_response.all_entries {
+                    self.backend.put_unverified(entry)?;
+                }
+
+                info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
+            }
+            SyncResponse::Incremental(incremental_response) => {
+                info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
+
+                // Use the enhanced handler that supports bidirectional sync
+                self.handle_incremental_response(incremental_response, address)
+                    .await?;
+
+                debug!(peer = %peer_pubkey, tree = %tree_id, "Incremental sync completed");
+            }
+            SyncResponse::Error(err) => {
+                return Err(SyncError::Network(format!("Peer returned error: {err}")).into());
+            }
+            _ => {
+                return Err(SyncError::SyncProtocolError(
+                    "Unexpected response type for sync tree request".to_string(),
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Sync with a peer, requesting access with authentication for bootstrap scenarios.
+    ///
+    /// This method is specifically designed for bootstrap scenarios where the local
+    /// device doesn't have access to the target tree yet and needs to request
+    /// permission during the initial sync.
+    ///
+    /// # Arguments
+    /// * `peer_address` - The address of the peer to sync with
+    /// * `tree_id` - The ID of the tree to sync
+    /// * `requesting_key_name` - The name/ID of the local authentication key
+    /// * `requested_permission` - The permission level being requested
+    ///
+    /// # Returns
+    /// A Result indicating success or failure.
+    pub async fn sync_with_peer_for_bootstrap(
+        &mut self,
+        peer_address: &str,
+        tree_id: &crate::entry::ID,
+        requesting_key_name: &str,
+        requested_permission: crate::auth::Permission,
+    ) -> Result<()> {
+        use peer_types::Address;
+
+        let address = Address {
+            transport_type: "http".to_string(),
+            address: peer_address.to_string(),
+        };
+
+        // Connect to peer if not already connected
+        let peer_pubkey = self.connect_to_peer(&address).await?;
+
+        // Store the address for this peer
+        self.add_peer_address(&peer_pubkey, address.clone())?;
+
+        // Get our public key for the requesting key
+        let requesting_key =
+            if let Some(signing_key) = self.backend.get_private_key(requesting_key_name)? {
+                let verifying_key = signing_key.verifying_key();
+                Some(crate::auth::crypto::format_public_key(&verifying_key))
+            } else {
+                return Err(SyncError::BackendError(format!(
+                    "Private key not found for key name: {}",
+                    requesting_key_name
+                ))
+                .into());
+            };
+
+        // Sync tree with authentication
+        self.sync_tree_with_peer_auth(
+            &peer_pubkey,
+            tree_id,
+            requesting_key.as_deref(),
+            Some(requesting_key_name),
+            Some(requested_permission),
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

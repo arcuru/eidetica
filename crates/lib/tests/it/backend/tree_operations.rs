@@ -196,6 +196,7 @@ fn test_get_tips() {
     // Add child A
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
+        .set_metadata("entry_a_data")
         .build();
     let id_a = entry_a.id();
     backend
@@ -213,6 +214,7 @@ fn test_get_tips() {
     // Add child B from A
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
+        .set_metadata("entry_b_data")
         .build();
     let id_b = entry_b.id();
     backend
@@ -230,6 +232,7 @@ fn test_get_tips() {
     // Add child C directly from Root (creates a branch)
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
+        .set_metadata("entry_c_data")
         .build();
     let id_c = entry_c.id();
     backend

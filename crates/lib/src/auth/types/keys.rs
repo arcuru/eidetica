@@ -79,10 +79,11 @@ pub struct SigInfo {
     /// The last element in the delegation path must contain only a "key" field.
     /// This represents the path that needs to be traversed to find the public key of the signing key.
     pub key: SigKey,
-    /// Full public key of the signing key (optional)
-    /// Only necessary when using global permissions '*' where the public key
-    /// needs to be embedded directly rather than resolved through key references
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    /// Actual signer's public key for wildcard permissions
+    /// When using SigKey::Direct("*"), this field MUST contain the actual public key
+    /// of the signer since the "*" auth setting has pubkey="*" which is not a real key.
+    /// Optional for regular keys where the public key is stored in auth settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<String>,
 }
 

@@ -20,6 +20,24 @@ This document outlines the design principles, architecture decisions, and implem
 - **Complex conflict resolution**: CRDT-based automatic resolution only
 - **Centralized coordination**: No dependency on coordination servers
 
+## Key Design Innovation: Bootstrap-First Sync
+
+**Problem:** Traditional distributed databases require complex setup procedures for new nodes to join existing networks. Peers must either start with empty databases or go through complex initialization.
+
+**Solution:** Eidetica's bootstrap-first sync protocol enables **zero-state joining**:
+
+- **Single API call** handles both bootstrap and incremental sync
+- **Automatic detection** determines whether full or partial sync is needed
+- **No setup required** - new devices can immediately join existing databases
+- **Bidirectional capability** - any peer can bootstrap from any other peer
+
+**Use Cases Enabled:**
+
+- **Chat/messaging apps**: Join conversation rooms instantly with full history
+- **Collaborative documents**: Open shared documents from any device
+- **Data synchronization**: Sync app data to new devices automatically
+- **Backup/restore**: Restore complete application state from peers
+
 ## Core Design Principles
 
 ### 1. Merkle-CRDT Foundation
@@ -454,6 +472,54 @@ B -> A: HandshakeResponse {
 A -> B: verify(B.public_key, challenge_response, challenge)
 B -> A: verify(A.public_key, signature, challenge)
 ```
+
+**Bootstrap-First Protocol:**
+
+The sync protocol supports zero-state joining through automatic bootstrap detection:
+
+```text
+# Bootstrap Scenario (client has no local database)
+A -> B: SyncTreeRequest {
+    tree_id: ID,
+    our_tips: [] // Empty = bootstrap needed
+}
+
+B -> A: BootstrapResponse {
+    tree_id: ID,
+    root_entry: Entry,
+    all_entries: Vec<Entry> // Complete database
+}
+
+# Incremental Scenario (client has database)
+A -> B: SyncTreeRequest {
+    tree_id: ID,
+    our_tips: [tip1, tip2, ...] // Current tips
+}
+
+B -> A: IncrementalResponse {
+    tree_id: ID,
+    missing_entries: Vec<Entry>, // New changes for client
+    their_tips: [tip1, tip2, ...] // Server's tips for bidirectional sync
+}
+
+# Bidirectional Completion (client sends missing entries to server)
+A -> B: SendEntriesRequest {
+    tree_id: ID,
+    entries: Vec<Entry> // Entries server is missing
+}
+
+B -> A: SendEntriesResponse {
+    success: bool
+}
+```
+
+**Design Benefits:**
+
+- **Unified API:** Single request type handles both scenarios
+- **Auto-detection:** Server determines sync type from empty tips
+- **Zero-configuration:** No manual bootstrap setup required
+- **Efficient:** Only transfers necessary data (full or incremental)
+- **True Bidirectional:** Complete synchronization in single operation using existing protocol fields
 
 ### Performance Considerations
 

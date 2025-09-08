@@ -386,6 +386,22 @@ impl Instance {
         self.sync.as_ref()
     }
 
+    /// Get a mutable reference to the Sync module for this database.
+    ///
+    /// This allows calling mutable methods on the Sync module such as:
+    /// - `enable_http_transport()`
+    /// - `enable_iroh_transport()`
+    /// - `start_server_async()`
+    /// - `connect_to_peer()`
+    /// - `register_peer()`
+    /// - etc.
+    ///
+    /// # Returns
+    /// An `Option` containing a mutable reference to the `Sync` module if initialized.
+    pub fn sync_mut(&mut self) -> Option<&mut Sync> {
+        self.sync.as_mut()
+    }
+
     /// Load an existing Sync module from a sync database root ID.
     ///
     /// # Arguments

@@ -75,7 +75,12 @@ impl AuthValidator {
 
         // For all other entries, proceed with normal authentication validation
         // Resolve the authentication information
-        let resolved_auth = self.resolve_sig_key(&entry.sig.key, settings_state, backend)?;
+        let resolved_auth = self.resolver.resolve_sig_key_with_pubkey(
+            &entry.sig.key,
+            settings_state,
+            backend,
+            entry.sig.pubkey.as_deref(),
+        )?;
 
         // Check if the key is in an active state
         if resolved_auth.key_status != KeyStatus::Active {
@@ -100,6 +105,25 @@ impl AuthValidator {
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver.resolve_sig_key(sig_key, settings, backend)
+    }
+
+    /// Resolve authentication identifier with pubkey override for global permissions
+    ///
+    /// # Arguments
+    /// * `sig_key` - The signature key identifier to resolve
+    /// * `settings` - Map settings containing auth configuration
+    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
+    pub fn resolve_sig_key_with_pubkey(
+        &mut self,
+        sig_key: &SigKey,
+        settings: &Doc,
+        backend: Option<&Arc<dyn BackendDB>>,
+        pubkey_override: Option<&str>,
+    ) -> Result<ResolvedAuth> {
+        // Delegate to the resolver
+        self.resolver
+            .resolve_sig_key_with_pubkey(sig_key, settings, backend, pubkey_override)
     }
 
     /// Check if a resolved authentication has sufficient permissions for an operation

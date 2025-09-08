@@ -10,12 +10,18 @@ use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::protocol::{
-    GetEntriesRequest, GetEntriesResponse, GetTipsRequest, GetTipsResponse, HandshakeRequest,
-    HandshakeResponse, PROTOCOL_VERSION, SyncRequest, SyncResponse,
+    BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse, PROTOCOL_VERSION,
+    SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
 };
 use crate::{
-    auth::crypto::{create_challenge_response, format_public_key, generate_challenge},
+    auth::{
+        crypto::{create_challenge_response, format_public_key, generate_challenge},
+        settings::AuthSettings,
+        types::{AuthKey, KeyStatus},
+    },
     backend::BackendDB,
+    constants::SETTINGS,
+    crdt::Doc,
 };
 
 /// Trait for handling sync requests with database access.
@@ -66,6 +72,10 @@ impl SyncHandler for SyncHandlerImpl {
                 debug!("Received handshake request");
                 self.handle_handshake(handshake_req).await
             }
+            SyncRequest::SyncTree(sync_req) => {
+                debug!(tree_id = %sync_req.tree_id, tips_count = sync_req.our_tips.len(), "Received sync tree request");
+                self.handle_sync_tree(sync_req).await
+            }
             SyncRequest::SendEntries(entries) => {
                 // Process and store the received entries
                 let count = entries.len();
@@ -96,14 +106,6 @@ impl SyncHandler for SyncHandlerImpl {
                 } else {
                     SyncResponse::Count(stored_count)
                 }
-            }
-            SyncRequest::GetTips(req) => {
-                debug!(tree_id = %req.tree_id, "Received get tips request");
-                self.handle_get_tips(req).await
-            }
-            SyncRequest::GetEntries(req) => {
-                debug!(count = req.entry_ids.len(), "Received get entries request");
-                self.handle_get_entries(req).await
             }
         }
     }
@@ -161,9 +163,13 @@ impl SyncHandlerImpl {
             // Generate a new challenge for mutual authentication
             let new_challenge = generate_challenge();
 
+            // Get available trees for discovery
+            let available_trees = self.get_available_trees().await;
+
             info!(
                 our_device_id = %device_id,
                 peer_device_id = %request.device_id,
+                tree_count = available_trees.len(),
                 "Handshake completed successfully"
             );
 
@@ -174,87 +180,432 @@ impl SyncHandlerImpl {
                 protocol_version: PROTOCOL_VERSION,
                 challenge_response,
                 new_challenge,
+                available_trees,
             })
         }
         .instrument(info_span!("handle_handshake", peer = %request.device_id))
         .await
     }
 
-    /// Handle a request for tree tips.
-    async fn handle_get_tips(&self, request: &GetTipsRequest) -> SyncResponse {
+    /// Handle a unified sync tree request (bootstrap or incremental)
+    async fn handle_sync_tree(&self, request: &SyncTreeRequest) -> SyncResponse {
         async move {
-            trace!(tree_id = %request.tree_id, "Retrieving tree tips");
+            trace!(tree_id = %request.tree_id, "Processing sync tree request");
 
-            match self.backend.get_tips(&request.tree_id) {
-                Ok(tips) => {
-                    debug!(
-                        tree_id = %request.tree_id,
-                        tip_count = tips.len(),
-                        "Retrieved tree tips successfully"
-                    );
-                    SyncResponse::Tips(GetTipsResponse {
-                        tree_id: request.tree_id.clone(),
-                        tips,
-                    })
-                }
-                Err(e) => {
-                    error!(
-                        tree_id = %request.tree_id,
-                        error = %e,
-                        "Failed to get tips for tree"
-                    );
-                    SyncResponse::Error(format!(
-                        "Failed to get tips for tree {}: {e}",
-                        request.tree_id
-                    ))
-                }
+            // Check if peer needs bootstrap (empty tips)
+            if request.our_tips.is_empty() {
+                debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
+                return self.handle_bootstrap_request(&request.tree_id,
+                                                  request.requesting_key.as_deref(),
+                                                  request.requesting_key_name.as_deref(),
+                                                  request.requested_permission.clone()).await;
             }
+
+            // Handle incremental sync
+            debug!(tree_id = %request.tree_id, peer_tips = request.our_tips.len(), "Handling incremental sync");
+            self.handle_incremental_sync(&request.tree_id, &request.our_tips).await
         }
-        .instrument(info_span!("handle_get_tips", tree = %request.tree_id))
+        .instrument(info_span!("handle_sync_tree", tree = %request.tree_id))
         .await
     }
 
-    /// Handle a request for specific entries.
-    async fn handle_get_entries(&self, request: &GetEntriesRequest) -> SyncResponse {
-        async move {
-            debug!(
-                entry_count = request.entry_ids.len(),
-                "Retrieving requested entries"
-            );
+    /// Handle bootstrap request by sending complete tree state and optionally approving auth key
+    async fn handle_bootstrap_request(
+        &self,
+        tree_id: &crate::entry::ID,
+        requesting_key: Option<&str>,
+        requesting_key_name: Option<&str>,
+        requested_permission: Option<crate::auth::Permission>,
+    ) -> SyncResponse {
+        // Get the root entry (to verify tree exists)
+        let _root_entry = match self.backend.get(tree_id) {
+            Ok(entry) => entry,
+            Err(e) if e.is_not_found() => {
+                warn!(tree_id = %tree_id, "Tree not found for bootstrap");
+                return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+            }
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
+                return SyncResponse::Error(format!("Failed to get tree root: {e}"));
+            }
+        };
 
-            let mut entries = Vec::with_capacity(request.entry_ids.len());
+        // Handle key approval for bootstrap requests FIRST
+        let (key_approved, granted_permission) =
+            if let (Some(key), Some(key_name), Some(permission)) =
+                (requesting_key, requesting_key_name, requested_permission)
+            {
+                info!(
+                    tree_id = %tree_id,
+                    requesting_key = %key,
+                    key_name = %key_name,
+                    requested_permission = ?permission,
+                    "Processing key approval request for bootstrap"
+                );
 
-            for entry_id in &request.entry_ids {
-                trace!(entry_id = %entry_id, "Retrieving entry");
-
-                match self.backend.get(entry_id) {
-                    Ok(entry) => {
-                        trace!(entry_id = %entry_id, "Entry retrieved successfully");
-                        entries.push(entry);
-                    }
-                    Err(e) if e.is_not_found() => {
-                        warn!(entry_id = %entry_id, "Entry not found");
-                        return SyncResponse::Error(format!("Entry not found: {entry_id}"));
+                // For now, auto-approve all keys
+                // FIXME: In the future, this should require manual approval or policy check
+                match self
+                    .add_key_to_database(tree_id, key_name, key, permission.clone())
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            tree_id = %tree_id,
+                            key = %key,
+                            permission = ?permission,
+                            "Successfully approved and added key to database"
+                        );
+                        (true, Some(permission))
                     }
                     Err(e) => {
-                        error!(entry_id = %entry_id, error = %e, "Failed to get entry");
-                        return SyncResponse::Error(format!("Failed to get entry {entry_id}: {e}"));
+                        warn!(
+                            tree_id = %tree_id,
+                            key = %key,
+                            error = %e,
+                            "Failed to add key to database"
+                        );
+                        (false, None)
+                    }
+                }
+            } else {
+                // No key approval requested
+                (false, None)
+            };
+
+        // NOW collect all entries after key approval (so we get the updated database state)
+        let all_entries = match self.collect_all_entries_for_bootstrap(tree_id).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to collect all entries for bootstrap after key approval");
+                return SyncResponse::Error(format!(
+                    "Failed to collect all entries for bootstrap: {e}"
+                ));
+            }
+        };
+
+        // For bootstrap, we need to send the actual root entry (tree_id) as root_entry
+        // The root_entry should always be the tree's root, not a tip
+        let root_entry = match self.backend.get(tree_id) {
+            Ok(entry) => entry,
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
+                return SyncResponse::Error(format!("Failed to get root entry: {e}"));
+            }
+        };
+
+        // Filter out the root from all_entries since we send it separately as root_entry
+        let other_entries: Vec<_> = all_entries
+            .into_iter()
+            .filter(|entry| entry.id() != tree_id)
+            .collect();
+
+        info!(
+            tree_id = %tree_id,
+            entry_count = other_entries.len() + 1,
+            key_approved = key_approved,
+            "Sending bootstrap response"
+        );
+
+        SyncResponse::Bootstrap(BootstrapResponse {
+            tree_id: tree_id.clone(),
+            root_entry,
+            all_entries: other_entries,
+            key_approved,
+            granted_permission,
+        })
+    }
+
+    /// Handle incremental sync request
+    async fn handle_incremental_sync(
+        &self,
+        tree_id: &crate::entry::ID,
+        peer_tips: &[crate::entry::ID],
+    ) -> SyncResponse {
+        // Get our current tips
+        let our_tips = match self.backend.get_tips(tree_id) {
+            Ok(tips) => tips,
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to get our tips");
+                return SyncResponse::Error(format!("Failed to get tips: {e}"));
+            }
+        };
+
+        // Find entries peer is missing
+        let missing_entries = match self.find_missing_entries_for_peer(&our_tips, peer_tips) {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to find missing entries");
+                return SyncResponse::Error(format!("Failed to find missing entries: {e}"));
+            }
+        };
+
+        debug!(
+            tree_id = %tree_id,
+            our_tips = our_tips.len(),
+            peer_tips = peer_tips.len(),
+            missing_count = missing_entries.len(),
+            "Sending incremental sync response"
+        );
+
+        SyncResponse::Incremental(IncrementalResponse {
+            tree_id: tree_id.clone(),
+            their_tips: our_tips,
+            missing_entries,
+        })
+    }
+
+    /// Get list of available trees for discovery
+    async fn get_available_trees(&self) -> Vec<TreeInfo> {
+        // Get all root entries in the backend
+        match self.backend.all_roots() {
+            Ok(roots) => {
+                let mut tree_infos = Vec::new();
+                for root_id in roots {
+                    // Get basic tree info
+                    if let Ok(entry_count) = self.count_tree_entries(&root_id) {
+                        tree_infos.push(TreeInfo {
+                            tree_id: root_id,
+                            name: None, // Could extract from tree metadata in the future
+                            entry_count,
+                            last_modified: 0, // Could track modification times in the future
+                        });
+                    }
+                }
+                tree_infos
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to get available trees");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Collect all entries in a tree (excluding the root)
+    #[allow(dead_code)]
+    async fn collect_all_tree_entries(
+        &self,
+        tree_id: &crate::entry::ID,
+    ) -> crate::Result<Vec<crate::entry::Entry>> {
+        let mut entries = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut to_visit = std::collections::VecDeque::new();
+
+        // Get tips to start traversal
+        let tips = self.backend.get_tips(tree_id)?;
+        to_visit.extend(tips);
+
+        // Traverse the DAG depth-first
+        while let Some(entry_id) = to_visit.pop_front() {
+            if visited.contains(&entry_id) || entry_id == *tree_id {
+                continue; // Skip root and already visited
+            }
+            visited.insert(entry_id.clone());
+
+            match self.backend.get(&entry_id) {
+                Ok(entry) => {
+                    // Add parents to visit list
+                    if let Ok(parent_ids) = entry.parents() {
+                        for parent_id in parent_ids {
+                            if !visited.contains(&parent_id) && parent_id != *tree_id {
+                                to_visit.push_back(parent_id);
+                            }
+                        }
+                    }
+                    entries.push(entry);
+                }
+                Err(e) if e.is_not_found() => {
+                    warn!(entry_id = %entry_id, "Entry not found during traversal");
+                }
+                Err(e) => {
+                    error!(entry_id = %entry_id, error = %e, "Error during traversal");
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Collect ALL entries in a tree for bootstrap (including root)
+    async fn collect_all_entries_for_bootstrap(
+        &self,
+        tree_id: &crate::entry::ID,
+    ) -> crate::Result<Vec<crate::entry::Entry>> {
+        let mut entries = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut to_visit = std::collections::VecDeque::new();
+
+        // Get tips to start traversal
+        let tips = self.backend.get_tips(tree_id)?;
+        to_visit.extend(tips);
+
+        // Traverse the DAG depth-first, INCLUDING the root
+        while let Some(entry_id) = to_visit.pop_front() {
+            if visited.contains(&entry_id) {
+                continue; // Skip already visited (but don't skip root)
+            }
+            visited.insert(entry_id.clone());
+
+            match self.backend.get(&entry_id) {
+                Ok(entry) => {
+                    // Add parents to visit list
+                    if let Ok(parent_ids) = entry.parents() {
+                        for parent_id in parent_ids {
+                            if !visited.contains(&parent_id) {
+                                to_visit.push_back(parent_id);
+                            }
+                        }
+                    }
+                    entries.push(entry);
+                }
+                Err(e) if e.is_not_found() => {
+                    warn!(entry_id = %entry_id, "Entry not found during traversal");
+                }
+                Err(e) => {
+                    error!(entry_id = %entry_id, error = %e, "Error during traversal");
+                    return Err(e);
+                }
+            }
+        }
+
+        // IMPORTANT: Reverse the entries so parents come before children
+        // The traversal collects children first (starting from tips), but we need
+        // to store parents first for proper tip tracking
+        entries.reverse();
+
+        Ok(entries)
+    }
+
+    /// Find entries that peer is missing
+    fn find_missing_entries_for_peer(
+        &self,
+        our_tips: &[crate::entry::ID],
+        peer_tips: &[crate::entry::ID],
+    ) -> crate::Result<Vec<crate::entry::Entry>> {
+        // Find tips they don't have
+        let missing_tip_ids: Vec<_> = our_tips
+            .iter()
+            .filter(|tip_id| !peer_tips.contains(tip_id))
+            .cloned()
+            .collect();
+
+        if missing_tip_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Collect ancestors
+        super::utils::collect_ancestors_to_send(self.backend.as_ref(), &missing_tip_ids, peer_tips)
+    }
+
+    /// Count entries in a tree
+    fn count_tree_entries(&self, tree_id: &crate::entry::ID) -> crate::Result<usize> {
+        let mut count = 1; // Include root
+        let mut visited = std::collections::HashSet::new();
+        let mut to_visit = std::collections::VecDeque::new();
+
+        // Get tips to start traversal
+        let tips = self.backend.get_tips(tree_id)?;
+        to_visit.extend(tips);
+
+        // Count all entries
+        while let Some(entry_id) = to_visit.pop_front() {
+            if visited.contains(&entry_id) || entry_id == *tree_id {
+                continue;
+            }
+            visited.insert(entry_id.clone());
+            count += 1;
+
+            if let Ok(entry) = self.backend.get(&entry_id) {
+                if let Ok(parent_ids) = entry.parents() {
+                    for parent_id in parent_ids {
+                        if !visited.contains(&parent_id) && parent_id != *tree_id {
+                            to_visit.push_back(parent_id);
+                        }
                     }
                 }
             }
-
-            info!(
-                requested = request.entry_ids.len(),
-                retrieved = entries.len(),
-                "Completed entries retrieval"
-            );
-
-            SyncResponse::Entries(GetEntriesResponse { entries })
         }
-        .instrument(info_span!(
-            "handle_get_entries",
-            count = request.entry_ids.len()
-        ))
-        .await
+
+        Ok(count)
+    }
+
+    /// Add a key to the database's authentication settings
+    /// FIXME: This is wrong, it uses the root entry's settings
+    async fn add_key_to_database(
+        &self,
+        tree_id: &crate::entry::ID,
+        key_name: &str,
+        public_key: &str,
+        permission: crate::auth::Permission,
+    ) -> crate::Result<()> {
+        debug!(
+            tree_id = %tree_id,
+            key_name = %key_name,
+            public_key = %public_key,
+            permission = ?permission,
+            "Adding key to database authentication settings"
+        );
+
+        // Get the current root entry which contains the settings
+        let root_entry = self.backend.get(tree_id)?;
+
+        // Extract current settings from the root entry
+        let mut current_settings = if let Some(settings_data) = root_entry.data(SETTINGS).ok() {
+            serde_json::from_str::<Doc>(settings_data)?
+        } else {
+            Doc::new()
+        };
+
+        // Get or create auth settings
+        let mut auth_settings = if let Some(auth_section) = current_settings.get("auth") {
+            if let crate::crdt::doc::Value::Node(auth_map) = auth_section {
+                if !auth_map.as_hashmap().is_empty() {
+                    AuthSettings::from_doc(current_settings.get_doc("auth").unwrap())
+                } else {
+                    AuthSettings::new()
+                }
+            } else {
+                AuthSettings::new()
+            }
+        } else {
+            AuthSettings::new()
+        };
+
+        // Create the new auth key
+        let auth_key = AuthKey {
+            pubkey: public_key.to_string(),
+            permissions: permission,
+            status: KeyStatus::Active,
+        };
+
+        // Add the key to auth settings
+        auth_settings.add_key(key_name, auth_key)?;
+
+        // Update the settings with the new auth configuration
+        current_settings.set_node("auth", auth_settings.as_doc().clone());
+
+        // Get current tips to properly extend the database
+        let current_tips = self.backend.get_tips(tree_id)?;
+
+        // Create a new entry that extends the database with updated settings
+        // Use serde_json::to_string to properly serialize the Doc structure
+        let settings_json = serde_json::to_string(&current_settings)?;
+        let updated_entry = crate::entry::Entry::builder(tree_id.clone())
+            .set_subtree_data(SETTINGS, &settings_json)
+            .set_parents(current_tips)
+            .build();
+
+        // Store the new entry that extends the database
+        self.backend
+            .put(crate::backend::VerificationStatus::Verified, updated_entry)?;
+
+        info!(
+            tree_id = %tree_id,
+            key_name = %key_name,
+            "Successfully added key to database"
+        );
+
+        Ok(())
     }
 }

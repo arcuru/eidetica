@@ -328,6 +328,109 @@ This architecture solves the fundamental problem of received data storage by:
 - Efficient binary protocol with JsonHandler serialization
 - Bidirectional streams for request/response pattern
 
+## Bootstrap-First Sync Protocol
+
+Eidetica implements a **bootstrap-first sync protocol** that enables devices to join existing databases without prior local state.
+
+### Protocol Architecture
+
+**Unified SyncTree Protocol:** Replaced multiple request/response types with single `SyncTreeRequest`:
+
+```rust,ignore
+pub struct SyncTreeRequest {
+    pub tree_id: ID,
+    pub our_tips: Vec<ID>, // Empty = bootstrap needed
+}
+
+pub enum SyncResponse {
+    Bootstrap(BootstrapResponse),
+    Incremental(IncrementalResponse),
+    Error(String),
+}
+
+pub struct IncrementalResponse {
+    pub tree_id: ID,
+    pub missing_entries: Vec<Entry>,
+    pub their_tips: Vec<ID>, // Enable bidirectional sync
+}
+```
+
+**Auto-Detection Logic:** Server automatically determines sync type:
+
+```rust,ignore
+async fn handle_sync_tree(&self, request: &SyncTreeRequest) -> SyncResponse {
+    if request.our_tips.is_empty() {
+        // Client has no local state - send full bootstrap
+        return self.handle_bootstrap_request(&request.tree_id).await;
+    }
+    // Client has tips - send incremental updates
+    self.handle_incremental_sync(&request.tree_id, &request.our_tips).await
+}
+```
+
+### Bootstrap Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as New Client
+    participant Server as Existing Peer
+
+    Client->>Server: Handshake (establish identity)
+    Server->>Client: HandshakeResponse (tree_count=N)
+
+    Client->>Server: SyncTree(tree_id, our_tips=[])
+    Note over Server: Empty tips = bootstrap needed
+    Server->>Server: collect_all_tree_entries(tree_id)
+    Server->>Client: Bootstrap(root_entry + all entries)
+
+    Client->>Client: store_entries_in_backend()
+    Client->>Server: Ack
+```
+
+### Incremental Flow (Bidirectional)
+
+```mermaid
+sequenceDiagram
+    participant Client as Existing Client
+    participant Server as Peer
+
+    Client->>Server: Handshake
+    Server->>Client: HandshakeResponse
+
+    Client->>Server: SyncTree(tree_id, our_tips=[tip1, tip2])
+    Note over Server: Compare tips to find missing entries
+    Server->>Client: Incremental(missing_entries, their_tips)
+
+    Client->>Client: store_new_entries()
+    Note over Client: Compare server tips to find what they're missing
+    Client->>Server: SendEntries(entries_server_missing)
+    Server->>Server: store_entries_from_client()
+    Server->>Client: Ack
+```
+
+### API Integration
+
+**New Simplified API:**
+
+```rust,ignore
+// Single method handles both bootstrap and incremental
+pub async fn sync_with_peer(&mut self, peer_address: &str, tree_id: Option<&ID>) -> Result<()> {
+    let peer_pubkey = self.connect_to_peer(&address).await?;
+    if let Some(tree_id) = tree_id {
+        self.sync_tree_with_peer(&peer_pubkey, tree_id).await?;
+    }
+}
+
+// Tree discovery for bootstrap scenarios
+pub async fn discover_peer_trees(&mut self, peer_address: &str) -> Result<Vec<TreeInfo>> {
+    // Returns list of available databases on peer
+}
+```
+
+**Legacy API Still Supported:**
+
+The old manual peer management API (`register_peer`, `add_tree_sync`, etc.) still works for advanced use cases.
+
 ## Data Flow
 
 ### 1. Entry Commit Flow
@@ -810,11 +913,20 @@ The sync module maintains comprehensive test coverage across multiple test suite
 - Channel-based frontend/backend communication
 - Automatic runtime detection (async/sync contexts)
 
+**Bootstrap-First Sync Protocol:**
+
+- Unified `SyncTreeRequest`/`SyncResponse` protocol
+- Automatic bootstrap vs incremental detection
+- Complete database transfer for zero-state clients
+- Simplified `sync_with_peer()` API
+- Peer discovery via `discover_peer_trees()`
+- Graceful peer registration (handles `PeerAlreadyExists`)
+
 **Core Functionality:**
 
 - HTTP and Iroh transport implementations with SyncHandler architecture
 - SyncHandler trait enabling database access in transport layer
-- Full protocol support (GetTips, GetEntries, SendEntries)
+- Full protocol support (bootstrap and incremental sync)
 - Ed25519 handshake protocol with signatures
 - Persistent sync state via DocStore
 - Per-peer sync hook creation
@@ -828,18 +940,24 @@ The sync module maintains comprehensive test coverage across multiple test suite
 - Transport address handling
 - Server lifecycle control
 
-### In Progress 🔄
+**Testing:**
 
-**High Priority:**
+- Comprehensive integration tests for bootstrap protocol
+- Zero-state bootstrap verification
+- Incremental sync after bootstrap
+- Complex DAG synchronization scenarios
+- All 490 integration tests passing
 
-- Complete bidirectional sync algorithm in `sync_with_peer()`
-- Implement full retry queue processing logic
+### Completed Recent Work 🎉
 
-**Medium Priority:**
+**Bootstrap-First Protocol Implementation:**
 
-- Device ID management (currently hardcoded)
-- Connection health monitoring
-- Update remaining test modules for new architecture
+- Full bootstrap sync from zero local state ✅
+- Automatic protocol detection (empty tips = bootstrap needed) ✅
+- Unified sync handler with `SyncTreeRequest` processing ✅
+- Background sync integration with bootstrap response handling ✅
+- Peer registration robustness (`PeerAlreadyExists` handling) ✅
+- Integration test suite validation ✅
 
 ### Future Enhancements 📋
 
@@ -857,9 +975,17 @@ The sync module maintains comprehensive test coverage across multiple test suite
 - Connection state tracking
 - Automatic reconnection logic
 
+**Bootstrap Protocol Extensions:**
+
+- Selective bootstrap (partial tree sync)
+- Progress tracking for large bootstraps
+- Resume interrupted bootstrap operations
+- Bandwidth-aware bootstrap scheduling
+
 **Monitoring:**
 
 - Sync metrics collection
 - Health check endpoints
 - Performance dashboards
 - Sync status visualization
+- Bootstrap completion tracking

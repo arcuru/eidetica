@@ -21,10 +21,7 @@ use super::{
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
     peer_types::{Address, PeerInfo},
-    protocol::{
-        GetEntriesRequest, GetTipsRequest, HandshakeRequest, PROTOCOL_VERSION, SyncRequest,
-        SyncResponse,
-    },
+    protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
     transports::SyncTransport,
 };
 use crate::{
@@ -145,7 +142,7 @@ impl BackgroundSync {
         Ok(sync_tree)
     }
 
-    /// Main event loop that handles all sync operations  
+    /// Main event loop that handles all sync operations
     async fn run(mut self) {
         async move {
             info!("Starting background sync engine");
@@ -492,149 +489,55 @@ impl BackgroundSync {
         address: &Address,
     ) -> Result<()> {
         async move {
-            trace!(peer = %peer_pubkey, tree = %tree_id, "Starting tree synchronization");
-        // Step 1: Get our tips for this tree
-        let our_tips = self
-            .backend
-            .get_tips(tree_id)
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+            trace!(peer = %peer_pubkey, tree = %tree_id, "Starting unified tree synchronization");
 
-        // Step 2: Get peer's tips
-        let their_tips = self.get_peer_tips(tree_id, address).await?;
+            // Get our tips for this tree (empty if tree doesn't exist)
+            let our_tips = self
+                .backend
+                .get_tips(tree_id)
+                .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
-        // Step 3: Find what we're missing and fetch it
-        let missing_entries = self.find_missing_entries(&our_tips, &their_tips)?;
-        if !missing_entries.is_empty() {
-            debug!(peer = %peer_pubkey, tree = %tree_id, missing_count = missing_entries.len(), "Fetching missing entries from peer");
-            let entries = self
-                .fetch_entries_from_peer(address, &missing_entries)
-                .await?;
-            self.store_received_entries(entries).await?;
-        }
+            debug!(peer = %peer_pubkey, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 
-        // Step 4: Find what they're missing and send it
-        let entries_to_send = self.find_entries_to_send(&our_tips, &their_tips)?;
-        if !entries_to_send.is_empty() {
-            debug!(peer = %peer_pubkey, tree = %tree_id, send_count = entries_to_send.len(), "Sending entries to peer");
-            self.transport
-                .send_entries(address, &entries_to_send)
-                .await?;
-        }
+            // Send unified sync request
+            let request = SyncRequest::SyncTree(SyncTreeRequest {
+                tree_id: tree_id.clone(),
+                our_tips,
+                requesting_key: None, // TODO: Add auth support for background sync
+                requesting_key_name: None,
+                requested_permission: None,
+            });
 
-        trace!(peer = %peer_pubkey, tree = %tree_id, "Completed tree synchronization");
-        Ok(())
+            let response = self.transport.send_request(address, &request).await?;
+
+            match response {
+                SyncResponse::Bootstrap(bootstrap_response) => {
+                    info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
+                    self.handle_bootstrap_response(bootstrap_response).await?;
+                }
+                SyncResponse::Incremental(incremental_response) => {
+                    debug!(peer = %peer_pubkey, tree = %tree_id,
+                           their_tips = incremental_response.their_tips.len(),
+                           missing_count = incremental_response.missing_entries.len(),
+                           "Received incremental sync response");
+                    self.handle_incremental_response(incremental_response).await?;
+                }
+                SyncResponse::Error(msg) => {
+                    return Err(SyncError::SyncProtocolError(format!("Sync error: {msg}")).into());
+                }
+                _ => {
+                    return Err(SyncError::UnexpectedResponse {
+                        expected: "Bootstrap or Incremental",
+                        actual: format!("{response:?}"),
+                    }.into());
+                }
+            }
+
+            trace!(peer = %peer_pubkey, tree = %tree_id, "Completed unified tree synchronization");
+            Ok(())
         }
         .instrument(info_span!("sync_tree", peer = %peer_pubkey, tree = %tree_id))
         .await
-    }
-
-    /// Get tips from a peer for a tree
-    async fn get_peer_tips(&self, tree_id: &ID, address: &Address) -> Result<Vec<ID>> {
-        let request = SyncRequest::GetTips(GetTipsRequest {
-            tree_id: tree_id.clone(),
-        });
-
-        let response = self.transport.send_request(address, &request).await?;
-
-        match response {
-            crate::sync::protocol::SyncResponse::Tips(tips_response) => Ok(tips_response.tips),
-            crate::sync::protocol::SyncResponse::Error(msg) => {
-                Err(SyncError::SyncProtocolError(format!("GetTips error: {msg}")).into())
-            }
-            _ => Err(SyncError::UnexpectedResponse {
-                expected: "Tips",
-                actual: format!("{response:?}"),
-            }
-            .into()),
-        }
-    }
-
-    /// Find entries we don't have locally (including all ancestors)
-    fn find_missing_entries(&self, _our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<ID>> {
-        // Use DAG traversal to find all missing entries including ancestors
-        super::utils::collect_missing_ancestors(self.backend.as_ref(), their_tips)
-    }
-
-    /// Collect ancestors that need to be sent with the given entries
-    fn collect_ancestors_to_send(&self, entry_ids: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
-        super::utils::collect_ancestors_to_send(self.backend.as_ref(), entry_ids, their_tips)
-    }
-
-    /// Find entries we have that peer doesn't have, implementing smart duplicate prevention.
-    ///
-    /// This is the core of Eidetica's semantic duplicate prevention algorithm.
-    /// Instead of tracking individual "sent" entries, it compares tree tips to
-    /// determine exactly what the peer is missing.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. **Tip Filtering**: Find tips in our set that peer doesn't have
-    /// 2. **DAG Traversal**: Collect all ancestor entries needed for completeness
-    /// 3. **Dependency Resolution**: Ensure all parent relationships are satisfied
-    ///
-    /// # Why This Works
-    ///
-    /// In a Merkle-CRDT, tips represent the "frontier" of knowledge. If a peer
-    /// has tip X, they transitively have all ancestors of X. By comparing tips,
-    /// we can perfectly determine what data is missing without any persistent tracking.
-    ///
-    /// # Example
-    ///
-    /// ```text
-    /// Our tips:    [E, F]     Peer tips: [D]
-    ///
-    /// A -> B -> C -> D
-    ///      |         
-    ///      v         
-    ///      E -> F    
-    ///
-    /// Peer is missing: [B, E, F] (B is needed as ancestor of E)
-    /// ```
-    fn find_entries_to_send(&self, our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
-        // Find tips that peer doesn't have
-        let tips_to_send: Vec<ID> = our_tips
-            .iter()
-            .filter(|tip_id| !their_tips.contains(tip_id))
-            .cloned()
-            .collect();
-
-        if tips_to_send.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Use DAG traversal to collect all necessary ancestors
-        self.collect_ancestors_to_send(&tips_to_send, their_tips)
-    }
-
-    /// Fetch specific entries from a peer
-    async fn fetch_entries_from_peer(
-        &self,
-        address: &Address,
-        entry_ids: &[ID],
-    ) -> Result<Vec<Entry>> {
-        if entry_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let request = SyncRequest::GetEntries(GetEntriesRequest {
-            entry_ids: entry_ids.to_vec(),
-        });
-
-        let response = self.transport.send_request(address, &request).await?;
-
-        match response {
-            crate::sync::protocol::SyncResponse::Entries(entries_response) => {
-                Ok(entries_response.entries)
-            }
-            crate::sync::protocol::SyncResponse::Error(msg) => {
-                Err(SyncError::SyncProtocolError(format!("GetEntries error: {msg}")).into())
-            }
-            _ => Err(SyncError::UnexpectedResponse {
-                expected: "Entries",
-                actual: format!("{response:?}"),
-            }
-            .into()),
-        }
     }
 
     /// Store received entries from peer with proper DAG ordering
@@ -824,11 +727,24 @@ impl BackgroundSync {
                 let op = sync_tree.new_transaction()?;
                 let peer_manager = PeerManager::new(&op);
 
-                peer_manager.register_peer(
+                // Try to register peer, but ignore if already exists
+                match peer_manager.register_peer(
                     &handshake_resp.public_key,
                     handshake_resp.display_name.as_deref(),
-                )?;
-                op.commit()?;
+                ) {
+                    Ok(_) => {
+                        op.commit()?;
+                    }
+                    Err(e)
+                        if matches!(
+                            e,
+                            crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(_))
+                        ) =>
+                    {
+                        // Peer already exists, that's fine - just continue with handshake result
+                    }
+                    Err(e) => return Err(e),
+                }
 
                 // Successfully connected to peer
                 Ok(handshake_resp.public_key)
@@ -845,5 +761,42 @@ impl BackgroundSync {
         request: &SyncRequest,
     ) -> Result<SyncResponse> {
         self.transport.send_request(address, request).await
+    }
+
+    /// Handle bootstrap response by storing root and all entries
+    async fn handle_bootstrap_response(
+        &self,
+        response: super::protocol::BootstrapResponse,
+    ) -> Result<()> {
+        trace!(tree_id = %response.tree_id, "Processing bootstrap response");
+
+        // Store root entry first
+        self.backend
+            .put_verified(response.root_entry)
+            .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
+
+        // Store all other entries
+        self.store_received_entries(response.all_entries).await?;
+
+        info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
+        Ok(())
+    }
+
+    /// Handle incremental response by storing missing entries
+    async fn handle_incremental_response(
+        &self,
+        response: super::protocol::IncrementalResponse,
+    ) -> Result<()> {
+        trace!(tree_id = %response.tree_id, "Processing incremental response");
+
+        // Store missing entries
+        self.store_received_entries(response.missing_entries)
+            .await?;
+
+        // Note: We could use their_tips for further optimization in the future
+        // For now, the next sync cycle will handle any remaining differences
+
+        debug!(tree_id = %response.tree_id, "Incremental sync completed");
+        Ok(())
     }
 }

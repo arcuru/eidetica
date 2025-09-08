@@ -152,6 +152,24 @@ Multi-level delegation supported with permission clamping at each level:
 8. **Permission Check**: Ensure key has sufficient permissions
 9. **Storage**: Entry stored if all validations pass
 
+## Bootstrap Authentication Flow
+
+For new devices joining existing databases without prior state:
+
+1. **Bootstrap Request**: Device sends SyncTreeRequest with empty tips + auth info
+2. **Key Validation**: Server validates requesting device's public key
+3. **Permission Evaluation**: Server checks requested permission level
+4. **Auto-Approval**: Server automatically approves key (configurable)
+5. **Database Update**: Server adds key to database authentication settings
+6. **Bootstrap Response**: Complete database sent with key approval confirmation
+7. **Local Setup**: Device stores database and gains authenticated access
+
+**Key Components**:
+
+- `sync_with_peer_for_bootstrap()`: API for authenticated bootstrap
+- `add_key_to_database()`: Server-side key approval and storage
+- Protocol extensions in SyncTreeRequest/BootstrapResponse
+
 ## Conflict Resolution
 
 Authentication changes use **Last-Write-Wins (LWW)** semantics based on the DAG structure:
