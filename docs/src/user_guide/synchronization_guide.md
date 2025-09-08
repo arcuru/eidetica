@@ -31,6 +31,8 @@ db.add_private_key("device_key")?;
 
 ### 2. Enable a Transport Protocol
 
+<!-- TODO: Example uses sync API that doesn't match current implementation - sync_mut() method doesn't exist on Instance/Database -->
+
 ```rust,ignore
 // Enable HTTP transport
 db.sync_mut()?.enable_http_transport()?;
@@ -40,6 +42,8 @@ db.sync_mut()?.start_server("127.0.0.1:8080")?;
 ```
 
 ### 3. Connect to a Remote Peer
+
+<!-- TODO: Example uses sync API methods that don't exist in current implementation -->
 
 ```rust,ignore
 use eidetica::sync::{Address, peer_types::PeerStatus};
@@ -56,6 +60,8 @@ db.sync_mut()?.update_peer_status(&peer_pubkey, PeerStatus::Active)?;
 
 ### 4. Set Up Database Synchronization
 
+<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
+
 ```rust,ignore
 // Create a database to sync
 let database = db.new_database(Doc::new(), "device_key")?;
@@ -68,6 +74,8 @@ db.sync_mut()?.add_tree_sync(&peer_pubkey, &tree_id)?;
 ### 5. Automatic Synchronization
 
 Once configured, any changes to the database will automatically be queued for synchronization:
+
+<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
 
 ```rust,ignore
 // Make changes to the database - these will be auto-synced
@@ -82,6 +90,8 @@ op.commit()?; // This triggers sync queue entry
 ### HTTP Transport
 
 The HTTP transport uses REST APIs for synchronization:
+
+<!-- TODO: Example uses sync API methods that don't match current implementation -->
 
 ```rust,ignore
 // Enable HTTP transport
@@ -98,6 +108,8 @@ let peer_key = sync.connect_to_peer(&addr).await?;
 ### Iroh P2P Transport (Recommended)
 
 Iroh provides direct peer-to-peer connectivity with NAT traversal:
+
+<!-- TODO: Example uses sync API methods that don't match current implementation -->
 
 ```rust,ignore
 // Enable Iroh transport with production defaults (uses n0's relay servers)

@@ -10,7 +10,7 @@
   - [Entries & Databases](user_guide/concepts/entries_databases.md)
   - [Database Storage](user_guide/concepts/backends.md)
   - [Stores](user_guide/concepts/stores.md)
-  - [Operations](user_guide/operations.md)
+  - [Transactions](user_guide/transactions.md)
 - [Authentication Guide](user_guide/authentication_guide.md)
 - [Synchronization Guide](user_guide/synchronization_guide.md)
 - [Sync Quick Reference](user_guide/sync_quick_reference.md)

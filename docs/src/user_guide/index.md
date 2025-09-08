@@ -9,7 +9,7 @@ Eidetica is a Rust library for managing structured data with built-in history tr
 - **Efficient data storage** with customizable [Databases](concepts/backends.md)
 - **History tracking** for all changes via immutable [Entries](concepts/entries_databases.md) forming a DAG
 - **Structured data types** via named, typed [Stores](concepts/stores.md) within logical [Databases](concepts/entries_databases.md)
-- **Atomic changes** across multiple data structures using [Operations](operations.md)
+- **Atomic changes** across multiple data structures using [Transactions](transactions.md)
 - **Designed for distribution** (future capability)
 
 ## How to Use This Guide
@@ -22,7 +22,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
     - [Entries & Databases](concepts/entries_databases.md): The core DAG structure.
     - [Databases](concepts/backends.md): How data is stored.
     - [Stores](concepts/stores.md): Where structured data lives (`DocStore`, `Table`, `YDoc`).
-    - [Operations](operations.md): How atomic changes are made.
+    - [Transactions](transactions.md): How atomic changes are made.
 4.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
 5.  [**Code Examples**](examples_snippets.md): Focused code snippets for common tasks.
 
@@ -33,9 +33,9 @@ Eidetica revolves around a few key components working together:
 1.  **`Database`**: You start by choosing or creating a storage `Database` (e.g., `InMemoryDatabase`).
 2.  **`Instance`**: You create a `Instance` instance, providing it the `Database`. This is your main database handle.
 3.  **`Database`**: Using the `Instance`, you create or load a `Database`, which acts as a logical container for related data and tracks its history.
-4.  **`Operation`**: To **read or write** data, you start an `Operation` from the `Database`. This ensures atomicity and consistent views.
-5.  **`Store`**: Within an `Operation`, you get handles to named `Store`s (like `DocStore` or `Table<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
-6.  **`Commit`**: Changes made via `Store` handles within the `Operation` are staged. Calling `commit()` on the `Operation` finalizes these changes atomically, creating a new historical `Entry` in the `Database`.
+4.  **`Transaction`**: To **read or write** data, you start a `Transaction` from the `Database`. This ensures atomicity and consistent views.
+5.  **`Store`**: Within a `Transaction`, you get handles to named `Store`s (like `DocStore` or `Table<YourData>`). These provide methods (`set`, `get`, `insert`, `remove`, etc.) to interact with your structured data.
+6.  **`Commit`**: Changes made via `Store` handles within the `Transaction` are staged. Calling `commit()` on the `Transaction` finalizes these changes atomically, creating a new historical `Entry` in the `Database`.
 
 ## Basic Usage Pattern
 
@@ -95,7 +95,7 @@ fn main() -> eidetica::Result<()> {
 }
 ```
 
-See [Operations](operations.md) and [Code Examples](examples_snippets.md) for more details.
+See [Transactions](transactions.md) and [Code Examples](examples_snippets.md) for more details.
 
 ## Project Status
 

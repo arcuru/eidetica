@@ -103,18 +103,18 @@ fn load_or_create_todo_tree(db: &Instance) -> Result<Database> {
 // let todo_database = load_or_create_todo_database(&db)?;
 ```
 
-### 3. Operations (`Operation`)
+### 3. Transactions (`Transaction`)
 
-All modifications to a `Database`'s data happen within an `Operation`. Operations ensure atomicity – similar to transactions in traditional databases. Changes made within an operation are only applied to the Database when the operation is successfully committed.
+All modifications to a `Database`'s data happen within a `Transaction`. Transactions ensure atomicity – similar to transactions in traditional databases. Changes made within a transaction are only applied to the Database when the transaction is successfully committed.
 
-Every operation is automatically authenticated using the database's default signing key. This ensures that all changes are cryptographically verified and traceable.
+Every transaction is automatically authenticated using the database's default signing key. This ensures that all changes are cryptographically verified and traceable.
 
 ```rust,ignore
 use eidetica::Database;
 use anyhow::Result;
 
-fn some_data_modification(database: &Database) -> Result<()> {
-    // Start an authenticated atomic operation
+fn some_data_modification(database: &Database) -> eidetica::Result<()> {
+    // Start an authenticated atomic transaction
     let op = database.new_transaction()?; // Automatically uses the database's default signing key
 
     // ... perform data changes using the 'op' handle ...
@@ -126,7 +126,7 @@ fn some_data_modification(database: &Database) -> Result<()> {
 }
 ```
 
-Read-only access also typically uses an `Operation` to ensure a consistent view of the data at a specific point in time.
+Read-only access also typically uses a `Transaction` to ensure a consistent view of the data at a specific point in time.
 
 ### 4. Stores (`Store`)
 
@@ -138,6 +138,8 @@ Read-only access also typically uses an `Operation` to ensure a consistent view 
 - **Extensibility:** You can implement your own `Store` types to model complex or domain-specific data structures.
 
 The Todo example uses a `Table` to store `Todo` structs:
+
+<!-- TODO: Example has complex chrono serde dependencies and Result<()> return type issues -->
 
 ```rust,ignore
 use eidetica::{Database, Error};
@@ -154,7 +156,6 @@ pub struct Todo {
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
-// ... impl Todo ...
 
 fn add_todo(database: &Database, title: String) -> Result<()> {
     let op = database.new_transaction()?;
@@ -194,6 +195,8 @@ fn list_todos(database: &Database) -> Result<()> {
 
 Eidetica leverages the `serde` framework for data serialization. Any data structure you want to store needs to implement `serde::Serialize` and `serde::Deserialize`. This allows you to store complex Rust types directly.
 
+<!-- TODO: Example requires chrono serde feature which causes multiple rlib candidates error -->
+
 ```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize)] // Serde traits
 pub struct Todo {
@@ -207,6 +210,8 @@ pub struct Todo {
 ### 6. Y-CRDT Integration (`YDoc`)
 
 The Todo example also demonstrates the use of `YDoc` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
+
+<!-- TODO: YDoc example causes Y-CRDT runtime errors with empty data structures -->
 
 ```rust,ignore
 use eidetica::store::YDoc;

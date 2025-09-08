@@ -212,13 +212,13 @@ Store implementations add their own methods on top of this minimal interface.
 
 While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Store is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
 
-Each Store type implements its own merge logic, typically triggered implicitly when an `Operation` reads the current state of the store (which involves finding and merging the tips of that store's history):
+Each Store type implements its own merge logic, typically triggered implicitly when an `Transaction` reads the current state of the store (which involves finding and merging the tips of that store's history):
 
 - **`DocStore`**: Implements a **Last-Writer-Wins (LWW)** strategy using the internal `Doc` type. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins", and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly.
 
 - **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
 
-**Note:** The CRDT merge logic happens internally when an `Operation` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
+**Note:** The CRDT merge logic happens internally when an `Transaction` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
 
 <!-- TODO: Add links to specific CRDT literature or more detailed internal docs on merge logic if needed -->
 

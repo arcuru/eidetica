@@ -96,7 +96,7 @@ Eidetica extends the Merkle-CRDT concept with Stores, which partition data withi
 - Stores can use different data models and conflict resolution strategies
 - Stores maintain their own history tracking within the larger Database
 
-This innovation enables:
+This enables:
 
 - Type-safe, structure-specific APIs for data access
 - Efficient partial synchronization (only needed stores)
@@ -111,22 +111,21 @@ Planned future stores include:
 
 ## Atomic Operations and Transactions
 
-All changes in Eidetica happen through atomic Operations:
+All changes in Eidetica happen through atomic Transactions:
 
-1. An Operation is created from a Database
-2. Stores are accessed and modified through the Operation
+1. A Transaction is created from a Database
+2. Stores are accessed and modified through the Transaction
 3. When committed, all changes across all stores become a single new Entry
-4. If the Operation fails, no changes are applied
+4. If the Transaction fails, no changes are applied
 
-This transaction-like model ensures data consistency while allowing complex operations across multiple stores.
+This model ensures data consistency while allowing complex operations across multiple stores.
 
 ## Settings as Stores
 
 In Eidetica, even configuration is stored as a store:
 
-- A Database's settings are stored in a special "settings" KV Store store
+- A Database's settings are stored in a special "settings" Store internally that is hidden from regular usage
 - This approach unifies the data model and allows settings to participate in history tracking
-- It also enables future distributed synchronization of settings
 
 ## CRDT Properties and Eventual Consistency
 

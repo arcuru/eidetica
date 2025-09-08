@@ -68,7 +68,7 @@ use eidetica::store::DocStore;
 
 let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the database's default key)
+// Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
 
 {
@@ -105,7 +105,7 @@ struct Task {
 
 let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the database's default key)
+// Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
 let inserted_id;
 
@@ -207,7 +207,7 @@ use eidetica::store::{DocStore, Value};
 
 let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the database's default key)
+// Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
 
 // Get the DocStore store handle
@@ -326,7 +326,7 @@ use eidetica::y_crdt::{Map as YMap, Transact};
 
 let database: Database = /* obtained from step 2 */;
 
-// Start an authenticated operation (automatically uses the database's default key)
+// Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
 
 // Get the YDoc store handle
@@ -344,7 +344,7 @@ user_info_store.with_doc_mut(|doc| {
     Ok(())
 })?;
 
-// Commit the operation
+// Commit the transaction
 let entry_id = op.commit()?;
 println!("YDoc changes committed in entry: {}", entry_id);
 
@@ -418,7 +418,7 @@ prefs_read_store.with_doc(|doc| {
 - **Collaborative Editing**: Y-CRDT documents provide conflict-free merging for concurrent modifications
 - **Rich Data Types**: Support for Maps, Arrays, Text, and other Y-CRDT types
 - **Functional Interface**: Access via `with_doc()` for reads and `with_doc_mut()` for writes
-- **Atomic Integration**: Changes are staged within the Operation and committed atomically
+- **Atomic Integration**: Changes are staged within the Transaction and committed atomically
 
 **Use Cases for YDoc:**
 

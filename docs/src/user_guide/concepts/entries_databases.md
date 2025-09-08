@@ -30,23 +30,43 @@ Key characteristics of Databases:
 - **Store Organization**: Data within a database is organized into named stores, each potentially using different data structures.
 - **Atomic Operations**: All changes to a database happen through transactions, which create new entries.
 
-## Database Operations
+## Database Transactions
 
-You interact with Databases through Operations:
+You interact with Databases through Transactions:
 
-```rust,ignore
-// Create a new operation
-let op = database.new_transaction()?;
-
-// Access stores and perform actions
-let settings = op.get_store::<DocStore>("settings")?;
-settings.set("version", "1.2.0")?;
-
-// Commit the changes, creating a new Entry
-let new_entry_id = op.commit()?;
+```rust
+extern crate eidetica;
+# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::DocStore, Database};
+#
+# use eidetica::Result;
+#
+# fn example(database: Database) -> Result<()> {
+#     // Create a new transaction
+#     let op = database.new_transaction()?;
+#
+#     // Access stores and perform actions
+#     let settings = op.get_store::<DocStore>("settings")?;
+#     settings.set("version", "1.2.0")?;
+#
+#     // Commit the changes, creating a new Entry
+#     let new_entry_id = op.commit()?;
+#
+#     Ok(())
+# }
+#
+# fn main() -> Result<()> {
+#     let backend = InMemory::new();
+#     let db = Instance::new(Box::new(backend));
+#     db.add_private_key("key")?;
+#     let mut settings = Doc::new();
+#     settings.set_string("name", "test");
+#     let database = db.new_database(settings, "key")?;
+#     example(database)?;
+#     Ok(())
+# }
 ```
 
-When you commit an operation, Eidetica:
+When you commit a transaction, Eidetica:
 
 1. Creates a new Entry containing all changes
 2. Links it to the appropriate parent entries

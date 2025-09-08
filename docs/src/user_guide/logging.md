@@ -13,6 +13,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
+<!-- TODO: Example causes multiple rlib candidates error for tracing_subscriber dependency -->
+
 ```rust,ignore
 use tracing_subscriber::EnvFilter;
 
@@ -93,8 +95,13 @@ fn main() -> eidetica::Result<()> {
     let backend = Box::new(InMemory::new());
     let db = Instance::new(backend);
 
-    // Library operations will now emit log messages
-    let database = db.new_database_default("my_key")?;
+    // Add private key first
+    db.add_private_key("my_key")?;
+
+    // Create a database
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "my_database");
+    let database = db.new_database(settings, "my_key")?;
 
     Ok(())
 }

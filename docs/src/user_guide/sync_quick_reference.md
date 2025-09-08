@@ -6,6 +6,8 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 
 ### Basic Sync Setup
 
+<!-- TODO: Example uses sync API that doesn't match current implementation - sync_mut() and with_sync() methods don't exist -->
+
 ```rust,ignore
 use eidetica::{Instance, backend::InMemory};
 
@@ -22,6 +24,8 @@ db.sync_mut()?.start_server("127.0.0.1:8080")?;
 ```
 
 ### Understanding BackgroundSync
+
+<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
 
 ```rust,ignore
 // The BackgroundSync engine starts automatically with transport

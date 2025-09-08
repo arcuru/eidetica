@@ -94,7 +94,7 @@ Any data you store must be serializable with `serde`:
 
 ### Basic Operations
 
-All operations in Eidetica happen within an atomic **Operation**:
+All operations in Eidetica happen within an atomic **Transaction**:
 
 **Inserting Data:**
 
@@ -111,7 +111,7 @@ struct Person {
 }
 
 fn insert_alice(database: &Database) -> eidetica::Result<()> {
-    // Start an authenticated operation
+    // Start an authenticated transaction
     let op = database.new_transaction()?;
 
     // Get or create a Table store
