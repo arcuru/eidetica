@@ -1,0 +1,22 @@
+name: Nix
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      # Let the Nix flake manage the actual workflow definitions
+      - name: Checks
+        run: nix flake check
