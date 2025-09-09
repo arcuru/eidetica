@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lib", "crates/bin"]
+members = ["crates/lib", "crates/bin", "examples/*"]
 resolver = "2"
 
 [workspace.package]
@@ -34,14 +34,27 @@ signal-hook = "0.3"
 tempfile = "3"
 criterion = "0.5"
 # Networking dependencies
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "io-util",
+] }
+axum = { version = "0.7", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+] }
 reqwest = { version = "0.12", features = [
     "json",
     "rustls-tls",
 ], default-features = false }
 async-trait = "0.1"
 iroh = { version = "0.91", default-features = false }
+# Example-only dependencies
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
 
 # Profile configuration for optimizing builds
 [profile.dev]
@@ -50,3 +63,9 @@ opt-level = 0
 # But compile dependencies with optimizations for better performance
 [profile.dev.package."*"]
 opt-level = 3
+
+# Optimized benchmark profile
+[profile.bench]
+inherits = "release"
+lto = true
+codegen-units = 1
