@@ -51,49 +51,94 @@
         config,
         system,
         pkgs,
+        lib,
         ...
       }: let
+        inherit (pkgs) stdenv;
+
         # Rust toolchain configuration using fenix
+        # Using fenix instead of rust-overlay for better llvm-tools support (needed for coverage)
         fenixStable = inputs.fenix.packages.${system}.complete;
         rustSrc = fenixStable.rust-src;
         toolChain = fenixStable.toolchain;
 
         # Crane library with custom Rust toolchain
+        # Crane provides efficient Rust builds with Nix
         craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolChain;
 
-        # Common arguments for all cargo derivations
-        # These arguments are shared across build phases to maintain consistency
-        commonArgs = {
-          inherit cargoArtifacts;
+        # Base arguments for cargo derivations
+        # These are shared by all builds
+        baseArgs = {
           # Clean source to include only Rust-relevant files
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
           nativeBuildInputs = with pkgs; [
-            pkg-config
+            pkg-config # Required for OpenSSL linking
           ];
-          buildInputs = with pkgs; [
-            openssl
-          ];
+          buildInputs = with pkgs;
+            [
+              openssl
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              # Darwin-specific frameworks required for networking and crypto
+              # Not actually tested
+              darwin.apple_sdk.frameworks.Security
+              darwin.apple_sdk.frameworks.SystemConfiguration
+            ];
         };
 
-        # Build cargo dependencies separately for better caching
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        # Build cargo dependencies once for caching (release profile by default)
+        # This creates a build cache that can be reused by all release builds
+        cargoArtifacts = craneLib.buildDepsOnly baseArgs;
 
-        # Main package build
-        eidetica = craneLib.buildPackage (commonArgs
+        # Build cargo dependencies for debug profile (used by book-test)
+        # Separate debug cache needed because debug/release profiles are incompatible
+        cargoArtifactsDebug = craneLib.buildDepsOnly (baseArgs
           // {
-            cargoExtraArgs = "--workspace --all-targets --all-features";
+            pname = "debug-deps";
+            CARGO_PROFILE = "dev";
+          });
+
+        # Common arguments for cargo derivations that need cargoArtifacts
+        # Most builds use the release artifacts for better performance
+        commonArgs =
+          baseArgs
+          // {
+            inherit cargoArtifacts;
+          };
+
+        # Library crate build
+        eidetica-lib = craneLib.buildPackage (commonArgs
+          // {
+            pname = "eidetica";
+            cargoExtraArgs = "-p eidetica --all-features";
             doCheck = false; # Tests run separately with nextest
             meta = {
-              description = "A P2P decentralized database";
+              description = "Eidetica library - A P2P decentralized database";
+            };
+          });
+
+        # Binary crate build
+        eidetica-bin = craneLib.buildPackage (commonArgs
+          // {
+            pname = "eidetica-bin";
+            cargoExtraArgs = "-p eidetica-bin";
+            doCheck = false; # Tests run separately with nextest
+            meta = {
+              description = "Eidetica binary";
               mainProgram = "eidetica";
             };
           });
+
+        # Main package
+        eidetica = eidetica-bin;
       in {
         # Package definitions
         packages = {
           default = eidetica;
           eidetica = eidetica;
+          eidetica-lib = eidetica-lib;
+          eidetica-bin = eidetica-bin;
 
           # Development and Quality Assurance packages
 
@@ -114,9 +159,10 @@
           deny = craneLib.cargoDeny commonArgs;
 
           # Documentation generation
+          # Only docs for this workspace, not the deps
           doc = craneLib.cargoDoc (commonArgs
             // {
-              cargoDocExtraArgs = "--workspace --all-features";
+              cargoDocExtraArgs = "--workspace --all-features --no-deps";
             });
 
           # Code formatting check
@@ -131,17 +177,37 @@
               cargoNextestExtraArgs = "--workspace --all-features --no-fail-fast";
             });
 
+          # Benchmark execution
+          bench = craneLib.mkCargoDerivation (commonArgs
+            // {
+              pname = "eidetica-bench";
+              buildPhaseCargoCommand = "cargo bench --workspace --all-features";
+              doCheck = false;
+              meta = {
+                description = "Eidetica benchmark suite";
+              };
+            });
+
+          # Security audit of dependencies
+          audit = craneLib.cargoAudit (commonArgs
+            // {
+              inherit (inputs) advisory-db;
+            });
+
           # Documentation examples testing
-          book-test = craneLib.mkCargoDerivation (commonArgs
+          # Uses debug cargoArtifacts for better build cache reuse
+          book-test = craneLib.mkCargoDerivation (baseArgs
             // {
               pname = "book-test";
-              inherit cargoArtifacts;
-              # Include entire source for docs directory access
-              src = ./.;
-              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.mdbook];
+              src = ./.; # Needs the docs directory
+              cargoArtifacts = cargoArtifactsDebug; # Reuse debug dependencies
+              nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.mdbook];
 
-              buildPhaseCargoCommand = "cargo build -p eidetica --features full";
+              # Force debug build to match cargoArtifactsDebug
+              CARGO_PROFILE = "dev";
+              buildPhaseCargoCommand = "cargoWithProfile build -p eidetica --features full";
 
+              doCheck = true;
               checkPhase = ''
                 runHook preCheck
                 RUST_LOG=warn mdbook test docs -L target/debug/deps
@@ -154,23 +220,27 @@
                 echo "Documentation examples tested successfully" > $out/result
                 runHook postInstall
               '';
-
-              doCheck = true;
-            });
-
-          # Security audit of dependencies
-          audit = craneLib.cargoAudit (commonArgs
-            // {
-              inherit (inputs) advisory-db;
             });
         };
 
         # CI checks - packages that run during `nix flake check`
         checks = {
-          inherit eidetica;
-          # Include most packages in CI checks
-          # Excluded: coverage (expensive)
-          inherit (config.packages) audit clippy doc deny fmt test book-test;
+          inherit eidetica eidetica-lib;
+
+          inherit
+            (config.packages)
+            audit # Security vulnerabilities
+            clippy # Linting and code quality
+            doc # Documentation builds
+            deny # License compliance
+            fmt # Code formatting
+            test # Test Suite
+            ;
+
+          # Note: Excluded from CI for performance reasons:
+          # - coverage: expensive tarpaulin run
+          # - book-test: rebuilds dependencies for mdbook compatibility
+          # - bench: benchmarks are run separately
         };
 
         # Formatting configuration via treefmt
@@ -215,9 +285,15 @@
         devShells.default = pkgs.mkShell {
           name = "eidetica";
           shellHook = ''
-            echo ---------------------
+            echo "Eidetica Development Shell"
+            echo ""
+            echo "Available commands:"
+            echo "  task --list       - Show all task commands"
+            echo "  cargo nextest run - Run tests with nextest"
+            echo "  nix flake check   - Run all CI checks"
+            echo ""
             task --list
-            echo ---------------------
+            echo ""
           '';
 
           # Inherit build environments from all packages and checks
