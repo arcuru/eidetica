@@ -45,10 +45,10 @@ fn test_auth_key_serialization() {
 
 #[test]
 fn test_sig_info_serialization() {
-    let sig_info = SigInfo {
-        key: SigKey::Direct("KEY_LAPTOP".to_string()),
-        sig: Some("signature_base64_encoded_string_here".to_string()),
-    };
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .sig("signature_base64_encoded_string_here")
+        .build();
 
     let json = serde_json::to_string(&sig_info).unwrap();
     let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
@@ -58,6 +58,7 @@ fn test_sig_info_serialization() {
         serde_json::to_string(&deserialized.key).unwrap()
     );
     assert_eq!(sig_info.sig, deserialized.sig);
+    assert_eq!(sig_info.pubkey, deserialized.pubkey);
 }
 
 #[test]
@@ -189,15 +190,16 @@ fn test_sig_key_delegation_path_roundtrip() {
 
 #[test]
 fn test_sig_info_nested_value_roundtrip() {
-    let original = SigInfo {
-        key: SigKey::Direct("KEY_LAPTOP".to_string()),
-        sig: Some("signature_here".to_string()),
-    };
+    let original = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .sig("signature_here")
+        .build();
     let mut nested = Doc::new();
     nested.set_json("sig_info", &original).unwrap();
     let parsed: SigInfo = nested.get_json("sig_info").unwrap();
     assert_eq!(original.key, parsed.key);
     assert_eq!(original.sig, parsed.sig);
+    assert_eq!(original.pubkey, parsed.pubkey);
 }
 
 #[test]
@@ -498,4 +500,126 @@ fn test_permission_methods() {
     assert_eq!(Permission::Read.priority(), None);
     assert_eq!(Permission::Write(10).priority(), Some(10));
     assert_eq!(Permission::Admin(5).priority(), Some(5));
+}
+
+#[test]
+fn test_sig_info_with_pubkey_serialization() {
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("*".to_string()))
+        .sig("signature_base64_encoded_string_here")
+        .pubkey("ed25519:ABC123")
+        .build();
+
+    let json = serde_json::to_string(&sig_info).unwrap();
+    let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(sig_info.key, deserialized.key);
+    assert_eq!(sig_info.sig, deserialized.sig);
+    assert_eq!(sig_info.pubkey, deserialized.pubkey);
+}
+
+#[test]
+fn test_sig_info_without_pubkey_serialization() {
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .sig("signature_base64_encoded_string_here")
+        .build();
+
+    let json = serde_json::to_string(&sig_info).unwrap();
+    let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(sig_info.key, deserialized.key);
+    assert_eq!(sig_info.sig, deserialized.sig);
+    assert_eq!(sig_info.pubkey, deserialized.pubkey);
+
+    // Verify that None pubkey fields are omitted from serialization
+    assert!(!json.contains("pubkey"));
+}
+
+#[test]
+fn test_sig_info_builder_basic() {
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .sig("test_signature")
+        .build();
+
+    assert_eq!(sig_info.key, SigKey::Direct("KEY_LAPTOP".to_string()));
+    assert_eq!(sig_info.sig, Some("test_signature".to_string()));
+    assert_eq!(sig_info.pubkey, None);
+}
+
+#[test]
+fn test_sig_info_builder_with_pubkey() {
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("*".to_string()))
+        .sig("test_signature")
+        .pubkey("ed25519:ABC123")
+        .build();
+
+    assert_eq!(sig_info.key, SigKey::Direct("*".to_string()));
+    assert_eq!(sig_info.sig, Some("test_signature".to_string()));
+    assert_eq!(sig_info.pubkey, Some("ed25519:ABC123".to_string()));
+}
+
+#[test]
+fn test_sig_info_builder_minimal() {
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .build();
+
+    assert_eq!(sig_info.key, SigKey::Direct("KEY_LAPTOP".to_string()));
+    assert_eq!(sig_info.sig, None);
+    assert_eq!(sig_info.pubkey, None);
+}
+
+#[test]
+#[should_panic(expected = "key is required for SigInfo")]
+fn test_sig_info_builder_missing_key() {
+    SigInfo::builder().sig("test_signature").build();
+}
+
+#[test]
+fn test_sig_info_builder_delegation_path() {
+    let delegation_path = SigKey::DelegationPath(vec![
+        DelegationStep {
+            key: "user@example.com".to_string(),
+            tips: Some(vec![ID::new("tip1")]),
+        },
+        DelegationStep {
+            key: "KEY_LAPTOP".to_string(),
+            tips: None,
+        },
+    ]);
+
+    let sig_info = SigInfo::builder()
+        .key(delegation_path.clone())
+        .sig("test_signature")
+        .pubkey("ed25519:ABC123")
+        .build();
+
+    assert_eq!(sig_info.key, delegation_path);
+    assert_eq!(sig_info.sig, Some("test_signature".to_string()));
+    assert_eq!(sig_info.pubkey, Some("ed25519:ABC123".to_string()));
+}
+
+#[test]
+fn test_sig_info_backward_compatibility() {
+    // Test that old-style direct construction still works
+    let sig_info = SigInfo {
+        key: SigKey::Direct("KEY_LAPTOP".to_string()),
+        sig: Some("signature_here".to_string()),
+        pubkey: None, // Default value for backward compatibility
+    };
+
+    // Test serialization roundtrip
+    let json = serde_json::to_string(&sig_info).unwrap();
+    let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(sig_info, deserialized);
+
+    // Test that Default trait still works
+    let default_sig_info = SigInfo::default();
+    assert_eq!(default_sig_info.key, SigKey::default());
+    assert_eq!(default_sig_info.sig, None);
+    assert_eq!(default_sig_info.pubkey, None);
 }

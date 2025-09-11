@@ -135,10 +135,9 @@ fn test_entry_validation_success() {
     let mut entry = Entry::builder("abc").build();
 
     // Set auth info without signature
-    entry.sig = SigInfo {
-        key: SigKey::Direct("KEY_LAPTOP".to_string()),
-        sig: None,
-    };
+    entry.sig = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -200,10 +199,9 @@ fn test_validate_entry_with_auth_info_against_empty_settings() {
 
     // Create an entry with auth info (signed)
     let mut entry = Entry::builder("root123").build();
-    entry.sig = SigInfo {
-        key: SigKey::Direct("SOME_KEY".to_string()),
-        sig: None,
-    };
+    entry.sig = SigInfo::builder()
+        .key(SigKey::Direct("SOME_KEY".to_string()))
+        .build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -235,10 +233,9 @@ fn test_entry_validation_with_revoked_key() {
     let mut entry = Entry::builder("abc").build();
 
     // Set auth info without signature
-    entry.sig = SigInfo {
-        key: SigKey::Direct("KEY_LAPTOP".to_string()),
-        sig: None,
-    };
+    entry.sig = SigInfo::builder()
+        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();

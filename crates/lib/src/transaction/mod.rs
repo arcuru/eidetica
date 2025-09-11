@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Database, Result, Store,
     auth::{
-        crypto::sign_entry,
+        crypto::{format_public_key, sign_entry},
         types::{Operation, SigInfo, SigKey},
         validation::AuthValidator,
     },
@@ -730,12 +730,6 @@ impl Transaction {
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
         let signing_key = if let Some(key_name) = &self.auth_key_name {
-            // Set auth ID on the entry builder (without signature initially)
-            builder.set_sig_mut(SigInfo {
-                key: SigKey::Direct(key_name.clone()),
-                sig: None,
-            });
-
             // Get the private key from backend for signing
             let signing_key = self.db.backend().get_private_key(key_name)?;
 
@@ -745,6 +739,21 @@ impl Transaction {
                 }
                 .into());
             }
+
+            // Build SigInfo using the builder pattern
+            let mut sig_builder = SigInfo::builder().key(SigKey::Direct(key_name.clone()));
+
+            // For global permissions '*', include the public key directly
+            if key_name == "*"
+                && let Some(ref private_key) = signing_key
+            {
+                let public_key = private_key.verifying_key();
+                let pubkey_string = format_public_key(&public_key);
+                sig_builder = sig_builder.pubkey(pubkey_string);
+            }
+
+            // Set auth ID on the entry builder (without signature initially)
+            builder.set_sig_mut(sig_builder.build());
 
             // Check if we need to bootstrap auth configuration
             // First check if auth is configured in the historical settings

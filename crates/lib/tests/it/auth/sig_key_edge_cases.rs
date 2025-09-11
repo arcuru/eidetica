@@ -177,10 +177,10 @@ fn test_delegation_with_unicode_keys() -> Result<()> {
 /// Test SigInfo with signature but missing key
 #[test]
 fn test_sig_info_with_signature_no_key() {
-    let sig_info = SigInfo {
-        key: SigKey::Direct("".to_string()), // Empty key
-        sig: Some("fake_signature".to_string()),
-    };
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("".to_string())) // Empty key
+        .sig("fake_signature")
+        .build();
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&sig_info).unwrap();
@@ -191,10 +191,9 @@ fn test_sig_info_with_signature_no_key() {
 /// Test SigInfo with key but no signature
 #[test]
 fn test_sig_info_with_key_no_signature() {
-    let sig_info = SigInfo {
-        key: SigKey::Direct("valid_key".to_string()),
-        sig: None, // No signature
-    };
+    let sig_info = SigInfo::builder()
+        .key(SigKey::Direct("valid_key".to_string()))
+        .build(); // No signature
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&sig_info).unwrap();

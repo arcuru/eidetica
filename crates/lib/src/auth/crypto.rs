@@ -285,10 +285,9 @@ mod tests {
         let mut entry = Entry::builder("root123").build();
 
         // Set auth ID without signature
-        entry.sig = crate::auth::types::SigInfo {
-            key: crate::auth::types::SigKey::Direct("KEY_LAPTOP".to_string()),
-            sig: None,
-        };
+        entry.sig = crate::auth::types::SigInfo::builder()
+            .key(crate::auth::types::SigKey::Direct("KEY_LAPTOP".to_string()))
+            .build();
 
         // Sign the entry
         let signature = sign_entry(&entry, &signing_key).unwrap();

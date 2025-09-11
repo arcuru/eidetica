@@ -79,6 +79,11 @@ pub struct SigInfo {
     /// The last element in the delegation path must contain only a "key" field.
     /// This represents the path that needs to be traversed to find the public key of the signing key.
     pub key: SigKey,
+    /// Full public key of the signing key (optional)
+    /// Only necessary when using global permissions '*' where the public key
+    /// needs to be embedded directly rather than resolved through key references
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pubkey: Option<String>,
 }
 
 impl SigInfo {
@@ -88,6 +93,62 @@ impl SigInfo {
     /// For delegated trees, this checks if the final key in the delegation path matches the given key name.
     pub fn is_signed_by(&self, key_name: &str) -> bool {
         self.key.is_signed_by(key_name)
+    }
+
+    /// Create a new SigInfoBuilder for constructing SigInfo instances
+    pub fn builder() -> SigInfoBuilder {
+        SigInfoBuilder::new()
+    }
+}
+
+/// Builder for constructing SigInfo instances
+///
+/// This builder provides a fluent interface for creating SigInfo objects,
+/// making it easier to set optional fields like pubkey for global permissions.
+#[derive(Debug, Clone, Default)]
+pub struct SigInfoBuilder {
+    sig: Option<String>,
+    key: Option<SigKey>,
+    pubkey: Option<String>,
+}
+
+impl SigInfoBuilder {
+    /// Create a new empty SigInfoBuilder
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the signature (base64-encoded signature bytes)
+    pub fn sig(mut self, sig: impl Into<String>) -> Self {
+        self.sig = Some(sig.into());
+        self
+    }
+
+    /// Set the authentication key reference path
+    pub fn key(mut self, key: SigKey) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    /// Set the full public key (for global permissions)
+    ///
+    /// This is only necessary when using global permissions '*' where the public key
+    /// needs to be embedded directly rather than resolved through key references.
+    pub fn pubkey(mut self, pubkey: impl Into<String>) -> Self {
+        self.pubkey = Some(pubkey.into());
+        self
+    }
+
+    /// Build the final SigInfo instance
+    ///
+    /// # Panics
+    /// Panics if key is not set, as it's a required field.
+    pub fn build(self) -> SigInfo {
+        SigInfo {
+            sig: self.sig,
+            key: self.key.expect("key is required for SigInfo"),
+            pubkey: self.pubkey,
+        }
     }
 }
 

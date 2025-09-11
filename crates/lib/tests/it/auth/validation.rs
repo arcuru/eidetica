@@ -160,10 +160,11 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Create a signed entry
     let mut entry = eidetica::Entry::builder("root123".to_string()).build();
-    entry.sig = eidetica::auth::types::SigInfo {
-        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
-        sig: None,
-    };
+    entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(eidetica::auth::types::SigKey::Direct(
+            "TEST_KEY".to_string(),
+        ))
+        .build();
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
@@ -239,10 +240,11 @@ fn test_entry_validation_cache_behavior() {
 
     // Create a signed entry
     let mut entry = eidetica::Entry::builder("root123".to_string()).build();
-    entry.sig = eidetica::auth::types::SigInfo {
-        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
-        sig: None,
-    };
+    entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(eidetica::auth::types::SigKey::Direct(
+            "TEST_KEY".to_string(),
+        ))
+        .build();
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
@@ -300,10 +302,11 @@ fn test_entry_validation_with_malformed_keys() {
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::builder("root123".to_string()).build();
-    correct_entry.sig = eidetica::auth::types::SigInfo {
-        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
-        sig: None,
-    };
+    correct_entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(eidetica::auth::types::SigKey::Direct(
+            "TEST_KEY".to_string(),
+        ))
+        .build();
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
@@ -351,10 +354,11 @@ fn test_entry_validation_with_malformed_keys() {
     let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     let mut wrong_signature_entry = eidetica::Entry::builder("root456".to_string()).build();
-    wrong_signature_entry.sig = eidetica::auth::types::SigInfo {
-        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
-        sig: None,
-    };
+    wrong_signature_entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(eidetica::auth::types::SigKey::Direct(
+            "TEST_KEY".to_string(),
+        ))
+        .build();
 
     // Sign with wrong key but try to validate against correct key
     let wrong_signature =
@@ -415,10 +419,11 @@ fn test_entry_validation_with_invalid_signatures() {
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::builder("root123".to_string()).build();
-    correct_entry.sig = eidetica::auth::types::SigInfo {
-        key: eidetica::auth::types::SigKey::Direct("TEST_KEY".to_string()),
-        sig: None,
-    };
+    correct_entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(eidetica::auth::types::SigKey::Direct(
+            "TEST_KEY".to_string(),
+        ))
+        .build();
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
