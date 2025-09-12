@@ -58,7 +58,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Include server admin key for initial database creation
     auth_doc
         .set_json(
-            "SERVER_ADMIN",
+            SERVER_KEY_NAME,
             serde_json::json!({
                 "pubkey": server_pubkey,
                 "permissions": {"Admin": 10},
@@ -606,11 +606,40 @@ async fn test_multiple_databases_sync() {
         .add_private_key(SERVER_KEY_NAME)
         .expect("Failed to add server key");
 
+    // Get server public key for auth configuration
+    let server_pubkey = server_instance
+        .get_formatted_public_key(SERVER_KEY_NAME)
+        .expect("Failed to get server public key")
+        .expect("Server key should exist");
+
     // Create three different databases (chat rooms)
     let mut room_ids = Vec::new();
     for i in 1..=3 {
         let mut settings = Doc::new();
         settings.set_string("name", format!("Room {}", i));
+
+        // Set up auth configuration with bootstrap policy
+        let mut auth_doc = Doc::new();
+        let mut policy_doc = Doc::new();
+        policy_doc
+            .set_json("bootstrap_auto_approve", true)
+            .expect("set policy json");
+        auth_doc.set_node("policy", policy_doc);
+
+        // Include server admin key for initial database creation
+        auth_doc
+            .set_json(
+                SERVER_KEY_NAME,
+                serde_json::json!({
+                    "pubkey": server_pubkey,
+                    "permissions": {"Admin": 10},
+                    "status": "Active"
+                }),
+            )
+            .expect("Failed to set admin auth");
+
+        settings.set_node("auth", auth_doc);
+
         let database = server_instance
             .new_database(settings, SERVER_KEY_NAME)
             .expect("Failed to create database");

@@ -238,7 +238,7 @@ let database = instance.new_database(settings, "admin_device")?;
 
 The bootstrap policy is stored in database settings at:
 
-```
+```text
 _settings.auth.policy.bootstrap_auto_approve: bool (default: false)
 ```
 

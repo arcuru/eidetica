@@ -124,13 +124,14 @@ impl SyncHandlerImpl {
         let root_entry = self.backend.get(tree_id)?;
         if let Ok(settings_data) = root_entry.data(crate::constants::SETTINGS)
             && let Ok(settings_doc) = serde_json::from_str::<crate::crdt::Doc>(settings_data)
-                && let Some(auth_doc) = settings_doc.get_doc("auth")
-                    && let Some(policy_doc) = auth_doc.get_doc("policy") {
-                        // Read as JSON-encoded bool to match set_json storage
-                        if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
-                            return Ok(flag);
-                        }
-                    }
+            && let Some(auth_doc) = settings_doc.get_doc("auth")
+            && let Some(policy_doc) = auth_doc.get_doc("policy")
+        {
+            // Read as JSON-encoded bool to match set_json storage
+            if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
+                return Ok(flag);
+            }
+        }
         Ok(false)
     }
 
@@ -631,38 +632,35 @@ impl SyncHandlerImpl {
             }
             Err(crate::Error::Auth(auth_err)) if auth_err.is_key_already_exists() => {
                 // Key already exists - check if it's the same public key
-                if let Some(existing_key_result) = auth_settings.get_key(key_name) {
-                    match existing_key_result {
-                        Ok(existing_key) => {
-                            if existing_key.pubkey == public_key {
-                                debug!(
-                                    key_name = %key_name,
-                                    public_key = %public_key,
-                                    "Key already exists with same public key - skipping add"
-                                );
-                                // Same key, no need to update
-                                return Ok(());
-                            } else {
-                                warn!(
-                                    key_name = %key_name,
-                                    existing_pubkey = %existing_key.pubkey,
-                                    new_pubkey = %public_key,
-                                    "Key name conflict: different devices using same key name"
-                                );
-                                return Err(crate::auth::errors::AuthError::KeyAlreadyExists {
-                                    key_name: format!(
-                                        "Key name '{}' already exists with different public key",
-                                        key_name
-                                    ),
-                                }
-                                .into());
-                            }
-                        }
-                        Err(key_err) => {
-                            // Error reading existing key
-                            return Err(key_err);
-                        }
-                    }
+                let existing_key_result = auth_settings.get_key(key_name).ok_or(
+                    crate::Error::Auth(crate::auth::errors::AuthError::KeyNotFound {
+                        key_name: key_name.to_string(),
+                    }),
+                )?;
+                let existing_key = existing_key_result?;
+                if existing_key.pubkey == public_key {
+                    debug!(
+                        key_name = %key_name,
+                        public_key = %public_key,
+                        "Key already exists with same public key - skipping add"
+                    );
+                    // Same key, no need to update
+                    return Ok(());
+                } else {
+                    warn!(
+                        key_name = %key_name,
+                        existing_pubkey = %existing_key.pubkey,
+                        new_pubkey = %public_key,
+                        "Key name conflict: different devices using same key name"
+                    );
+                    return Err(crate::Error::Auth(
+                        crate::auth::errors::AuthError::InvalidAuthConfiguration {
+                            reason: format!(
+                                "Key name '{}' already exists with different public key",
+                                key_name
+                            ),
+                        },
+                    ));
                 }
             }
             Err(e) => return Err(e),

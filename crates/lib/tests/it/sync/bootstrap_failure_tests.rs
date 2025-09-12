@@ -17,11 +17,7 @@ use std::time::Duration;
 /// This test expects SECURE behavior: Bootstrap should fail with a permission error,
 /// and unauthorized clients should not receive database content or be added
 /// to the auth configuration.
-///
-/// NOTE: This test will FAIL until proper security is implemented. The failure
-/// indicates that the security vulnerability still exists and needs to be fixed.
 #[tokio::test]
-#[ignore = "SECURITY: Bootstrap auto-approval vulnerability - any client can gain unauthorized access regardless of auth config"]
 async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
@@ -175,10 +171,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 /// This test expects SECURE behavior: Should either fail because there's no auth
 /// framework to approve keys against, or succeed only if the database explicitly
 /// allows unauthenticated access with proper validation.
-///
-/// NOTE: This test will FAIL until proper security is implemented.
 #[tokio::test]
-#[ignore = "SECURITY: Unauthorized auth config creation - clients can create auth frameworks on unprotected databases"]
 async fn test_bootstrap_permission_denied_no_auth_config() {
     println!(
         "\n🧪 TEST: Bootstrap key approval with no auth config (should have defined behavior)"
@@ -306,10 +299,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 ///
 /// This test expects SECURE behavior: Bootstrap should fail with clear error
 /// for malformed keys and proper validation should be in place.
-///
-/// NOTE: This test will FAIL until proper key validation is implemented.
 #[tokio::test]
-#[ignore = "SECURITY: Key validation bypass - malformed or unusual key names may be accepted without proper validation"]
 async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
@@ -399,10 +389,7 @@ async fn test_bootstrap_invalid_public_key_format() {
 ///
 /// This test expects SECURE behavior: Bootstrap should fail for revoked or
 /// inactive keys with proper status validation.
-///
-/// NOTE: This test will FAIL until proper key status validation is implemented.
 #[tokio::test]
-#[ignore = "SECURITY: Key status validation missing - revoked or inactive keys may still be accepted for bootstrap"]
 async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
@@ -532,10 +519,7 @@ async fn test_bootstrap_with_revoked_key() {
 ///
 /// This test expects SECURE behavior: Bootstrap should either reject excessive
 /// permission requests or grant only appropriate permission levels based on policy.
-///
-/// NOTE: This test will FAIL until proper permission validation is implemented.
 #[tokio::test]
-#[ignore = "SECURITY: Permission escalation vulnerability - clients can request and receive excessive permissions without validation"]
 async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
