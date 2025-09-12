@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_collect_missing_ancestors_present() {
         let backend = create_test_backend();
-        let entry = Entry::builder("test123").build();
+        let entry = Entry::root_builder().build();
         let entry_id = entry.id();
 
         // Store the entry
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn test_collect_ancestors_to_send_single_entry() {
         let backend = create_test_backend();
-        let entry = Entry::builder("test123").build();
+        let entry = Entry::root_builder().build();
         let entry_id = entry.id();
 
         // Store the entry
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn test_collect_ancestors_to_send_peer_already_has() {
         let backend = create_test_backend();
-        let entry = Entry::builder("test123").build();
+        let entry = Entry::root_builder().build();
         let entry_id = entry.id();
 
         // Store the entry

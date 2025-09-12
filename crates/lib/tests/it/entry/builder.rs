@@ -167,9 +167,10 @@ fn test_parents_are_sorted() {
 fn test_entrybuilder_edge_cases() {
     // Test behavior of EntryBuilder with edge cases
 
-    // Empty builder
+    // Empty root entry (created with Entry::root_builder)
     let empty_entry = create_empty_entry();
     assert_eq!(empty_entry.root(), ""); // Default root should be empty string
-    assert_no_parents(&empty_entry); // No parents
-    assert!(empty_entry.subtrees().is_empty()); // No subtrees
+    assert_no_parents(&empty_entry); // Root entries have no parents
+    assert!(empty_entry.is_root()); // Should be a root entry
+    assert!(empty_entry.in_subtree("_root")); // Root entries have the _root subtree
 }

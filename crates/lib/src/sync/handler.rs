@@ -558,8 +558,8 @@ impl SyncHandlerImpl {
         };
 
         // Get or create auth settings
-        let mut auth_settings = if let Some(auth_section) = current_settings.get("auth") {
-            if let crate::crdt::doc::Value::Node(auth_map) = auth_section {
+        let mut auth_settings =
+            if let Some(crate::crdt::doc::Value::Node(auth_map)) = current_settings.get("auth") {
                 if !auth_map.as_hashmap().is_empty() {
                     AuthSettings::from_doc(current_settings.get_doc("auth").unwrap())
                 } else {
@@ -567,10 +567,7 @@ impl SyncHandlerImpl {
                 }
             } else {
                 AuthSettings::new()
-            }
-        } else {
-            AuthSettings::new()
-        };
+            };
 
         // Create the new auth key
         let auth_key = AuthKey {

@@ -156,16 +156,15 @@ impl Entry {
         self.tree.root.clone()
     }
 
-    /// Check if this entry is a root entry of a tree.
+    /// Check if this entry is a root entry (contains the ROOT marker and has no parents).
     ///
-    /// Determined by the presence of a special ROOT subtree.
+    /// Root entries are the top-level entries in the database and are distinguished by:
+    /// 1. Containing a subtree with the ROOT marker
+    /// 2. Having no parent entries (they are true tree roots)
+    ///
+    /// This ensures that root entries are actual starting points of trees in the DAG.
     pub fn is_root(&self) -> bool {
-        self.subtrees.iter().any(|node| node.name == ROOT)
-    }
-
-    /// Check if this entry is the absolute top-level root entry (has no parent tree).
-    pub fn is_toplevel_root(&self) -> bool {
-        self.root().is_empty() && self.is_root()
+        self.subtrees.iter().any(|node| node.name == ROOT) && self.tree.parents.is_empty()
     }
 
     /// Check if this entry contains data for a specific named subtree.
@@ -260,6 +259,163 @@ impl Entry {
     /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
     pub fn signing_bytes(&self) -> crate::Result<Vec<u8>> {
         self.canonical_for_signing().canonical_bytes()
+    }
+
+    /// Validate the structural integrity of this entry.
+    ///
+    /// This method performs lightweight structural validation that can be done
+    /// without access to the backend database. It checks for obvious structural
+    /// issues while deferring complex DAG relationship validation to the transaction
+    /// and backend layers where full database access is available.
+    ///
+    /// # Validation Rules
+    ///
+    /// ## Critical Main Tree Parent Validation (Prevents "No Common Ancestor" Errors)
+    /// - **Root entries** (containing "_root" subtree): May have empty parents
+    /// - **Non-root entries**: MUST have at least one parent - **HARD REQUIREMENT**
+    /// - **Empty parent IDs**: Always rejected as invalid
+    ///
+    /// This strict enforcement prevents orphaned entries that cause sync failures.
+    ///
+    /// ## Subtree Parent Relationships
+    /// - For root entries: Subtrees may have empty parents (they establish the subtree roots)
+    /// - For non-root entries: Empty subtree parents require deeper validation:
+    ///   - Could be legitimate (first entry in a new subtree)
+    ///   - Could indicate broken relationships (needs DAG traversal to verify)
+    ///
+    /// ## Multi-Layer Validation System
+    /// Complex validation happens at multiple layers:
+    /// 1. **Entry Layer** (this method): Structural validation, main tree parent enforcement
+    /// 2. **Transaction Layer**: Parent discovery, subtree parent validation with DAG access
+    /// 3. **Backend Storage**: Final validation gate before persistence
+    /// 4. **Sync Operations**: Validation of entries received from peers
+    ///
+    /// # Special Cases
+    /// - The "_root" marker subtree has special handling and skips validation
+    /// - The "_settings" subtree follows standard validation rules
+    /// - Empty subtree parents are logged but deferred to transaction layer
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the entry is structurally valid
+    /// - `Err(InstanceError::EntryValidationFailed)` if validation fails with specific reason
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::Entry;
+    /// # let entry: Entry = unimplemented!();
+    /// // Validate an entry before storage or sync
+    /// match entry.validate() {
+    ///     Ok(()) => {
+    ///         // Entry is valid, safe to store/sync
+    ///         println!("Entry is valid");
+    ///     }
+    ///     Err(e) => {
+    ///         // Entry is invalid, reject it
+    ///         eprintln!("Invalid entry: {}", e);
+    ///     }
+    /// }
+    /// ```
+    pub fn validate(&self) -> crate::Result<()> {
+        use crate::constants::{ROOT, SETTINGS};
+        use crate::instance::errors::InstanceError;
+
+        // CRITICAL VALIDATION: Root entries (with _root marker) cannot have parents
+        // This enforces that root entries are true starting points of trees
+        let has_root_marker = self.subtrees.iter().any(|node| node.name == ROOT);
+        if has_root_marker && !self.tree.parents.is_empty() {
+            return Err(InstanceError::EntryValidationFailed {
+                reason: format!(
+                    "Entry {} has _root marker but also has parents. Root entries cannot have parent relationships as they are the starting points of trees.",
+                    self.id()
+                ),
+            }.into());
+        }
+
+        // Check if this is a root entry (will be true only if has ROOT marker AND no parents)
+        let is_root_entry = has_root_marker && self.tree.parents.is_empty();
+
+        // Validate each subtree
+        for subtree_node in &self.subtrees {
+            let subtree_name = &subtree_node.name;
+            let subtree_parents = &subtree_node.parents;
+
+            // Skip validation for the special "_root" marker subtree
+            if subtree_name == ROOT {
+                continue;
+            }
+
+            // For non-root entries with empty subtree parents, this is only valid if:
+            // 1. The entry has no main parents (making it a legitimate subtree root), OR
+            // 2. The subtree is genuinely being established for the first time within the tree
+            //
+            // Note: We can't perform deep validation here without access to the backend,
+            // so we defer complex validation to transaction/backend layers where full
+            // DAG traversal is possible. This basic validation catches obvious structural errors.
+            if !is_root_entry && subtree_parents.is_empty() {
+                // This is a lightweight structural check - more comprehensive validation
+                // happens in transaction/backend layers with full DAG access
+                tracing::debug!(
+                    entry_id = %self.id(),
+                    subtree = subtree_name,
+                    "Entry has empty subtree parents - will be validated in transaction layer"
+                );
+            }
+
+            // Special validation for the critical "_settings" subtree
+            // Note: Settings subtree follows the same rules as other subtrees - empty parents
+            // are valid for the first entry in the subtree. Comprehensive validation happens
+            // in transaction/backend layers with full DAG access.
+            if subtree_name == SETTINGS && !is_root_entry && subtree_parents.is_empty() {
+                tracing::debug!(
+                    entry_id = %self.id(),
+                    "Settings subtree has empty parents - will be validated in transaction layer"
+                );
+            }
+
+            // Validate that subtree parents are not empty strings
+            for parent_id in subtree_parents {
+                if parent_id.is_empty() {
+                    return Err(InstanceError::EntryValidationFailed {
+                        reason: format!(
+                            "Entry {} has subtree '{}' with empty parent ID. Parent IDs must be non-empty valid entry IDs.",
+                            self.id(),
+                            subtree_name
+                        ),
+                    }.into());
+                }
+            }
+        }
+
+        // Enforce main tree parent requirements
+        if !is_root_entry {
+            let main_parents = self.tree.parents.clone();
+            if main_parents.is_empty() {
+                // This is a HARD FAILURE - reject the entry completely
+                // Empty main tree parents create orphaned nodes that break LCA calculations
+                return Err(InstanceError::EntryValidationFailed {
+                    reason: format!(
+                        "Non-root entry {} has empty main tree parents. All non-root entries must have valid parent relationships in the main tree.",
+                        self.id()
+                    ),
+                }.into());
+            }
+
+            // Validate that main parents are not empty strings
+            for parent_id in &main_parents {
+                if parent_id.is_empty() {
+                    return Err(InstanceError::EntryValidationFailed {
+                        reason: format!(
+                            "Entry {} has empty parent ID in main tree. Parent IDs must be non-empty valid entry IDs.",
+                            self.id()
+                        ),
+                    }.into());
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -777,5 +933,251 @@ impl EntryBuilder {
             subtrees: self.subtrees,
             sig: self.sig,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_root_entry_without_parents_succeeds() {
+        // Root entries (with "_root" subtree) should be valid without parents
+        let entry = Entry::root_builder().build();
+
+        // Should pass validation
+        assert!(
+            entry.validate().is_ok(),
+            "Root entry should be valid without parents"
+        );
+        assert!(entry.is_root(), "Entry should be identified as root");
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot add parents to a root entry builder")]
+    fn test_validate_root_entry_with_parents_panics() {
+        // Root entries with parents should now PANIC at build time
+        Entry::root_builder().add_parent("some_parent_id").build();
+    }
+
+    #[test]
+    fn test_validate_non_root_entry_without_parents_fails() {
+        // Non-root entries MUST have parents to be valid
+        let entry = Entry::builder("tree_id").build();
+
+        // Should fail validation
+        let result = entry.validate();
+        assert!(
+            result.is_err(),
+            "Non-root entry without parents should fail validation"
+        );
+
+        // Check that it's the correct error type
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            error_msg.contains("EntryValidationFailed"),
+            "Should be EntryValidationFailed error, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("empty main tree parents"),
+            "Error should mention empty parent requirement, got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_non_root_entry_with_parents_succeeds() {
+        // Non-root entries with parents should be valid
+        let entry = Entry::builder("tree_id").add_parent("parent_id").build();
+
+        // Should pass validation
+        assert!(
+            entry.validate().is_ok(),
+            "Non-root entry with parents should be valid"
+        );
+        assert!(!entry.is_root(), "Entry should not be identified as root");
+    }
+
+    #[test]
+    fn test_validate_empty_parent_id_fails() {
+        // Empty parent IDs should be rejected
+        let entry = Entry::builder("tree_id")
+            .add_parent("") // Empty parent ID
+            .build();
+
+        // Should fail validation
+        let result = entry.validate();
+        assert!(
+            result.is_err(),
+            "Entry with empty parent ID should fail validation"
+        );
+
+        // Check that it's the correct error type
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            error_msg.contains("EntryValidationFailed"),
+            "Should be EntryValidationFailed error, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("empty parent ID"),
+            "Error should mention empty parent ID, got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_subtree_with_empty_parent_id_fails() {
+        // Subtrees with empty parent IDs should be rejected
+        let entry = Entry::root_builder()
+            .set_subtree_data("messages", "test_data")
+            .set_subtree_parents("messages", vec!["".into()]) // Empty subtree parent ID
+            .build();
+
+        // Should fail validation
+        let result = entry.validate();
+        assert!(
+            result.is_err(),
+            "Entry with empty subtree parent ID should fail validation"
+        );
+
+        // Check that it's the correct error type
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            error_msg.contains("EntryValidationFailed"),
+            "Should be EntryValidationFailed error, got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains("empty parent ID"),
+            "Error should mention empty parent ID, got: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
+        // Non-root entries with empty subtree parents should log but pass validation
+        // This is deferred to transaction layer for deeper validation
+        let entry = Entry::builder("tree_id")
+            .add_parent("main_parent")
+            .set_subtree_data("messages", "test_data")
+            .set_subtree_parents("messages", vec![]) // Empty subtree parents
+            .build();
+
+        // Should pass validation (deeper validation happens in transaction layer)
+        assert!(
+            entry.validate().is_ok(),
+            "Non-root entry with empty subtree parents should pass entry-level validation"
+        );
+        assert!(!entry.is_root(), "Entry should not be identified as root");
+
+        // Verify it has main tree parents but empty subtree parents
+        assert!(
+            !entry.parents().unwrap().is_empty(),
+            "Should have main tree parents"
+        );
+        assert!(
+            entry.subtree_parents("messages").unwrap().is_empty(),
+            "Should have empty subtree parents"
+        );
+    }
+
+    #[test]
+    fn test_validate_root_entry_with_empty_subtree_parents_succeeds() {
+        // Root entries can have empty subtree parents (they establish subtree roots)
+        let entry = Entry::root_builder()
+            .set_subtree_data("messages", "test_data")
+            .set_subtree_parents("messages", vec![]) // Empty subtree parents - valid for root
+            .build();
+
+        // Should pass validation
+        assert!(
+            entry.validate().is_ok(),
+            "Root entry with empty subtree parents should be valid"
+        );
+        assert!(entry.is_root(), "Entry should be identified as root");
+    }
+
+    #[test]
+    fn test_validate_settings_subtree_follows_standard_rules() {
+        // Settings subtree follows the same validation rules as other subtrees
+
+        // Root entry with empty settings subtree parents should be valid
+        let root_entry = Entry::root_builder()
+            .set_subtree_data("_settings", "auth_config")
+            .set_subtree_parents("_settings", vec![]) // Empty - valid for root
+            .build();
+
+        assert!(
+            root_entry.validate().is_ok(),
+            "Root entry with empty settings subtree parents should be valid"
+        );
+
+        // Non-root entry with empty settings subtree parents should pass entry validation
+        // (deeper validation deferred to transaction layer)
+        let non_root_entry = Entry::builder("tree_id")
+            .add_parent("main_parent")
+            .set_subtree_data("_settings", "auth_config")
+            .set_subtree_parents("_settings", vec![]) // Empty - logs but passes entry validation
+            .build();
+
+        assert!(
+            non_root_entry.validate().is_ok(),
+            "Non-root entry with empty settings subtree parents should pass entry validation"
+        );
+    }
+
+    #[test]
+    fn test_validate_multiple_subtrees_with_mixed_parent_scenarios() {
+        // Test entry with multiple subtrees having different parent scenarios
+        let entry = Entry::builder("tree_id")
+            .add_parent("main_parent")
+            .set_subtree_data("messages", "msg_data")
+            .set_subtree_parents("messages", vec!["msg_parent".into()]) // Valid parent
+            .set_subtree_data("users", "user_data")
+            .set_subtree_parents("users", vec![]) // Empty parents - deferred validation
+            .build();
+
+        // Should pass entry-level validation
+        assert!(
+            entry.validate().is_ok(),
+            "Entry with mixed subtree parent scenarios should pass entry validation"
+        );
+
+        // Verify the structure
+        assert!(
+            !entry.parents().unwrap().is_empty(),
+            "Should have main tree parents"
+        );
+        assert!(
+            !entry.subtree_parents("messages").unwrap().is_empty(),
+            "Messages should have parents"
+        );
+        assert!(
+            entry.subtree_parents("users").unwrap().is_empty(),
+            "Users should have empty parents"
+        );
+    }
+
+    #[test]
+    fn test_validate_root_subtree_marker_skipped() {
+        // The "_root" marker subtree should be skipped during validation
+        let entry = Entry::root_builder()
+            .set_subtree_data("other_subtree", "data")
+            .build();
+
+        // Should pass validation - _root subtree validation is skipped
+        assert!(
+            entry.validate().is_ok(),
+            "Entry with _root marker subtree should pass validation"
+        );
+
+        // Verify it has the _root marker
+        assert!(
+            entry.subtrees().contains(&"_root".to_string()),
+            "Root entry should contain _root marker"
+        );
     }
 }

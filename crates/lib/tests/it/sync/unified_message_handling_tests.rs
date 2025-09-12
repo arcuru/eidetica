@@ -15,13 +15,13 @@ async fn test_unified_message_handling() {
     use eidetica::Entry;
 
     // Create test entries
-    let single_entry = Entry::builder("test_root")
+    let single_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "single"}"#)
         .build();
-    let entry1 = Entry::builder("test_root_1")
+    let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "multi1"}"#)
         .build();
-    let entry2 = Entry::builder("test_root_2")
+    let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "multi2"}"#)
         .build();
 
@@ -104,7 +104,7 @@ async fn test_http_v0_json_endpoint() {
     let url = format!("http://{addr}/api/v0");
 
     // Send single entry as JSON POST (same as transport does internally)
-    let entry = Entry::builder("test_root")
+    let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http"}"#)
         .build();
 
@@ -122,10 +122,10 @@ async fn test_http_v0_json_endpoint() {
     }
 
     // Send multiple entries as JSON POST
-    let entry1 = Entry::builder("test_root_1")
+    let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http_1"}"#)
         .build();
-    let entry2 = Entry::builder("test_root_2")
+    let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http_2"}"#)
         .build();
 

@@ -25,6 +25,15 @@ pub enum BackendError {
         id: ID,
     },
 
+    /// Entry failed structural validation.
+    #[error("Entry {entry_id} failed validation: {reason}")]
+    EntryValidationFailed {
+        /// The ID of the entry that failed validation
+        entry_id: ID,
+        /// The reason for validation failure
+        reason: String,
+    },
+
     /// Verification status not found for entry.
     #[error("Verification status not found for entry: {id}")]
     VerificationStatusNotFound {
@@ -162,7 +171,8 @@ impl BackendError {
     pub fn is_integrity_error(&self) -> bool {
         matches!(
             self,
-            BackendError::CycleDetected { .. }
+            BackendError::EntryValidationFailed { .. }
+                | BackendError::CycleDetected { .. }
                 | BackendError::HeightCalculationCorruption { .. }
                 | BackendError::TreeIntegrityViolation { .. }
                 | BackendError::StateInconsistency { .. }
@@ -203,6 +213,7 @@ impl BackendError {
         match self {
             BackendError::EntryNotFound { id }
             | BackendError::VerificationStatusNotFound { id }
+            | BackendError::EntryValidationFailed { entry_id: id, .. }
             | BackendError::CycleDetected { entry_id: id }
             | BackendError::EntryNotInTree { entry_id: id, .. }
             | BackendError::EntryNotInSubtree { entry_id: id, .. } => Some(id),

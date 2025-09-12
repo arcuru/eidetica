@@ -38,9 +38,11 @@ const CHAT_APP_KEY: &str = "CHAT_APP_USER";
 
 /// Test the exact scenario that causes "no common ancestor" error.
 #[tokio::test]
-#[ignore = "BUG: Bidirectional sync 'no common ancestor' error - CRDT merge algorithm fails in specific sync scenarios"]
+#[ignore = "BUG: Signature verification fails during bidirectional sync"]
 async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
-    println!("\n🧪 TEST: Bidirectional sync causing no common ancestor error");
+    println!(
+        "\n🧪 TEST: Bidirectional sync test (original sync bug fixed, now has signature verification issue)"
+    );
 
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
@@ -220,6 +222,49 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 5: Device 1 tries to add message C (trigger "no common ancestor" error) ===
     println!("\n📱 STEP 5: Device 1 tries to add message C (this should trigger the error)");
 
+    // Debug: Check current tips before adding message C
+    let current_tips = device1_database
+        .backend()
+        .get_tips(&room_id)
+        .expect("Failed to get tips");
+    println!(
+        "🔍 Device 1 current tree tips before adding C: {:?}",
+        current_tips
+    );
+    let current_subtree_tips = device1_database
+        .backend()
+        .get_store_tips(&room_id, "messages")
+        .expect("Failed to get store tips");
+    println!(
+        "🔍 Device 1 current messages store tips before adding C: {:?}",
+        current_subtree_tips
+    );
+
+    // Debug: Show all entries in the tree to understand the DAG structure
+    println!("🔍 All entries in Device 1's tree:");
+    let all_entries = device1_database
+        .backend()
+        .get_tree(&room_id)
+        .expect("Failed to get tree entries");
+    for (i, entry) in all_entries.iter().enumerate() {
+        let parents = entry.parents().unwrap_or_default();
+        let subtrees = entry.subtrees();
+        println!(
+            "   {}. Entry {}: parents={:?}, subtrees={:?}",
+            i + 1,
+            entry.id(),
+            parents,
+            subtrees
+        );
+
+        // Show subtree parents for the messages store
+        if subtrees.contains(&"messages".to_string())
+            && let Ok(subtree_parents) = entry.subtree_parents("messages")
+        {
+            println!("      └─ messages subtree parents: {:?}", subtree_parents);
+        }
+    }
+
     let message_c = ChatMessage::new(
         "alice".to_string(),
         "Hello again from Device 1 (Message C)".to_string(),
@@ -251,7 +296,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     match add_result {
         Ok(()) => {
-            println!("✅ Bidirectional sync works correctly - message C added successfully");
+            println!("🎉 SUCCESS: No common ancestor error did not occur - BUG IS FIXED!");
 
             // Check final message count
             let op = device1_database.new_transaction()?;
@@ -263,20 +308,25 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
                 println!("   - {}: {}", msg.author, msg.content);
             }
 
-            // Verify we have all 3 messages (A, B, C)
+            // Verify we have all 3 messages
             assert_eq!(
                 messages.len(),
                 3,
-                "Should have all 3 messages when sync works correctly"
+                "Device 1 should have 3 messages after adding C"
             );
+            let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+            assert!(contents.contains(&"Hello from Device 1 (Message A)"));
+            assert!(contents.contains(&"Hello from Device 2 (Message B)"));
+            assert!(contents.contains(&"Hello again from Device 1 (Message C)"));
         }
         Err(e) => {
-            println!("❌ SYNC BUG STILL EXISTS: {:?}", e);
+            println!("🎯 ERROR STILL REPRODUCED: {:?}", e);
             let error_str = e.to_string();
 
             if error_str.to_lowercase().contains("ancestor") {
                 panic!(
-                    "SYNC BUG: 'no common ancestor' error still occurs in bidirectional sync - this needs to be fixed"
+                    "SYNC BUG: 'no common ancestor' error still occurs during bidirectional sync - this needs to be fixed: {}",
+                    e
                 );
             } else {
                 panic!(

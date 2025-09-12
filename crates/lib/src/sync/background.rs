@@ -735,12 +735,9 @@ impl BackgroundSync {
                     Ok(_) => {
                         op.commit()?;
                     }
-                    Err(e)
-                        if matches!(
-                            e,
-                            crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(_))
-                        ) =>
-                    {
+                    Err(crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(
+                        _,
+                    ))) => {
                         // Peer already exists, that's fine - just continue with handshake result
                     }
                     Err(e) => return Err(e),

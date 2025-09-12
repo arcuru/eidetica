@@ -1,30 +1,64 @@
+//! Test helper functions for creating valid Entry structures
+//!
+//! # Important: Entry Validation Requirements
+//!
+//! All entries created by these helpers must pass structural validation to prevent
+//! "no common ancestor" errors during sync operations. The validation rules are:
+//!
+//! 1. **Root entries** (containing "_root" subtree): May have empty parents
+//! 2. **Non-root entries**: MUST have at least one parent in the main tree
+//!
+//! Most test helpers create root entries using `Entry::root_builder()` because:
+//! - They don't require parent relationships (valid as standalone entries)
+//! - They're suitable for testing isolated entry behavior
+//! - They avoid the complexity of maintaining parent-child relationships
+//!
+//! For tests requiring non-root entries with specific parent relationships,
+//! use `create_entry_with_parents()` which ensures proper parent linkage.
+
 use eidetica::Entry;
 
-/// Create a simple test entry with the given root
-pub fn create_entry(root: &str) -> Entry {
-    Entry::builder(root).build()
-}
-
-/// Create a root entry (top-level entry)
+/// Create a root entry (top-level entry in the DAG)
+///
+/// Explicitly creates a root entry with the "_root" subtree marker.
+/// These entries form the foundation of the DAG and require no parents.
 pub fn create_root_entry() -> Entry {
     Entry::root_builder().build()
 }
 
-/// Create an empty entry (with empty string root)
+/// Create an empty root entry for edge case testing
+///
+/// Creates a minimal valid entry with no additional data.
+/// Used for testing entry creation, storage, and validation edge cases.
 pub fn create_empty_entry() -> Entry {
-    Entry::builder("").build()
+    Entry::root_builder().build()
 }
 
-/// Create a test entry with parents
+/// Create a NON-ROOT entry with explicit parent relationships
+///
+/// This is the primary helper for creating entries that are part of an existing DAG.
+/// The entry MUST have at least one parent to be valid (enforced by validation).
+///
+/// # Arguments
+/// * `root` - The root/tree ID for this entry
+/// * `parents` - Parent entry IDs (must not be empty for valid non-root entries)
+///
+/// # Panics
+/// Will panic during validation if parents is empty (non-root entries require parents)
 pub fn create_entry_with_parents(root: &str, parents: &[&str]) -> Entry {
     Entry::builder(root)
         .set_parents(parents.iter().map(|p| (*p).into()).collect())
         .build()
 }
 
-/// Create a test entry with multiple subtrees
-pub fn create_entry_with_subtrees(root: &str, subtrees: &[(&str, &str)]) -> Entry {
-    let mut builder = Entry::builder(root);
+/// Create a ROOT entry with multiple subtrees
+///
+/// **Creates a ROOT entry** to ensure validity without requiring parents.
+/// Used for testing subtree operations and data organization.
+///
+/// Note: The `root` parameter is ignored as root_builder always uses empty string.
+pub fn create_entry_with_subtrees(_root: &str, subtrees: &[(&str, &str)]) -> Entry {
+    let mut builder = Entry::root_builder();
     for (name, data) in subtrees {
         builder.set_subtree_data_mut(*name, *data);
     }
@@ -44,9 +78,14 @@ pub fn create_entry_with_subtree_parents(
         .build()
 }
 
-/// Create a test entry with a single subtree
-pub fn create_entry_with_subtree(root: &str, subtree_name: &str, data: &str) -> Entry {
-    Entry::builder(root)
+/// Create a ROOT entry with a single subtree
+///
+/// **Creates a ROOT entry** to ensure validity without requiring parents.
+/// Convenience function for tests that need a single subtree.
+///
+/// Note: The `root` parameter is ignored as root_builder always uses empty string.
+pub fn create_entry_with_subtree(_root: &str, subtree_name: &str, data: &str) -> Entry {
+    Entry::root_builder()
         .set_subtree_data(subtree_name, data)
         .build()
 }

@@ -5,13 +5,12 @@ use super::helpers::*;
 #[test]
 fn test_entry_creation() {
     let root = "test_root";
-    let entry = create_entry(root);
+    let entry = create_entry_with_parents(root, &["parent1"]);
 
     assert_eq!(entry.root(), root);
     assert!(!entry.is_root()); // Regular entries are not root entries
-    assert!(!entry.is_toplevel_root()); // Should be false as it's not a top-level entry
 
-    assert_no_parents(&entry); // New entry has no parents
+    assert_has_parents(&entry, &["parent1"]); // Entry now has parents as required
 }
 
 #[test]
@@ -28,7 +27,9 @@ fn test_in_tree_and_subtree() {
     let root = "test_root_subtrees";
     let entry = create_entry_with_subtree(root, "subtree1", "subtree_data");
 
-    assert!(entry.in_tree(root));
+    // Root entries created with Entry::root_builder() have empty string as root
+    assert!(entry.in_tree(""));
+    assert!(entry.in_tree(entry.id())); // Also check by entry ID
     assert!(!entry.in_tree("other_tree"));
     assert!(entry.in_subtree("subtree1"));
     assert!(!entry.in_subtree("non_existent_subtree"));

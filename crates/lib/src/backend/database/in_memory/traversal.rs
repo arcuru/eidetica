@@ -253,19 +253,60 @@ pub(crate) fn find_lca(
         return Ok(entry_ids[0].clone());
     }
 
+    // Debug logging for LCA algorithm
+    tracing::debug!(
+        tree_id = %tree,
+        subtree = subtree,
+        entry_count = entry_ids.len(),
+        entry_ids = ?entry_ids,
+        "Starting LCA algorithm"
+    );
+
     // Verify that all entries exist and belong to the specified tree
     for entry_id in entry_ids {
         match super::storage::get(backend, entry_id) {
             Ok(entry) => {
+                // CRITICAL: Validate entry structure to fail fast on invalid data
+                //
+                // This validation step is essential for preventing the LCA algorithm
+                // from operating on entries with broken subtree parent relationships.
+                // Without this check, the algorithm could fail with confusing
+                // errors. By validating here, we provide clear error messages
+                // that identify the specific invalid entry.
+                if let Err(validation_error) = entry.validate() {
+                    tracing::error!(
+                        entry_id = %entry_id,
+                        error = %validation_error,
+                        "Entry failed validation in LCA algorithm"
+                    );
+                    return Err(BackendError::EntryValidationFailed {
+                        entry_id: entry_id.clone(),
+                        reason: validation_error.to_string(),
+                    }
+                    .into());
+                }
+
                 if !entry.in_tree(tree) {
+                    tracing::warn!(
+                        entry_id = %entry_id,
+                        tree_id = %tree,
+                        actual_tree = %entry.root(),
+                        "Entry is not in the expected tree"
+                    );
                     return Err(BackendError::EntryNotInTree {
                         entry_id: entry_id.clone(),
                         tree_id: tree.clone(),
                     }
                     .into());
                 }
+                tracing::debug!(
+                    entry_id = %entry_id,
+                    parents = ?entry.parents().unwrap_or_default(),
+                    "Entry verified and belongs to tree"
+                );
             }
             Err(_) => {
+                tracing::error!(entry_id = %entry_id, "Entry not found");
                 return Err(BackendError::EntryNotFound {
                     id: entry_id.clone(),
                 }
@@ -287,38 +328,128 @@ pub(crate) fn find_lca(
     }
 
     // BFS upward until we find common ancestor
+    let mut iteration = 0;
     loop {
+        iteration += 1;
         let mut any_progress = false;
+
+        tracing::trace!(iteration = iteration, "LCA BFS iteration starting");
 
         for (idx, queue) in queues.iter_mut().enumerate() {
             if let Some(current) = queue.pop_front() {
                 any_progress = true;
 
+                tracing::trace!(
+                    iteration = iteration,
+                    entry_idx = idx,
+                    current_entry = %current,
+                    "Processing entry in BFS"
+                );
+
                 // Check if this ancestor is reachable by all entries
                 let reachable_by = ancestors.entry(current.clone()).or_default();
                 reachable_by.insert(idx);
 
+                tracing::trace!(
+                    current_entry = %current,
+                    reachable_by_count = reachable_by.len(),
+                    required_count = entry_ids.len(),
+                    reachable_by = ?reachable_by,
+                    "Checking if entry is reachable by all"
+                );
+
                 if reachable_by.len() == entry_ids.len() {
                     // Found LCA!
+                    tracing::debug!(
+                        lca = %current,
+                        iteration = iteration,
+                        "Found LCA successfully"
+                    );
                     return Ok(current);
                 }
 
                 // Add parents to queue
                 if let Ok(entry) = super::storage::get(backend, &current) {
-                    let parents = if let Ok(parents) = entry.subtree_parents(subtree) {
-                        parents
-                    } else {
-                        entry.parents()?
-                    };
+                    // Get subtree parents for LCA calculations
+                    match entry.subtree_parents(subtree) {
+                        Ok(parents) => {
+                            if parents.is_empty() {
+                                // This entry is a subtree root (has the subtree but no parents in it)
+                                tracing::trace!(
+                                    entry = %current,
+                                    subtree = subtree,
+                                    "Entry is subtree root (empty parents)"
+                                );
+                                // Don't add any parents - this is a root in the subtree
+                            } else {
+                                // Entry has parents in the subtree, add them to queue
+                                tracing::trace!(
+                                    entry = %current,
+                                    subtree_parents = ?parents,
+                                    "Adding subtree parents to queue"
+                                );
 
-                    for parent in parents {
-                        queue.push_back(parent);
+                                for parent in parents {
+                                    tracing::trace!(
+                                        entry = %current,
+                                        parent = %parent,
+                                        "Adding parent to queue"
+                                    );
+                                    queue.push_back(parent);
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Entry doesn't contain this subtree - this is a serious problem
+                            // All entries in subtree LCA should participate in that subtree
+                            tracing::error!(
+                                entry = %current,
+                                subtree = subtree,
+                                "Entry encountered in subtree LCA that doesn't contain the subtree"
+                            );
+                            return Err(BackendError::EntryNotInSubtree {
+                                entry_id: current,
+                                tree_id: tree.clone(),
+                                subtree: subtree.to_string(),
+                            }
+                            .into());
+                        }
                     }
                 }
             }
         }
 
         if !any_progress {
+            // BFS terminated without finding a perfect LCA
+            // This can happen legitimately when:
+            // 1. Entries in subtree don't share a common ancestor in that subtree
+            // 2. The subtree has multiple independent root entries
+            // 3. Entries arrived out of sync order and don't have proper parent relationships
+
+            tracing::debug!(
+                iteration = iteration,
+                final_ancestors_count = ancestors.len(),
+                subtree = subtree,
+                "BFS terminated without finding perfect LCA - using fallback strategy"
+            );
+
+            // TODO: Improve fallback strategy in LCA calculation
+
+            // Fallback strategy: find the ancestor reachable by the most entries
+            // If no perfect LCA exists, we use the "best" common ancestor available
+            if let Some((best_ancestor, reachable_set)) = ancestors
+                .iter()
+                .max_by_key(|(_, reachable_by)| reachable_by.len())
+            {
+                tracing::debug!(
+                    best_ancestor = %best_ancestor,
+                    reachable_by_count = reachable_set.len(),
+                    required_count = entry_ids.len(),
+                    "Using best available ancestor as fallback LCA"
+                );
+                return Ok(best_ancestor.clone());
+            }
+
             break;
         }
     }

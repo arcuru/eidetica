@@ -87,7 +87,7 @@ async fn test_transport_error_handling_consistency() {
     let iroh_transport = IrohTransport::new().unwrap();
 
     // Both should fail to send requests when no server is running
-    let entry = Entry::builder("test").build();
+    let entry = Entry::root_builder().build();
     let request = SyncRequest::SendEntries(vec![entry.clone()]);
     let http_result = http_transport
         .send_request(&Address::http("127.0.0.1:59999"), &request)

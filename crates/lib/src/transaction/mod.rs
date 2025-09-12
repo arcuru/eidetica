@@ -1,3 +1,20 @@
+//! Transaction system for atomic database modifications
+//!
+//! This module provides the transaction API for making atomic changes to an Eidetica database.
+//! Transactions ensure that all changes within a transaction are applied atomically and maintain
+//! proper parent-child relationships in the Merkle-CRDT DAG structure.
+//!
+//! # Subtree Parent Management
+//!
+//! One of the critical responsibilities of the transaction system is establishing proper
+//! subtree parent relationships. When a store (subtree) is accessed for the first time
+//! in a transaction, the system must determine the correct parent entries for that subtree.
+//! This involves:
+//!
+//! 1. Checking for existing subtree tips (leaf nodes)
+//! 2. If no tips exist, traversing the DAG to find reachable subtree entries
+//! 3. Setting appropriate parent relationships (empty for first entry, or proper parents)
+
 pub mod errors;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -298,26 +315,33 @@ impl Transaction {
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-            // If we haven't cached the tips for this subtree yet, get them now
+            // Initialize subtree parents if this is the first time accessing this subtree
+            // in this transaction. This ensures proper parent relationships are established
+            // before any operations on the subtree.
             let subtrees = builder.subtrees();
 
             if !subtrees.contains(&subtree_name) {
-                // Check if this transaction was created with custom tips vs current tips
+                // Determine whether this transaction is using custom parent tips or current database tips
+                // This affects how we calculate subtree parents
                 let main_parents = builder.parents().unwrap_or_default();
                 let current_database_tips = self.db.backend().get_tips(self.db.root_id())?;
 
+                // Get subtree tips based on the transaction's parent context
                 let tips = if main_parents == current_database_tips {
+                    // Using current database tips - get all current subtree tips
                     self.db
                         .backend()
                         .get_store_tips(self.db.root_id(), &subtree_name)?
                 } else {
-                    // This transaction uses custom tips - use special handler
+                    // Using custom parent tips - get subtree tips reachable from those parents
                     self.db.backend().get_store_tips_up_to_entries(
                         self.db.root_id(),
                         &subtree_name,
                         &main_parents,
                     )?
                 };
+
+                // Initialize the subtree with proper parent relationships
                 builder.set_subtree_data_mut(subtree_name.clone(), String::new());
                 builder.set_subtree_parents_mut(&subtree_name, tips);
             }
@@ -804,6 +828,22 @@ impl Transaction {
 
         // Remove empty subtrees and build the final immutable Entry
         let mut entry = builder.remove_empty_subtrees().build();
+
+        // CRITICAL VALIDATION: Ensure entry structural integrity before commit
+        //
+        // This validation is crucial because the transaction layer has already:
+        // 1. Discovered proper parent relationships through DAG traversal
+        // 2. Set up correct subtree parents via find_subtree_parents_from_main_parents()
+        // 3. Ensured all references point to valid entries in the backend
+        //
+        // The validate() call here ensures that:
+        // - Non-root entries have main tree parents (preventing orphaned nodes)
+        // - Parent IDs are not empty strings (preventing reference errors)
+        // - The entry structure is valid before signing and storage
+        //
+        // This catches any issues early in the transaction, providing clear error
+        // messages before the entry is signed or reaches the backend storage layer.
+        entry.validate()?;
 
         // Sign the entry if we have a signing key
         if let Some(signing_key) = signing_key {

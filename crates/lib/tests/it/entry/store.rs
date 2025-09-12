@@ -115,11 +115,16 @@ fn test_subtrees_are_sorted() {
     // Create entry with subtrees in reverse order
     let entry = create_entry_with_subtrees("root_id", &[("c", "{}"), ("a", "{}"), ("b", "{}")]);
 
-    // Verify subtrees are sorted alphabetically
+    // Verify subtrees are sorted alphabetically (including the automatic _root subtree)
     let subtrees = entry.subtrees();
     assert_eq!(
         subtrees,
-        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        vec![
+            "_root".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string()
+        ]
     );
 }
 

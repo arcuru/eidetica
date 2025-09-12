@@ -89,7 +89,7 @@ async fn test_background_sync_integration() {
 
     // Add some entries to the queue to test processing
     let peer_pubkey = "test_peer";
-    let entry1 = Entry::builder("test_tree").build();
+    let entry1 = Entry::root_builder().build();
     let tree_id = entry1.id().clone();
 
     sync.sync_queue()

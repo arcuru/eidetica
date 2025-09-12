@@ -72,7 +72,7 @@ async fn test_http_transport_client_server_communication() {
     let http_address = Address::http(&addr);
 
     // Send a single entry - should get Ack response
-    let single_entry = Entry::builder("test_root")
+    let single_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"single": "entry"}"#)
         .build();
 
@@ -90,10 +90,10 @@ async fn test_http_transport_client_server_communication() {
     }
 
     // Send multiple entries - should get Count response
-    let entry1 = Entry::builder("test_root_1")
+    let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"entry": "1"}"#)
         .build();
-    let entry2 = Entry::builder("test_root_2")
+    let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"entry": "2"}"#)
         .build();
 
@@ -122,7 +122,7 @@ async fn test_http_transport_connection_refused() {
 
     // Try to connect to a server that's not running on a high port
     // Using a high port that's unlikely to be in use
-    let entry = Entry::builder("test").build();
+    let entry = Entry::root_builder().build();
     let unreachable_address = Address::http("127.0.0.1:59999");
     let request = SyncRequest::SendEntries(vec![entry]);
     let result = transport.send_request(&unreachable_address, &request).await;

@@ -115,7 +115,7 @@ impl Database {
         let op = temp_database_for_bootstrap.new_transaction()?;
 
         // IMPORTANT: For the root entry, we need to set the database root to empty string
-        // so that is_toplevel_root() returns true and all_roots() can find it
+        // so that is_root() returns true and all_roots() can find it
         op.set_entry_root("")?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry

@@ -115,6 +115,7 @@ fn test_save_load_with_various_entries() {
 
     // Entry with subtree
     let entry_with_subtree = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
         .set_subtree_data("subtree1", "subtree_data")
         .build();
     let entry_with_subtree_id = entry_with_subtree.id();

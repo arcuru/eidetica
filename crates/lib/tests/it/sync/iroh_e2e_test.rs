@@ -4,21 +4,12 @@
 use std::time::Duration;
 
 use eidetica::{
-    entry::{Entry, ID},
+    entry::Entry,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
 
 use super::helpers;
-
-/// Helper to create a test entry with specific parents
-fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
-    let mut builder = Entry::builder(tree_id);
-    if !parents.is_empty() {
-        builder = builder.set_parents(parents);
-    }
-    builder.build()
-}
 
 /// Test basic Iroh sync functionality with local direct connections
 /// This test verifies basic sync operation without relay overhead.
@@ -64,7 +55,9 @@ async fn test_iroh_e2e_basic_local() {
     // Create a small set of test entries for functional testing
     let mut entries = Vec::new();
     for i in 0..3 {
-        let entry = create_entry_with_parents(&format!("basic_test_tree_{i}"), vec![]);
+        let entry = Entry::root_builder()
+            .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
+            .build();
         base_db1.backend().put_verified(entry.clone()).unwrap();
         entries.push(entry);
     }
@@ -130,7 +123,9 @@ async fn test_iroh_e2e_resilience() {
         .unwrap();
 
     // Create test entries
-    let entry1 = create_entry_with_parents("resilience_test_1", vec![]);
+    let entry1 = Entry::root_builder()
+        .set_subtree_data("data", r#"{"test": "resilience_1"}"#)
+        .build();
     base_db1.backend().put_verified(entry1.clone()).unwrap();
 
     // First sync should succeed
@@ -143,7 +138,9 @@ async fn test_iroh_e2e_resilience() {
     sync2.stop_server_async().await.unwrap();
 
     // Create another entry while node 2 is down
-    let entry2 = create_entry_with_parents("resilience_test_2", vec![]);
+    let entry2 = Entry::root_builder()
+        .set_subtree_data("data", r#"{"test": "resilience_2"}"#)
+        .build();
     base_db1.backend().put_verified(entry2.clone()).unwrap();
 
     // This sync should fail (node 2 is down)
@@ -282,7 +279,9 @@ async fn test_iroh_e2e_with_relays() {
     // Create test entries
     let mut entries = Vec::new();
     for i in 0..5 {
-        let entry = create_entry_with_parents(&format!("relay_test_entry_{i}"), vec![]);
+        let entry = Entry::root_builder()
+            .set_subtree_data("data", format!(r#"{{"test": "relay_{i}"}}"#))
+            .build();
         base_db1.backend().put_verified(entry.clone()).unwrap();
         entries.push(entry);
     }

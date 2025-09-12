@@ -109,7 +109,7 @@ fn test_sync_without_transport_enabled() {
     let (_base_db, sync) = setup();
 
     // Attempting to send entries without enabling transport should fail
-    let entry = Entry::builder("test").build();
+    let entry = Entry::root_builder().build();
     let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:8084"));
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -145,7 +145,7 @@ fn test_sync_connect_to_invalid_address() {
     sync.enable_http_transport().unwrap();
 
     // Try to send entries to a non-existent server
-    let entry = Entry::builder("test").build();
+    let entry = Entry::root_builder().build();
     let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:19998"));
     assert!(result.is_err());
 }

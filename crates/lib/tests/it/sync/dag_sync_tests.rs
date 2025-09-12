@@ -32,13 +32,18 @@ fn create_linear_chain(tree_id: &str, count: usize) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     for i in 0..count {
-        let parents = if i == 0 {
-            Vec::new() // Root entry
+        let entry = if i == 0 {
+            // Create root entry
+            Entry::root_builder()
+                .set_subtree_data("data", r#"{"test": true}"#)
+                .build()
         } else {
-            vec![entries[i - 1].id().clone()]
+            // Create child entry with parent
+            let parents = vec![entries[i - 1].id().clone()];
+            create_entry_with_parents(tree_id, parents)
         };
 
-        entries.push(create_entry_with_parents(tree_id, parents));
+        entries.push(entry);
     }
 
     entries
@@ -49,7 +54,9 @@ fn create_dag_structure(tree_id: &str) -> Vec<Entry> {
     let mut entries: Vec<Entry> = Vec::new();
 
     // Root entry
-    let root = create_entry_with_parents(tree_id, vec![]);
+    let root = Entry::root_builder()
+        .set_subtree_data("data", r#"{"test": true}"#)
+        .build();
     entries.push(root.clone());
 
     // Two branches from root
@@ -240,8 +247,8 @@ async fn test_dag_sync_empty_sets() {
     let (base_db, _sync) = helpers::setup();
 
     // Test edge cases with empty tip sets
-    let tree_id = "test_tree";
-    let entry = create_entry_with_parents(tree_id, vec![]);
+    let _tree_id = "test_tree";
+    let entry = Entry::root_builder().build();
 
     base_db.backend().put_verified(entry.clone()).unwrap();
 
@@ -431,7 +438,9 @@ async fn test_real_sync_transport_setup() {
     // Create some entries to send
     let mut entries = Vec::new();
     for i in 0..3 {
-        let entry = create_entry_with_parents(&format!("test_tree_{i}"), vec![]);
+        let entry = Entry::root_builder()
+            .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
+            .build();
         entries.push(entry.clone());
     }
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
@@ -695,7 +704,9 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     // Create some test entries to sync
     let mut entries = Vec::new();
     for i in 0..3 {
-        let entry = create_entry_with_parents(&format!("iroh_test_tree_{i}"), vec![]);
+        let entry = Entry::root_builder()
+            .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
+            .build();
         entries.push(entry.clone());
     }
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
