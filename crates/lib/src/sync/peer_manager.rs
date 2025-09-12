@@ -3,7 +3,7 @@
 //! This module handles all peer registration, status tracking, and tree-peer
 //! sync relationships. It operates on the sync tree but doesn't own it.
 
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::{
     error::SyncError,
@@ -50,7 +50,7 @@ impl<'a> PeerManager<'a> {
 
         // Check if peer already exists using path-based check
         if peers.contains_path(path!(&pubkey as &str)) {
-            warn!(peer = %pubkey, "Attempted to register peer that already exists");
+            debug!(peer = %pubkey, "Peer already registered, skipping");
             return Err(Error::Sync(SyncError::PeerAlreadyExists(pubkey.clone())));
         }
 

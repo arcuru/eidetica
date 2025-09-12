@@ -516,12 +516,12 @@ impl SyncHandlerImpl {
             visited.insert(entry_id.clone());
             count += 1;
 
-            if let Ok(entry) = self.backend.get(&entry_id) {
-                if let Ok(parent_ids) = entry.parents() {
-                    for parent_id in parent_ids {
-                        if !visited.contains(&parent_id) && parent_id != *tree_id {
-                            to_visit.push_back(parent_id);
-                        }
+            if let Ok(entry) = self.backend.get(&entry_id)
+                && let Ok(parent_ids) = entry.parents()
+            {
+                for parent_id in parent_ids {
+                    if !visited.contains(&parent_id) && parent_id != *tree_id {
+                        to_visit.push_back(parent_id);
                     }
                 }
             }
@@ -551,7 +551,7 @@ impl SyncHandlerImpl {
         let root_entry = self.backend.get(tree_id)?;
 
         // Extract current settings from the root entry
-        let mut current_settings = if let Some(settings_data) = root_entry.data(SETTINGS).ok() {
+        let mut current_settings = if let Ok(settings_data) = root_entry.data(SETTINGS) {
             serde_json::from_str::<Doc>(settings_data)?
         } else {
             Doc::new()

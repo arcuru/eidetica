@@ -99,13 +99,13 @@ pub(crate) fn put(
                 }
 
                 // Get the existing tip entry to check its parents
-                if let Ok(existing_tip) = get(backend, &existing_tip_id) {
-                    if let Ok(tip_parents) = existing_tip.parents() {
-                        // If the new entry is a parent of this tip, remove the new entry from tips
-                        if tip_parents.contains(&entry_id) {
-                            cache.tree_tips.remove(&entry_id);
-                            break; // An entry can only be removed once
-                        }
+                if let Ok(existing_tip) = get(backend, &existing_tip_id)
+                    && let Ok(tip_parents) = existing_tip.parents()
+                {
+                    // If the new entry is a parent of this tip, remove the new entry from tips
+                    if tip_parents.contains(&entry_id) {
+                        cache.tree_tips.remove(&entry_id);
+                        break; // An entry can only be removed once
                     }
                 }
             }

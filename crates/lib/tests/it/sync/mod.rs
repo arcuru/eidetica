@@ -6,6 +6,8 @@
 // Disabled due to old API references - needs updating for new BackgroundSync architecture
 // mod background_sync_tests;
 mod basic_operations;
+mod bidirectional_sync_test;
+mod bootstrap_failure_tests;
 mod bootstrap_sync_tests;
 mod chat_simulation_test;
 mod dag_sync_tests;

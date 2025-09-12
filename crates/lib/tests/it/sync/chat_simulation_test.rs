@@ -189,14 +189,14 @@ async fn test_chat_app_authenticated_bootstrap() {
         println!("🔍 Client _settings subtree tips: {:?}", settings_tips);
 
         for tip_id in &settings_tips {
-            if let Ok(entry) = client_instance.backend().get(tip_id) {
-                if let Ok(settings_data) = entry.data("_settings") {
-                    println!(
-                        "🔍 Settings tip {} data preview: {}",
-                        tip_id,
-                        &settings_data[..settings_data.len().min(200)]
-                    );
-                }
+            if let Ok(entry) = client_instance.backend().get(tip_id)
+                && let Ok(settings_data) = entry.data("_settings")
+            {
+                println!(
+                    "🔍 Settings tip {} data preview: {}",
+                    tip_id,
+                    &settings_data[..settings_data.len().min(200)]
+                );
             }
         }
     }
@@ -243,7 +243,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                         // If it's a JSON string, parse it
                         if let Value::Text(json_str) = key_value {
                             let key_info: serde_json::Value =
-                                serde_json::from_str(&json_str).expect("Failed to parse key JSON");
+                                serde_json::from_str(json_str).expect("Failed to parse key JSON");
                             let stored_pubkey =
                                 key_info["pubkey"].as_str().expect("Missing pubkey in JSON");
                             println!("✅ Client key found with pubkey: {}", stored_pubkey);
@@ -630,7 +630,7 @@ async fn test_multiple_databases_sync() {
                 eidetica::auth::Permission::Write(10),
             )
             .await
-            .expect(&format!("Failed to bootstrap room {}", i + 1));
+            .unwrap_or_else(|_| panic!("Failed to bootstrap room {}", i + 1));
 
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -639,7 +639,7 @@ async fn test_multiple_databases_sync() {
     for (i, room_id) in room_ids.iter().enumerate() {
         let database = client_instance
             .load_database(room_id)
-            .expect(&format!("Failed to load room {}", i + 1));
+            .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
 
         // Verify room name
         let settings = database.get_settings().expect("Failed to get settings");
