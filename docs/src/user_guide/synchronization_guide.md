@@ -320,19 +320,33 @@ database.set_default_auth_key("backup_key");
 When joining a new database, the authenticated bootstrap protocol handles permission requests:
 
 1. **Client Request**: Device requests access with its public key and desired permission level
-2. **Server Evaluation**: Server evaluates the request (auto-approved by default)
-3. **Key Addition**: Server adds the requesting key to the database's authentication settings
-4. **Database Transfer**: Complete database state transferred to the client
-5. **Access Granted**: Client can immediately make authenticated operations
+2. **Policy Check**: Server evaluates bootstrap auto-approval policy (secure by default)
+3. **Conditional Approval**: Key approved only if policy explicitly allows
+4. **Key Addition**: Server adds the requesting key to the database's authentication settings
+5. **Database Transfer**: Complete database state transferred to the client
+6. **Access Granted**: Client can immediately make authenticated operations
 
 ```rust,ignore
-// Bootstrap authentication example
+// Configure database with bootstrap policy (server side)
+let mut settings = Doc::new();
+settings.set_string("name", "Team Database");
+
+let mut auth_doc = Doc::new();
+let mut policy_doc = Doc::new();
+// Enable auto-approval for team collaboration
+policy_doc.set_json("bootstrap_auto_approve", true)?;
+auth_doc.set_node("policy", policy_doc);
+settings.set_node("auth", auth_doc);
+
+let database = instance.new_database(settings, "admin_key")?;
+
+// Bootstrap authentication example (client side)
 sync.sync_with_peer_for_bootstrap(
     "peer_address",
     &tree_id,
     "my_device_key",
     Permission::Write  // Request write access
-).await?;
+).await?;  // Will succeed if policy allows
 
 // After successful bootstrap, the device can write to the database
 let op = database.new_authenticated_operation("my_device_key")?;
@@ -342,8 +356,9 @@ op.commit()?;
 
 **Security Considerations**:
 
-- Current implementation auto-approves all keys for testing convenience
-- Future versions will support manual approval workflows
+- Bootstrap requests are **rejected by default** for security
+- Auto-approval must be explicitly enabled via policy configuration
+- Policy setting: `_settings.auth.policy.bootstrap_auto_approve: bool`
 - All key additions are recorded in the immutable database history
 - Permission levels are enforced (Read/Write/Admin)
 

@@ -112,6 +112,28 @@ impl SyncHandler for SyncHandlerImpl {
 }
 
 impl SyncHandlerImpl {
+    /// Returns whether bootstrap key auto-approval is allowed by policy for this tree
+    ///
+    /// Policy location in settings Doc:
+    ///   _settings.auth.policy.bootstrap_auto_approve: bool (default false)
+    async fn is_bootstrap_auto_approve_allowed(
+        &self,
+        tree_id: &crate::entry::ID,
+    ) -> crate::Result<bool> {
+        // Load root entry and parse settings
+        let root_entry = self.backend.get(tree_id)?;
+        if let Ok(settings_data) = root_entry.data(crate::constants::SETTINGS)
+            && let Ok(settings_doc) = serde_json::from_str::<crate::crdt::Doc>(settings_data)
+                && let Some(auth_doc) = settings_doc.get_doc("auth")
+                    && let Some(policy_doc) = auth_doc.get_doc("policy") {
+                        // Read as JSON-encoded bool to match set_json storage
+                        if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
+                            return Ok(flag);
+                        }
+                    }
+        Ok(false)
+    }
+
     /// Handle a handshake request from a peer.
     async fn handle_handshake(&self, request: &HandshakeRequest) -> SyncResponse {
         async move {
@@ -231,47 +253,69 @@ impl SyncHandlerImpl {
         };
 
         // Handle key approval for bootstrap requests FIRST
-        let (key_approved, granted_permission) =
-            if let (Some(key), Some(key_name), Some(permission)) =
-                (requesting_key, requesting_key_name, requested_permission)
-            {
-                info!(
-                    tree_id = %tree_id,
-                    requesting_key = %key,
-                    key_name = %key_name,
-                    requested_permission = ?permission,
-                    "Processing key approval request for bootstrap"
-                );
+        let (key_approved, granted_permission) = if let (
+            Some(key),
+            Some(key_name),
+            Some(permission),
+        ) =
+            (requesting_key, requesting_key_name, requested_permission)
+        {
+            info!(
+                tree_id = %tree_id,
+                requesting_key = %key,
+                key_name = %key_name,
+                requested_permission = ?permission,
+                "Processing key approval request for bootstrap"
+            );
 
-                // For now, auto-approve all keys
-                // FIXME: In the future, this should require manual approval or policy check
-                match self
-                    .add_key_to_database(tree_id, key_name, key, permission.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            tree_id = %tree_id,
-                            key = %key,
-                            permission = ?permission,
-                            "Successfully approved and added key to database"
-                        );
-                        (true, Some(permission))
-                    }
-                    Err(e) => {
-                        warn!(
-                            tree_id = %tree_id,
-                            key = %key,
-                            error = %e,
-                            "Failed to add key to database"
-                        );
-                        (false, None)
+            // Check policy to determine if auto-approval is allowed
+            match self.is_bootstrap_auto_approve_allowed(tree_id).await {
+                Ok(true) => {
+                    // Proceed with auto-approval under policy
+                    match self
+                        .add_key_to_database(tree_id, key_name, key, permission.clone())
+                        .await
+                    {
+                        Ok(_) => {
+                            info!(
+                                tree_id = %tree_id,
+                                key = %key,
+                                permission = ?permission,
+                                "Successfully approved and added key to database under policy"
+                            );
+                            (true, Some(permission))
+                        }
+                        Err(e) => {
+                            warn!(
+                                tree_id = %tree_id,
+                                key = %key,
+                                error = %e,
+                                "Failed to add key to database"
+                            );
+                            (false, None)
+                        }
                     }
                 }
-            } else {
-                // No key approval requested
-                (false, None)
-            };
+                Ok(false) => {
+                    warn!(tree_id = %tree_id, "Bootstrap key approval requested but policy forbids auto-approval");
+                    return SyncResponse::Error(
+                        crate::auth::errors::AuthError::PermissionDenied {
+                            reason:
+                                "bootstrap key approval requires explicit admin approval or policy"
+                                    .to_string(),
+                        }
+                        .to_string(),
+                    );
+                }
+                Err(e) => {
+                    error!(tree_id = %tree_id, error = %e, "Failed to evaluate bootstrap approval policy");
+                    return SyncResponse::Error(format!("Policy evaluation failed: {e}"));
+                }
+            }
+        } else {
+            // No key approval requested
+            (false, None)
+        };
 
         // NOW collect all entries after key approval (so we get the updated database state)
         let all_entries = match self.collect_all_entries_for_bootstrap(tree_id).await {
@@ -585,7 +629,7 @@ impl SyncHandlerImpl {
                     "Successfully added new key to auth settings"
                 );
             }
-            Err(e) if e.to_string().contains("Key already exists") => {
+            Err(crate::Error::Auth(auth_err)) if auth_err.is_key_already_exists() => {
                 // Key already exists - check if it's the same public key
                 if let Some(existing_key_result) = auth_settings.get_key(key_name) {
                     match existing_key_result {
@@ -619,9 +663,6 @@ impl SyncHandlerImpl {
                             return Err(key_err);
                         }
                     }
-                } else {
-                    // This shouldn't happen, but handle gracefully
-                    return Err(e);
                 }
             }
             Err(e) => return Err(e),

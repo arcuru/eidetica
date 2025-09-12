@@ -48,6 +48,36 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Create a database (like creating a chat room)
     let mut settings = Doc::new();
     settings.set_string("name", "Test Chat Room");
+    // Enable bootstrap auto-approval via policy AND include admin/global entries so creation succeeds
+    let mut auth_doc = Doc::new();
+    let mut policy_doc = Doc::new();
+    policy_doc
+        .set_json("bootstrap_auto_approve", true)
+        .expect("set policy json");
+    auth_doc.set_node("policy", policy_doc);
+    // Include server admin key for initial database creation
+    auth_doc
+        .set_json(
+            "SERVER_ADMIN",
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 10},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set admin auth");
+    // Also include global write permission so clients can write using "*"
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 10},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set global auth");
+    settings.set_node("auth", auth_doc);
     let mut server_database = server_instance
         .new_database(settings, SERVER_KEY_NAME)
         .expect("Failed to create server database");
@@ -501,7 +531,6 @@ async fn test_global_key_bootstrap() {
         .expect("Failed to create client instance");
 
     // Add a private key for the client to use with global permissions
-    // FIXME: this shouldn't be how we need to add global permissions
     client_instance
         .add_private_key("*")
         .expect("Failed to add client key");

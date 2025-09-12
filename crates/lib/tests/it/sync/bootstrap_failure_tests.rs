@@ -111,7 +111,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         .enable_http_transport()
         .expect("Failed to enable HTTP transport");
 
-    // Attempt bootstrap with key approval request - this should be REJECTED
+    // Attempt bootstrap with key approval request - should be REJECTED by default
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap(
             &server_addr,
@@ -243,7 +243,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
         .enable_http_transport()
         .expect("Failed to enable HTTP transport");
 
-    // Attempt bootstrap with key approval request on database with no auth config
+    // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap(
             &server_addr,
@@ -647,7 +647,6 @@ async fn test_bootstrap_exceeds_granted_permissions() {
             "Greedy client should NOT be granted any permissions for excessive request - test fails because permission validation is not implemented"
         );
     }
-
     println!(
         "✅ TEST: Expected secure behavior for excessive permission requests (will fail until permission validation is implemented)"
     );

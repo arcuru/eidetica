@@ -648,10 +648,11 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 
 1. **Bootstrap Detection**: Empty tips in SyncTreeRequest signals bootstrap needed
 2. **Auth Request**: Client includes requesting key, key name, and requested permission
-3. **Auto-approval**: Server automatically approves keys (configurable for manual approval)
-4. **Key Addition**: Server adds requesting key to database's authentication settings
-5. **Database Transfer**: Complete database state sent with key approval confirmation
-6. **Access Granted**: Client receives database and can make authenticated operations
+3. **Policy Evaluation**: Server checks `_settings.auth.policy.bootstrap_auto_approve` setting
+4. **Conditional Approval**: Key approved only if policy allows (defaults to false for security)
+5. **Key Addition**: On approval, server adds requesting key to database's authentication settings
+6. **Database Transfer**: Complete database state sent with key approval confirmation
+7. **Access Granted**: Client receives database and can make authenticated operations
 
 **Protocol Extensions**:
 
@@ -663,7 +664,8 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 
 - Ed25519 key cryptography for secure identity
 - Permission levels maintained (Read/Write/Admin)
-- Auto-approval for testing, manual approval for production (future)
+- Policy-controlled bootstrap approval (secure by default)
+- Configurable auto-approval via `_settings.auth.policy.bootstrap_auto_approve`
 - Immutable audit trail of all key additions in database history
 
 ### CRDT Metadata Considerations

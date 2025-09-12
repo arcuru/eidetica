@@ -189,6 +189,74 @@ This allows users to manage their own keys in their personal databases while acc
 
 **Network partitions**: Authentication changes merge automatically using Last-Write-Wins. The most recent change takes precedence.
 
+## Bootstrap Security Policy
+
+When new devices join existing databases through bootstrap synchronization, Eidetica uses configurable security policies to control automatic key approval.
+
+### Default Security Behavior
+
+By default, bootstrap requests are **rejected** for security:
+
+```rust,ignore
+// Bootstrap will fail without explicit policy configuration
+client_sync.sync_with_peer_for_bootstrap(
+    "127.0.0.1:8080",
+    &database_tree_id,
+    Some("device_key_name"),
+    Some(Permission::Write(100)),
+).await; // Returns PermissionDenied error
+```
+
+### Enabling Bootstrap Auto-Approval
+
+To allow automatic key approval, configure the bootstrap policy:
+
+```rust,ignore
+// Configure database with bootstrap auto-approval policy
+let mut settings = Doc::new();
+settings.set_string("name", "Team Chat Room");
+
+// Set up authentication with policy
+let mut auth_doc = Doc::new();
+let mut policy_doc = Doc::new();
+policy_doc.set_json("bootstrap_auto_approve", true)?;
+auth_doc.set_node("policy", policy_doc);
+
+// Include initial admin key
+auth_doc.set_json("admin_device", serde_json::json!({
+    "pubkey": admin_public_key,
+    "permissions": {"Admin": 10},
+    "status": "Active"
+}))?;
+
+settings.set_node("auth", auth_doc);
+
+let database = instance.new_database(settings, "admin_device")?;
+```
+
+### Policy Configuration
+
+The bootstrap policy is stored in database settings at:
+
+```
+_settings.auth.policy.bootstrap_auto_approve: bool (default: false)
+```
+
+**Security Recommendations**:
+
+- **Development/Testing**: Enable auto-approval for convenience
+- **Production**: Keep disabled, use manual key management
+- **Team Collaboration**: Enable with proper access controls
+- **Public Databases**: Always disabled for security
+
+### Bootstrap Flow with Policy
+
+1. **Client Request**: Device requests access with public key and permission level
+2. **Policy Check**: Server evaluates `bootstrap_auto_approve` setting
+3. **Auto-Approval**: If enabled, key is automatically added to database auth settings
+4. **Rejection**: If disabled, request fails with `PermissionDenied` error
+5. **Database Access**: Approved devices can read/write according to granted permissions
+
 ## See Also
 
 - [Core Concepts](core_concepts.md) - Understanding Databases and Entries
