@@ -576,8 +576,56 @@ impl SyncHandlerImpl {
             status: KeyStatus::Active,
         };
 
-        // Add the key to auth settings
-        auth_settings.add_key(key_name, auth_key)?;
+        // Add the key to auth settings (with conflict handling)
+        match auth_settings.add_key(key_name, auth_key.clone()) {
+            Ok(_) => {
+                debug!(
+                    key_name = %key_name,
+                    public_key = %public_key,
+                    "Successfully added new key to auth settings"
+                );
+            }
+            Err(e) if e.to_string().contains("Key already exists") => {
+                // Key already exists - check if it's the same public key
+                if let Some(existing_key_result) = auth_settings.get_key(key_name) {
+                    match existing_key_result {
+                        Ok(existing_key) => {
+                            if existing_key.pubkey == public_key {
+                                debug!(
+                                    key_name = %key_name,
+                                    public_key = %public_key,
+                                    "Key already exists with same public key - skipping add"
+                                );
+                                // Same key, no need to update
+                                return Ok(());
+                            } else {
+                                warn!(
+                                    key_name = %key_name,
+                                    existing_pubkey = %existing_key.pubkey,
+                                    new_pubkey = %public_key,
+                                    "Key name conflict: different devices using same key name"
+                                );
+                                return Err(crate::auth::errors::AuthError::KeyAlreadyExists {
+                                    key_name: format!(
+                                        "Key name '{}' already exists with different public key",
+                                        key_name
+                                    ),
+                                }
+                                .into());
+                            }
+                        }
+                        Err(key_err) => {
+                            // Error reading existing key
+                            return Err(key_err);
+                        }
+                    }
+                } else {
+                    // This shouldn't happen, but handle gracefully
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
 
         // Update the settings with the new auth configuration
         current_settings.set_node("auth", auth_settings.as_doc().clone());

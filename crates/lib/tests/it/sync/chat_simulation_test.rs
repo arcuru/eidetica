@@ -12,8 +12,9 @@ use eidetica::{
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-// Simulate the chat app's key name
-const CHAT_APP_KEY_NAME: &str = "CHAT_APP_USER";
+// Simulate the chat app's key names (device-specific)
+const SERVER_KEY_NAME: &str = "CHAT_APP_SERVER";
+const CLIENT_KEY_NAME: &str = "CHAT_APP_CLIENT";
 
 // Simulate the chat app's message structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,11 +36,11 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Add authentication key for server (like chat app does)
     server_instance
-        .add_private_key(CHAT_APP_KEY_NAME)
+        .add_private_key(SERVER_KEY_NAME)
         .expect("Failed to add server key");
 
     let server_pubkey = server_instance
-        .get_formatted_public_key(CHAT_APP_KEY_NAME)
+        .get_formatted_public_key(SERVER_KEY_NAME)
         .expect("Failed to get server public key")
         .expect("Server key should exist");
     println!("📍 Server public key: {}", server_pubkey);
@@ -48,11 +49,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     let mut settings = Doc::new();
     settings.set_string("name", "Test Chat Room");
     let mut server_database = server_instance
-        .new_database(settings, CHAT_APP_KEY_NAME)
+        .new_database(settings, SERVER_KEY_NAME)
         .expect("Failed to create server database");
 
     // Set default auth key for the database
-    server_database.set_default_auth_key(CHAT_APP_KEY_NAME);
+    server_database.set_default_auth_key(SERVER_KEY_NAME);
 
     let room_id = server_database.root_id().clone();
     println!("🏠 Created room with ID: {}", room_id);
@@ -98,13 +99,13 @@ async fn test_chat_app_authenticated_bootstrap() {
         .with_sync()
         .expect("Failed to create client instance with sync");
 
-    // Add authentication key for client
+    // Add authentication key for client (different key name to avoid conflicts)
     client_instance
-        .add_private_key(CHAT_APP_KEY_NAME)
+        .add_private_key(CLIENT_KEY_NAME)
         .expect("Failed to add client key");
 
     let client_pubkey = client_instance
-        .get_formatted_public_key(CHAT_APP_KEY_NAME)
+        .get_formatted_public_key(CLIENT_KEY_NAME)
         .expect("Failed to get client public key")
         .expect("Client key should exist");
     println!("📍 Client public key: {}", client_pubkey);
@@ -126,7 +127,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .sync_with_peer_for_bootstrap(
             &server_addr,
             &room_id,
-            CHAT_APP_KEY_NAME,
+            CLIENT_KEY_NAME,
             eidetica::auth::Permission::Write(10),
         )
         .await;
@@ -213,7 +214,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Set default auth key for client's database
-    client_database.set_default_auth_key(CHAT_APP_KEY_NAME);
+    client_database.set_default_auth_key(CLIENT_KEY_NAME);
 
     // Verify client's key was added to the database auth settings
     println!("\n🔐 Checking authentication setup...");
@@ -237,7 +238,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                     println!("✅ Auth is a Node");
 
                     // Try to get the key entry - it might be JSON string
-                    if let Some(key_value) = auth_node.get(CHAT_APP_KEY_NAME) {
+                    if let Some(key_value) = auth_node.get(CLIENT_KEY_NAME) {
                         println!("🔍 Key value type: {:?}", key_value);
 
                         // If it's a JSON string, parse it
@@ -573,7 +574,7 @@ async fn test_multiple_databases_sync() {
         .expect("Failed to create server instance");
 
     server_instance
-        .add_private_key(CHAT_APP_KEY_NAME)
+        .add_private_key(SERVER_KEY_NAME)
         .expect("Failed to add server key");
 
     // Create three different databases (chat rooms)
@@ -582,7 +583,7 @@ async fn test_multiple_databases_sync() {
         let mut settings = Doc::new();
         settings.set_string("name", format!("Room {}", i));
         let database = server_instance
-            .new_database(settings, CHAT_APP_KEY_NAME)
+            .new_database(settings, SERVER_KEY_NAME)
             .expect("Failed to create database");
         room_ids.push(database.root_id().clone());
         println!("🏠 Created room {} with ID: {}", i, database.root_id());
@@ -610,7 +611,7 @@ async fn test_multiple_databases_sync() {
         .expect("Failed to create client instance");
 
     client_instance
-        .add_private_key(CHAT_APP_KEY_NAME)
+        .add_private_key(CLIENT_KEY_NAME)
         .expect("Failed to add client key");
 
     // Bootstrap each database
@@ -626,7 +627,7 @@ async fn test_multiple_databases_sync() {
             .sync_with_peer_for_bootstrap(
                 &server_addr,
                 room_id,
-                CHAT_APP_KEY_NAME,
+                CLIENT_KEY_NAME,
                 eidetica::auth::Permission::Write(10),
             )
             .await

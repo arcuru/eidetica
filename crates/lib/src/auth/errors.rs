@@ -150,6 +150,13 @@ pub enum AuthError {
         /// Description of why permission was denied
         reason: String,
     },
+
+    /// Attempted to add a key that already exists.
+    #[error("Key already exists: {key_name}")]
+    KeyAlreadyExists {
+        /// The name of the key that already exists
+        key_name: String,
+    },
 }
 
 impl AuthError {
@@ -169,6 +176,11 @@ impl AuthError {
     /// Check if this error indicates permission was denied.
     pub fn is_permission_denied(&self) -> bool {
         matches!(self, AuthError::PermissionDenied { .. })
+    }
+
+    /// Check if this error indicates a key already exists.
+    pub fn is_key_already_exists(&self) -> bool {
+        matches!(self, AuthError::KeyAlreadyExists { .. })
     }
 
     /// Check if this error indicates a configuration problem.

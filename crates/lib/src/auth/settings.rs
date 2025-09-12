@@ -53,8 +53,27 @@ impl AuthSettings {
         &mut self.inner
     }
 
-    /// Add or update an authentication key
+    /// Add a new authentication key (fails if key already exists)
+    ///
+    /// This method ensures keys are not accidentally overwritten during operations
+    /// like bootstrap sync, preventing key conflicts between devices.
     pub fn add_key(&mut self, key_name: impl Into<String>, key: AuthKey) -> Result<()> {
+        let name = key_name.into();
+
+        // Check if key already exists
+        if self.get_key(&name).is_some() {
+            return Err(crate::auth::errors::AuthError::KeyAlreadyExists { key_name: name }.into());
+        }
+
+        self.inner.set_json(name, key)?;
+        Ok(())
+    }
+
+    /// Explicitly overwrite an existing authentication key
+    ///
+    /// Use this method when you intentionally want to replace an existing key.
+    /// This provides clear intent and prevents accidental overwrites.
+    pub fn overwrite_key(&mut self, key_name: impl Into<String>, key: AuthKey) -> Result<()> {
         self.inner.set_json(key_name, key)?;
         Ok(())
     }

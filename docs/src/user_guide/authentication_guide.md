@@ -58,7 +58,7 @@ let user_key = AuthKey {
     permissions: Permission::Write(10),
     status: KeyStatus::Active,
 };
-auth.add_key("alice", user_key)?;
+auth.add_key("alice", user_key)?;  // Fails if key already exists
 
 op.commit()?;
 ```
@@ -77,7 +77,7 @@ let public_key = AuthKey {
     permissions: Permission::Read,
     status: KeyStatus::Active,
 };
-auth.add_key("*", public_key)?;
+auth.add_key("*", public_key)?;  // Use add_key for new keys
 
 op.commit()?;
 ```
@@ -93,7 +93,7 @@ let auth = op.auth_settings()?;
 // Revoke the key
 if let Some(mut key) = auth.get_key("alice")? {
     key.status = KeyStatus::Revoked;
-    auth.update_key("alice", key)?;
+    auth.overwrite_key("alice", key)?;  // Use overwrite_key to replace existing
 }
 
 op.commit()?;
@@ -136,8 +136,11 @@ op.commit()?;
 
 1. **Use descriptive key names**: "alice_laptop", "build_server", etc.
 2. **Set up admin hierarchy**: Lower priority numbers = higher authority
-3. **Regular key rotation**: Periodically update keys for security
-4. **Backup admin keys**: Keep secure copies of critical admin keys
+3. **Choose the right method**:
+   - `add_key()` for new keys (prevents accidents)
+   - `overwrite_key()` when intentionally replacing a key
+4. **Regular key rotation**: Periodically update keys for security
+5. **Backup admin keys**: Keep secure copies of critical admin keys
 
 ## Advanced: Cross-Database Authentication
 
@@ -168,10 +171,21 @@ This allows users to manage their own keys in their personal databases while acc
 - The key status is Active (not Revoked)
 - The key has sufficient permissions for the operation
 
+**"Key already exists"**: When using `add_key()`:
+
+- Use `overwrite_key()` if you want to replace the existing key
+- Check if the existing key has the same public key (might be safe to ignore)
+
 **"Cannot modify key"**: Admin operations require:
 
 - Admin-level permissions
 - Equal or higher priority than the target key
+
+**Multi-device conflicts**: During bootstrap sync between devices:
+
+- If same key name with same public key: Operation succeeds (safe)
+- If same key name with different public key: Operation fails (prevents conflicts)
+- Consider using device-specific key names like "alice_laptop", "alice_phone"
 
 **Network partitions**: Authentication changes merge automatically using Last-Write-Wins. The most recent change takes precedence.
 

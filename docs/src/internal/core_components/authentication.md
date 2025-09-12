@@ -44,6 +44,30 @@ Three-tier permission model with integrated priority system:
 
 ## Key Management
 
+### Key Management API
+
+The authentication system provides three methods for managing keys with different safety guarantees:
+
+**`add_key(key_name, auth_key)`**: Adds a new key, fails if key already exists
+
+- Prevents accidental overwrites during operations like bootstrap sync
+- Recommended for new key creation to avoid conflicts between devices
+- Returns `KeyAlreadyExists` error if key name is already in use
+
+**`overwrite_key(key_name, auth_key)`**: Explicitly replaces an existing key
+
+- Use when intentionally updating or replacing a key
+- Provides clear intent for key replacement operations
+- Always succeeds regardless of whether key exists
+
+### Key Conflict Prevention
+
+During multi-device synchronization, the system prevents key conflicts:
+
+- If adding a key that exists with the **same public key**: Operation succeeds silently (idempotent)
+- If adding a key that exists with a **different public key**: Operation fails with detailed error
+- This prevents devices from accidentally overwriting each other's authentication keys
+
 ### Direct Keys
 
 Ed25519 public keys stored directly in the database's `_settings.auth`:
@@ -159,16 +183,21 @@ For new devices joining existing databases without prior state:
 1. **Bootstrap Request**: Device sends SyncTreeRequest with empty tips + auth info
 2. **Key Validation**: Server validates requesting device's public key
 3. **Permission Evaluation**: Server checks requested permission level
-4. **Auto-Approval**: Server automatically approves key (configurable)
-5. **Database Update**: Server adds key to database authentication settings
-6. **Bootstrap Response**: Complete database sent with key approval confirmation
-7. **Local Setup**: Device stores database and gains authenticated access
+4. **Key Conflict Check**: System checks if key name already exists:
+   - If key exists with same public key: Bootstrap continues (idempotent)
+   - If key exists with different public key: Bootstrap fails with error
+   - If key doesn't exist: Key is added to database
+5. **Auto-Approval**: Server automatically approves key (configurable)
+6. **Database Update**: Server safely adds key using conflict-safe `add_key()` method
+7. **Bootstrap Response**: Complete database sent with key approval confirmation
+8. **Local Setup**: Device stores database and gains authenticated access
 
 **Key Components**:
 
 - `sync_with_peer_for_bootstrap()`: API for authenticated bootstrap
-- `add_key_to_database()`: Server-side key approval and storage
+- `add_key_to_database()`: Server-side key approval with conflict handling
 - Protocol extensions in SyncTreeRequest/BootstrapResponse
+- Key conflict resolution during multi-device bootstrap scenarios
 
 ## Conflict Resolution
 
@@ -211,7 +240,7 @@ During network splits:
 
 **Crypto Module** (`auth/crypto.rs`): Ed25519 operations and signature verification
 
-**AuthSettings** (`auth/settings.rs`): Settings management and key operations
+**AuthSettings** (`auth/settings.rs`): Settings management and conflict-safe key operations
 
 **Permission Module** (`auth/permission.rs`): Permission checking and clamping logic
 
