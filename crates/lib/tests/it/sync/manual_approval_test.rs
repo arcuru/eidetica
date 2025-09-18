@@ -5,7 +5,8 @@
 
 use super::helpers::*;
 use eidetica::{
-    auth::{Permission as AuthPermission, settings::AuthSettings},
+    Error,
+    auth::{Permission as AuthPermission, errors::AuthError, settings::AuthSettings},
     constants::SETTINGS,
     store::DocStore,
     sync::{
@@ -141,8 +142,7 @@ async fn test_approve_bootstrap_request() {
     let auth_settings = AuthSettings::from_doc(auth_doc);
     let added_key = auth_settings
         .get_key("laptop_key")
-        .expect("Auth key not found")
-        .expect("Failed to parse auth key");
+        .expect("Failed to get auth key");
 
     assert_eq!(added_key.pubkey, "ed25519:test_requesting_key");
     assert_eq!(added_key.permissions, AuthPermission::Write(5));
@@ -222,10 +222,12 @@ async fn test_reject_bootstrap_request() {
             let auth_settings = AuthSettings::from_doc(auth_doc);
             auth_settings.get_key("laptop_key")
         }
-        Err(_) => None, // No auth settings means no keys
+        Err(_) => Err(Error::Auth(AuthError::KeyNotFound {
+            key_name: "laptop_key".to_string(),
+        })), // No auth settings means no keys
     };
     assert!(
-        key_result.is_none(),
+        key_result.is_err(),
         "Key should not have been added to database"
     );
 

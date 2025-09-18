@@ -61,7 +61,7 @@ impl AuthSettings {
         let name = key_name.into();
 
         // Check if key already exists
-        if self.get_key(&name).is_some() {
+        if self.get_key(&name).is_ok() {
             return Err(crate::auth::errors::AuthError::KeyAlreadyExists { key_name: name }.into());
         }
 
@@ -115,29 +115,32 @@ impl AuthSettings {
     }
 
     /// Get a specific key by key name
-    pub fn get_key(&self, key_name: impl AsRef<str>) -> Option<Result<AuthKey>> {
+    pub fn get_key(&self, key_name: impl AsRef<str>) -> Result<AuthKey> {
         match self.inner.get_json::<AuthKey>(key_name.as_ref()) {
-            Ok(key) => Some(Ok(key)),
-            Err(e) if e.is_not_found() => None,
-            Err(e) => Some(Err(AuthError::InvalidKeyFormat {
+            Ok(key) => Ok(key),
+            Err(e) if e.is_not_found() => Err(AuthError::KeyNotFound {
+                key_name: key_name.as_ref().to_string(),
+            }
+            .into()),
+            Err(e) => Err(AuthError::InvalidKeyFormat {
                 reason: e.to_string(),
             }
-            .into())),
+            .into()),
         }
     }
 
     /// Get a specific delegated tree reference by key name
-    pub fn get_delegated_tree(
-        &self,
-        key_name: impl AsRef<str>,
-    ) -> Option<Result<DelegatedTreeRef>> {
+    pub fn get_delegated_tree(&self, key_name: impl AsRef<str>) -> Result<DelegatedTreeRef> {
         match self.inner.get_json::<DelegatedTreeRef>(key_name.as_ref()) {
-            Ok(tree_ref) => Some(Ok(tree_ref)),
-            Err(e) if e.is_not_found() => None,
-            Err(e) => Some(Err(AuthError::InvalidAuthConfiguration {
+            Ok(tree_ref) => Ok(tree_ref),
+            Err(e) if e.is_not_found() => Err(AuthError::KeyNotFound {
+                key_name: key_name.as_ref().to_string(),
+            }
+            .into()),
+            Err(e) => Err(AuthError::InvalidAuthConfiguration {
                 reason: format!("Invalid delegated tree format: {e}"),
             }
-            .into())),
+            .into()),
         }
     }
 
@@ -176,20 +179,13 @@ impl AuthSettings {
     ) -> Result<ResolvedAuth> {
         match sig_key {
             SigKey::Direct(key_name) => {
-                if let Some(key_result) = self.get_key(key_name) {
-                    let auth_key = key_result?;
-                    let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
-                    Ok(ResolvedAuth {
-                        public_key,
-                        effective_permission: auth_key.permissions.clone(),
-                        key_status: auth_key.status,
-                    })
-                } else {
-                    Err(AuthError::KeyNotFound {
-                        key_name: key_name.to_string(),
-                    }
-                    .into())
-                }
+                let auth_key = self.get_key(key_name)?;
+                let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
+                Ok(ResolvedAuth {
+                    public_key,
+                    effective_permission: auth_key.permissions.clone(),
+                    key_status: auth_key.status,
+                })
             }
             SigKey::DelegationPath(_) => {
                 // For delegation path entries, validate using the backend
@@ -222,18 +218,10 @@ impl AuthSettings {
         }
 
         // Get target key info
-        if let Some(target_result) = self.get_key(target_key_name.as_ref()) {
-            let target_key = target_result?;
+        let target_key = self.get_key(target_key_name.as_ref())?;
 
-            // Use the built-in permission ordering: signing key must be >= target key
-            Ok(signing_key.effective_permission >= target_key.permissions)
-        } else {
-            // Target key doesn't exist - this is an error for modification
-            Err(AuthError::KeyNotFound {
-                key_name: target_key_name.as_ref().to_string(),
-            }
-            .into())
-        }
+        // Use the built-in permission ordering: signing key must be >= target key
+        Ok(signing_key.effective_permission >= target_key.permissions)
     }
 
     /// Check if a signing key can create a new key with the specified permissions.
@@ -283,7 +271,7 @@ mod tests {
         settings.add_key("KEY_LAPTOP", auth_key.clone()).unwrap();
 
         // Retrieve the key
-        let retrieved = settings.get_key("KEY_LAPTOP").unwrap().unwrap();
+        let retrieved = settings.get_key("KEY_LAPTOP").unwrap();
         assert_eq!(retrieved.pubkey, auth_key.pubkey);
         assert_eq!(retrieved.permissions, auth_key.permissions);
         assert_eq!(retrieved.status, auth_key.status);
@@ -305,7 +293,7 @@ mod tests {
         settings.revoke_key("KEY_LAPTOP").unwrap();
 
         // Check that it's revoked
-        let retrieved = settings.get_key("KEY_LAPTOP").unwrap().unwrap();
+        let retrieved = settings.get_key("KEY_LAPTOP").unwrap();
         assert_eq!(retrieved.status, KeyStatus::Revoked);
     }
 
@@ -338,8 +326,8 @@ mod tests {
         let merged_settings = AuthSettings::from_doc(merged_map);
 
         // Both keys should be present in the merged view
-        assert!(merged_settings.get_key("KEY_1").is_some());
-        assert!(merged_settings.get_key("KEY_2").is_some());
+        assert!(merged_settings.get_key("KEY_1").is_ok());
+        assert!(merged_settings.get_key("KEY_2").is_ok());
     }
 
     #[test]

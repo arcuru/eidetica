@@ -157,6 +157,19 @@ pub enum AuthError {
         /// The name of the key that already exists
         key_name: String,
     },
+
+    /// Key name conflicts with existing key that has different public key.
+    #[error(
+        "Key name '{key_name}' conflicts: existing key has pubkey '{existing_pubkey}', new key has pubkey '{new_pubkey}'"
+    )]
+    KeyNameConflict {
+        /// The name of the conflicting key
+        key_name: String,
+        /// The public key of the existing key
+        existing_pubkey: String,
+        /// The public key of the new key
+        new_pubkey: String,
+    },
 }
 
 impl AuthError {
@@ -181,6 +194,11 @@ impl AuthError {
     /// Check if this error indicates a key already exists.
     pub fn is_key_already_exists(&self) -> bool {
         matches!(self, AuthError::KeyAlreadyExists { .. })
+    }
+
+    /// Check if this error indicates a key name conflict.
+    pub fn is_key_name_conflict(&self) -> bool {
+        matches!(self, AuthError::KeyNameConflict { .. })
     }
 
     /// Check if this error indicates a configuration problem.

@@ -23,13 +23,11 @@ use crate::{
     Database,
     auth::{
         crypto::{create_challenge_response, format_public_key, generate_challenge},
-        settings::AuthSettings,
         types::{AuthKey, KeyStatus},
     },
     backend::BackendDB,
-    constants::SETTINGS,
-    crdt::Doc,
     entry::ID,
+    store::SettingsStore,
 };
 
 /// Trait for handling sync requests with database access.
@@ -202,17 +200,19 @@ impl SyncHandlerImpl {
     /// - `Ok(true)` if auto-approval is enabled
     /// - `Ok(false)` if manual approval is required (default)
     /// - `Err` if the policy cannot be read
-    async fn is_bootstrap_auto_approve_allowed(
+    pub async fn is_bootstrap_auto_approve_allowed(
         &self,
         tree_id: &crate::entry::ID,
     ) -> crate::Result<bool> {
-        // Load root entry and parse settings
-        let root_entry = self.backend.get(tree_id)?;
-        if let Ok(settings_data) = root_entry.data(crate::constants::SETTINGS)
-            && let Ok(settings_doc) = serde_json::from_str::<crate::crdt::Doc>(settings_data)
-            && let Some(auth_doc) = settings_doc.get_doc("auth")
-            && let Some(policy_doc) = auth_doc.get_doc("policy")
-        {
+        // Create database instance to access settings through proper Transaction
+        let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
+        let mut transaction = database.new_transaction()?;
+        transaction.set_auth_key(&self.device_key_name);
+        let settings_store = SettingsStore::new(&transaction)?;
+
+        let auth_settings = settings_store.get_auth_settings()?;
+
+        if let Some(policy_doc) = auth_settings.as_doc().get_doc("policy") {
             // Read as JSON-encoded bool to match set_json storage
             if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
                 return Ok(flag);
@@ -762,27 +762,11 @@ impl SyncHandlerImpl {
             "Adding key to database authentication settings"
         );
 
-        // Get the current root entry which contains the settings
-        let root_entry = self.backend.get(tree_id)?;
-
-        // Extract current settings from the root entry
-        let mut current_settings = if let Ok(settings_data) = root_entry.data(SETTINGS) {
-            serde_json::from_str::<Doc>(settings_data)?
-        } else {
-            Doc::new()
-        };
-
-        // Get or create auth settings
-        let mut auth_settings =
-            if let Some(crate::crdt::doc::Value::Node(auth_map)) = current_settings.get("auth") {
-                if !auth_map.as_hashmap().is_empty() {
-                    AuthSettings::from_doc(current_settings.get_doc("auth").unwrap())
-                } else {
-                    AuthSettings::new()
-                }
-            } else {
-                AuthSettings::new()
-            };
+        // Create database instance to access settings through proper Transaction
+        let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
+        let mut transaction = database.new_transaction()?;
+        transaction.set_auth_key(&self.device_key_name);
+        let settings_store = SettingsStore::new(&transaction)?;
 
         // Create the new auth key
         let auth_key = AuthKey {
@@ -791,68 +775,28 @@ impl SyncHandlerImpl {
             status: KeyStatus::Active,
         };
 
-        // Add the key to auth settings (with conflict handling)
-        match auth_settings.add_key(key_name, auth_key.clone()) {
+        // Set the key using SettingsStore (handles upsert logic)
+        match settings_store.set_auth_key(key_name, auth_key.clone()) {
             Ok(_) => {
                 debug!(
                     key_name = %key_name,
                     public_key = %public_key,
-                    "Successfully added new key to auth settings"
+                    "Successfully set key in auth settings"
                 );
             }
-            Err(crate::Error::Auth(auth_err)) if auth_err.is_key_already_exists() => {
-                // Key already exists - check if it's the same public key
-                let existing_key_result = auth_settings.get_key(key_name).ok_or(
-                    crate::Error::Auth(crate::auth::errors::AuthError::KeyNotFound {
-                        key_name: key_name.to_string(),
-                    }),
-                )?;
-                let existing_key = existing_key_result?;
-                if existing_key.pubkey == public_key {
-                    debug!(
-                        key_name = %key_name,
-                        public_key = %public_key,
-                        "Key already exists with same public key - skipping add"
-                    );
-                    // Same key, no need to update
-                    return Ok(());
-                } else {
-                    warn!(
-                        key_name = %key_name,
-                        existing_pubkey = %existing_key.pubkey,
-                        new_pubkey = %public_key,
-                        "Key name conflict: different devices using same key name"
-                    );
-                    return Err(crate::Error::Auth(
-                        crate::auth::errors::AuthError::InvalidAuthConfiguration {
-                            reason: format!(
-                                "Key name '{}' already exists with different public key",
-                                key_name
-                            ),
-                        },
-                    ));
-                }
+            Err(crate::Error::Auth(auth_err)) if auth_err.is_key_name_conflict() => {
+                warn!(
+                    key_name = %key_name,
+                    error = %auth_err,
+                    "Key name conflict: different devices using same key name"
+                );
+                return Err(crate::Error::Auth(auth_err));
             }
             Err(e) => return Err(e),
         }
 
-        // Update the settings with the new auth configuration
-        current_settings.set_node("auth", auth_settings.as_doc().clone());
-
-        // Get current tips to properly extend the database
-        let current_tips = self.backend.get_tips(tree_id)?;
-
-        // Create a new entry that extends the database with updated settings
-        // Use serde_json::to_string to properly serialize the Doc structure
-        let settings_json = serde_json::to_string(&current_settings)?;
-        let updated_entry = crate::entry::Entry::builder(tree_id.clone())
-            .set_subtree_data(SETTINGS, &settings_json)
-            .set_parents(current_tips)
-            .build()?;
-
-        // Store the new entry that extends the database
-        self.backend
-            .put(crate::backend::VerificationStatus::Verified, updated_entry)?;
+        // Commit the transaction to persist the changes
+        transaction.commit()?;
 
         info!(
             tree_id = %tree_id,

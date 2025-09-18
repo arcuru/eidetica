@@ -9,6 +9,9 @@ pub use docstore::DocStore;
 mod table;
 pub use table::Table;
 
+mod settings_store;
+pub use settings_store::SettingsStore;
+
 #[cfg(feature = "y-crdt")]
 mod ydoc;
 #[cfg(feature = "y-crdt")]

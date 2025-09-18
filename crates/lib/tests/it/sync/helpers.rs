@@ -247,6 +247,24 @@ pub fn setup_bootstrap_server(
         )
         .expect("Failed to set server admin auth");
 
+    // Add device key to auth settings for sync handler operations
+    // The sync handler needs this key to authenticate when operating on the database
+    let device_pubkey = instance
+        .get_formatted_public_key("_device_key")
+        .expect("Failed to get device public key")
+        .expect("Device key should exist");
+
+    auth_doc
+        .set_json(
+            "_device_key",
+            serde_json::json!({
+                "pubkey": device_pubkey,
+                "permissions": {"Admin": 0},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set device key auth");
+
     settings.set_node("auth", auth_doc);
 
     let database = instance

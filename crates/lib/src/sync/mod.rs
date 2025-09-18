@@ -73,6 +73,13 @@ impl Sync {
     /// # Returns
     /// A new Sync instance with its own settings tree.
     pub fn new(backend: Arc<dyn crate::backend::BackendDB>) -> Result<Self> {
+        // Ensure device key exists in the backend
+        // If no device key exists, generate one automatically
+        if backend.get_private_key(DEVICE_KEY_NAME)?.is_none() {
+            let (signing_key, _) = crate::auth::crypto::generate_keypair();
+            backend.store_private_key(DEVICE_KEY_NAME, signing_key)?;
+        }
+
         let mut sync_settings = Doc::new();
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");

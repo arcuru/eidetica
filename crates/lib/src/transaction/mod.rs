@@ -32,7 +32,7 @@ use crate::{
     constants::SETTINGS,
     crdt::{CRDT, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
-    store::DocStore,
+    store::SettingsStore,
     sync::hooks::{SyncHookCollection, SyncHookContext},
 };
 
@@ -182,16 +182,16 @@ impl Transaction {
         self.auth_key_name.as_deref()
     }
 
-    /// Get a DocStore handle for the settings subtree within this transaction.
+    /// Get a SettingsStore handle for the settings subtree within this transaction.
     ///
-    /// This method returns a `DocStore` that provides access to the `_settings` subtree,
+    /// This method returns a `SettingsStore` that provides specialized access to the `_settings` subtree,
     /// allowing you to read and modify settings data within this atomic transaction.
     /// The DocStore automatically merges historical settings from the database with any
     /// staged changes in this transaction.
     ///
     /// # Returns
     ///
-    /// Returns a `Result<DocStore>` that can be used to:
+    /// Returns a `Result<SettingsStore>` that can be used to:
     /// - Read current settings values (including both historical and staged data)
     /// - Stage new settings changes within this transaction
     /// - Access nested settings structures
@@ -205,23 +205,23 @@ impl Transaction {
     /// let settings = op.get_settings()?;
     ///
     /// // Read a setting
-    /// if let Ok(name) = settings.get_string("name") {
+    /// if let Ok(name) = settings.get_name() {
     ///     println!("Database name: {}", name);
     /// }
     ///
     /// // Modify a setting
-    /// settings.set("description", "Updated description")?;
+    /// settings.set_name("Updated Database Name")?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Unable to create the DocStore for the settings subtree
+    /// - Unable to create the SettingsStore for the settings subtree
     /// - Operation has already been committed
-    pub fn get_settings(&self) -> Result<DocStore> {
-        // Create a DocStore for the settings subtree
-        DocStore::new(self, SETTINGS)
+    pub fn get_settings(&self) -> Result<SettingsStore> {
+        // Create a SettingsStore for the settings subtree
+        SettingsStore::new(self)
     }
 
     /// Set the tree root field for the entry being built.

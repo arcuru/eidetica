@@ -30,8 +30,6 @@ async fn test_unified_message_handling() {
 
     // Create a Sync instance for testing
     let db = Instance::new(Box::new(InMemory::new()));
-    db.add_private_key("_device_key")
-        .expect("Failed to add device key");
     let sync = Sync::new(db.backend().clone()).unwrap();
 
     // Test single entry request directly through shared handler

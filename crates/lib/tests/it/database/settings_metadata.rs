@@ -134,10 +134,8 @@ fn test_entry_get_settings_from_subtree() {
     // Transaction should be able to get settings properly
     let op = tree.new_transaction().unwrap();
     let op_settings = op.get_settings().unwrap();
-    match op_settings.get("name").unwrap() {
-        Value::Text(s) => assert_eq!(s, "test_tree"),
-        _ => panic!("Expected string value for name"),
-    }
+    let name = op_settings.get_name().unwrap();
+    assert_eq!(name, "test_tree");
 }
 
 #[test]
