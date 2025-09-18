@@ -132,7 +132,9 @@ fn test_entry_validation_success() {
     let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
     // Create a test entry using Entry::builder
-    let mut entry = Entry::builder("abc").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     // Set auth info without signature
     entry.sig = SigInfo::builder()
@@ -198,7 +200,9 @@ fn test_validate_entry_with_auth_info_against_empty_settings() {
     let (signing_key, _verifying_key) = generate_keypair();
 
     // Create an entry with auth info (signed)
-    let mut entry = Entry::builder("root123").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     entry.sig = SigInfo::builder()
         .key(SigKey::Direct("SOME_KEY".to_string()))
         .build();
@@ -230,7 +234,9 @@ fn test_entry_validation_with_revoked_key() {
     let settings = create_test_settings_with_key("KEY_LAPTOP", &revoked_key);
 
     // Create a test entry using Entry::builder
-    let mut entry = Entry::builder("abc").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     // Set auth info without signature
     entry.sig = SigInfo::builder()
@@ -697,7 +703,9 @@ fn test_global_permission_with_pubkey_field() {
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
     // Create an entry that uses global permission
-    let mut entry = Entry::builder("test_entry").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     // Set signature info to reference "*" permission and include actual pubkey
     entry.sig = SigInfo {
@@ -734,7 +742,9 @@ fn test_global_permission_without_pubkey_fails() {
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
     // Create an entry that uses global permission but doesn't include pubkey
-    let mut entry = Entry::builder("test_entry").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     entry.sig = SigInfo {
         key: SigKey::Direct("*".to_string()),
@@ -811,7 +821,9 @@ fn test_global_permission_insufficient_perms() {
     assert_eq!(resolved.effective_permission, Permission::Read); // Should have read permission
 
     // Create an entry that tries to write (requires Write permission)
-    let mut entry = Entry::builder("test_entry").build();
+    let mut entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     entry.sig = SigInfo {
         key: SigKey::Direct("*".to_string()),
@@ -860,7 +872,9 @@ fn test_global_permission_vs_specific_key() {
     settings.set_node("auth", auth_section);
 
     // Test 1: Entry signed with specific key should work normally
-    let mut entry1 = Entry::builder("test_entry1").build();
+    let mut entry1 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     entry1.sig = SigInfo::builder()
         .key(SigKey::Direct("specific_key".to_string()))
         .build(); // No pubkey needed for specific keys
@@ -871,7 +885,9 @@ fn test_global_permission_vs_specific_key() {
     assert!(result1.is_ok(), "Specific key validation should work");
 
     // Test 2: Entry using global permission should also work
-    let mut entry2 = Entry::builder("test_entry2").build();
+    let mut entry2 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     entry2.sig = SigInfo::builder()
         .key(SigKey::Direct("*".to_string()))
         .pubkey(format_public_key(&verifying_key2)) // Different key using global permission

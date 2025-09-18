@@ -282,7 +282,9 @@ mod tests {
         let (signing_key, verifying_key) = generate_keypair();
 
         // Create a test entry with auth info but no signature
-        let mut entry = Entry::builder("root123").build();
+        let mut entry = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully");
 
         // Set auth ID without signature
         entry.sig = crate::auth::types::SigInfo::builder()

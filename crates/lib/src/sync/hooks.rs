@@ -208,7 +208,9 @@ mod tests {
         assert!(collection.has_hooks());
 
         // Create test context
-        let entry = Entry::builder("test_tree").build();
+        let entry = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully");
         let context = SyncHookContext {
             tree_id: entry.id().clone(),
             entry: entry.clone(),
@@ -229,7 +231,9 @@ mod tests {
         collection.add_hook(Arc::new(TestHook::new("another_good_hook", false)));
 
         // Create test context
-        let entry = Entry::builder("test_tree").build();
+        let entry = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully");
         let context = SyncHookContext {
             tree_id: entry.id().clone(),
             entry: entry.clone(),

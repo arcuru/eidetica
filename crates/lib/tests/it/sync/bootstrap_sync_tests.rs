@@ -23,7 +23,8 @@ async fn test_bootstrap_sync_from_zero_state() {
             "messages",
             r#"{"msg1": {"text": "Hello from server!", "timestamp": 1234567890}}"#,
         )
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let test_tree_id = root_entry.id().clone();
 
     // Now create a child entry referencing the root
@@ -33,7 +34,8 @@ async fn test_bootstrap_sync_from_zero_state() {
             "messages",
             r#"{"msg2": {"text": "Second message", "timestamp": 1234567891}}"#,
         )
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let child_entry_id = child_entry.id().clone();
 
     // Store entries in server backend
@@ -117,7 +119,8 @@ async fn test_incremental_sync_after_bootstrap() {
     // Create some entries on server
     let root_entry = Entry::root_builder()
         .set_subtree_data("messages", r#"{"initial": {"text": "Initial message"}}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let test_tree_id = root_entry.id().clone();
 
     server_sync.backend().put_verified(root_entry).unwrap();
@@ -149,7 +152,8 @@ async fn test_incremental_sync_after_bootstrap() {
             "messages",
             r#"{"post_bootstrap": {"text": "After bootstrap message"}}"#,
         )
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     server_sync.backend().put_verified(entry2.clone()).unwrap();
 

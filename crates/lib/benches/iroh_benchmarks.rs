@@ -13,7 +13,9 @@ fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
     if !parents.is_empty() {
         builder = builder.set_parents(parents);
     }
-    builder.build()
+    builder
+        .build()
+        .expect("Benchmark entry should build successfully")
 }
 
 // Helper function to setup sync engines for benchmarking

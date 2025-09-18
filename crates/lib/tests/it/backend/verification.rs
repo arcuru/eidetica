@@ -8,7 +8,9 @@ fn test_verification_status_basic_operations() {
     let backend = InMemory::new();
 
     // Create a test entry
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let entry_id = entry.id();
 
     // Test storing with different verification statuses
@@ -49,7 +51,9 @@ fn test_verification_status_default_behavior() {
     let backend = InMemory::new();
 
     // Create a test entry
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let entry_id = entry.id();
 
     // Store with Verified (default)
@@ -74,9 +78,15 @@ fn test_verification_status_multiple_entries() {
     let backend = InMemory::new();
 
     // Create multiple test entries
-    let entry1 = Entry::root_builder().build();
-    let entry2 = Entry::root_builder().build();
-    let entry3 = Entry::root_builder().build();
+    let entry1 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let entry2 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let entry3 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
@@ -128,8 +138,12 @@ fn test_verification_status_serialization() {
     let backend = InMemory::new();
 
     // Create test entries with different verification statuses
-    let entry1 = Entry::root_builder().build();
-    let entry2 = Entry::root_builder().build();
+    let entry1 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let entry2 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
@@ -167,9 +181,15 @@ fn test_backend_verification_helpers() {
     let backend = InMemory::new();
 
     // Test the convenience methods
-    let entry1 = Entry::root_builder().build();
-    let entry2 = Entry::root_builder().build();
-    let entry3 = Entry::root_builder().build();
+    let entry1 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let entry2 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let entry3 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     let id1 = entry1.id();
     let id2 = entry2.id();

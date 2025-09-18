@@ -79,10 +79,10 @@ async fn test_flush_worker_processes_queue() {
     let peer_pubkey = "test_peer";
     let entry1 = Entry::builder("test_tree")
         .set_subtree_data("data", r#"{"test": "entry1"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
     let entry2 = Entry::builder("test_tree")
         .set_subtree_data("data", r#"{"test": "entry2"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
     let tree_id = entry1.id().clone();
 
     sync.sync_queue()

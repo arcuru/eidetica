@@ -54,9 +54,9 @@ Entry {
 
 ## Multi-Layer Validation System
 
-The system uses multi-layer validation to ensure DAG integrity:
+The system uses multi-layer validation to ensure DAG integrity and ID format correctness (see [Entry documentation](core_components/entry.md#id-format-requirements) for ID format details):
 
-### 1. Entry Layer: Structural Validation
+### 1. Entry Layer: Structural and Format Validation
 
 The `Entry::validate()` method enforces critical invariants:
 
@@ -65,6 +65,7 @@ The `Entry::validate()` method enforces critical invariants:
 /// 1. Root entries (with "_root" subtree): May have empty parents
 /// 2. Non-root entries: MUST have at least one parent in main tree
 /// 3. Empty parent IDs: Always rejected
+/// 4. All IDs must be valid 64-character lowercase hex SHA-256 hashes
 
 pub fn validate(&self) -> Result<()> {
     // Non-root entries MUST have main tree parents
@@ -72,19 +73,52 @@ pub fn validate(&self) -> Result<()> {
         return Err(ValidationError::NonRootEntryWithoutParents);
     }
 
-    // Reject empty string parent IDs
+    // Validate all parent IDs are properly formatted (see Entry docs for format details)
     for parent in self.parents()? {
         if parent.is_empty() {
             return Err(ValidationError::EmptyParentId);
+        }
+        validate_id_format(parent, "main tree parent ID")?;
+    }
+
+    // Validate tree root ID format (when not empty)
+    if !self.tree.root.is_empty() {
+        validate_id_format(&self.tree.root, "tree root ID")?;
+    }
+
+    // Validate subtree parent IDs
+    for subtree in &self.subtrees {
+        for parent_id in &subtree.parents {
+            validate_id_format(parent_id, "subtree parent ID")?;
         }
     }
     // ... additional validation
 }
 ```
 
-This prevents the creation of orphaned nodes that break DAG traversal.
+This prevents the creation of orphaned nodes and ensures all IDs are properly formatted.
 
-### 2. Transaction Layer: Lazy Parent Discovery
+### 2. Entry Builder: Build-time Validation
+
+The `EntryBuilder::build()` method automatically validates entries before returning them:
+
+```rust,ignore
+pub fn build(mut self) -> Result<Entry> {
+    // 1. Sort and deduplicate parent lists
+    // 2. Sort subtrees by name
+    // 3. Create the entry
+    let entry = Entry { ... };
+
+    // 4. VALIDATE before returning - catches errors at build time
+    entry.validate()?;
+
+    Ok(entry)
+}
+```
+
+This means validation errors are caught immediately when building entries, providing clear error messages about ID format violations (see [Entry documentation](core_components/entry.md#id-format-requirements) for format details).
+
+### 3. Transaction Layer: Automatic Parent Discovery
 
 When a transaction accesses a subtree for the first time, only then does it determine the correct subtree parents:
 
@@ -112,7 +146,7 @@ The transaction system handles:
 - **Custom parent scenarios**: Finds subtree tips reachable from specific main parents
 - **First subtree entry**: Returns empty tips, creating a subtree root
 
-### 3. Backend Storage: Final Validation Gate
+### 4. Backend Storage: Final Validation Gate
 
 The backend `put()` method serves as the **final validation gate** before persistence:
 
@@ -130,7 +164,7 @@ pub(crate) fn put(
 }
 ```
 
-### 4. LCA Traversal: Subtree Root Detection
+### 5. LCA Traversal: Subtree Root Detection
 
 During LCA (Lowest Common Ancestor) calculations, the system correctly identifies subtree roots:
 
@@ -202,17 +236,26 @@ let entry_id = op.commit()?; // Parents automatically determined
 // ✅ CORRECT: Root entry (doesn't need parents)
 let entry = Entry::root_builder()
     .set_subtree_data("data", "content")
-    .build();
+    .build()
+    .expect("Root entry should build successfully");
 
-// ✅ CORRECT: Non-root entry with parents
-let entry = Entry::builder("tree_id")
-    .set_parents(vec!["parent_id"])
+// ✅ CORRECT: Non-root entry with valid SHA-256 hex IDs
+let entry = Entry::builder("a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456")
+    .set_parents(vec!["b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234567a"])
     .set_subtree_data("messages", "data")
-    .set_subtree_parents("messages", vec!["subtree_parent_id"])
-    .build();
+    .set_subtree_parents("messages", vec!["c3d4e5f6789012345678901234567890abcdef1234567890abcdef1234567ab2"])
+    .build()
+    .expect("Entry with valid IDs should build successfully");
 
-// ❌ WRONG: Non-root entry without parents (WILL FAIL VALIDATION)
-let entry = Entry::builder("tree_id").build();
+// ❌ WRONG: Non-root entry without parents (WILL FAIL AT BUILD TIME)
+let result = Entry::builder("tree_id").build();
+assert!(result.is_err()); // Fails validation
+
+// ❌ WRONG: Invalid ID format (WILL FAIL AT BUILD TIME)
+let result = Entry::builder("invalid_id")
+    .set_parents(vec!["also_invalid"])
+    .build();
+assert!(result.is_err()); // Fails ID format validation
 ```
 
 ## Debugging Tips
@@ -230,20 +273,25 @@ Look for entries where:
 - `"Entry is subtree root (empty parents)"` - Normal operation, entry starts a new subtree
 - `"Entry encountered in subtree LCA that doesn't contain the subtree"` - Invalid state, entry should not be in subtree operations
 - `"Non-root entry has empty main tree parents"` - Validation failure, entry missing required parents
+- `"Invalid ID format in main tree parent ID: 'xyz'. IDs must be exactly 64 characters"` - ID format validation failure
+- `"Invalid ID format in subtree 'messages' parent ID: 'ABC123'. IDs must contain only lowercase hexadecimal characters"` - Uppercase or invalid characters in ID
 
 ### Validation Points
 
-1. **Entry validation**: Check that entries have proper main tree parents and valid parent IDs
-2. **Transaction commit**: Subtree parents are automatically discovered and set
-3. **Backend storage**: Final validation before persistence
-4. **LCA operations**: Proper subtree traversal based on subtree parent relationships
+1. **Entry building**: ID format and structural validation at build time via `EntryBuilder::build()`
+2. **Entry validation**: Check that entries have proper main tree parents and valid ID formats
+3. **Transaction commit**: Subtree parents are automatically discovered and set
+4. **Backend storage**: Final validation before persistence
+5. **LCA operations**: Proper subtree traversal based on subtree parent relationships
 
 ## Best Practices
 
-1. **Use transactions** for all entry creation - they handle parent discovery automatically
-2. **Validate entries** before manual storage or transmission
-3. **Test subtree scenarios** thoroughly, especially with custom parent relationships
-4. **Monitor debug logs** for subtree parent discovery during development
+1. **Use transactions** for all entry creation - they handle parent discovery automatically and generate proper IDs
+2. **Use `Entry::root_builder()`** for standalone entries that start new DAGs
+3. **Generate proper SHA-256 hex IDs** when creating entries manually (for testing or advanced use cases)
+4. **Handle build errors** - `EntryBuilder::build()` can fail with validation errors
+5. **Test with valid IDs** - use proper 64-character hex strings in tests
+6. **Monitor debug logs** for subtree parent discovery during development
 
 ## Implementation Details
 

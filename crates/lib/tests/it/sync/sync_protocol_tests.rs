@@ -17,17 +17,17 @@ async fn create_test_sync_with_data() -> (Sync, ID, Vec<Entry>) {
     // Create some test entries
     let entry1 = Entry::builder("test_tree_root")
         .set_subtree_data("data", r#"{"test": "entry1"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let entry2 = Entry::builder("test_tree_root")
         .add_parent(entry1.id().as_str())
         .set_subtree_data("data", r#"{"test": "entry2"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let entry3 = Entry::builder("test_tree_root")
         .add_parent(entry2.id().as_str())
         .set_subtree_data("data", r#"{"test": "entry3"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let entries = vec![entry1.clone(), entry2.clone(), entry3.clone()];
 
@@ -245,7 +245,7 @@ async fn test_send_entries_protocol() {
 
     let single_entry = Entry::builder("test_root")
         .set_subtree_data("data", r#"{"test": "single"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let request = SyncRequest::SendEntries(vec![single_entry]);
     let response = helpers::handle_request(&sync, &request).await;
@@ -264,11 +264,11 @@ async fn test_send_multiple_entries_protocol() {
 
     let entry1 = Entry::builder("test_root")
         .set_subtree_data("data", r#"{"test": "entry1"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let entry2 = Entry::builder("test_root")
         .set_subtree_data("data", r#"{"test": "entry2"}"#)
-        .build();
+        .build().expect("Entry should build successfully");
 
     let request = SyncRequest::SendEntries(vec![entry1, entry2]);
     let response = helpers::handle_request(&sync, &request).await;

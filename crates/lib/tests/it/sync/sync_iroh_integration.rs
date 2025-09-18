@@ -96,12 +96,14 @@ async fn test_send_entries_iroh() {
     sync_client.enable_iroh_transport().unwrap();
 
     // Create some test entries
-    let entry1 = Entry::builder("test_root_1")
+    let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"key1": "value1"}"#)
-        .build();
-    let entry2 = Entry::builder("test_root_2")
+        .build()
+        .expect("Entry should build successfully");
+    let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"key2": "value2"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let entries = vec![entry1, entry2];
 
     // Note: Iroh transport requires actual network connectivity between nodes

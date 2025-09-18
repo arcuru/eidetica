@@ -827,7 +827,7 @@ impl Transaction {
         };
 
         // Remove empty subtrees and build the final immutable Entry
-        let mut entry = builder.remove_empty_subtrees().build();
+        let mut entry = builder.remove_empty_subtrees().build()?;
 
         // CRITICAL VALIDATION: Ensure entry structural integrity before commit
         //

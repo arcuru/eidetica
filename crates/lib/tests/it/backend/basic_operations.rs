@@ -70,11 +70,15 @@ fn test_all_roots() {
     assert!(backend.all_roots().unwrap().is_empty());
 
     // Add a simple top-level entry (a root)
-    let root1 = Entry::root_builder().build();
+    let root1 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root1_id = root1.id();
     backend.put_verified(root1).unwrap();
 
-    let root2 = Entry::root_builder().build();
+    let root2 = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root2_id = root2.id();
     backend.put_verified(root2).unwrap();
 
@@ -87,7 +91,8 @@ fn test_all_roots() {
     // Add a child under root1
     let child = Entry::builder(root1_id.clone())
         .add_parent(root1_id.clone())
-        .build();
+        .build()
+        .expect("Child entry should build successfully");
     backend.put_verified(child).unwrap();
 
     // Should still have only the two roots

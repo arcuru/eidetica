@@ -7,7 +7,7 @@ fn test_entry_creation() {
     let root = "test_root";
     let entry = create_entry_with_parents(root, &["parent1"]);
 
-    assert_eq!(entry.root(), root);
+    assert_eq!(entry.root(), test_id(root));
     assert!(!entry.is_root()); // Regular entries are not root entries
 
     assert_has_parents(&entry, &["parent1"]); // Entry now has parents as required
@@ -57,11 +57,13 @@ fn test_entry_parents() {
     );
 
     // Test entry with both main and subtree parents
-    let mut builder = Entry::builder(root);
-    builder.set_parents_mut(vec!["parent1".into(), "parent2".into()]);
+    let mut builder = Entry::builder(test_id(root));
+    builder.set_parents_mut(vec![test_id("parent1"), test_id("parent2")]);
     builder.set_subtree_data_mut(subtree_name, subtree_data);
-    builder.set_subtree_parents_mut(subtree_name, vec!["subtree_parent".into()]);
-    let complex_entry = builder.build();
+    builder.set_subtree_parents_mut(subtree_name, vec![test_id("subtree_parent")]);
+    let complex_entry = builder
+        .build()
+        .expect("Complex entry should build successfully");
 
     assert_has_parents(&complex_entry, &["parent1", "parent2"]);
     assert_subtree_has_parents(&complex_entry, subtree_name, &["subtree_parent"]);

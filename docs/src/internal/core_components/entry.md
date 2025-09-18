@@ -56,6 +56,30 @@ This separation allows the internal Merkle-DAG structures to remain efficient an
 
 **Efficient Storage**: Identical entries are automatically deduplicated, and metadata can be stored separately from bulk data.
 
+## ID Format Requirements
+
+All IDs in Eidetica must be valid SHA-256 hashes represented as 64-character lowercase hexadecimal strings. This includes:
+
+- **Tree root IDs**: The ID of the root entry of a tree
+- **Main tree parent IDs**: Parent entries in the main tree
+- **Subtree parent IDs**: Parent entries within specific subtrees
+- **Entry IDs**: Content-addressable identifiers for entries themselves
+
+### Valid ID Format
+
+- **Length**: Exactly 64 characters
+- **Characters**: Only lowercase hexadecimal (0-9, a-f)
+- **Example**: `a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456`
+
+### Invalid ID Examples
+
+```text
+❌ "parent_id"           # Too short, not hex
+❌ "ABCD1234..."         # Uppercase letters
+❌ "abcd-1234-..."       # Contains hyphens
+❌ "12345678901234567890123456789012345678901234567890123456789012345"  # 63 chars (too short)
+```
+
 ## Internal Data Structure Detail
 
 An Entry contains the following internal data structures:

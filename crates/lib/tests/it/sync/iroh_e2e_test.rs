@@ -57,7 +57,8 @@ async fn test_iroh_e2e_basic_local() {
     for i in 0..3 {
         let entry = Entry::root_builder()
             .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
-            .build();
+            .build()
+            .expect("Entry should build successfully");
         base_db1.backend().put_verified(entry.clone()).unwrap();
         entries.push(entry);
     }
@@ -125,7 +126,8 @@ async fn test_iroh_e2e_resilience() {
     // Create test entries
     let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "resilience_1"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     base_db1.backend().put_verified(entry1.clone()).unwrap();
 
     // First sync should succeed
@@ -140,7 +142,8 @@ async fn test_iroh_e2e_resilience() {
     // Create another entry while node 2 is down
     let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "resilience_2"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     base_db1.backend().put_verified(entry2.clone()).unwrap();
 
     // This sync should fail (node 2 is down)
@@ -281,7 +284,8 @@ async fn test_iroh_e2e_with_relays() {
     for i in 0..5 {
         let entry = Entry::root_builder()
             .set_subtree_data("data", format!(r#"{{"test": "relay_{i}"}}"#))
-            .build();
+            .build()
+            .expect("Entry should build successfully");
         base_db1.backend().put_verified(entry.clone()).unwrap();
         entries.push(entry);
     }

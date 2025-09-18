@@ -414,14 +414,22 @@ mod tests {
     #[test]
     fn test_sync_cursor() {
         let peer_pubkey = "test_peer".to_string();
-        let tree_id = Entry::builder("test_tree").build().id().clone();
+        let tree_id = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully")
+            .id()
+            .clone();
 
         let mut cursor = SyncCursor::new(peer_pubkey.clone(), tree_id.clone());
         assert_eq!(cursor.peer_pubkey, peer_pubkey);
         assert_eq!(cursor.tree_id, tree_id);
         assert!(!cursor.has_sync_history());
 
-        let entry_id = Entry::builder("test_entry").build().id().clone();
+        let entry_id = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully")
+            .id()
+            .clone();
         cursor.update_sync(entry_id.clone(), 5);
         assert!(cursor.has_sync_history());
         assert_eq!(cursor.last_synced_entry.unwrap(), entry_id);
@@ -477,7 +485,11 @@ mod tests {
             .unwrap();
         assert!(!cursor.has_sync_history());
 
-        let entry_id = Entry::builder("test_entry").build().id().clone();
+        let entry_id = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully")
+            .id()
+            .clone();
         cursor.update_sync(entry_id, 3);
         state_manager.update_sync_cursor(&cursor).unwrap();
 

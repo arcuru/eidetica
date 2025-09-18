@@ -10,7 +10,8 @@ fn test_in_memory_backend_subtree_operations() {
     // Create a root entry with a subtree
     let root_entry = Entry::root_builder()
         .set_subtree_data("subtree1", "root_subtree1_data")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
@@ -19,7 +20,8 @@ fn test_in_memory_backend_subtree_operations() {
         .add_parent(root_id.clone())
         .set_subtree_data("subtree1", "child_subtree1_data")
         .add_subtree_parent("subtree1", root_id.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let child_id = child_entry.id();
     backend.put_verified(child_entry).unwrap();
 
@@ -50,13 +52,15 @@ fn test_backend_get_store_from_tips() {
 
     let entry_root = Entry::root_builder()
         .set_subtree_data(subtree_name, "root_sub_data")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let root_entry_id = entry_root.id();
     backend.put_verified(entry_root).unwrap();
 
     let e1 = Entry::builder(root_entry_id.clone())
         .add_parent(root_entry_id.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let e1_id = e1.id();
     backend.put_verified(e1).unwrap();
 
@@ -64,7 +68,8 @@ fn test_backend_get_store_from_tips() {
         .add_parent(e1_id.clone())
         .set_subtree_data(subtree_name, "e2a_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let e2a_id = e2a.id();
     backend.put_verified(e2a).unwrap();
 
@@ -72,7 +77,8 @@ fn test_backend_get_store_from_tips() {
         .add_parent(e1_id.clone())
         .set_subtree_data(subtree_name, "e2b_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let e2b_id = e2b.id();
     backend.put_verified(e2b).unwrap();
 
@@ -174,7 +180,9 @@ fn test_get_store_tips() {
     let backend = InMemory::new();
 
     // Create a tree with subtrees
-    let root = Entry::root_builder().build();
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root_id = root.id();
     backend
         .put(
@@ -187,7 +195,8 @@ fn test_get_store_tips() {
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("sub1", "A sub1 data")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_a = entry_a.id();
     backend.put_verified(entry_a).unwrap();
 
@@ -201,7 +210,8 @@ fn test_get_store_tips() {
         .add_parent(id_a.clone())
         .set_subtree_data("sub1", "B sub1 data")
         .add_subtree_parent("sub1", id_a.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_b = entry_b.id();
     backend.put_verified(entry_b).unwrap();
 
@@ -214,7 +224,8 @@ fn test_get_store_tips() {
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("sub2", "C sub2 data")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_c = entry_c.id();
     backend.put_verified(entry_c).unwrap();
 
@@ -236,7 +247,8 @@ fn test_get_store_tips() {
         .add_subtree_parent("sub1", id_b.clone())
         .set_subtree_data("sub2", "D sub2 data")
         .add_subtree_parent("sub2", id_c.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_d = entry_d.id();
     backend.put_verified(entry_d).unwrap();
 

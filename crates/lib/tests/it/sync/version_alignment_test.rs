@@ -53,9 +53,10 @@ async fn test_http_v0_endpoint_format() {
     use eidetica::{Entry, sync::protocol::SyncRequest};
 
     let client = reqwest::Client::new();
-    let entry = Entry::builder("test_root")
+    let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "v0_endpoint"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     let request = SyncRequest::SendEntries(vec![entry]);
 

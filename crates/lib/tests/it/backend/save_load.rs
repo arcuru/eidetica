@@ -14,7 +14,9 @@ fn test_in_memory_backend_save_and_load() {
     // Setup: Create a backend with some data
     {
         let backend = InMemory::new();
-        let entry = Entry::root_builder().build();
+        let entry = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully");
         backend.put_verified(entry).unwrap();
 
         // Save to file
@@ -86,7 +88,9 @@ fn test_save_load_with_various_entries() {
     let backend = InMemory::new();
 
     // Top-level root
-    let root_entry = Entry::root_builder().build();
+    let root_entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
@@ -94,7 +98,8 @@ fn test_save_load_with_various_entries() {
     let child1 = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("child", "1")
-        .build();
+        .build()
+        .expect("Child entry should build successfully");
     let child1_id = child1.id();
     backend.put_verified(child1).unwrap();
 
@@ -102,14 +107,16 @@ fn test_save_load_with_various_entries() {
     let child2 = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("child", "2")
-        .build();
+        .build()
+        .expect("Child entry should build successfully");
     let child2_id = child2.id();
     backend.put_verified(child2).unwrap();
 
     // Grandchild (child of child1)
     let grandchild = Entry::builder(root_id.clone())
         .add_parent(child1_id.clone())
-        .build();
+        .build()
+        .expect("Grandchild entry should build successfully");
     let grandchild_id = grandchild.id();
     backend.put_verified(grandchild).unwrap();
 
@@ -117,7 +124,8 @@ fn test_save_load_with_various_entries() {
     let entry_with_subtree = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("subtree1", "subtree_data")
-        .build();
+        .build()
+        .expect("Entry with subtree should build successfully");
     let entry_with_subtree_id = entry_with_subtree.id();
     backend.put_verified(entry_with_subtree).unwrap();
 

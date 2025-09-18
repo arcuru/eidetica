@@ -80,7 +80,9 @@ async fn test_iroh_transport_send_request_no_endpoint() {
     let transport = IrohTransport::new().unwrap();
 
     // Try to send request without initializing endpoint
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let result = transport
         .send_request(
             &Address::iroh("invalid_node_id"),

@@ -3,6 +3,7 @@
 //! This module tests the new BackgroundSync DAG traversal methods that ensure
 //! proper parent-child ordering during synchronization.
 
+use sha2::{Digest, Sha256};
 use std::{collections::HashSet, time::Duration};
 
 use eidetica::{
@@ -14,9 +15,18 @@ use eidetica::{
 
 use super::helpers;
 
+/// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
+fn test_id(name: &str) -> ID {
+    let mut hasher = Sha256::new();
+    hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
+    hasher.update(name.as_bytes());
+    let hash = hasher.finalize();
+    format!("{hash:x}").into()
+}
+
 /// Helper to create a test entry with specific parents
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
-    let mut builder = Entry::builder(tree_id);
+    let mut builder = Entry::builder(test_id(tree_id));
 
     if !parents.is_empty() {
         builder = builder.set_parents(parents);
@@ -25,6 +35,7 @@ fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
     builder
         .set_subtree_data("data", r#"{"test": true}"#)
         .build()
+        .expect("Test entry should build successfully")
 }
 
 /// Helper to create a linear chain of entries: root -> child1 -> child2 -> ...
@@ -37,6 +48,7 @@ fn create_linear_chain(tree_id: &str, count: usize) -> Vec<Entry> {
             Entry::root_builder()
                 .set_subtree_data("data", r#"{"test": true}"#)
                 .build()
+                .expect("Root entry should build successfully")
         } else {
             // Create child entry with parent
             let parents = vec![entries[i - 1].id().clone()];
@@ -56,7 +68,8 @@ fn create_dag_structure(tree_id: &str) -> Vec<Entry> {
     // Root entry
     let root = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": true}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     entries.push(root.clone());
 
     // Two branches from root
@@ -248,7 +261,9 @@ async fn test_dag_sync_empty_sets() {
 
     // Test edge cases with empty tip sets
     let _tree_id = "test_tree";
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
     base_db.backend().put_verified(entry.clone()).unwrap();
 
@@ -440,7 +455,8 @@ async fn test_real_sync_transport_setup() {
     for i in 0..3 {
         let entry = Entry::root_builder()
             .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
-            .build();
+            .build()
+            .expect("Entry should build successfully");
         entries.push(entry.clone());
     }
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();
@@ -706,7 +722,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     for i in 0..3 {
         let entry = Entry::root_builder()
             .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
-            .build();
+            .build()
+            .expect("Entry should build successfully");
         entries.push(entry.clone());
     }
     let entry_ids: Vec<_> = entries.iter().map(|e| e.id().clone()).collect();

@@ -77,10 +77,11 @@ struct SubTreeNode {
 /// ```
 /// # use eidetica::Entry;
 ///
-/// // Create a new entry using Entry::builder()
-/// let entry = Entry::builder("tree_root")
+/// // Create a new root entry (standalone entry that starts a new DAG)
+/// let entry = Entry::root_builder()
 ///     .set_subtree_data("users", r#"{"user1":"data"}"#)
-///     .build();
+///     .build()
+///     .expect("Entry should build successfully");
 ///
 /// // Access entry data
 /// let id = entry.id(); // Calculate content-addressable ID
@@ -317,6 +318,38 @@ impl Entry {
     ///     }
     /// }
     /// ```
+    /// Validates that an ID is in the correct format (64-character lowercase hex SHA-256 hash).
+    fn validate_id_format(id: &ID, context: &str) -> crate::Result<()> {
+        use crate::instance::errors::InstanceError;
+
+        let id_str = id.as_str();
+
+        // Check length (SHA-256 hash is 256 bits = 64 hex characters)
+        if id_str.len() != 64 {
+            return Err(InstanceError::EntryValidationFailed {
+                reason: format!(
+                    "Invalid ID format in {}: '{}'. IDs must be exactly 64 characters (SHA-256 hex), got {} characters.",
+                    context, id_str, id_str.len()
+                ),
+            }.into());
+        }
+
+        // Check that all characters are lowercase hexadecimal
+        if !id_str
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            return Err(InstanceError::EntryValidationFailed {
+                reason: format!(
+                    "Invalid ID format in {}: '{}'. IDs must contain only lowercase hexadecimal characters (0-9, a-f).",
+                    context, id_str
+                ),
+            }.into());
+        }
+
+        Ok(())
+    }
+
     pub fn validate(&self) -> crate::Result<()> {
         use crate::constants::{ROOT, SETTINGS};
         use crate::instance::errors::InstanceError;
@@ -335,6 +368,11 @@ impl Entry {
 
         // Check if this is a root entry (will be true only if has ROOT marker AND no parents)
         let is_root_entry = has_root_marker && self.tree.parents.is_empty();
+
+        // Validate root ID format (when not empty)
+        if !self.tree.root.is_empty() {
+            Self::validate_id_format(&self.tree.root, "tree root ID")?;
+        }
 
         // Validate each subtree
         for subtree_node in &self.subtrees {
@@ -374,7 +412,7 @@ impl Entry {
                 );
             }
 
-            // Validate that subtree parents are not empty strings
+            // Validate that subtree parents are not empty strings and have valid format
             for parent_id in subtree_parents {
                 if parent_id.is_empty() {
                     return Err(InstanceError::EntryValidationFailed {
@@ -385,6 +423,11 @@ impl Entry {
                         ),
                     }.into());
                 }
+                // Validate parent ID format
+                Self::validate_id_format(
+                    parent_id,
+                    &format!("subtree '{}' parent ID", subtree_name),
+                )?;
             }
         }
 
@@ -402,7 +445,7 @@ impl Entry {
                 }.into());
             }
 
-            // Validate that main parents are not empty strings
+            // Validate that main parents are not empty strings and have valid format
             for parent_id in &main_parents {
                 if parent_id.is_empty() {
                     return Err(InstanceError::EntryValidationFailed {
@@ -412,6 +455,8 @@ impl Entry {
                         ),
                     }.into());
                 }
+                // Validate parent ID format
+                Self::validate_id_format(parent_id, "main tree parent ID")?;
             }
         }
 
@@ -908,11 +953,18 @@ impl EntryBuilder {
     /// 1. Sorts all parent lists in both the main tree and subtrees
     /// 2. Sorts the subtrees list by name
     /// 3. Removes any empty subtrees
-    /// 4. Creates and returns the immutable `Entry`
+    /// 4. Creates the immutable `Entry`
+    /// 5. Validates the entry structure
+    /// 6. Returns the validated entry or an error
     ///
     /// After calling this method, the builder is consumed and cannot be used again.
     /// The returned `Entry` is immutable and its parts cannot be modified.
-    pub fn build(mut self) -> Entry {
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Entry)` if the entry is structurally valid
+    /// - `Err(crate::Error)` if the entry fails validation (e.g., root entry with parents)
+    pub fn build(mut self) -> crate::Result<Entry> {
         // Sort parent lists (if any)
         Self::sort_parents_list(&mut self.tree.parents);
         for subtree in &mut self.subtrees {
@@ -928,22 +980,39 @@ impl EntryBuilder {
         // Sort subtrees
         self.sort_subtrees_list();
 
-        Entry {
+        let entry = Entry {
             tree: self.tree,
             subtrees: self.subtrees,
             sig: self.sig,
-        }
+        };
+
+        // Validate the built entry before returning
+        entry.validate()?;
+
+        Ok(entry)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
+    fn test_id(name: &str) -> ID {
+        let mut hasher = Sha256::new();
+        hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
+        hasher.update(name.as_bytes());
+        let hash = hasher.finalize();
+        format!("{hash:x}").into()
+    }
 
     #[test]
     fn test_validate_root_entry_without_parents_succeeds() {
         // Root entries (with "_root" subtree) should be valid without parents
-        let entry = Entry::root_builder().build();
+        let entry = Entry::root_builder()
+            .build()
+            .expect("Root entry should build successfully");
 
         // Should pass validation
         assert!(
@@ -954,22 +1023,24 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Cannot add parents to a root entry builder")]
-    fn test_validate_root_entry_with_parents_panics() {
-        // Root entries with parents should now PANIC at build time
-        Entry::root_builder().add_parent("some_parent_id").build();
+    fn test_validate_root_entry_with_parents_fails() {
+        // Root entries with parents should fail at build time
+        let result = Entry::root_builder()
+            .add_parent(test_id("some_parent"))
+            .build();
+        assert!(
+            result.is_err(),
+            "Root entry with parents should fail to build"
+        );
     }
 
     #[test]
     fn test_validate_non_root_entry_without_parents_fails() {
         // Non-root entries MUST have parents to be valid
-        let entry = Entry::builder("tree_id").build();
-
-        // Should fail validation
-        let result = entry.validate();
+        let result = Entry::builder(test_id("tree")).build();
         assert!(
             result.is_err(),
-            "Non-root entry without parents should fail validation"
+            "Non-root entry without parents should fail to build"
         );
 
         // Check that it's the correct error type
@@ -989,7 +1060,10 @@ mod tests {
     #[test]
     fn test_validate_non_root_entry_with_parents_succeeds() {
         // Non-root entries with parents should be valid
-        let entry = Entry::builder("tree_id").add_parent("parent_id").build();
+        let entry = Entry::builder(test_id("tree"))
+            .add_parent(test_id("parent"))
+            .build()
+            .expect("Entry with parent should build successfully");
 
         // Should pass validation
         assert!(
@@ -1002,15 +1076,12 @@ mod tests {
     #[test]
     fn test_validate_empty_parent_id_fails() {
         // Empty parent IDs should be rejected
-        let entry = Entry::builder("tree_id")
+        let result = Entry::builder(test_id("tree"))
             .add_parent("") // Empty parent ID
             .build();
-
-        // Should fail validation
-        let result = entry.validate();
         assert!(
             result.is_err(),
-            "Entry with empty parent ID should fail validation"
+            "Entry with empty parent ID should fail to build"
         );
 
         // Check that it's the correct error type
@@ -1030,16 +1101,13 @@ mod tests {
     #[test]
     fn test_validate_subtree_with_empty_parent_id_fails() {
         // Subtrees with empty parent IDs should be rejected
-        let entry = Entry::root_builder()
+        let result = Entry::root_builder()
             .set_subtree_data("messages", "test_data")
             .set_subtree_parents("messages", vec!["".into()]) // Empty subtree parent ID
             .build();
-
-        // Should fail validation
-        let result = entry.validate();
         assert!(
             result.is_err(),
-            "Entry with empty subtree parent ID should fail validation"
+            "Entry with empty subtree parent ID should fail to build"
         );
 
         // Check that it's the correct error type
@@ -1060,11 +1128,12 @@ mod tests {
     fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
         // Non-root entries with empty subtree parents should log but pass validation
         // This is deferred to transaction layer for deeper validation
-        let entry = Entry::builder("tree_id")
-            .add_parent("main_parent")
+        let entry = Entry::builder(test_id("tree"))
+            .add_parent(test_id("main_parent"))
             .set_subtree_data("messages", "test_data")
             .set_subtree_parents("messages", vec![]) // Empty subtree parents
-            .build();
+            .build()
+            .expect("Entry with main parent should build successfully");
 
         // Should pass validation (deeper validation happens in transaction layer)
         assert!(
@@ -1090,7 +1159,8 @@ mod tests {
         let entry = Entry::root_builder()
             .set_subtree_data("messages", "test_data")
             .set_subtree_parents("messages", vec![]) // Empty subtree parents - valid for root
-            .build();
+            .build()
+            .expect("Root entry should build successfully");
 
         // Should pass validation
         assert!(
@@ -1108,7 +1178,8 @@ mod tests {
         let root_entry = Entry::root_builder()
             .set_subtree_data("_settings", "auth_config")
             .set_subtree_parents("_settings", vec![]) // Empty - valid for root
-            .build();
+            .build()
+            .expect("Root entry should build successfully");
 
         assert!(
             root_entry.validate().is_ok(),
@@ -1117,11 +1188,12 @@ mod tests {
 
         // Non-root entry with empty settings subtree parents should pass entry validation
         // (deeper validation deferred to transaction layer)
-        let non_root_entry = Entry::builder("tree_id")
-            .add_parent("main_parent")
+        let non_root_entry = Entry::builder(test_id("tree"))
+            .add_parent(test_id("main_parent"))
             .set_subtree_data("_settings", "auth_config")
             .set_subtree_parents("_settings", vec![]) // Empty - logs but passes entry validation
-            .build();
+            .build()
+            .expect("Entry with main parent should build successfully");
 
         assert!(
             non_root_entry.validate().is_ok(),
@@ -1132,13 +1204,14 @@ mod tests {
     #[test]
     fn test_validate_multiple_subtrees_with_mixed_parent_scenarios() {
         // Test entry with multiple subtrees having different parent scenarios
-        let entry = Entry::builder("tree_id")
-            .add_parent("main_parent")
+        let entry = Entry::builder(test_id("tree"))
+            .add_parent(test_id("main_parent"))
             .set_subtree_data("messages", "msg_data")
-            .set_subtree_parents("messages", vec!["msg_parent".into()]) // Valid parent
+            .set_subtree_parents("messages", vec![test_id("msg_parent")]) // Valid parent
             .set_subtree_data("users", "user_data")
             .set_subtree_parents("users", vec![]) // Empty parents - deferred validation
-            .build();
+            .build()
+            .expect("Entry with main parent should build successfully");
 
         // Should pass entry-level validation
         assert!(
@@ -1166,7 +1239,8 @@ mod tests {
         // The "_root" marker subtree should be skipped during validation
         let entry = Entry::root_builder()
             .set_subtree_data("other_subtree", "data")
-            .build();
+            .build()
+            .expect("Root entry should build successfully");
 
         // Should pass validation - _root subtree validation is skipped
         assert!(

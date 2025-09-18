@@ -159,7 +159,9 @@ fn test_entry_validation_with_corrupted_auth_section() {
     let (signing_key, _verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     // Create a signed entry
-    let mut entry = eidetica::Entry::builder("root123".to_string()).build();
+    let mut entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
     entry.sig = eidetica::auth::types::SigInfo::builder()
         .key(eidetica::auth::types::SigKey::Direct(
             "TEST_KEY".to_string(),
@@ -239,7 +241,9 @@ fn test_entry_validation_cache_behavior() {
     settings.set_node("auth", auth_settings);
 
     // Create a signed entry
-    let mut entry = eidetica::Entry::builder("root123".to_string()).build();
+    let mut entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
     entry.sig = eidetica::auth::types::SigInfo::builder()
         .key(eidetica::auth::types::SigKey::Direct(
             "TEST_KEY".to_string(),
@@ -301,7 +305,9 @@ fn test_entry_validation_with_malformed_keys() {
     settings.set_node("auth", auth_settings);
 
     // Create entry signed with correct key
-    let mut correct_entry = eidetica::Entry::builder("root123".to_string()).build();
+    let mut correct_entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
     correct_entry.sig = eidetica::auth::types::SigInfo::builder()
         .key(eidetica::auth::types::SigKey::Direct(
             "TEST_KEY".to_string(),
@@ -353,7 +359,9 @@ fn test_entry_validation_with_malformed_keys() {
     // Test signature created with wrong key
     let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
 
-    let mut wrong_signature_entry = eidetica::Entry::builder("root456".to_string()).build();
+    let mut wrong_signature_entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
     wrong_signature_entry.sig = eidetica::auth::types::SigInfo::builder()
         .key(eidetica::auth::types::SigKey::Direct(
             "TEST_KEY".to_string(),
@@ -377,7 +385,9 @@ fn test_entry_validation_unsigned_entry_detection() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
 
     // Create an unsigned entry
-    let entry = eidetica::Entry::builder("root123".to_string()).build();
+    let entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
 
     // Test with no auth settings
     let empty_settings = Doc::new();
@@ -418,7 +428,9 @@ fn test_entry_validation_with_invalid_signatures() {
     settings.set_node("auth", auth_settings);
 
     // Create entry signed with correct key
-    let mut correct_entry = eidetica::Entry::builder("root123".to_string()).build();
+    let mut correct_entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
     correct_entry.sig = eidetica::auth::types::SigInfo::builder()
         .key(eidetica::auth::types::SigKey::Direct(
             "TEST_KEY".to_string(),

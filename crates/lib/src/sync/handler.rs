@@ -591,7 +591,7 @@ impl SyncHandlerImpl {
         let updated_entry = crate::entry::Entry::builder(tree_id.clone())
             .set_subtree_data(SETTINGS, &settings_json)
             .set_parents(current_tips)
-            .build();
+            .build()?;
 
         // Store the new entry that extends the database
         self.backend

@@ -1,9 +1,19 @@
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 use eidetica::{
     backend::{BackendDB, database::InMemory},
     entry::{Entry, ID},
 };
+
+/// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
+pub fn test_id(name: &str) -> ID {
+    let mut hasher = Sha256::new();
+    hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
+    hasher.update(name.as_bytes());
+    let hash = hasher.finalize();
+    format!("{hash:x}").into()
+}
 
 /// Create a new test backend
 pub fn create_test_backend() -> InMemory {
@@ -21,7 +31,9 @@ pub fn create_test_backend_with_root() -> (InMemory, ID) {
 /// Create and store a root entry in the backend
 /// Returns the root entry ID
 pub fn create_and_store_root(backend: &InMemory) -> ID {
-    let root_entry = Entry::root_builder().build();
+    let root_entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
     root_id
@@ -32,7 +44,8 @@ pub fn create_and_store_root(backend: &InMemory) -> ID {
 pub fn create_and_store_child(backend: &InMemory, tree_id: &ID, parent_id: &ID) -> ID {
     let entry = Entry::builder(tree_id.clone())
         .add_parent(parent_id.clone())
-        .build();
+        .build()
+        .expect("Child entry should build successfully");
     let id = entry.id();
     backend.put_verified(entry).unwrap();
     id
@@ -50,7 +63,8 @@ pub fn create_and_store_subtree_entry(
     let entry = Entry::builder(tree_id.clone())
         .add_parent(parent_id.clone())
         .set_subtree_data(subtree_name, data)
-        .build();
+        .build()
+        .expect("Subtree entry should build successfully");
     let id = entry.id();
     backend.put_verified(entry).unwrap();
     id

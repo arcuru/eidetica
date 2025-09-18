@@ -28,7 +28,8 @@ fn test_calculate_entry_height() {
         .add_parent(id_c.clone())
         .add_parent(id_f.clone())
         .set_subtree_data("branch", "d")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_d = entry_d.id();
     backend.put_verified(entry_d).unwrap();
 
@@ -70,7 +71,8 @@ fn test_calculate_subtree_height() {
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_subtree_data("sub1", "A_sub1")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_a = entry_a.id();
     backend
         .put(
@@ -83,7 +85,8 @@ fn test_calculate_subtree_height() {
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
         .set_subtree_data("sub1", "B_sub1")
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     // B is directly under root in subtree (not under A)
     // So we don't set subtree parents
     let id_b = entry_b.id();
@@ -100,7 +103,8 @@ fn test_calculate_subtree_height() {
         .set_subtree_data("sub1", "C_sub1")
         .add_subtree_parent("sub1", id_a.clone())
         .add_subtree_parent("sub1", id_b.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_c = entry_c.id();
     backend
         .put(
@@ -135,22 +139,27 @@ fn test_sort_entries() {
     let backend = InMemory::new();
 
     // Create a simple tree with mixed order
-    let root = Entry::root_builder().build();
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root_id = root.id();
 
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_a = entry_a.id();
 
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let id_b = entry_b.id();
 
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(id_b.clone())
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     // Store all entries in backend
     backend.put_verified(root.clone()).unwrap();

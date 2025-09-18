@@ -36,7 +36,8 @@ fn test_in_memory_backend_complex_tree_structure() {
             .add_parent(a_id.clone())
             .add_parent(b_id.clone())
             .set_subtree_data("branch", "c")
-            .build();
+            .build()
+            .expect("Merge entry should build successfully");
         let c_id = c_entry.id();
         backend.put_verified(c_entry).unwrap();
 
@@ -73,32 +74,36 @@ fn test_in_memory_backend_complex_tree_structure() {
 #[test]
 fn test_backend_get_tree_from_tips() {
     let backend = InMemory::new();
-    let root_id: ID = "tree_root".into();
+    let root_id = test_id("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
     let root_entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .build();
+        .build()
+        .expect("Root entry should build successfully");
     let root_entry_id = root_entry.id();
     backend.put_verified(root_entry).unwrap();
 
     let e1_entry = Entry::builder(root_id.clone())
         .add_parent(root_entry_id.clone())
-        .build();
+        .build()
+        .expect("E1 entry should build successfully");
     let e1_id = e1_entry.id();
     backend.put_verified(e1_entry).unwrap();
 
     let e2a_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
         .set_subtree_data("branch", "a")
-        .build();
+        .build()
+        .expect("E2a entry should build successfully");
     let e2a_id = e2a_entry.id();
     backend.put_verified(e2a_entry).unwrap();
 
     let e2b_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
         .set_subtree_data("branch", "b")
-        .build();
+        .build()
+        .expect("E2b entry should build successfully");
     let e2b_id = e2b_entry.id();
     backend.put_verified(e2b_entry).unwrap();
 
@@ -179,7 +184,9 @@ fn test_get_tips() {
     // Root -> A -> B
     //    \-> C
 
-    let root = Entry::root_builder().build();
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let root_id = root.id();
     backend
         .put(
@@ -197,7 +204,8 @@ fn test_get_tips() {
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_metadata("entry_a_data")
-        .build();
+        .build()
+        .expect("Entry A should build successfully");
     let id_a = entry_a.id();
     backend
         .put(
@@ -215,7 +223,8 @@ fn test_get_tips() {
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
         .set_metadata("entry_b_data")
-        .build();
+        .build()
+        .expect("Entry B should build successfully");
     let id_b = entry_b.id();
     backend
         .put(
@@ -233,7 +242,8 @@ fn test_get_tips() {
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_metadata("entry_c_data")
-        .build();
+        .build()
+        .expect("Entry C should build successfully");
     let id_c = entry_c.id();
     backend
         .put(

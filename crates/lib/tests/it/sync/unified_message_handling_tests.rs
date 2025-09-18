@@ -17,13 +17,16 @@ async fn test_unified_message_handling() {
     // Create test entries
     let single_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "single"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "multi1"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "multi2"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     // Create a Sync instance for testing
     let db = Instance::new(Box::new(InMemory::new()));
@@ -106,7 +109,8 @@ async fn test_http_v0_json_endpoint() {
     // Send single entry as JSON POST (same as transport does internally)
     let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     let request = SyncRequest::SendEntries(vec![entry]);
     let response = client.post(&url).json(&request).send().await.unwrap();
@@ -124,10 +128,12 @@ async fn test_http_v0_json_endpoint() {
     // Send multiple entries as JSON POST
     let entry1 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http_1"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let entry2 = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "direct_http_2"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     let multi_request = SyncRequest::SendEntries(vec![entry1, entry2]);
     let response = client.post(&url).json(&multi_request).send().await.unwrap();

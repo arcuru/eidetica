@@ -19,9 +19,10 @@ async fn test_sync_with_http_transport() {
     let http_address = Address::http(&server_addr);
 
     // Test the new protocol by sending entries
-    let entry = Entry::builder("test_root")
+    let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "value"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     sync.send_entries_async(vec![entry], &http_address)
         .await
@@ -50,9 +51,10 @@ async fn test_multiple_sync_instances_communication() {
     let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Test communication by sending entries from client to server
-    let entry = Entry::builder("communication_test")
+    let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"message": "hello from client"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
 
     let http_address = Address::http(&server_addr);
     sync_client
@@ -83,12 +85,14 @@ async fn test_send_entries_http() {
     let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Create some test entries
-    let entry1 = Entry::builder("test_root_1")
+    let entry1 = Entry::root_builder()
         .set_subtree_data("users", r#"{"user1": "data1"}"#)
-        .build();
-    let entry2 = Entry::builder("test_root_2")
+        .build()
+        .expect("Entry should build successfully");
+    let entry2 = Entry::root_builder()
         .set_subtree_data("users", r#"{"user2": "data2"}"#)
-        .build();
+        .build()
+        .expect("Entry should build successfully");
     let entries = vec![entry1, entry2];
 
     // Send entries from client to server
@@ -109,7 +113,9 @@ fn test_sync_without_transport_enabled() {
     let (_base_db, sync) = setup();
 
     // Attempting to send entries without enabling transport should fail
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:8084"));
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -145,7 +151,9 @@ fn test_sync_connect_to_invalid_address() {
     sync.enable_http_transport().unwrap();
 
     // Try to send entries to a non-existent server
-    let entry = Entry::root_builder().build();
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
     let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:19998"));
     assert!(result.is_err());
 }
