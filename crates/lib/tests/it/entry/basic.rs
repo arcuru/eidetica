@@ -1,4 +1,4 @@
-use eidetica::{Entry, constants::ROOT};
+use eidetica::{Entry, constants::ROOT, entry::ID};
 
 use super::helpers::*;
 
@@ -7,7 +7,7 @@ fn test_entry_creation() {
     let root = "test_root";
     let entry = create_entry_with_parents(root, &["parent1"]);
 
-    assert_eq!(entry.root(), test_id(root));
+    assert_eq!(entry.root(), ID::from_bytes(root));
     assert!(!entry.is_root()); // Regular entries are not root entries
 
     assert_has_parents(&entry, &["parent1"]); // Entry now has parents as required
@@ -57,10 +57,10 @@ fn test_entry_parents() {
     );
 
     // Test entry with both main and subtree parents
-    let mut builder = Entry::builder(test_id(root));
-    builder.set_parents_mut(vec![test_id("parent1"), test_id("parent2")]);
+    let mut builder = Entry::builder(ID::from_bytes(root));
+    builder.set_parents_mut(vec![ID::from_bytes("parent1"), ID::from_bytes("parent2")]);
     builder.set_subtree_data_mut(subtree_name, subtree_data);
-    builder.set_subtree_parents_mut(subtree_name, vec![test_id("subtree_parent")]);
+    builder.set_subtree_parents_mut(subtree_name, vec![ID::from_bytes("subtree_parent")]);
     let complex_entry = builder
         .build()
         .expect("Complex entry should build successfully");

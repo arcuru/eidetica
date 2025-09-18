@@ -74,7 +74,7 @@ fn test_in_memory_backend_complex_tree_structure() {
 #[test]
 fn test_backend_get_tree_from_tips() {
     let backend = InMemory::new();
-    let root_id = test_id("tree_root");
+    let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
     let root_entry = Entry::builder(root_id.clone())

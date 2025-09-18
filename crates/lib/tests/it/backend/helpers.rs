@@ -1,19 +1,9 @@
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 use eidetica::{
     backend::{BackendDB, database::InMemory},
     entry::{Entry, ID},
 };
-
-/// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
-pub fn test_id(name: &str) -> ID {
-    let mut hasher = Sha256::new();
-    hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
-    hasher.update(name.as_bytes());
-    let hash = hasher.finalize();
-    format!("{hash:x}").into()
-}
 
 /// Create a new test backend
 pub fn create_test_backend() -> InMemory {

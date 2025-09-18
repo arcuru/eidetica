@@ -83,11 +83,31 @@ pub enum Error {
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
     Sync(sync::SyncError),
+
+    /// Structured entry errors from the entry module
+    #[error(transparent)]
+    Entry(entry::EntryError),
+
+    /// Structured ID errors from the entry::id module
+    #[error(transparent)]
+    Id(entry::id::IdError),
 }
 
 impl From<sync::SyncError> for Error {
     fn from(err: sync::SyncError) -> Self {
         Error::Sync(err)
+    }
+}
+
+impl From<entry::EntryError> for Error {
+    fn from(err: entry::EntryError) -> Self {
+        Error::Entry(err)
+    }
+}
+
+impl From<entry::id::IdError> for Error {
+    fn from(err: entry::id::IdError) -> Self {
+        Error::Id(err)
     }
 }
 
@@ -102,6 +122,8 @@ impl Error {
             Error::Store(_) => "store",
             Error::Transaction(_) => "transaction",
             Error::Sync(_) => "sync",
+            Error::Entry(_) => "entry",
+            Error::Id(_) => "id",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
         }
@@ -177,9 +199,11 @@ impl Error {
     /// Check if this error is validation-related.
     pub fn is_validation_error(&self) -> bool {
         match self {
+            Error::Id(_) => true, // ID errors are validation errors
             Error::Instance(base_err) => base_err.is_validation_error(),
             Error::Backend(backend_err) => backend_err.is_logical_error(),
             Error::Transaction(transaction_err) => transaction_err.is_validation_error(),
+            Error::Entry(entry_err) => entry_err.is_validation_error(),
             _ => false,
         }
     }
@@ -264,6 +288,28 @@ impl Error {
     pub fn is_entry_error(&self) -> bool {
         match self {
             Error::Transaction(transaction_err) => transaction_err.is_entry_error(),
+            Error::Entry(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this error is specifically about ID validation.
+    pub fn is_id_error(&self) -> bool {
+        matches!(self, Error::Id(_))
+    }
+
+    /// Check if this error is specifically about entry structure validation.
+    pub fn is_entry_validation_error(&self) -> bool {
+        match self {
+            Error::Entry(entry_err) => entry_err.is_validation_error(),
+            _ => false,
+        }
+    }
+
+    /// Check if this error is specifically about entry serialization.
+    pub fn is_entry_serialization_error(&self) -> bool {
+        match self {
+            Error::Entry(entry_err) => entry_err.is_serialization_error(),
             _ => false,
         }
     }

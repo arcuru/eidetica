@@ -22,6 +22,8 @@ rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 typetag = { workspace = true }

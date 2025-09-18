@@ -3,7 +3,6 @@
 //! This module tests the new BackgroundSync DAG traversal methods that ensure
 //! proper parent-child ordering during synchronization.
 
-use sha2::{Digest, Sha256};
 use std::{collections::HashSet, time::Duration};
 
 use eidetica::{
@@ -15,18 +14,9 @@ use eidetica::{
 
 use super::helpers;
 
-/// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
-fn test_id(name: &str) -> ID {
-    let mut hasher = Sha256::new();
-    hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
-    hasher.update(name.as_bytes());
-    let hash = hasher.finalize();
-    format!("{hash:x}").into()
-}
-
 /// Helper to create a test entry with specific parents
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
-    let mut builder = Entry::builder(test_id(tree_id));
+    let mut builder = Entry::builder(ID::from_bytes(tree_id));
 
     if !parents.is_empty() {
         builder = builder.set_parents(parents);

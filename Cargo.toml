@@ -24,6 +24,8 @@ rand = "0.8"
 serde = { version = "1.0.113", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+hex = "0.4"
+blake3 = "1.8"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"

@@ -5,12 +5,13 @@
 //! representing a snapshot of data in the main tree and potentially multiple named subtrees.
 //! This module also defines the `ID` type and `RawData` type.
 
+pub mod errors;
 pub mod id;
 
+pub use errors::EntryError;
 pub use id::ID;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{Result, auth::types::SigInfo, constants::ROOT};
 
@@ -143,13 +144,7 @@ impl Entry {
         // Entry itself derives Serialize and contains tree and subtrees.
         // These are kept sorted and finalized by the EntryBuilder before Entry creation.
         let json = serde_json::to_string(self).expect("Failed to serialize entry for hashing");
-
-        let mut hasher = Sha256::new();
-        hasher.update(json.as_bytes());
-        // convert the hash to a string
-        let hash = hasher.finalize();
-        // convert the hash to a hex string
-        format!("{hash:x}").into()
+        ID::from_bytes(json)
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
@@ -318,33 +313,30 @@ impl Entry {
     ///     }
     /// }
     /// ```
-    /// Validates that an ID is in the correct format (64-character lowercase hex SHA-256 hash).
+    /// Validates that an ID is in the correct format for the hash algorithm used.
+    ///
+    /// This function now supports multiple hash algorithms and uses the structured
+    /// ID validation from the ID type itself.
     fn validate_id_format(id: &ID, context: &str) -> crate::Result<()> {
-        use crate::instance::errors::InstanceError;
-
-        let id_str = id.as_str();
-
-        // Check length (SHA-256 hash is 256 bits = 64 hex characters)
-        if id_str.len() != 64 {
-            return Err(InstanceError::EntryValidationFailed {
-                reason: format!(
-                    "Invalid ID format in {}: '{}'. IDs must be exactly 64 characters (SHA-256 hex), got {} characters.",
-                    context, id_str, id_str.len()
+        // Use the ID's built-in validation by attempting to parse its string representation
+        // This ensures we validate according to the actual algorithm and format rules
+        if let Err(id_err) = ID::parse(id.as_str()) {
+            // Add context to the error and convert through the error system
+            let contextual_err = match &id_err {
+                crate::entry::id::IdError::InvalidFormat(_) => {
+                    crate::entry::id::IdError::InvalidFormat(format!(
+                        "Invalid ID format in {}: {}",
+                        context,
+                        id.as_str()
+                    ))
+                }
+                crate::entry::id::IdError::InvalidHex(_) => crate::entry::id::IdError::InvalidHex(
+                    format!("Invalid hex characters in {} ID: {}", context, id.as_str()),
                 ),
-            }.into());
-        }
-
-        // Check that all characters are lowercase hexadecimal
-        if !id_str
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        {
-            return Err(InstanceError::EntryValidationFailed {
-                reason: format!(
-                    "Invalid ID format in {}: '{}'. IDs must contain only lowercase hexadecimal characters (0-9, a-f).",
-                    context, id_str
-                ),
-            }.into());
+                // For length and algorithm errors, the original error is sufficient
+                _ => id_err,
+            };
+            return Err(contextual_err.into());
         }
 
         Ok(())
@@ -996,16 +988,6 @@ impl EntryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
-
-    /// Generate a valid test ID in the correct SHA-256 hex format (64 lowercase hex chars)
-    fn test_id(name: &str) -> ID {
-        let mut hasher = Sha256::new();
-        hasher.update(b"test_prefix_"); // Add prefix to avoid collisions with real IDs
-        hasher.update(name.as_bytes());
-        let hash = hasher.finalize();
-        format!("{hash:x}").into()
-    }
 
     #[test]
     fn test_validate_root_entry_without_parents_succeeds() {
@@ -1026,7 +1008,7 @@ mod tests {
     fn test_validate_root_entry_with_parents_fails() {
         // Root entries with parents should fail at build time
         let result = Entry::root_builder()
-            .add_parent(test_id("some_parent"))
+            .add_parent(ID::from_bytes("some_parent"))
             .build();
         assert!(
             result.is_err(),
@@ -1037,7 +1019,7 @@ mod tests {
     #[test]
     fn test_validate_non_root_entry_without_parents_fails() {
         // Non-root entries MUST have parents to be valid
-        let result = Entry::builder(test_id("tree")).build();
+        let result = Entry::builder(ID::from_bytes("tree")).build();
         assert!(
             result.is_err(),
             "Non-root entry without parents should fail to build"
@@ -1060,8 +1042,8 @@ mod tests {
     #[test]
     fn test_validate_non_root_entry_with_parents_succeeds() {
         // Non-root entries with parents should be valid
-        let entry = Entry::builder(test_id("tree"))
-            .add_parent(test_id("parent"))
+        let entry = Entry::builder(ID::from_bytes("tree"))
+            .add_parent(ID::from_bytes("parent"))
             .build()
             .expect("Entry with parent should build successfully");
 
@@ -1076,7 +1058,7 @@ mod tests {
     #[test]
     fn test_validate_empty_parent_id_fails() {
         // Empty parent IDs should be rejected
-        let result = Entry::builder(test_id("tree"))
+        let result = Entry::builder(ID::from_bytes("tree"))
             .add_parent("") // Empty parent ID
             .build();
         assert!(
@@ -1128,8 +1110,8 @@ mod tests {
     fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
         // Non-root entries with empty subtree parents should log but pass validation
         // This is deferred to transaction layer for deeper validation
-        let entry = Entry::builder(test_id("tree"))
-            .add_parent(test_id("main_parent"))
+        let entry = Entry::builder(ID::from_bytes("tree"))
+            .add_parent(ID::from_bytes("main_parent"))
             .set_subtree_data("messages", "test_data")
             .set_subtree_parents("messages", vec![]) // Empty subtree parents
             .build()
@@ -1188,8 +1170,8 @@ mod tests {
 
         // Non-root entry with empty settings subtree parents should pass entry validation
         // (deeper validation deferred to transaction layer)
-        let non_root_entry = Entry::builder(test_id("tree"))
-            .add_parent(test_id("main_parent"))
+        let non_root_entry = Entry::builder(ID::from_bytes("tree"))
+            .add_parent(ID::from_bytes("main_parent"))
             .set_subtree_data("_settings", "auth_config")
             .set_subtree_parents("_settings", vec![]) // Empty - logs but passes entry validation
             .build()
@@ -1204,10 +1186,10 @@ mod tests {
     #[test]
     fn test_validate_multiple_subtrees_with_mixed_parent_scenarios() {
         // Test entry with multiple subtrees having different parent scenarios
-        let entry = Entry::builder(test_id("tree"))
-            .add_parent(test_id("main_parent"))
+        let entry = Entry::builder(ID::from_bytes("tree"))
+            .add_parent(ID::from_bytes("main_parent"))
             .set_subtree_data("messages", "msg_data")
-            .set_subtree_parents("messages", vec![test_id("msg_parent")]) // Valid parent
+            .set_subtree_parents("messages", vec![ID::from_bytes("msg_parent")]) // Valid parent
             .set_subtree_data("users", "user_data")
             .set_subtree_parents("users", vec![]) // Empty parents - deferred validation
             .build()
