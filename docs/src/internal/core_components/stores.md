@@ -39,6 +39,34 @@ Document-oriented store wrapping `crdt::Doc` for nested structures and path-base
 
 **Use Cases**: Configuration data, metadata, structured documents, sync state.
 
+### SettingsStore
+
+Specialized wrapper around DocStore for managing the `_settings` subtree with type-safe authentication operations.
+
+**Features**:
+
+- Type-safe settings management API
+- Convenience methods for authentication key operations
+- Atomic updates via closure pattern (update_auth_settings)
+- Direct access to underlying DocStore for advanced operations
+- Built-in validation for authentication configurations
+
+**Architecture**:
+
+- Wraps DocStore instance configured for `_settings` subtree
+- Delegates to AuthSettings for authentication-specific operations
+- Provides abstraction layer hiding CRDT implementation details
+- Maintains proper transaction boundaries for settings modifications
+
+**Operations**:
+
+- Database name management (get_name, set_name)
+- Authentication key lifecycle (set_auth_key, get_auth_key, revoke_auth_key)
+- Bulk auth operations via update_auth_settings closure
+- Auth validation via validate_entry_auth method
+
+**Use Cases**: Database configuration, authentication key management, settings validation, bootstrap policies.
+
 ### YDoc (Y-CRDT Integration)
 
 Real-time collaborative editing with sophisticated conflict resolution.

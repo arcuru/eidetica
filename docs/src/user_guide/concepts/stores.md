@@ -25,13 +25,14 @@ Stores offer several advantages:
 
 ## Available Store Types
 
-Eidetica provides three main store types, each optimized for different data patterns:
+Eidetica provides four main store types, each optimized for different data patterns:
 
-| Type          | Purpose               | Key Features                              | Best For                                     |
-| ------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
-| **DocStore**  | Document storage      | Path-based operations, nested structures  | Configuration, metadata, structured docs     |
-| **Table\<T>** | Record collections    | Auto-generated UUIDs, type safety, search | User lists, products, any structured records |
-| **YDoc**      | Collaborative editing | Y-CRDT integration, real-time sync        | Shared documents, collaborative text editing |
+| Type              | Purpose               | Key Features                              | Best For                                     |
+| ----------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
+| **DocStore**      | Document storage      | Path-based operations, nested structures  | Configuration, metadata, structured docs     |
+| **Table\<T>**     | Record collections    | Auto-generated UUIDs, type safety, search | User lists, products, any structured records |
+| **SettingsStore** | Database settings     | Type-safe settings API, auth management   | Database configuration, authentication       |
+| **YDoc**          | Collaborative editing | Y-CRDT integration, real-time sync        | Shared documents, collaborative text editing |
 
 ### DocStore (Document-Oriented Storage)
 
@@ -139,6 +140,101 @@ Use cases for `Table`:
 - Record storage (users, products, todos, etc.)
 - Any data where individual items need unique IDs
 - When you need to search across records with custom predicates
+
+### SettingsStore (Database Settings Management)
+
+The `SettingsStore` provides a specialized, type-safe interface for managing database settings and authentication configuration. It wraps the internal `_settings` subtree to provide convenient methods for common settings operations.
+
+#### Basic Usage
+
+```rust,ignore
+use eidetica::store::SettingsStore;
+use eidetica::auth::{AuthKey, Permission, KeyStatus};
+
+// Get a SettingsStore for the current transaction
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Set database name
+settings_store.set_name("My Application Database")?;
+
+// Get database name
+let name = settings_store.get_name()?;
+println!("Database name: {}", name);
+
+transaction.commit()?;
+```
+
+#### Authentication Management
+
+`SettingsStore` provides convenient methods for managing authentication keys:
+
+```rust,ignore
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Add a new authentication key
+let auth_key = AuthKey::active(
+    "ed25519:user_public_key_here",
+    Permission::Write(10),
+)?;
+settings_store.set_auth_key("alice", auth_key)?;
+
+// Get an authentication key
+let key = settings_store.get_auth_key("alice")?;
+println!("Alice's key: {}", key.pubkey);
+
+// Revoke a key
+settings_store.revoke_auth_key("alice")?;
+
+transaction.commit()?;
+```
+
+#### Complex Updates with Closures
+
+For complex operations that need to be atomic, use the `update_auth_settings` method:
+
+```rust,ignore
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Perform multiple auth operations atomically
+settings_store.update_auth_settings(|auth| {
+    // Add multiple keys
+    auth.overwrite_key("bob", bob_key)?;
+    auth.overwrite_key("charlie", charlie_key)?;
+
+    // Revoke an old key
+    auth.revoke_key("old_user")?;
+
+    Ok(())
+})?;
+
+transaction.commit()?;
+```
+
+#### Advanced Usage
+
+For operations not covered by the convenience methods, access the underlying DocStore:
+
+```rust,ignore
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Access underlying DocStore for advanced operations
+let doc_store = settings_store.as_doc_store();
+doc_store.set_path("custom.config.option", "value")?;
+
+transaction.commit()?;
+```
+
+Use cases for `SettingsStore`:
+
+- Database configuration and metadata
+- Authentication key management
+- User permission management
+- Bootstrap and sync policies
+- Any settings that need type-safe, validated access
 
 ### YDoc (Y-CRDT Integration)
 

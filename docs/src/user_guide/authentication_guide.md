@@ -47,20 +47,20 @@ op.commit()?;  // Automatically signed
 Give other users access to your database:
 
 ```rust,ignore
+use eidetica::store::SettingsStore;
 use eidetica::auth::{AuthKey, Permission, KeyStatus};
 
-let op = database.new_transaction()?;
-let auth = op.auth_settings()?;
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
 // Add a user with write access
-let user_key = AuthKey {
-    key: "ed25519:USER_PUBLIC_KEY_HERE".to_string(),
-    permissions: Permission::Write(10),
-    status: KeyStatus::Active,
-};
-auth.add_key("alice", user_key)?;  // Fails if key already exists
+let user_key = AuthKey::active(
+    "ed25519:USER_PUBLIC_KEY_HERE",
+    Permission::Write(10),
+)?;
+settings_store.set_auth_key("alice", user_key)?;
 
-op.commit()?;
+transaction.commit()?;
 ```
 
 ### Making Data Public
@@ -68,18 +68,17 @@ op.commit()?;
 Allow anyone to read your database:
 
 ```rust,ignore
-let op = database.new_transaction()?;
-let auth = op.auth_settings()?;
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
 // Wildcard key for public read access
-let public_key = AuthKey {
-    key: "*".to_string(),
-    permissions: Permission::Read,
-    status: KeyStatus::Active,
-};
-auth.add_key("*", public_key)?;  // Use add_key for new keys
+let public_key = AuthKey::active(
+    "*",
+    Permission::Read(1),
+)?;
+settings_store.set_auth_key("*", public_key)?;
 
-op.commit()?;
+transaction.commit()?;
 ```
 
 ### Revoking Access
@@ -87,16 +86,13 @@ op.commit()?;
 Remove a user's access:
 
 ```rust,ignore
-let op = database.new_transaction()?;
-let auth = op.auth_settings()?;
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
 // Revoke the key
-if let Some(mut key) = auth.get_key("alice")? {
-    key.status = KeyStatus::Revoked;
-    auth.overwrite_key("alice", key)?;  // Use overwrite_key to replace existing
-}
+settings_store.revoke_auth_key("alice")?;
 
-op.commit()?;
+transaction.commit()?;
 ```
 
 Note: Historical entries created by revoked keys remain valid.
@@ -105,40 +101,43 @@ Note: Historical entries created by revoked keys remain valid.
 
 ```rust,ignore
 // Initial setup with admin hierarchy
-let op = database.new_transaction()?;
-let auth = op.auth_settings()?;
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
-// Super admin (priority 0 - highest)
-auth.add_key("super_admin", AuthKey {
-    key: "ed25519:SUPER_ADMIN_KEY".to_string(),
-    permissions: Permission::Admin(0),
-    status: KeyStatus::Active,
+// Use update_auth_settings for complex multi-key setup
+settings_store.update_auth_settings(|auth| {
+    // Super admin (priority 0 - highest)
+    auth.overwrite_key("super_admin", AuthKey::active(
+        "ed25519:SUPER_ADMIN_KEY",
+        Permission::Admin(0),
+    )?)?;
+
+    // Department admin (priority 10)
+    auth.overwrite_key("dept_admin", AuthKey::active(
+        "ed25519:DEPT_ADMIN_KEY",
+        Permission::Admin(10),
+    )?)?;
+
+    // Regular users (priority 100)
+    auth.overwrite_key("user1", AuthKey::active(
+        "ed25519:USER1_KEY",
+        Permission::Write(100),
+    )?)?;
+
+    Ok(())
 })?;
 
-// Department admin (priority 10)
-auth.add_key("dept_admin", AuthKey {
-    key: "ed25519:DEPT_ADMIN_KEY".to_string(),
-    permissions: Permission::Admin(10),
-    status: KeyStatus::Active,
-})?;
-
-// Regular users (priority 100)
-auth.add_key("user1", AuthKey {
-    key: "ed25519:USER1_KEY".to_string(),
-    permissions: Permission::Write(100),
-    status: KeyStatus::Active,
-})?;
-
-op.commit()?;
+transaction.commit()?;
 ```
 
 ## Key Management Tips
 
 1. **Use descriptive key names**: "alice_laptop", "build_server", etc.
 2. **Set up admin hierarchy**: Lower priority numbers = higher authority
-3. **Choose the right method**:
-   - `add_key()` for new keys (prevents accidents)
-   - `overwrite_key()` when intentionally replacing a key
+3. **Use SettingsStore methods**:
+   - `set_auth_key()` for setting keys (upsert behavior)
+   - `revoke_auth_key()` for removing access
+   - `update_auth_settings()` for complex multi-step operations
 4. **Regular key rotation**: Periodically update keys for security
 5. **Backup admin keys**: Keep secure copies of critical admin keys
 
@@ -148,17 +147,21 @@ Databases can delegate authentication to other databases:
 
 ```rust,ignore
 // In main database, delegate to a user's personal database
-let op = main_tree.new_operation()?;
-let auth = op.auth_settings()?;
+let transaction = main_database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
-// Reference another database for authentication
-auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
-    tree_root: "USER_TREE_ROOT_ID".to_string(),
-    max_permission: Permission::Write(15),
-    min_permission: Some(Permission::Read),
+// Use update_auth_settings for delegation setup
+settings_store.update_auth_settings(|auth| {
+    // Reference another database for authentication
+    auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
+        tree_root: "USER_TREE_ROOT_ID".to_string(),
+        max_permission: Permission::Write(15),
+        min_permission: Some(Permission::Read(1)),
+    })?;
+    Ok(())
 })?;
 
-op.commit()?;
+transaction.commit()?;
 ```
 
 This allows users to manage their own keys in their personal databases while accessing your database with appropriate permissions.
@@ -171,10 +174,11 @@ This allows users to manage their own keys in their personal databases while acc
 - The key status is Active (not Revoked)
 - The key has sufficient permissions for the operation
 
-**"Key already exists"**: When using `add_key()`:
+**"Key name conflict"**: When using `set_auth_key()` with different public key:
 
-- Use `overwrite_key()` if you want to replace the existing key
-- Check if the existing key has the same public key (might be safe to ignore)
+- `set_auth_key()` provides upsert behavior for same public key
+- Returns KeyNameConflict error if key name exists with different public key
+- Use `get_auth_key()` to check existing key before deciding action
 
 **"Cannot modify key"**: Admin operations require:
 

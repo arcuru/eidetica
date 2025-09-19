@@ -22,7 +22,7 @@ Using a `Transaction` follows a distinct lifecycle:
 
 1.  **Creation**: Start an authenticated transaction from a `Database` instance.
 
-    ```rust
+    ```rust,ignore
     extern crate eidetica;
     use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 
@@ -42,10 +42,10 @@ Using a `Transaction` follows a distinct lifecycle:
 
 2.  **Store Access**: Get handles to the specific `Store`s you want to interact with. This implicitly loads the current state (tips) of that store into the transaction if accessed for the first time.
 
-    ```rust
+    ```rust,ignore
     extern crate eidetica;
     extern crate serde;
-    use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore}, Database};
+    use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
     use serde::{Serialize, Deserialize};
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +66,7 @@ Using a `Transaction` follows a distinct lifecycle:
         // Get handles within a scope or manage their lifetime
         let _users_store = txn.get_store::<Table<User>>("users")?;
         let _config_store = txn.get_store::<DocStore>("config")?;
+        let _settings_store = SettingsStore::new(&txn)?;  // For database settings
 
         txn.commit()?;
         Ok(())
@@ -74,11 +75,11 @@ Using a `Transaction` follows a distinct lifecycle:
 
 3.  **Staging Changes**: Use the methods provided by the `Store` handles (`set`, `insert`, `get`, `remove`, etc.). These methods interact with the data staged _within the `Transaction`_.
 
-    ```rust
+    ```rust,ignore
     extern crate eidetica;
     extern crate serde;
     extern crate chrono;
-    use eidetica::store::{Table, DocStore};
+    use eidetica::store::{Table, DocStore, SettingsStore};
     use serde::{Serialize, Deserialize};
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,10 +87,11 @@ Using a `Transaction` follows a distinct lifecycle:
         name: String,
     }
 
-    fn example(users_store: &Table<User>, config_store: &DocStore, user_id: &str) -> eidetica::Result<()> {
+    fn example(users_store: &Table<User>, config_store: &DocStore, settings_store: &SettingsStore, user_id: &str) -> eidetica::Result<()> {
         users_store.insert(User { name: "Alice".to_string() })?;
         let _current_name = users_store.get(user_id)?;
         config_store.set("last_updated", chrono::Utc::now().to_rfc3339())?;
+        settings_store.set_name("Updated Database Name")?;  // Manage database settings
         Ok(())
     }
     ```
@@ -98,7 +100,7 @@ Using a `Transaction` follows a distinct lifecycle:
 
 4.  **Commit**: Finalize the changes. This consumes the `Transaction` object, calculates the final `Entry` content based on staged changes, cryptographically signs the entry, writes the new `Entry` to the `Database`, and returns the `ID` of the newly created `Entry`.
 
-    ```rust
+    ```rust,ignore
     extern crate eidetica;
     use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 
@@ -121,11 +123,47 @@ Using a `Transaction` follows a distinct lifecycle:
 
     _After `commit()`, the `txn` variable is no longer valid._
 
+## Managing Database Settings
+
+Within transactions, you can manage database settings using `SettingsStore`. This provides type-safe access to database configuration and authentication settings:
+
+```rust,ignore
+use eidetica::store::SettingsStore;
+use eidetica::auth::{AuthKey, Permission, KeyStatus};
+
+fn manage_settings(database: &Database) -> eidetica::Result<()> {
+    let transaction = database.new_transaction()?;
+    let settings_store = SettingsStore::new(&transaction)?;
+
+    // Update database name
+    settings_store.set_name("Production Database")?;
+
+    // Add authentication keys
+    let new_user_key = AuthKey::active(
+        "ed25519:new_user_public_key",
+        Permission::Write(10),
+    )?;
+    settings_store.set_auth_key("new_user", new_user_key)?;
+
+    // Complex auth operations atomically
+    settings_store.update_auth_settings(|auth| {
+        auth.overwrite_key("alice", alice_key)?;
+        auth.revoke_key("old_user")?;
+        Ok(())
+    })?;
+
+    transaction.commit()?;
+    Ok(())
+}
+```
+
+This ensures that settings changes are atomic and properly authenticated alongside other database modifications.
+
 ## Read-Only Access
 
 While `Transaction`s are essential for writes, you can perform reads without an explicit `Transaction` using `Database::get_subtree_viewer`:
 
-```rust
+```rust,ignore
 extern crate eidetica;
 extern crate serde;
 use eidetica::{Database, store::Table};

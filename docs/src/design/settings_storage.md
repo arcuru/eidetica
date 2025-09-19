@@ -32,7 +32,26 @@ Settings are stored in the `_settings` store (constant `SETTINGS` in `constants.
 
 ### Settings Retrieval
 
-`Transaction::get_settings()` provides unified access to settings:
+Settings can be accessed through two primary interfaces:
+
+#### SettingsStore API (Recommended)
+
+`SettingsStore` provides a type-safe, high-level interface for settings management:
+
+```rust,ignore
+use eidetica::store::SettingsStore;
+
+// Create a SettingsStore from a transaction
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Type-safe access to common settings
+let database_name = settings_store.get_name()?;
+let auth_settings = settings_store.get_auth_settings()?;
+```
+
+#### Low-Level Transaction API
+
+`Transaction::get_settings()` provides unified access to raw settings data:
 
 ```rust,ignore
 pub fn get_settings(&self) -> Result<Doc> {
@@ -73,6 +92,43 @@ struct EntryMetadata {
 - Automatically populated by `Transaction::commit()`
 - Used for efficient settings validation in sparse checkouts
 - Stored in `TreeNode.metadata` field as serialized JSON
+
+## SettingsStore API
+
+### Overview
+
+`SettingsStore` provides a specialized, type-safe interface for managing the `_settings` subtree. It wraps `DocStore` to offer convenient methods for common settings operations while maintaining proper CRDT semantics and transaction boundaries.
+
+### Key Benefits
+
+- **Type Safety**: Eliminates raw CRDT manipulation for common operations
+- **Convenience**: Direct methods for authentication key management
+- **Atomicity**: Closure-based updates ensure atomic multi-step operations
+- **Validation**: Built-in validation for authentication configurations
+- **Abstraction**: Hides implementation details while providing escape hatch via `as_doc_store()`
+
+### Primary Methods
+
+```rust,ignore
+impl SettingsStore {
+    // Core settings management
+    fn get_name(&self) -> Result<String>;
+    fn set_name(&self, name: &str) -> Result<()>;
+
+    // Authentication key management
+    fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()>;
+    fn get_auth_key(&self, key_name: &str) -> Result<AuthKey>;
+    fn revoke_auth_key(&self, key_name: &str) -> Result<()>;
+
+    // Complex operations via closure
+    fn update_auth_settings<F>(&self, f: F) -> Result<()>
+    where F: FnOnce(&mut AuthSettings) -> Result<()>;
+
+    // Advanced access
+    fn as_doc_store(&self) -> &DocStore;
+    fn validate_entry_auth(&self, sig_key: &SigKey, backend: Option<&Arc<dyn BackendDB>>) -> Result<ResolvedAuth>;
+}
+```
 
 ## Data Structures
 
@@ -150,15 +206,47 @@ if let Some(Value::Map(auth_map)) = settings.get("auth") {
 
 ### Modifying Settings
 
+#### Using SettingsStore (Recommended)
+
+```rust,ignore
+use eidetica::store::SettingsStore;
+use eidetica::auth::{AuthKey, Permission, KeyStatus};
+
+// Get a SettingsStore handle for type-safe operations
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Update database name
+settings_store.set_name("My Database")?;
+
+// Set authentication keys with validation (upsert behavior)
+let auth_key = AuthKey::active(
+    "ed25519:user_public_key",
+    Permission::Write(10),
+)?;
+settings_store.set_auth_key("alice", auth_key)?;
+
+// Perform complex auth operations atomically
+settings_store.update_auth_settings(|auth| {
+    auth.overwrite_key("bob", bob_key)?;
+    auth.revoke_key("old_user")?;
+    Ok(())
+})?;
+
+// Commit the transaction
+transaction.commit()?;
+```
+
+#### Using DocStore Directly (Low-Level)
+
 ```rust,ignore
 // Get a DocStore handle for the _settings store
-let mut settings_store = op.get_subtree::<DocStore>("_settings")?;
+let mut settings_store = transaction.get_store::<DocStore>("_settings")?;
 
 // Update a setting
-settings_store.set("tree_config.name", "My Database")?;
+settings_store.set("name", "My Database")?;
 
-// Commit the operation
-let entry_id = op.commit()?;
+// Commit the transaction
+transaction.commit()?;
 ```
 
 ### Bootstrap Process

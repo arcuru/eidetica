@@ -317,6 +317,28 @@ Key error scenarios:
 
 ### Enable Auto-Approval (Development)
 
+#### Using SettingsStore (Recommended)
+
+```rust,ignore
+use eidetica::store::SettingsStore;
+
+// Enable auto-approval in database settings
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
+
+// Configure bootstrap auto-approval policy
+settings_store.update_auth_settings(|auth| {
+    let mut policy_doc = eidetica::crdt::Doc::new();
+    policy_doc.set_json("bootstrap_auto_approve", true)?;
+    auth.as_doc().set_node("policy", policy_doc)?;
+    Ok(())
+})?;
+
+transaction.commit()?;
+```
+
+#### Using Raw Doc (Low-Level)
+
 ```rust,ignore
 // In database creation or settings update
 let mut settings = Doc::new();
