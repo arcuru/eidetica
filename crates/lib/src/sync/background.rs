@@ -610,8 +610,12 @@ impl BackgroundSync {
             .into());
         }
 
-        // Create a sync handler with backend access
-        let handler = Arc::new(SyncHandlerImpl::new(self.backend.clone(), DEVICE_KEY_NAME));
+        // Create a sync handler with backend access and sync tree ID
+        let handler = Arc::new(SyncHandlerImpl::new(
+            self.backend.clone(),
+            DEVICE_KEY_NAME,
+            self.sync_tree_id.clone(),
+        ));
 
         self.transport.start_server(addr, handler).await?;
 

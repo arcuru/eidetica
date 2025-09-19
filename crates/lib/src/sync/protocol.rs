@@ -115,6 +115,13 @@ pub enum SyncResponse {
     Bootstrap(BootstrapResponse),
     /// Incremental sync for existing peers
     Incremental(IncrementalResponse),
+    /// Bootstrap request pending manual approval
+    BootstrapPending {
+        /// Unique identifier for the pending request
+        request_id: String,
+        /// Human-readable message about the pending status
+        message: String,
+    },
     /// Acknowledgment that entries were received successfully
     Ack,
     /// Number of entries received (for multiple entries)

@@ -39,9 +39,11 @@ pub fn setup_instance_with_initialized() -> Instance {
 /// Create a test SyncHandler for transport-specific tests
 pub fn setup_test_handler() -> Arc<dyn SyncHandler> {
     let base_db = setup_db();
+    let sync = Sync::new(base_db.backend().clone()).expect("Failed to create Sync");
     Arc::new(SyncHandlerImpl::new(
         base_db.backend().clone(),
         "_device_key",
+        sync.sync_tree_root_id().clone(),
     ))
 }
 
@@ -51,7 +53,11 @@ pub async fn handle_request(
     sync: &Sync,
     request: &eidetica::sync::protocol::SyncRequest,
 ) -> eidetica::sync::protocol::SyncResponse {
-    let handler = SyncHandlerImpl::new(sync.backend().clone(), "_device_key");
+    let handler = SyncHandlerImpl::new(
+        sync.backend().clone(),
+        "_device_key",
+        sync.sync_tree_root_id().clone(),
+    );
     handler.handle_request(request).await
 }
 
@@ -182,4 +188,201 @@ impl TransportFactory for IrohTransportFactory {
     fn transport_name(&self) -> &'static str {
         "Iroh (No Relays)"
     }
+}
+
+// ===== BOOTSTRAP TESTING HELPERS =====
+
+use eidetica::{
+    Database, Entry,
+    auth::Permission as AuthPermission,
+    backend::database::InMemory,
+    crdt::Doc,
+    sync::protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
+};
+
+/// Create a server instance configured for bootstrap testing
+///
+/// # Arguments
+/// * `auto_approve` - Whether to enable bootstrap auto-approval
+///
+/// # Returns
+/// (Instance, Database, Sync, tree_id)
+pub fn setup_bootstrap_server(
+    auto_approve: bool,
+) -> (Instance, Database, Sync, eidetica::entry::ID) {
+    let backend = Box::new(InMemory::new());
+    let instance = Instance::new(backend);
+
+    // Add server admin key
+    instance
+        .add_private_key("server_admin")
+        .expect("Failed to add server admin key");
+
+    // Create database with appropriate bootstrap policy
+    let mut settings = Doc::new();
+    settings.set_string("name", "Bootstrap Test Database");
+
+    // Configure auth policy
+    let mut auth_doc = Doc::new();
+    let mut policy_doc = Doc::new();
+    policy_doc
+        .set_json("bootstrap_auto_approve", auto_approve)
+        .expect("Failed to set policy");
+    auth_doc.set_node("policy", policy_doc);
+
+    // Add server admin key to auth settings
+    let server_pubkey = instance
+        .get_formatted_public_key("server_admin")
+        .expect("Failed to get server public key")
+        .expect("Server admin key should exist");
+
+    auth_doc
+        .set_json(
+            "server_admin",
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 0},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set server admin auth");
+
+    settings.set_node("auth", auth_doc);
+
+    let database = instance
+        .new_database(settings, "server_admin")
+        .expect("Failed to create database");
+    let tree_id = database.root_id().clone();
+
+    // Create sync instance
+    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+
+    (instance, database, sync, tree_id)
+}
+
+/// Create a server with manual approval (auto_approve = false)
+pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
+    setup_bootstrap_server(false)
+}
+
+/// Create a server with auto approval (auto_approve = true)
+pub fn setup_auto_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
+    setup_bootstrap_server(true)
+}
+
+/// Start a sync server with common settings
+pub async fn start_sync_server(sync: &mut Sync) -> String {
+    sync.enable_http_transport()
+        .expect("Failed to enable HTTP transport");
+    sync.start_server_async("127.0.0.1:0")
+        .await
+        .expect("Failed to start server");
+    sync.get_server_address_async()
+        .await
+        .expect("Failed to get server address")
+}
+
+/// Create a client instance for bootstrap testing
+///
+/// # Arguments
+/// * `key_name` - Name for the client's private key
+///
+/// # Returns
+/// (Instance, Sync)
+pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Sync) {
+    let backend = Box::new(InMemory::new());
+    let instance = Instance::new(backend);
+
+    instance
+        .add_private_key(key_name)
+        .expect("Failed to add client key");
+
+    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+
+    (instance, sync)
+}
+
+/// Create a simple client with default key name
+pub fn setup_simple_client() -> (Instance, Sync) {
+    setup_bootstrap_client("client_key")
+}
+
+/// Create a SyncTreeRequest for bootstrap testing
+pub fn create_bootstrap_request(
+    tree_id: &eidetica::entry::ID,
+    requesting_key: &str,
+    key_name: &str,
+    permission: AuthPermission,
+) -> SyncRequest {
+    SyncRequest::SyncTree(SyncTreeRequest {
+        tree_id: tree_id.clone(),
+        our_tips: vec![], // Empty tips = bootstrap needed
+        requesting_key: Some(requesting_key.to_string()),
+        requesting_key_name: Some(key_name.to_string()),
+        requested_permission: Some(permission),
+    })
+}
+
+/// Create and submit a bootstrap request, returning the request ID
+pub async fn create_pending_bootstrap_request(
+    handler: &SyncHandlerImpl,
+    tree_id: &eidetica::entry::ID,
+    requesting_key: &str,
+    key_name: &str,
+    permission: AuthPermission,
+) -> String {
+    let request = create_bootstrap_request(tree_id, requesting_key, key_name, permission);
+    let response = handler.handle_request(&request).await;
+
+    match response {
+        SyncResponse::BootstrapPending { request_id, .. } => request_id,
+        other => panic!("Expected BootstrapPending, got: {:?}", other),
+    }
+}
+
+/// Approve a bootstrap request with error handling
+pub fn approve_request(sync: &mut Sync, request_id: &str, approver_key: &str) -> Result<()> {
+    sync.approve_bootstrap_request(request_id, approver_key)
+}
+
+/// Create a standard test tree entry
+pub fn create_test_tree_entry() -> Entry {
+    Entry::root_builder()
+        .set_subtree_data(
+            "messages",
+            r#"{"msg1": {"text": "Hello from test!", "timestamp": 1234567890}}"#,
+        )
+        .build()
+        .expect("Failed to build test entry")
+}
+
+/// Assert that a response is BootstrapPending
+pub fn assert_bootstrap_pending(response: &SyncResponse) -> &str {
+    match response {
+        SyncResponse::BootstrapPending { request_id, .. } => request_id,
+        other => panic!("Expected BootstrapPending, got: {:?}", other),
+    }
+}
+
+/// Assert that sync has expected number of pending requests
+pub fn assert_request_stored(sync: &Sync, expected_count: usize) {
+    let pending_requests = sync
+        .pending_bootstrap_requests()
+        .expect("Failed to list pending requests");
+    assert_eq!(
+        pending_requests.len(),
+        expected_count,
+        "Expected {} pending requests, found {}",
+        expected_count,
+        pending_requests.len()
+    );
+}
+
+/// Create a sync handler for testing
+pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
+    SyncHandlerImpl::new(
+        sync.backend().clone(),
+        "_device_key",
+        sync.sync_tree_root_id().clone(),
+    )
 }

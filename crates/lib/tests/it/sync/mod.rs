@@ -5,6 +5,7 @@
 
 mod basic_operations;
 mod bidirectional_sync_test;
+mod bootstrap_client_behavior_test;
 mod bootstrap_concurrency_tests;
 mod bootstrap_failure_tests;
 mod bootstrap_sync_tests;
@@ -16,6 +17,7 @@ mod http_transport_tests;
 mod integration_tests;
 mod iroh_e2e_test;
 mod iroh_transport_tests;
+mod manual_approval_test;
 mod peer_management_tests;
 // mod queue_flush_tests; // Uses old queue API
 mod sync_iroh_integration;

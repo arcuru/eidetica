@@ -9,11 +9,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
-use super::protocol::{
-    BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse, PROTOCOL_VERSION,
-    SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
+use super::{
+    bootstrap_request_manager::{
+        BootstrapRequest, BootstrapRequestManager, RequestStatus, current_timestamp,
+    },
+    peer_types::Address,
+    protocol::{
+        BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse,
+        PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
+    },
 };
 use crate::{
+    Database,
     auth::{
         crypto::{create_challenge_response, format_public_key, generate_challenge},
         settings::AuthSettings,
@@ -22,6 +29,7 @@ use crate::{
     backend::BackendDB,
     constants::SETTINGS,
     crdt::Doc,
+    entry::ID,
 };
 
 /// Trait for handling sync requests with database access.
@@ -48,6 +56,7 @@ pub trait SyncHandler: Send + std::marker::Sync {
 pub struct SyncHandlerImpl {
     backend: Arc<dyn BackendDB>,
     device_key_name: String,
+    sync_tree_id: ID,
 }
 
 impl SyncHandlerImpl {
@@ -56,11 +65,69 @@ impl SyncHandlerImpl {
     /// # Arguments
     /// * `backend` - Database backend for storing and retrieving entries
     /// * `device_key_name` - Name of the device signing key
-    pub fn new(backend: Arc<dyn BackendDB>, device_key_name: impl Into<String>) -> Self {
+    /// * `sync_tree_id` - Root ID of the sync database for storing bootstrap requests
+    pub fn new(
+        backend: Arc<dyn BackendDB>,
+        device_key_name: impl Into<String>,
+        sync_tree_id: ID,
+    ) -> Self {
         Self {
             backend,
             device_key_name: device_key_name.into(),
+            sync_tree_id,
         }
+    }
+
+    /// Get access to the sync tree for bootstrap request management.
+    ///
+    /// # Returns
+    /// A Database instance for the sync tree with device key authentication.
+    fn get_sync_tree(&self) -> crate::Result<Database> {
+        let mut sync_tree = Database::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
+        sync_tree.set_default_auth_key(&self.device_key_name);
+        Ok(sync_tree)
+    }
+
+    /// Store a bootstrap request in the sync database for manual approval.
+    ///
+    /// # Arguments
+    /// * `tree_id` - ID of the tree being requested
+    /// * `requesting_key` - Public key of the requesting device
+    /// * `requesting_key_name` - Name of the requesting key
+    /// * `requested_permission` - Permission level being requested
+    ///
+    /// # Returns
+    /// The generated UUID for the stored request
+    async fn store_bootstrap_request(
+        &self,
+        tree_id: &ID,
+        requesting_key: &str,
+        requesting_key_name: &str,
+        requested_permission: &crate::auth::Permission,
+    ) -> crate::Result<String> {
+        let sync_tree = self.get_sync_tree()?;
+        let op = sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+
+        let request = BootstrapRequest {
+            tree_id: tree_id.clone(),
+            requesting_pubkey: requesting_key.to_string(),
+            requesting_key_name: requesting_key_name.to_string(),
+            requested_permission: requested_permission.clone(),
+            timestamp: current_timestamp(),
+            status: RequestStatus::Pending,
+            // TODO: We need to get the actual peer address from the transport layer
+            // For now, use a placeholder that will need to be fixed when implementing notifications
+            peer_address: Address {
+                transport_type: "unknown".to_string(),
+                address: "unknown".to_string(),
+            },
+        };
+
+        let request_id = manager.store_request(request)?;
+        op.commit()?;
+
+        Ok(request_id)
     }
 }
 
@@ -112,10 +179,29 @@ impl SyncHandler for SyncHandlerImpl {
 }
 
 impl SyncHandlerImpl {
-    /// Returns whether bootstrap key auto-approval is allowed by policy for this tree
+    /// Returns whether bootstrap key auto-approval is allowed by policy for this tree.
     ///
-    /// Policy location in settings Doc:
-    ///   _settings.auth.policy.bootstrap_auto_approve: bool (default false)
+    /// This method checks the bootstrap approval policy stored in the target database's
+    /// settings. The policy determines whether new devices can automatically gain access
+    /// or require manual approval from an administrator.
+    ///
+    /// # Policy Location
+    /// `_settings.auth.policy.bootstrap_auto_approve: bool` (default: false)
+    ///
+    /// # Security Implications
+    /// - `true`: Any device that can reach this sync endpoint can automatically gain
+    ///   the permissions they request (up to the maximum allowed by other policies).
+    ///   Suitable for development or trusted private networks.
+    /// - `false`: All bootstrap requests are queued for manual review by an administrator.
+    ///   Recommended for production and public-facing deployments.
+    ///
+    /// # Arguments
+    /// * `tree_id` - The ID of the database/tree to check policy for
+    ///
+    /// # Returns
+    /// - `Ok(true)` if auto-approval is enabled
+    /// - `Ok(false)` if manual approval is required (default)
+    /// - `Err` if the policy cannot be read
     async fn is_bootstrap_auto_approve_allowed(
         &self,
         tree_id: &crate::entry::ID,
@@ -210,12 +296,27 @@ impl SyncHandlerImpl {
         .await
     }
 
-    /// Handle a unified sync tree request (bootstrap or incremental)
+    /// Handle a unified sync tree request (bootstrap or incremental).
+    ///
+    /// This method routes between two sync modes:
+    /// 1. **Bootstrap**: When peer has no tips (empty database), sends complete tree
+    /// 2. **Incremental**: When peer has existing tips, sends only new entries
+    ///
+    /// # Bootstrap Authentication
+    /// During bootstrap, if the peer provides authentication credentials:
+    /// - `requesting_key`: Public key to add
+    /// - `requesting_key_name`: Name for the key
+    /// - `requested_permission`: Access level requested
+    ///
+    /// The handler will evaluate the bootstrap policy and either:
+    /// - Auto-approve and add the key immediately
+    /// - Store request for manual approval
+    /// - Proceed without authentication (anonymous bootstrap)
     async fn handle_sync_tree(&self, request: &SyncTreeRequest) -> SyncResponse {
         async move {
             trace!(tree_id = %request.tree_id, "Processing sync tree request");
 
-            // Check if peer needs bootstrap (empty tips)
+            // Check if peer needs bootstrap (empty tips indicates no local data)
             if request.our_tips.is_empty() {
                 debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
                 return self.handle_bootstrap_request(&request.tree_id,
@@ -224,7 +325,7 @@ impl SyncHandlerImpl {
                                                   request.requested_permission.clone()).await;
             }
 
-            // Handle incremental sync
+            // Handle incremental sync (peer has existing data, needs updates)
             debug!(tree_id = %request.tree_id, peer_tips = request.our_tips.len(), "Handling incremental sync");
             self.handle_incremental_sync(&request.tree_id, &request.our_tips).await
         }
@@ -232,7 +333,31 @@ impl SyncHandlerImpl {
         .await
     }
 
-    /// Handle bootstrap request by sending complete tree state and optionally approving auth key
+    /// Handle bootstrap request by sending complete tree state and optionally approving auth key.
+    ///
+    /// Bootstrap is the initial synchronization when a peer has no local data for a tree.
+    /// This method:
+    /// 1. Validates the tree exists
+    /// 2. Processes any authentication request (key approval)
+    /// 3. Sends all entries from the tree to the peer
+    ///
+    /// # Authentication Flow
+    /// If authentication credentials are provided:
+    /// 1. Check bootstrap auto-approval policy
+    /// 2. If auto-approve enabled: Add key immediately
+    /// 3. If manual approval required: Store request and return BootstrapPending
+    /// 4. Track approval status in response
+    ///
+    /// # Arguments
+    /// * `tree_id` - The database/tree to bootstrap
+    /// * `requesting_key` - Optional public key requesting access
+    /// * `requesting_key_name` - Optional name for the key
+    /// * `requested_permission` - Optional permission level requested
+    ///
+    /// # Returns
+    /// - `BootstrapResponse`: Contains entries and approval status
+    /// - `BootstrapPending`: Manual approval required (request queued)
+    /// - `Error`: Tree not found or processing failure
     async fn handle_bootstrap_request(
         &self,
         tree_id: &crate::entry::ID,
@@ -298,15 +423,35 @@ impl SyncHandlerImpl {
                     }
                 }
                 Ok(false) => {
-                    warn!(tree_id = %tree_id, "Bootstrap key approval requested but policy forbids auto-approval");
-                    return SyncResponse::Error(
-                        crate::auth::errors::AuthError::PermissionDenied {
-                            reason:
-                                "bootstrap key approval requires explicit admin approval or policy"
-                                    .to_string(),
+                    info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
+
+                    // Store the bootstrap request in sync database for manual approval
+                    match self
+                        .store_bootstrap_request(tree_id, key, key_name, &permission)
+                        .await
+                    {
+                        Ok(request_id) => {
+                            info!(
+                                tree_id = %tree_id,
+                                request_id = %request_id,
+                                "Bootstrap request stored for manual approval"
+                            );
+                            return SyncResponse::BootstrapPending {
+                                request_id,
+                                message: "Bootstrap request pending manual approval".to_string(),
+                            };
                         }
-                        .to_string(),
-                    );
+                        Err(e) => {
+                            error!(
+                                tree_id = %tree_id,
+                                error = %e,
+                                "Failed to store bootstrap request"
+                            );
+                            return SyncResponse::Error(format!(
+                                "Failed to store bootstrap request: {e}"
+                            ));
+                        }
+                    }
                 }
                 Err(e) => {
                     error!(tree_id = %tree_id, error = %e, "Failed to evaluate bootstrap approval policy");
@@ -575,8 +720,33 @@ impl SyncHandlerImpl {
         Ok(count)
     }
 
-    /// Add a key to the database's authentication settings
-    /// FIXME: This is wrong, it uses the root entry's settings
+    /// Add a key to the database's authentication settings.
+    ///
+    /// This method is used during bootstrap auto-approval to add a requesting device's
+    /// public key to the target database. It operates with elevated privileges as part
+    /// of the sync infrastructure.
+    ///
+    /// # Authentication Challenge
+    /// This method needs to authenticate with the target database to add keys. However,
+    /// the sync handler doesn't inherently know which key to use for each database.
+    /// Current implementation attempts to operate without authentication, which fails
+    /// for databases that require authenticated operations.
+    ///
+    /// # TODO: Authentication Strategy
+    /// Need to implement one of:
+    /// 1. Database-to-key mapping in sync configuration
+    /// 2. Discovery of admin keys from the database
+    /// 3. Special bootstrap authentication mode
+    ///
+    /// # Arguments
+    /// * `tree_id` - The database to add the key to
+    /// * `key_name` - Name identifier for the new key
+    /// * `public_key` - Ed25519 public key in "ed25519:..." format
+    /// * `permission` - Permission level to grant (Admin, Write, Read)
+    ///
+    /// # Returns
+    /// - `Ok(())` if key was successfully added
+    /// - `Err` if authentication fails or key cannot be added
     async fn add_key_to_database(
         &self,
         tree_id: &crate::entry::ID,

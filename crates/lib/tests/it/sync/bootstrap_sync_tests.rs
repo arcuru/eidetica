@@ -47,9 +47,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     println!("🧪 DEBUG: Server tips: {:?}", server_tips);
 
     // Start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    let server_addr = start_sync_server(&mut server_sync).await;
 
     // Verify client doesn't have the database initially
     assert!(
@@ -117,18 +115,13 @@ async fn test_incremental_sync_after_bootstrap() {
     let (_client_instance, mut client_sync) = setup();
 
     // Create some entries on server
-    let root_entry = Entry::root_builder()
-        .set_subtree_data("messages", r#"{"initial": {"text": "Initial message"}}"#)
-        .build()
-        .expect("Entry should build successfully");
+    let root_entry = create_test_tree_entry();
     let test_tree_id = root_entry.id().clone();
 
     server_sync.backend().put_verified(root_entry).unwrap();
 
     // Start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    let server_addr = start_sync_server(&mut server_sync).await;
 
     // Bootstrap client
     client_sync.enable_http_transport().unwrap();
@@ -224,9 +217,7 @@ async fn test_discover_peer_trees_placeholder() {
     let (_client_instance, mut client_sync) = setup();
 
     // Start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    let server_addr = start_sync_server(&mut server_sync).await;
 
     // Try to discover trees (currently returns empty list)
     client_sync.enable_http_transport().unwrap();
@@ -239,6 +230,103 @@ async fn test_discover_peer_trees_placeholder() {
     );
 
     println!("✅ TEST: Tree discovery placeholder works (returns empty list)");
+
+    // Cleanup
+    server_sync.stop_server_async().await.unwrap();
+}
+
+/// Test bootstrap behavior with malformed request data
+#[tokio::test]
+async fn test_bootstrap_malformed_request_data() {
+    let (_server_instance, mut server_sync) = setup();
+    let (_client_instance, mut client_sync) = setup();
+
+    // Create a valid tree on server
+    let root_entry = create_test_tree_entry();
+    let test_tree_id = root_entry.id().clone();
+
+    server_sync.backend().put_verified(root_entry).unwrap();
+
+    // Start server
+    let server_addr = start_sync_server(&mut server_sync).await;
+
+    client_sync.enable_http_transport().unwrap();
+
+    // Test 1: Invalid tree ID format
+    let malformed_tree_id = eidetica::entry::ID::from("invalid_tree_format");
+    let result = client_sync
+        .sync_with_peer_for_bootstrap(
+            &server_addr,
+            &malformed_tree_id,
+            "client_key",
+            eidetica::auth::Permission::Write(5),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bootstrap should fail with invalid tree ID"
+    );
+    println!("✅ Bootstrap correctly rejected malformed tree ID");
+
+    // Test 2: Empty key name (should be handled gracefully)
+    let result = client_sync
+        .sync_with_peer_for_bootstrap(
+            &server_addr,
+            &test_tree_id,
+            "", // Empty key name
+            eidetica::auth::Permission::Write(5),
+        )
+        .await;
+
+    assert!(result.is_err(), "Bootstrap should fail with empty key name");
+    println!("✅ Bootstrap correctly rejected empty key name");
+
+    // Cleanup
+    server_sync.stop_server_async().await.unwrap();
+}
+
+/// Test bootstrap with conflicting tree IDs
+#[tokio::test]
+async fn test_bootstrap_conflicting_tree_ids() {
+    let (_server_instance, mut server_sync) = setup();
+    let (_client_instance, mut client_sync) = setup();
+
+    // Create a tree on server
+    let root_entry = create_test_tree_entry();
+    let _actual_tree_id = root_entry.id().clone();
+
+    server_sync.backend().put_verified(root_entry).unwrap();
+
+    // Start server
+    let server_addr = start_sync_server(&mut server_sync).await;
+
+    client_sync.enable_http_transport().unwrap();
+
+    // Try to bootstrap with a different tree ID than what exists
+    let different_tree_id = eidetica::entry::ID::from("different_tree_that_doesnt_exist");
+    let result = client_sync
+        .sync_with_peer_for_bootstrap(
+            &server_addr,
+            &different_tree_id,
+            "client_key",
+            eidetica::auth::Permission::Write(5),
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Bootstrap should fail for non-existent tree"
+    );
+
+    let error_msg = result.unwrap_err().to_string();
+    assert!(
+        error_msg.contains("not found") || error_msg.contains("exist"),
+        "Error should indicate tree not found: {}",
+        error_msg
+    );
+
+    println!("✅ Bootstrap correctly rejected request for non-existent tree");
 
     // Cleanup
     server_sync.stop_server_async().await.unwrap();

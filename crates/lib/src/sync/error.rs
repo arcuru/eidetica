@@ -92,6 +92,28 @@ pub enum SyncError {
     /// Backend storage error.
     #[error("Backend error: {0}")]
     BackendError(String),
+
+    /// Bootstrap request not found.
+    #[error("Bootstrap request not found: {0}")]
+    RequestNotFound(String),
+
+    /// Bootstrap request already exists.
+    #[error("Bootstrap request already exists: {0}")]
+    RequestAlreadyExists(String),
+
+    /// Invalid bootstrap request state.
+    #[error(
+        "Invalid request state for '{request_id}': expected {expected_status}, found {current_status}"
+    )]
+    InvalidRequestState {
+        request_id: String,
+        current_status: String,
+        expected_status: String,
+    },
+
+    /// Invalid data format in stored bootstrap request.
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
 }
 
 impl SyncError {

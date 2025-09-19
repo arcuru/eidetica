@@ -4,6 +4,7 @@
 //! access attempts, invalid keys, and permission boundary violations. These tests
 //! expect secure behavior and will fail until proper security is implemented.
 
+use super::helpers::*;
 use eidetica::{
     Instance,
     auth::Permission,
@@ -67,20 +68,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     );
 
     // Start server
-    let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
-        server_sync
-            .enable_http_transport()
-            .expect("Failed to enable HTTP transport");
-        server_sync
-            .start_server_async("127.0.0.1:0")
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address_async()
-            .await
-            .expect("Failed to get server address")
-    };
+    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_addr = start_sync_server(server_sync).await;
 
     // Setup client with its own key
     let mut client_instance = Instance::new(Box::new(InMemory::new()))
@@ -202,20 +191,8 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Start server
-    let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
-        server_sync
-            .enable_http_transport()
-            .expect("Failed to enable HTTP transport");
-        server_sync
-            .start_server_async("127.0.0.1:0")
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address_async()
-            .await
-            .expect("Failed to get server address")
-    };
+    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_addr = start_sync_server(server_sync).await;
 
     // Setup client
     let mut client_instance = Instance::new(Box::new(InMemory::new()))
@@ -323,20 +300,8 @@ async fn test_bootstrap_invalid_public_key_format() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
-        server_sync
-            .enable_http_transport()
-            .expect("Failed to enable HTTP transport");
-        server_sync
-            .start_server_async("127.0.0.1:0")
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address_async()
-            .await
-            .expect("Failed to get server address")
-    };
+    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_addr = start_sync_server(server_sync).await;
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
     let mut client_instance = Instance::new(Box::new(InMemory::new()))
@@ -452,20 +417,8 @@ async fn test_bootstrap_with_revoked_key() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
-        server_sync
-            .enable_http_transport()
-            .expect("Failed to enable HTTP transport");
-        server_sync
-            .start_server_async("127.0.0.1:0")
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address_async()
-            .await
-            .expect("Failed to get server address")
-    };
+    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_addr = start_sync_server(server_sync).await;
 
     // Setup different client instance (to simulate external client using revoked key)
     let mut client_instance = Instance::new(Box::new(InMemory::new()))
@@ -563,20 +516,8 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
-        server_sync
-            .enable_http_transport()
-            .expect("Failed to enable HTTP transport");
-        server_sync
-            .start_server_async("127.0.0.1:0")
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address_async()
-            .await
-            .expect("Failed to get server address")
-    };
+    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_addr = start_sync_server(server_sync).await;
 
     // Setup client requesting Admin permissions (should be excessive)
     let mut client_instance = Instance::new(Box::new(InMemory::new()))

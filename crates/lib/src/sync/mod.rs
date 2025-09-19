@@ -6,9 +6,20 @@
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::{Database, Entry, Result, auth::crypto::format_public_key, crdt::Doc, store::DocStore};
+use crate::{
+    Database, Entry, Result,
+    auth::{
+        crypto::format_public_key,
+        settings::AuthSettings,
+        types::{AuthKey, KeyStatus},
+    },
+    constants::SETTINGS,
+    crdt::Doc,
+    store::DocStore,
+};
 
 pub mod background;
+mod bootstrap_request_manager;
 pub mod error;
 pub mod handler;
 pub mod hooks;
@@ -20,6 +31,8 @@ pub mod transports;
 pub mod utils;
 
 use background::{BackgroundSync, SyncCommand};
+use bootstrap_request_manager::BootstrapRequestManager;
+pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
 pub use error::SyncError;
 use hooks::SyncHook;
 use peer_manager::PeerManager;
@@ -1262,6 +1275,200 @@ impl Sync {
             Some(requested_permission),
         )
         .await?;
+
+        Ok(())
+    }
+
+    // === Bootstrap Request Management Methods ===
+
+    /// Get all pending bootstrap requests.
+    ///
+    /// # Returns
+    /// A vector of (request_id, bootstrap_request) pairs for pending requests.
+    pub fn pending_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+        let op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+        manager.pending_requests()
+    }
+
+    /// Get all approved bootstrap requests.
+    ///
+    /// # Returns
+    /// A vector of (request_id, bootstrap_request) pairs for approved requests.
+    pub fn approved_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+        let op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+        manager.approved_requests()
+    }
+
+    /// Get all rejected bootstrap requests.
+    ///
+    /// # Returns
+    /// A vector of (request_id, bootstrap_request) pairs for rejected requests.
+    pub fn rejected_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+        let op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+        manager.rejected_requests()
+    }
+
+    /// Get a specific bootstrap request by ID.
+    ///
+    /// # Arguments
+    /// * `request_id` - The unique identifier of the request
+    ///
+    /// # Returns
+    /// A tuple of (request_id, bootstrap_request) if found, None otherwise.
+    pub fn get_bootstrap_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<(String, BootstrapRequest)>> {
+        let op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+
+        match manager.get_request(request_id)? {
+            Some(request) => Ok(Some((request_id.to_string(), request))),
+            None => Ok(None),
+        }
+    }
+
+    /// Approve a bootstrap request and add the key to the target database.
+    ///
+    /// This method loads the bootstrap request, validates it exists and is pending,
+    /// then adds the requesting key to the target database using the specified
+    /// approving key for authentication.
+    ///
+    /// # Arguments
+    /// * `request_id` - The unique identifier of the request to approve
+    /// * `approving_key_name` - The name of the local key to use for the approval
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the approval operation.
+    pub fn approve_bootstrap_request(
+        &mut self,
+        request_id: &str,
+        approving_key_name: &str,
+    ) -> Result<()> {
+        // Load the request from sync database
+        let sync_op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&sync_op);
+
+        let request = manager
+            .get_request(request_id)?
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
+
+        // Validate request is still pending
+        if !matches!(request.status, RequestStatus::Pending) {
+            return Err(SyncError::InvalidRequestState {
+                request_id: request_id.to_string(),
+                current_status: format!("{:?}", request.status),
+                expected_status: "Pending".to_string(),
+            }
+            .into());
+        }
+
+        // Load target database and add the key
+        let database = Database::new_from_id(request.tree_id.clone(), self.backend.clone())?;
+        let mut tx = database.new_transaction()?;
+        tx.set_auth_key(approving_key_name);
+
+        // Get settings store and update auth configuration
+        let settings_store = tx.get_store::<DocStore>(SETTINGS)?;
+
+        // Get existing auth settings or create new ones
+        let mut auth_settings = match settings_store.get_node("auth") {
+            Ok(auth_doc) => AuthSettings::from_doc(auth_doc),
+            Err(_) => AuthSettings::new(), // Key doesn't exist, create new
+        };
+
+        let auth_key = AuthKey {
+            pubkey: request.requesting_pubkey.clone(),
+            permissions: request.requested_permission.clone(),
+            status: KeyStatus::Active,
+        };
+
+        // Add the new key to auth settings
+        auth_settings.add_key(&request.requesting_key_name, auth_key)?;
+
+        // Update the settings store with the modified auth configuration
+        settings_store.set_node("auth", auth_settings.as_doc().clone())?;
+
+        tx.commit()?;
+
+        // Update request status to approved
+        let approval_time = bootstrap_request_manager::current_timestamp();
+        manager.update_status(
+            request_id,
+            RequestStatus::Approved {
+                approved_by: approving_key_name.to_string(),
+                approval_time,
+            },
+        )?;
+        sync_op.commit()?;
+
+        info!(
+            request_id = %request_id,
+            tree_id = %request.tree_id,
+            approved_by = %approving_key_name,
+            "Bootstrap request approved and key added to database"
+        );
+
+        // TODO: Implement notification to requesting peer (future enhancement)
+
+        Ok(())
+    }
+
+    /// Reject a bootstrap request.
+    ///
+    /// This method marks the request as rejected without adding any keys
+    /// to the target database.
+    ///
+    /// # Arguments
+    /// * `request_id` - The unique identifier of the request to reject
+    /// * `rejecting_key_name` - The name of the local key making the rejection
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the rejection operation.
+    pub fn reject_bootstrap_request(
+        &mut self,
+        request_id: &str,
+        rejecting_key_name: &str,
+    ) -> Result<()> {
+        let op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&op);
+
+        // Validate request exists and is pending
+        let request = manager
+            .get_request(request_id)?
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
+
+        if !matches!(request.status, RequestStatus::Pending) {
+            return Err(SyncError::InvalidRequestState {
+                request_id: request_id.to_string(),
+                current_status: format!("{:?}", request.status),
+                expected_status: "Pending".to_string(),
+            }
+            .into());
+        }
+
+        // Update status to rejected
+        let rejection_time = bootstrap_request_manager::current_timestamp();
+        manager.update_status(
+            request_id,
+            RequestStatus::Rejected {
+                rejected_by: rejecting_key_name.to_string(),
+                rejection_time,
+            },
+        )?;
+        op.commit()?;
+
+        info!(
+            request_id = %request_id,
+            tree_id = %request.tree_id,
+            rejected_by = %rejecting_key_name,
+            "Bootstrap request rejected"
+        );
+
+        // TODO: Implement notification to requesting peer (future enhancement)
 
         Ok(())
     }

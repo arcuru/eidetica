@@ -1,7 +1,7 @@
 // crates/lib/tests/it/sync/bootstrap_concurrency_tests.rs
 
 use super::helpers::*;
-use eidetica::{Entry, Result};
+use eidetica::Result;
 use std::time::Duration;
 use tracing::info;
 
@@ -16,13 +16,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     let mut server_instance = setup_instance_with_initialized();
 
     // Create some test data directly in the server's backend
-    let root_entry = Entry::root_builder()
-        .set_subtree_data(
-            "messages",
-            r#"{"msg1": {"text": "Hello from server!", "timestamp": 1234567890}}"#,
-        )
-        .build()
-        .expect("Failed to build root entry");
+    let root_entry = create_test_tree_entry();
     let test_tree_id = root_entry.id().clone();
 
     // Store entry in server backend
@@ -30,9 +24,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     server_sync.backend().put_verified(root_entry).unwrap();
 
     // Start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    let server_addr = start_sync_server(server_sync).await;
 
     // 3. Create multiple clients
     let num_clients = 3; // Use fewer clients to avoid overloading
@@ -136,9 +128,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
     // Start server
     let server_sync = server_instance.sync_mut().unwrap();
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    let server_addr = start_sync_server(server_sync).await;
 
     // 2. Create multiple clients that will request key approval concurrently
     let num_clients = 4;
