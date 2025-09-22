@@ -572,7 +572,15 @@ This allows:
 
 ## Bootstrap Security Policy
 
-When new devices join existing databases through bootstrap synchronization, Eidetica uses configurable security policies to control automatic key approval.
+When new devices join existing databases through bootstrap synchronization, Eidetica provides multiple approval methods to balance security and convenience.
+
+### Bootstrap Approval Methods
+
+Eidetica supports three bootstrap approval approaches, checked in this order:
+
+1. **Global Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests if the requested permission is satisfied
+2. **Auto-Approval Policy** - When `bootstrap_auto_approve: true`, devices are automatically approved and keys added
+3. **Manual Approval** - Default secure behavior requiring admin approval for each device
 
 ### Default Security Behavior
 
@@ -590,9 +598,41 @@ client_sync.sync_with_peer_for_bootstrap(
 ).await; // Returns PermissionDenied error
 ```
 
-### Enabling Bootstrap Auto-Approval
+### Option 1: Global Permissions (Recommended for Collaboration)
 
-To allow automatic key approval, configure the bootstrap policy:
+The simplest approach for collaborative databases is to use global permissions:
+
+```rust,ignore
+let mut settings = Doc::new();
+let mut auth_doc = Doc::new();
+
+// Add admin key
+auth_doc.set_json("admin", serde_json::json!({
+    "pubkey": admin_public_key,
+    "permissions": {"Admin": 1},
+    "status": "Active"
+}))?;
+
+// Add global permission for automatic bootstrap
+auth_doc.set_json("*", serde_json::json!({
+    "pubkey": "*",
+    "permissions": {"Write": 10},  // Allows Read and Write(11+) requests
+    "status": "Active"
+}))?;
+
+settings.set_doc("auth", auth_doc);
+```
+
+**Benefits**:
+
+- No per-device key management required
+- Immediate bootstrap approval
+- Works even if `bootstrap_auto_approve: false`
+- See [Bootstrap Guide](bootstrap.md#global-permission-bootstrap) for details
+
+### Option 2: Auto-Approval Policy
+
+To allow automatic key approval with per-device keys, configure the bootstrap policy:
 
 <!-- Code block ignored: Complex authentication flow requiring policy setup -->
 
@@ -633,13 +673,14 @@ _settings.auth.policy.bootstrap_auto_approve: bool (default: false)
 - **Team Collaboration**: Enable with proper access controls
 - **Public Databases**: Always disabled for security
 
-### Bootstrap Flow with Policy
+### Bootstrap Flow
 
 1. **Client Request**: Device requests access with public key and permission level
-2. **Policy Check**: Server evaluates `bootstrap_auto_approve` setting
-3. **Auto-Approval**: If enabled, key is automatically added to database auth settings
-4. **Rejection**: If disabled, request fails with `PermissionDenied` error
-5. **Database Access**: Approved devices can read/write according to granted permissions
+2. **Global Permission Check**: Server checks if global '\*' permission satisfies request
+3. **Policy Check**: If no global permission, server evaluates `bootstrap_auto_approve` setting
+4. **Auto-Approval**: If policy enabled, key is automatically added to database auth settings
+5. **Rejection**: If disabled, request requires manual admin approval
+6. **Database Access**: Approved devices can read/write according to granted permissions
 
 ## See Also
 

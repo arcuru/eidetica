@@ -17,3 +17,6 @@ pub const USERS: &str = "_users";
 
 /// System database name for database tracking
 pub const DATABASES: &str = "_databases";
+
+/// Global permission key for universal access.
+pub const GLOBAL_PERMISSION_KEY: &str = "*";

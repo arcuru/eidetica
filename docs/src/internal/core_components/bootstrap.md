@@ -52,35 +52,85 @@ Request management methods on the `Sync` struct:
 sequenceDiagram
     participant Client
     participant SyncHandler
+    participant GlobalPermCheck
     participant PolicyCheck
     participant BootstrapManager
     participant Database
     participant Admin
 
     Client->>SyncHandler: Bootstrap Request<br/>(key, permission)
-    SyncHandler->>PolicyCheck: Check auto_approve
+    SyncHandler->>GlobalPermCheck: Check global '*' permission
 
-    alt Auto-Approval Enabled
-        PolicyCheck-->>SyncHandler: true
-        SyncHandler->>Database: Add key directly
-        Database-->>SyncHandler: Success
-        SyncHandler-->>Client: BootstrapResponse<br/>(approved=true)
-    else Manual Approval Required
-        PolicyCheck-->>SyncHandler: false
-        SyncHandler->>BootstrapManager: Store request
-        BootstrapManager-->>SyncHandler: Request ID
-        SyncHandler-->>Client: BootstrapPending<br/>(request_id)
+    alt Global Permission Grants Access
+        GlobalPermCheck-->>SyncHandler: sufficient
+        SyncHandler-->>Client: BootstrapResponse<br/>(approved=true, no key added)
+    else Global Permission Insufficient
+        GlobalPermCheck-->>SyncHandler: insufficient/missing
+        SyncHandler->>PolicyCheck: Check auto_approve policy
 
-        Note over Client: Waits for approval
+        alt Auto-Approval Enabled
+            PolicyCheck-->>SyncHandler: true
+            SyncHandler->>Database: Add key directly
+            Database-->>SyncHandler: Success
+            SyncHandler-->>Client: BootstrapResponse<br/>(approved=true)
+        else Manual Approval Required
+            PolicyCheck-->>SyncHandler: false
+            SyncHandler->>BootstrapManager: Store request
+            BootstrapManager-->>SyncHandler: Request ID
+            SyncHandler-->>Client: BootstrapPending<br/>(request_id)
 
-        Admin->>BootstrapManager: approve_request(id)
-        BootstrapManager->>Database: Add key
-        Database-->>BootstrapManager: Success
-        BootstrapManager-->>Admin: Approved
+            Note over Client: Waits for approval
 
-        Note over Client: Next sync gets access
+            Admin->>BootstrapManager: approve_request(id)
+            BootstrapManager->>Database: Add key
+            Database-->>BootstrapManager: Success
+            BootstrapManager-->>Admin: Approved
+
+            Note over Client: Next sync gets access
+        end
     end
 ```
+
+## Global Permission Auto-Approval
+
+The bootstrap system supports automatic approval through global '\*' permissions, which provides immediate access without adding new keys to the database.
+
+### How It Works
+
+When a bootstrap request is received, the sync handler first checks if the requesting key already has sufficient permissions through existing auth settings:
+
+1. **Permission Check**: `AuthSettings::can_access()` checks if the requesting public key has sufficient permissions
+2. **Global Permission Check**: Includes checking for active global '\*' permission that satisfies the request
+3. **Auto-Approval**: If sufficient permission exists (specific or global), approve without adding a new key
+4. **Fallback**: If no existing permission, proceed to auto-approval policy or manual approval flow
+
+### Implementation Details
+
+**Key Components** (`handler.rs:check_existing_auth_permission`):
+
+1. Create database instance for target tree
+2. Get `AuthSettings` via `SettingsStore`
+3. Call `AuthSettings::can_access(requesting_pubkey, requested_permission)`
+4. Return approval decision without modifying database if permission exists
+
+**Permission Hierarchy**: Eidetica uses an inverted priority system where **lower numbers = higher permissions**:
+
+- `Write(5)` has **higher** permission than `Write(10)`
+- Global `Write(10)` allows bootstrap requests for `Read`, `Write(11)`, `Write(15)`, etc.
+- Global `Write(10)` **rejects** bootstrap requests for `Write(5)`, `Write(1)`, `Admin(*)`
+
+### Precedence Rules
+
+1. **Global permissions checked first** - Before auto-approval policy check
+2. **Global permissions override manual policy** - Even if `bootstrap_auto_approve: false`
+3. **No key storage** - Global permission grants don't add keys to auth settings
+4. **Insufficient global permission** - Falls back to normal policy check
+
+### Use Cases
+
+- **Public databases**: Set global `Read` permission for open access
+- **Collaborative workspaces**: Set global `Write(*)` for team environments
+- **Development environments**: Reduce friction while maintaining some permission control
 
 ## Data Structures
 

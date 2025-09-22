@@ -21,14 +21,16 @@ use super::{
     },
 };
 use crate::{
-    Database,
+    Database, Result,
     auth::{
+        Permission,
         crypto::{create_challenge_response, format_public_key, generate_challenge},
         types::AuthKey,
     },
     backend::BackendDB,
     entry::ID,
     store::SettingsStore,
+    sync::error::SyncError,
 };
 
 /// Trait for handling sync requests with database access.
@@ -182,6 +184,59 @@ impl SyncHandler for SyncHandlerImpl {
 }
 
 impl SyncHandlerImpl {
+    /// Check if the requesting key already has sufficient permissions through existing auth.
+    ///
+    /// This uses the AuthSettings.can_access() method to check if the requesting key
+    /// already has sufficient permissions (including through global '*' permissions).
+    ///
+    /// # Arguments
+    /// * `tree_id` - The database/tree ID to check auth settings for
+    /// * `requesting_pubkey` - The public key making the request
+    /// * `requested_permission` - The permission level being requested
+    ///
+    /// # Returns
+    /// - `Ok(true)` if key has sufficient permission
+    /// - `Ok(false)` if key lacks sufficient permission or auth check fails
+    async fn check_existing_auth_permission(
+        &self,
+        tree_id: &ID,
+        requesting_pubkey: &str,
+        requested_permission: &Permission,
+    ) -> Result<bool> {
+        // FIXME: This should not be using the device key for auth checks
+        // Load database with device key for accessing settings
+        let signing_key = self
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            })?;
+
+        let database = Database::open(
+            self.backend.clone(),
+            tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )?;
+        let transaction = database.new_transaction()?;
+        let settings_store = SettingsStore::new(&transaction)?;
+
+        let auth_settings = settings_store.get_auth_settings()?;
+
+        // Use the AuthSettings.can_access() method to check permissions
+        if auth_settings.can_access(requesting_pubkey, requested_permission) {
+            debug!(
+                tree_id = %tree_id,
+                requesting_pubkey = %requesting_pubkey,
+                requested_permission = ?requested_permission,
+                "Key has sufficient permission for bootstrap access"
+            );
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     /// Returns whether bootstrap key auto-approval is allowed by policy for this tree.
     ///
     /// This method checks the bootstrap approval policy stored in the target database's
@@ -410,68 +465,91 @@ impl SyncHandlerImpl {
                 "Processing key approval request for bootstrap"
             );
 
-            // Check policy to determine if auto-approval is allowed
-            match self.is_bootstrap_auto_approve_allowed(tree_id).await {
+            // Check if the requesting key already has sufficient permissions through existing auth
+            match self
+                .check_existing_auth_permission(tree_id, key, &permission)
+                .await
+            {
                 Ok(true) => {
-                    // Proceed with auto-approval under policy
-                    match self
-                        .add_key_to_database(tree_id, key_name, key, permission.clone())
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(
-                                tree_id = %tree_id,
-                                key = %key,
-                                permission = ?permission,
-                                "Successfully approved and added key to database under policy"
-                            );
-                            (true, Some(permission))
-                        }
-                        Err(e) => {
-                            warn!(
-                                tree_id = %tree_id,
-                                key = %key,
-                                error = %e,
-                                "Failed to add key to database"
-                            );
-                            (false, None)
-                        }
-                    }
+                    // Key already has sufficient permission - approve without adding
+                    info!(
+                        tree_id = %tree_id,
+                        key = %key,
+                        permission = ?permission,
+                        "Bootstrap approved via existing auth permission - no key added"
+                    );
+                    (true, Some(permission))
                 }
                 Ok(false) => {
-                    info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
+                    // No existing permission, check policy to determine if auto-approval is allowed
+                    match self.is_bootstrap_auto_approve_allowed(tree_id).await {
+                        Ok(true) => {
+                            // Proceed with auto-approval under policy
+                            match self
+                                .add_key_to_database(tree_id, key_name, key, permission.clone())
+                                .await
+                            {
+                                Ok(_) => {
+                                    info!(
+                                        tree_id = %tree_id,
+                                        key = %key,
+                                        permission = ?permission,
+                                        "Successfully approved and added key to database under policy"
+                                    );
+                                    (true, Some(permission))
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        tree_id = %tree_id,
+                                        key = %key,
+                                        error = %e,
+                                        "Failed to add key to database"
+                                    );
+                                    (false, None)
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
 
-                    // Store the bootstrap request in sync database for manual approval
-                    match self
-                        .store_bootstrap_request(tree_id, key, key_name, &permission)
-                        .await
-                    {
-                        Ok(request_id) => {
-                            info!(
-                                tree_id = %tree_id,
-                                request_id = %request_id,
-                                "Bootstrap request stored for manual approval"
-                            );
-                            return SyncResponse::BootstrapPending {
-                                request_id,
-                                message: "Bootstrap request pending manual approval".to_string(),
-                            };
+                            // Store the bootstrap request in sync database for manual approval
+                            match self
+                                .store_bootstrap_request(tree_id, key, key_name, &permission)
+                                .await
+                            {
+                                Ok(request_id) => {
+                                    info!(
+                                        tree_id = %tree_id,
+                                        request_id = %request_id,
+                                        "Bootstrap request stored for manual approval"
+                                    );
+                                    return SyncResponse::BootstrapPending {
+                                        request_id,
+                                        message: "Bootstrap request pending manual approval"
+                                            .to_string(),
+                                    };
+                                }
+                                Err(e) => {
+                                    error!(
+                                        tree_id = %tree_id,
+                                        error = %e,
+                                        "Failed to store bootstrap request"
+                                    );
+                                    return SyncResponse::Error(format!(
+                                        "Failed to store bootstrap request: {e}"
+                                    ));
+                                }
+                            }
                         }
                         Err(e) => {
-                            error!(
-                                tree_id = %tree_id,
-                                error = %e,
-                                "Failed to store bootstrap request"
-                            );
-                            return SyncResponse::Error(format!(
-                                "Failed to store bootstrap request: {e}"
-                            ));
+                            error!(tree_id = %tree_id, error = %e, "Failed to evaluate bootstrap approval policy");
+                            return SyncResponse::Error(format!("Policy evaluation failed: {e}"));
                         }
                     }
                 }
                 Err(e) => {
-                    error!(tree_id = %tree_id, error = %e, "Failed to evaluate bootstrap approval policy");
-                    return SyncResponse::Error(format!("Policy evaluation failed: {e}"));
+                    error!(tree_id = %tree_id, error = %e, "Failed to check global permission for bootstrap");
+                    return SyncResponse::Error(format!("Global permission check failed: {e}"));
                 }
             }
         } else {

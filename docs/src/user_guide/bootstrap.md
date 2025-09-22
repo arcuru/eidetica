@@ -2,7 +2,66 @@
 
 ## Overview
 
-The Bootstrap system provides secure key management for Eidetica databases by controlling how new devices gain access to synchronized databases. It supports both automatic approval (for convenience) and manual approval (for security) workflows.
+The Bootstrap system provides secure key management for Eidetica databases by controlling how new devices gain access to synchronized databases. It supports three approval methods:
+
+1. **Global Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests without adding new keys
+2. **Auto-Approval Policy** - When `bootstrap_auto_approve: true`, devices are automatically approved and keys added
+3. **Manual Approval** - When auto-approval is disabled, admin must explicitly approve each request
+
+## Global Permission Bootstrap
+
+Global '\*' permissions provide the simplest and most flexible approach for collaborative or public databases:
+
+### How It Works
+
+When a database has global permissions configured (e.g., `{"*": {"pubkey": "*", "permissions": "Write: 10"}}`), bootstrap requests are automatically approved if the requested permission level is satisfied by the global permission. No new keys are added to the database.
+
+### Advantages
+
+- **No key management**: Devices don't need individual keys added to database
+- **Immediate access**: Bootstrap approval happens instantly
+- **Overrides manual policy**: Works even if `bootstrap_auto_approve: false`
+- **Flexible permissions**: Set exactly the permission level you want to allow
+
+### Configuration Example
+
+Configure a database with global write permission:
+
+<!-- Code block ignored: Example configuration code for global permissions -->
+
+```rust,ignore
+use eidetica::crdt::Doc;
+
+// Create database with global permission
+let mut settings = Doc::new();
+let mut auth_doc = Doc::new();
+
+// Add admin key for database management
+auth_doc.set_json("admin_key", serde_json::json!({
+    "pubkey": "ed25519:admin_public_key_here",
+    "permissions": {"Admin": 1},
+    "status": "Active"
+}))?;
+
+// Add global permission for automatic bootstrap approval
+auth_doc.set_json("*", serde_json::json!({
+    "pubkey": "*",
+    "permissions": {"Write": 10},  // Allows Read and Write(11+) requests
+    "status": "Active"
+}))?;
+
+settings.set_doc("auth", auth_doc);
+let database = instance.new_database(settings, "admin_key")?;
+```
+
+### Permission Levels
+
+Eidetica uses **lower numbers = higher permissions**:
+
+- Global `Write(10)` **allows**: `Read`, `Write(11)`, `Write(15)`, etc.
+- Global `Write(10)` **denies**: `Write(5)`, `Admin(*)`
+
+Choose your global permission level carefully based on your security requirements.
 
 ## Client Workflow
 
@@ -27,12 +86,19 @@ client_sync.sync_with_peer_for_bootstrap(
 
 The client must handle different response scenarios:
 
-- **Auto-Approval Enabled** (rare in production):
+- **Global Permission Approved** (with global '\*' permissions):
   - Request succeeds immediately
+  - Client gains access via global permission
+  - No individual key added to database
+  - Can proceed with normal operations
+
+- **Auto-Approval Enabled** (with `bootstrap_auto_approve: true`):
+  - Request succeeds immediately
+  - Client key is added to database
   - Client gains access to the database
   - Can proceed with normal operations
 
-- **Manual Approval Required** (common):
+- **Manual Approval Required** (default):
   - Request fails with an error
   - Error indicates request is "pending"
   - Bootstrap request is queued for admin review

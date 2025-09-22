@@ -15,6 +15,7 @@ use eidetica::{
         Permission as AuthPermission,
         crypto::{format_public_key, generate_keypair},
     },
+    crdt::Doc,
     sync::{
         RequestStatus,
         handler::{SyncHandler, SyncHandlerImpl},
@@ -451,4 +452,596 @@ async fn test_malformed_permission_requests() {
     );
 
     println!("✅ All permission formats correctly processed");
+}
+
+#[tokio::test]
+async fn test_bootstrap_with_global_permission_auto_approval() {
+    println!("\n🧪 TEST: Bootstrap with global permission auto-approval");
+
+    // Setup server instance
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    // Create database with global '*' permission for Write(10) and admin key
+    let mut settings = Doc::new();
+    settings.set_string("name", "Test Global Permission DB");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key for database creation
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add global '*' permission with Write(10) access
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Setup sync
+    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Test 1: Request Write(15) permission - should be auto-approved via global permission
+    // Note: Lower priority numbers = higher permissions, so Write(15) < Write(10) in permission level
+    println!("🔍 Testing Write(15) request against global Write(10) permission");
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        "ed25519:client_requesting_key",
+        "client_key",
+        AuthPermission::Write(15),
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert_eq!(bootstrap_response.tree_id, tree_id);
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(15))
+            );
+            println!("✅ Write(15) request auto-approved via global permission");
+        }
+        other => panic!("Expected Bootstrap, got: {:?}", other),
+    }
+
+    // Verify NO pending requests were created (global permission bypasses storage)
+    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    assert_eq!(
+        pending_requests.len(),
+        0,
+        "Global permission should not create pending requests"
+    );
+
+    // Test 2: Request Read permission - should also be auto-approved (Read < Write in permission level)
+    println!("🔍 Testing Read request against global Write(10) permission");
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        "ed25519:another_client_key",
+        "another_client",
+        AuthPermission::Read,
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Read)
+            );
+            println!("✅ Read request auto-approved via global permission");
+        }
+        other => panic!("Expected Bootstrap, got: {:?}", other),
+    }
+
+    // Test 3: Request Admin(5) permission - should require manual approval (Admin > Write always)
+    println!("🔍 Testing Admin(5) request against global Write(10) permission");
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        "ed25519:admin_requesting_key",
+        "admin_client",
+        AuthPermission::Admin(5),
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        SyncResponse::BootstrapPending { request_id, .. } => {
+            println!(
+                "✅ Admin(5) request properly requires manual approval: {}",
+                request_id
+            );
+        }
+        other => panic!(
+            "Expected BootstrapPending for insufficient global permission, got: {:?}",
+            other
+        ),
+    }
+
+    // Verify one pending request was created for the Admin request
+    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    assert_eq!(
+        pending_requests.len(),
+        1,
+        "Should have one pending request for insufficient permission"
+    );
+
+    println!("✅ Global permission auto-approval works correctly");
+}
+
+#[tokio::test]
+async fn test_global_permission_overrides_manual_policy() {
+    println!("\n🧪 TEST: Global permission overrides manual approval policy");
+
+    // Setup server instance
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    // Create database with manual approval policy (bootstrap_auto_approve: false)
+    // but also global '*' permission
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Test Manual Policy with Global Permission");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key for database creation
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add global '*' permission with Write(10) access
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Explicitly set bootstrap policy to require manual approval (false)
+    let mut policy_doc = Doc::new();
+    policy_doc
+        .set_json("bootstrap_auto_approve", false)
+        .unwrap();
+    auth_doc.set_doc("policy", policy_doc);
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Setup sync
+    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Test 1: Request Read permission - should be auto-approved despite manual policy
+    println!("🔍 Testing Read request with manual policy but global Write(10) permission");
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        "ed25519:client_requesting_key",
+        "client_key",
+        AuthPermission::Read,
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert_eq!(bootstrap_response.tree_id, tree_id);
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Read)
+            );
+            println!("✅ Read request auto-approved via global permission despite manual policy");
+        }
+        other => panic!(
+            "Expected Bootstrap (global permission override), got: {:?}",
+            other
+        ),
+    }
+
+    // Verify NO pending requests were created (global permission bypasses manual policy)
+    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    assert_eq!(
+        pending_requests.len(),
+        0,
+        "Global permission should override manual policy and not create pending requests"
+    );
+
+    // Test 2: Request Write(5) permission - should require manual approval (Write(5) > Write(10) in permission level)
+    println!("🔍 Testing Write(5) request exceeding global Write(10) permission");
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        "ed25519:write_requesting_key",
+        "write_client",
+        AuthPermission::Write(5),
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        SyncResponse::BootstrapPending { request_id, .. } => {
+            println!(
+                "✅ Write(5) request properly requires manual approval (exceeds global permission): {}",
+                request_id
+            );
+        }
+        other => panic!(
+            "Expected BootstrapPending for insufficient global permission, got: {:?}",
+            other
+        ),
+    }
+
+    // Verify one pending request was created for the Write request
+    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    assert_eq!(
+        pending_requests.len(),
+        1,
+        "Should have one pending request for permission exceeding global permission"
+    );
+
+    println!("✅ Global permission correctly overrides manual policy when sufficient");
+}
+
+/// Test that bootstrap approval works when key already has specific permission
+/// Should approve without adding duplicate key
+#[tokio::test]
+async fn test_bootstrap_with_existing_specific_key_permission() {
+    println!("\n🧪 TEST: Bootstrap with existing specific key permission");
+
+    // Setup server instance
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    let test_key = generate_public_key();
+
+    // Create database with both admin key and the test key with Write(5) permission
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Test Existing Key DB");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key for database creation
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 1},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add the test key with Write(5) permission
+    auth_doc
+        .set_json(
+            "existing_laptop",
+            serde_json::json!({
+                "pubkey": test_key,
+                "permissions": {"Write": 5},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Set up sync system
+    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Now try to bootstrap with the same key requesting Write(10) permission (should succeed)
+    let sync_request =
+        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
+
+    let response = sync_handler.handle_request(&sync_request).await;
+
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            // Should get approved sync response, not pending
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(10)) // Should get requested permission since existing allows it
+            );
+            println!("✅ Bootstrap approved via existing specific key permission");
+        }
+        other => panic!("Expected Bootstrap response, got: {:?}", other),
+    }
+
+    // Verify no duplicate key was added by checking auth settings
+    let transaction = database.new_transaction().unwrap();
+    let settings = transaction.get_settings().unwrap();
+    let auth_doc = settings.get_auth_doc_for_validation().unwrap();
+
+    // Should have exactly 2 keys (admin + existing test key)
+    let key_count = auth_doc.keys().count();
+    assert_eq!(
+        key_count, 2,
+        "Should not add duplicate key when permission already exists"
+    );
+
+    // Verify the original key is still there by checking the auth doc directly
+    assert!(
+        auth_doc.contains_key("existing_laptop"),
+        "Original key should still exist"
+    );
+
+    println!(
+        "✅ Bootstrap with existing specific key permission works correctly without duplicate"
+    );
+}
+
+/// Test that bootstrap approval works when key has global permission
+/// Should approve without adding new key
+#[tokio::test]
+async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
+    println!("\n🧪 TEST: Bootstrap with existing global permission - no duplicate key");
+
+    // Setup server instance
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    let test_key = generate_public_key();
+
+    // Create database with admin key and global Write(5) permission
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Test Global Permission No Duplicate DB");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key for database creation
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 1},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add global '*' permission with Write(5)
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 5},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Set up sync system
+    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Try to bootstrap with any key requesting Write(10) permission (should succeed via global)
+    let sync_request =
+        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
+
+    let response = sync_handler.handle_request(&sync_request).await;
+
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            // Should get approved sync response, not pending
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(10)) // Should get requested permission since global allows it
+            );
+            println!("✅ Bootstrap approved via existing global permission");
+        }
+        other => panic!("Expected Bootstrap response, got: {:?}", other),
+    }
+
+    // Verify no new key was added - should still only have admin + global key
+    let transaction = database.new_transaction().unwrap();
+    let settings = transaction.get_settings().unwrap();
+    let auth_doc = settings.get_auth_doc_for_validation().unwrap();
+
+    // Should have exactly 2 keys (admin + global "*" key)
+    let key_count = auth_doc.keys().count();
+    assert_eq!(
+        key_count, 2,
+        "Should not add new key when global permission exists"
+    );
+
+    // Verify the global key is still there
+    assert!(auth_doc.contains_key("*"), "Global key should still exist");
+
+    println!(
+        "✅ Bootstrap with existing global permission works correctly without adding duplicate key"
+    );
+}
+
+/// Test that demonstrates client-side key discovery issue: clients approved via global
+/// permission need a way to discover which SigKey to use for creating entries.
+///
+/// Current Behavior:
+/// - Server approves bootstrap via global "*" permission without adding a per-device key
+/// - Client successfully bootstraps and can read from the database
+/// - When client attempts to create entries, it must choose which SigKey to use:
+///   - Using their device key name (e.g., "client_key") will fail validation
+///   - Using "*" as the SigKey works correctly (with pubkey field populated)
+/// - However, the client has no programmatic way to discover this requirement
+///
+/// The Issue:
+/// This is a client-side API/UX design issue. Clients need a mechanism to:
+/// 1. Query the database's auth settings after bootstrap approval
+/// 2. Determine whether their access comes from global "*" or a specific key
+/// 3. Select the appropriate SigKey for entry creation based on that discovery
+///
+/// Potential Solutions:
+/// - Client-side helper API: `database.discover_auth_key()` that queries auth settings
+///   and returns the appropriate SigKey to use ("*" for global, specific key name otherwise)
+/// - Bootstrap response enhancement: Include which key authorized the client
+/// - Documentation: Clear guidance on when to use "*" vs device-specific keys
+///
+/// This test is intentionally ignored until the client-side key discovery mechanism is implemented.
+#[ignore]
+#[tokio::test]
+async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
+    println!("\n🧪 TEST: Global permission bootstrap client entry creation bug");
+
+    // Setup server instance with global permission
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    // Create database with global '*' permission allowing Write(5)
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Global Permission Bug Test DB");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 1},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add global '*' permission
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 5},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_doc);
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Setup client instance
+    let client_instance = setup_instance_with_initialized();
+    let client_key = "client_key";
+    client_instance.add_private_key(client_key).unwrap();
+
+    let client_pubkey = client_instance
+        .get_formatted_public_key(client_key)
+        .unwrap();
+
+    // Set up sync system and handler
+    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Client bootstraps via global permission - this should succeed
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &client_pubkey,
+        client_key,
+        AuthPermission::Write(10),
+    );
+    let response = sync_handler.handle_request(&sync_request).await;
+
+    // Verify bootstrap succeeded
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert!(
+                bootstrap_response.key_approved,
+                "Bootstrap should succeed via global permission"
+            );
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(10))
+            );
+            println!("✅ Client successfully bootstrapped via global permission");
+        }
+        other => panic!("Expected Bootstrap response, got: {:?}", other),
+    }
+
+    // CLIENT-SIDE KEY DISCOVERY ISSUE:
+    // The client cannot programmatically discover which SigKey to use for entry creation.
+    // This test demonstrates that clients need an API to query auth settings and
+    // determine whether to use "*" (for global permissions) or their device key name.
+
+    println!("📋 CLIENT-SIDE ISSUE: No API for discovering which SigKey to use");
+    println!("   Client approved via global permission but lacks key discovery mechanism");
+    println!("   Needs: database.discover_auth_key() or similar client-side API");
+
+    // When the client-side key discovery mechanism is implemented, this test should
+    // demonstrate its usage for determining the correct SigKey.
+
+    // For now, we intentionally fail here to document the missing client-side API
+    // and avoid moving `response` a second time (which would not compile).
+    panic!(
+        "❌ CLIENT-SIDE API MISSING: No mechanism for key discovery! \
+        Client needs a way to query auth settings and determine which SigKey to use \
+        for entry creation. Expected: database.discover_auth_key() returning '*' for global permissions."
+    );
 }

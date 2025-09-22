@@ -6,8 +6,9 @@
 use eidetica::{
     Instance,
     backend::database::InMemory,
+    constants::GLOBAL_PERMISSION_KEY,
     crdt::{Doc, doc::Value},
-    store::Table,
+    store::{SettingsStore, Table},
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -22,6 +23,23 @@ struct ChatMessage {
     author: String,
     content: String,
     timestamp: i64,
+}
+
+/// Helper function to check if global permissions are configured in auth settings.
+///
+/// Returns true if global "*" permission exists and is configured with "*" pubkey.
+fn has_global_permission_configured(settings: &SettingsStore) -> bool {
+    // Use SettingsStore's get_auth_settings method
+    if let Ok(auth_settings) = settings.get_auth_settings() {
+        // Try to get the global "*" key
+        if let Ok(global_key) = auth_settings.get_key(GLOBAL_PERMISSION_KEY) {
+            global_key.pubkey() == GLOBAL_PERMISSION_KEY
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
 /// Test authenticated bootstrap with Database operations (simulating chat app)
@@ -259,7 +277,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         }
     };
 
-    // Verify client's key was added to the database auth settings
+    // Verify authentication was successful
     println!("\n🔐 Checking authentication setup...");
     {
         let settings = client_database
@@ -271,53 +289,78 @@ async fn test_chat_app_authenticated_bootstrap() {
             println!("🔍 Database settings: {:?}", all_settings);
         }
 
-        // Try different ways to get the auth section
-        match settings.get("auth") {
-            Ok(value) => {
-                println!("✅ Auth value found - type: {:?}", value);
+        // Check if global permissions are configured
+        let has_global_permission = has_global_permission_configured(&settings);
 
-                // The auth section exists but keys might be stored as JSON strings
-                if let Value::Doc(auth_node) = value {
-                    println!("✅ Auth is a Node");
+        if has_global_permission {
+            println!("✅ Global '*' permission detected - bootstrap worked via global permission");
 
-                    // Try to get the key entry - it might be JSON string
-                    if let Some(key_value) = auth_node.get(CLIENT_KEY_NAME) {
-                        println!("🔍 Key value type: {:?}", key_value);
+            // With global permissions, the client key should NOT be in auth settings initially
+            // (but the bootstrap process via global permission should have worked)
+            match settings.get("auth") {
+                Ok(Value::Doc(auth_node)) => {
+                    if auth_node.get(CLIENT_KEY_NAME).is_none() {
+                        println!(
+                            "✅ Confirmed: Client key correctly NOT added due to global permission"
+                        );
+                        println!("   (but bootstrap approval worked via global '*' permission)");
+                    } else {
+                        println!("ℹ️  Client key found in auth settings (possibly added later)");
+                    }
+                }
+                _ => panic!("Auth section should exist"),
+            }
+        } else {
+            println!("🔍 No global permission - checking for client key in auth settings");
 
-                        // If it's a JSON string, parse it
-                        if let Value::Text(json_str) = key_value {
-                            let key_info: serde_json::Value =
-                                serde_json::from_str(json_str).expect("Failed to parse key JSON");
-                            let stored_pubkey =
-                                key_info["pubkey"].as_str().expect("Missing pubkey in JSON");
-                            println!("✅ Client key found with pubkey: {}", stored_pubkey);
-                            assert_eq!(
-                                stored_pubkey, client_pubkey,
-                                "Stored pubkey should match client's pubkey"
-                            );
-                        } else if let Value::Doc(key_node) = key_value {
-                            // It's a proper node
-                            if let Some(stored_pubkey) = key_node.get_as::<String>("pubkey") {
+            // Without global permissions, check that the client key was added
+            match settings.get("auth") {
+                Ok(value) => {
+                    println!("✅ Auth value found - type: {:?}", value);
+
+                    // The auth section exists but keys might be stored as JSON strings
+                    if let Value::Doc(auth_node) = value {
+                        println!("✅ Auth is a Doc");
+
+                        // Try to get the key entry - it might be JSON string
+                        if let Some(key_value) = auth_node.get(CLIENT_KEY_NAME) {
+                            println!("🔍 Key value type: {:?}", key_value);
+
+                            // If it's a JSON string, parse it
+                            if let Value::Text(json_str) = key_value {
+                                let key_info: serde_json::Value = serde_json::from_str(json_str)
+                                    .expect("Failed to parse key JSON");
+                                let stored_pubkey =
+                                    key_info["pubkey"].as_str().expect("Missing pubkey in JSON");
                                 println!("✅ Client key found with pubkey: {}", stored_pubkey);
                                 assert_eq!(
                                     stored_pubkey, client_pubkey,
                                     "Stored pubkey should match client's pubkey"
                                 );
+                            } else if let Value::Doc(key_node) = key_value {
+                                // It's a proper doc
+                                if let Some(stored_pubkey) = key_node.get_as::<String>("pubkey") {
+                                    println!("✅ Client key found with pubkey: {}", stored_pubkey);
+                                    assert_eq!(
+                                        stored_pubkey, client_pubkey,
+                                        "Stored pubkey should match client's pubkey"
+                                    );
+                                } else {
+                                    panic!("Client key exists but missing pubkey field");
+                                }
                             } else {
-                                panic!("Client key exists but missing pubkey field");
+                                panic!("Key value is neither JSON string nor Doc: {:?}", key_value);
                             }
                         } else {
-                            panic!("Key value is neither JSON string nor Node: {:?}", key_value);
+                            panic!("Client key NOT found in auth Doc");
                         }
                     } else {
-                        panic!("Client key NOT found in auth Node");
+                        panic!("Auth section is not a Doc: {:?}", value);
                     }
-                } else {
-                    panic!("Auth section is not a Node: {:?}", value);
                 }
-            }
-            Err(e) => {
-                panic!("No auth section in database settings: {:?}", e);
+                Err(e) => {
+                    panic!("No auth section in database settings: {:?}", e);
+                }
             }
         }
     }
@@ -345,6 +388,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Test that client can add new messages (write permission)
     println!("\n✍️ Client attempting to add a message...");
     {
+        // Create transaction using default auth
         let op = match client_database.new_transaction() {
             Ok(op) => {
                 println!("✅ Client created transaction successfully");
@@ -378,7 +422,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             Ok(_) => println!("✅ Client successfully committed transaction"),
             Err(e) => {
                 println!("❌ Client failed to commit transaction: {:?}", e);
-                panic!("Client should be able to commit transactions");
+                panic!("Client should be able to commit transactions after bootstrap");
             }
         }
     }

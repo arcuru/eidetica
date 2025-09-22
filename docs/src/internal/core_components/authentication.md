@@ -87,6 +87,13 @@ The authentication system provides three methods for managing keys with differen
 - Provides clear intent for key replacement operations
 - Always succeeds regardless of whether key exists
 
+**`can_access(pubkey, requested_permission)`**: Check if a public key has sufficient access
+
+- Checks both specific key permissions and global '\*' permissions
+- Returns true if the key has sufficient permission (either specific or global)
+- Used internally by bootstrap approval system to avoid unnecessary key additions
+- Supports the flexible access control patterns enabled by wildcard permissions
+
 ### Key Conflict Prevention
 
 During multi-device synchronization, the system prevents key conflicts:

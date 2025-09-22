@@ -243,6 +243,46 @@ impl AuthSettings {
         // Signing key must be >= new key permissions to prevent privilege escalation
         Ok(signing_key.effective_permission >= *new_key_permissions)
     }
+
+    /// Check if a public key can access the database with the requested permission.
+    ///
+    /// This method checks both specific key permissions and global '*' permissions
+    /// to determine if the given public key has sufficient access.
+    ///
+    /// FIXME: Needs update to work for delegated keys
+    ///
+    /// # Arguments
+    /// * `pubkey` - The public key to check (e.g., "ed25519:...")
+    /// * `requested_permission` - The permission level required
+    ///
+    /// # Returns
+    /// - `true` if the key has sufficient permission (either specific or global)
+    /// - `false` if the key lacks sufficient permission
+    pub fn can_access(&self, pubkey: &str, requested_permission: &Permission) -> bool {
+        // First check if there's a specific key entry that matches this pubkey
+        for key_name in self.inner.keys() {
+            if let Ok(auth_key) = self.get_key(key_name) {
+                // Check if this key matches the requested pubkey and has sufficient permissions
+                if auth_key.pubkey() == pubkey
+                    && *auth_key.status() == KeyStatus::Active
+                    && *auth_key.permissions() >= *requested_permission
+                {
+                    return true;
+                }
+            }
+        }
+
+        // Check if global '*' permission exists and is sufficient
+        if let Ok(global_key) = self.get_key("*")
+            && global_key.pubkey() == "*"
+            && *global_key.status() == KeyStatus::Active
+            && *global_key.permissions() >= *requested_permission
+        {
+            return true;
+        }
+
+        false
+    }
 }
 
 impl Default for AuthSettings {
@@ -372,5 +412,84 @@ mod tests {
                 .can_create_key(&write_resolved, &Permission::Write(20))
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn test_can_access_comprehensive() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        // Generate valid keys for testing
+        let specific_pubkey = generate_public_key();
+        let revoked_pubkey = generate_public_key();
+        let test_pubkey = generate_public_key();
+
+        // Test without any permissions
+        assert!(!settings.can_access(&test_pubkey, &Permission::Read));
+        assert!(!settings.can_access(&test_pubkey, &Permission::Write(10)));
+
+        // Add a specific key with Write(5) permission
+        let specific_key = AuthKey::active(&specific_pubkey, Permission::Write(5)).unwrap();
+        settings.add_key("laptop_key", specific_key).unwrap();
+
+        // Test specific key access
+        assert!(settings.can_access(&specific_pubkey, &Permission::Read));
+        assert!(settings.can_access(&specific_pubkey, &Permission::Write(5)));
+        assert!(settings.can_access(&specific_pubkey, &Permission::Write(10)));
+        assert!(!settings.can_access(&specific_pubkey, &Permission::Write(1))); // Higher permission
+        assert!(!settings.can_access(&specific_pubkey, &Permission::Admin(10)));
+
+        // Test that other keys don't have access
+        assert!(!settings.can_access(&test_pubkey, &Permission::Read));
+
+        // Add a revoked key
+        let revoked_key =
+            AuthKey::new(&revoked_pubkey, Permission::Admin(1), KeyStatus::Revoked).unwrap();
+        settings.add_key("revoked_key", revoked_key).unwrap();
+
+        // Test revoked key cannot access
+        assert!(!settings.can_access(&revoked_pubkey, &Permission::Read));
+        assert!(!settings.can_access(&revoked_pubkey, &Permission::Admin(10)));
+
+        // Add global '*' permission with Write(10)
+        let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+        settings.add_key("*", global_key).unwrap();
+
+        // Test global permission allows appropriate access for any key
+        let random_key = generate_public_key();
+        assert!(settings.can_access(&random_key, &Permission::Read));
+        assert!(settings.can_access(&random_key, &Permission::Write(10)));
+        assert!(settings.can_access(&random_key, &Permission::Write(15)));
+
+        // Test global permission denies higher privileges
+        assert!(!settings.can_access(&random_key, &Permission::Write(5)));
+        assert!(!settings.can_access(&random_key, &Permission::Admin(10)));
+
+        // Test that specific key still works and takes precedence when it has higher permission
+        assert!(settings.can_access(&specific_pubkey, &Permission::Write(5))); // Specific key has Write(5)
+        assert!(!settings.can_access(&random_key, &Permission::Write(5))); // Global only has Write(10)
+
+        // Add revoked global permission
+        let revoked_global_key =
+            AuthKey::new("*", Permission::Admin(1), KeyStatus::Revoked).unwrap();
+        settings.overwrite_key("*", revoked_global_key).unwrap();
+
+        // Test revoked global permission doesn't grant access
+        let new_random_key = generate_public_key();
+        assert!(!settings.can_access(&new_random_key, &Permission::Read));
+
+        // But specific key should still work
+        assert!(settings.can_access(&specific_pubkey, &Permission::Read));
+
+        // Add active global Admin permission
+        let admin_global_key = AuthKey::active("*", Permission::Admin(1)).unwrap();
+        settings.overwrite_key("*", admin_global_key).unwrap();
+
+        // Test global Admin permission allows everything
+        let any_key = generate_public_key();
+        assert!(settings.can_access(&any_key, &Permission::Read));
+        assert!(settings.can_access(&any_key, &Permission::Write(1)));
+        assert!(settings.can_access(&any_key, &Permission::Admin(5)));
     }
 }
