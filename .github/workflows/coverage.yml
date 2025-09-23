@@ -28,8 +28,7 @@ jobs:
 
       - name: Build Coverage
         run: |
-          echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-          cargo tarpaulin --verbose --all-features --include-tests --out lcov
+          cargo tarpaulin --verbose --all-features --out lcov --engine llvm
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

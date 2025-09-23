@@ -87,28 +87,40 @@
             ];
         };
 
-        # Build cargo dependencies once for caching (release profile by default)
+        # Build cargo dependencies for release builds
         # This creates a build cache that can be reused by all release builds
-        cargoArtifacts = craneLib.buildDepsOnly baseArgs;
+        cargoArtifacts = craneLib.buildDepsOnly (baseArgs
+          // {
+            pname = "release";
+            CARGO_PROFILE = "release";
+          });
 
         # Build cargo dependencies for debug profile (used by book-test)
         # Separate debug cache needed because debug/release profiles are incompatible
         cargoArtifactsDebug = craneLib.buildDepsOnly (baseArgs
           // {
-            pname = "debug-deps";
+            pname = "debug";
             CARGO_PROFILE = "dev";
           });
 
-        # Common arguments for cargo derivations that need cargoArtifacts
-        # Most builds use the release artifacts for better performance
-        commonArgs =
+        # Common arguments for release builds (tests, benchmarks, main packages)
+        releaseArgs =
           baseArgs
           // {
             inherit cargoArtifacts;
+            CARGO_PROFILE = "release";
+          };
+
+        # Common arguments for debug builds (analysis tools that don't need runtime performance)
+        debugArgs =
+          baseArgs
+          // {
+            cargoArtifacts = cargoArtifactsDebug;
+            CARGO_PROFILE = "dev";
           };
 
         # Library crate build
-        eidetica-lib = craneLib.buildPackage (commonArgs
+        eidetica-lib = craneLib.buildPackage (releaseArgs
           // {
             pname = "eidetica";
             cargoExtraArgs = "-p eidetica --all-features";
@@ -119,7 +131,7 @@
           });
 
         # Binary crate build
-        eidetica-bin = craneLib.buildPackage (commonArgs
+        eidetica-bin = craneLib.buildPackage (releaseArgs
           // {
             pname = "eidetica-bin";
             cargoExtraArgs = "-p eidetica-bin";
@@ -140,45 +152,53 @@
           eidetica-lib = eidetica-lib;
           eidetica-bin = eidetica-bin;
 
-          # Development and Quality Assurance packages
-
           # Check code coverage with tarpaulin
-          coverage = craneLib.cargoTarpaulin (commonArgs
+          coverage = craneLib.cargoTarpaulin (baseArgs
             // {
-              # Use lcov output format for wider tool support
-              cargoTarpaulinExtraArgs = "--skip-clean --include-tests --output-dir $out --out lcov";
+              # Use dummy artifacts since tarpaulin rebuilds everything anyway
+              cargoArtifacts = craneLib.mkDummySrc {src = ./.;};
+              # Use lcov output format for wider tool support and LLVM engine to avoid segfaults
+              cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
+              # Add llvm-tools-preview for tarpaulin
+              nativeBuildInputs =
+                baseArgs.nativeBuildInputs
+                ++ [
+                  (fenixStable.withComponents [
+                    "llvm-tools-preview"
+                  ])
+                ];
             });
 
           # Run clippy with strict warnings
-          clippy = craneLib.cargoClippy (commonArgs
+          clippy = craneLib.cargoClippy (debugArgs
             // {
               cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
             });
 
           # License compliance checking
-          deny = craneLib.cargoDeny commonArgs;
+          deny = craneLib.cargoDeny debugArgs;
 
           # Documentation generation
-          # Only docs for this workspace, not the deps
-          doc = craneLib.cargoDoc (commonArgs
+          doc = craneLib.cargoDoc (debugArgs
             // {
+              # Only docs for this workspace, not the deps
               cargoDocExtraArgs = "--workspace --all-features --no-deps";
             });
 
           # Code formatting check
-          fmt = craneLib.cargoFmt (commonArgs
+          fmt = craneLib.cargoFmt (debugArgs
             // {
               cargoExtraArgs = "--all";
             });
 
           # Test execution with nextest
-          test = craneLib.cargoNextest (commonArgs
+          test = craneLib.cargoNextest (releaseArgs
             // {
               cargoNextestExtraArgs = "--workspace --all-features --no-fail-fast";
             });
 
           # Benchmark execution
-          bench = craneLib.mkCargoDerivation (commonArgs
+          bench = craneLib.mkCargoDerivation (releaseArgs
             // {
               pname = "eidetica-bench";
               buildPhaseCargoCommand = "cargo bench --workspace --all-features";
@@ -189,31 +209,34 @@
             });
 
           # Security audit of dependencies
-          audit = craneLib.cargoAudit (commonArgs
+          # Uses debug build for faster analysis (no runtime performance needed)
+          audit = craneLib.cargoAudit (debugArgs
             // {
               inherit (inputs) advisory-db;
             });
 
           # Documentation examples testing
-          # Uses debug cargoArtifacts for better build cache reuse
           book-test = craneLib.mkCargoDerivation (baseArgs
             // {
               pname = "book-test";
-              src = ./.; # Needs the docs directory
-              cargoArtifacts = cargoArtifactsDebug; # Reuse debug dependencies
+              src = ./.; # Needs the docs directory (not just cleanCargoSource)
+              # Force empty cargoArtifacts to avoid any cache at all
+              cargoArtifacts = craneLib.mkDummySrc {src = ./.;};
               nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.mdbook];
 
-              # Force debug build to match cargoArtifactsDebug
+              # Use debug profile for faster builds
               CARGO_PROFILE = "dev";
-              buildPhaseCargoCommand = "cargoWithProfile build -p eidetica --features full";
+              buildPhaseCargoCommand = "cargo build -p eidetica --features full";
 
               doCheck = true;
               checkPhase = ''
                 runHook preCheck
-                RUST_LOG=warn mdbook test docs -L target/debug/deps
+                cd docs
+                RUST_LOG=warn mdbook test . -L ../target/debug/deps
                 runHook postCheck
               '';
 
+              doInstallCargoArtifacts = false;
               installPhase = ''
                 runHook preInstall
                 mkdir -p $out
@@ -238,9 +261,9 @@
             ;
 
           # Note: Excluded from CI for performance reasons:
-          # - coverage: expensive tarpaulin run
-          # - book-test: rebuilds dependencies for mdbook compatibility
-          # - bench: benchmarks are run separately
+          # - coverage: tarpaulin can not use cached dependencies and rebuilds everything
+          # - book-test: requires mdbook and can not use cached deps
+          # - bench: benchmarks are run separately and take significant time
         };
 
         # Formatting configuration via treefmt

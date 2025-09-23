@@ -1,0 +1,37 @@
+name: Coverage (Nix)
+
+on:
+  # Run on main branch pushes
+  push:
+    branches: ["main"]
+  # Allow manual triggering
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+      - name: Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Build Coverage
+        run: nix build .#coverage --print-build-logs
+
+      # Extract coverage data from the Nix store
+      - name: Extract Coverage Data
+        run: |
+          mkdir -p coverage
+          cp -r $(nix path-info .#coverage)/* coverage/
+          ls -la coverage/
+
+      # Not uploading yet, testing this flow
+      # - name: Upload coverage to Codecov
+      #   uses: codecov/codecov-action@v4
+      #   with:
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+      #     files: coverage/lcov.info
+      #     fail_ci_if_error: true

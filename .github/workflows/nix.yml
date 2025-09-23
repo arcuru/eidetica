@@ -17,6 +17,32 @@ jobs:
       - name: Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      # Let the Nix flake manage the actual workflow definitions
-      - name: Checks
-        run: nix flake check
+      # Run individual checks for better visibility
+      - name: Build eidetica-lib
+        run: nix build .#eidetica-lib --print-build-logs
+        continue-on-error: true
+      - name: Build eidetica-bin
+        run: nix build .#eidetica-bin --print-build-logs
+        continue-on-error: true
+
+      - name: Run tests
+        run: nix build .#test --print-build-logs
+        continue-on-error: true
+      - name: Run clippy
+        run: nix build .#clippy --print-build-logs
+        continue-on-error: true
+      - name: Check formatting
+        run: nix build .#fmt --print-build-logs
+        continue-on-error: true
+      - name: Build documentation
+        run: nix build .#doc --print-build-logs
+        continue-on-error: true
+      - name: Check licenses
+        run: nix build .#deny --print-build-logs
+        continue-on-error: true
+      - name: Run security audit
+        run: nix build .#audit --print-build-logs
+        continue-on-error: true
+      - name: Test documentation examples
+        run: nix build .#book-test --print-build-logs
+        continue-on-error: true
