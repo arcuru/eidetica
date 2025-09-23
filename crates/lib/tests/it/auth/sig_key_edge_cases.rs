@@ -7,7 +7,7 @@ use eidetica::{
     Instance, Result,
     auth::{
         crypto::format_public_key,
-        types::{AuthKey, DelegationStep, KeyStatus, Permission, SigInfo, SigKey},
+        types::{AuthKey, DelegationStep, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
     backend::database::InMemory,
@@ -43,11 +43,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     let mut auth = Doc::new();
     auth.set_json(
         "", // Empty key ID
-        AuthKey {
-            pubkey: format_public_key(&admin_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
+        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
     )
     .unwrap();
 
@@ -262,11 +258,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     let mut auth = Doc::new();
     auth.set_json(
         "admin",
-        AuthKey {
-            pubkey: format_public_key(&admin_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
+        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
     )
     .unwrap();
 

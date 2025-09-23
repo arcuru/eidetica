@@ -18,3 +18,16 @@ pub use permission::*;
 pub use settings::*;
 pub use types::*;
 pub use validation::AuthValidator;
+
+#[cfg(test)]
+/// Generate a valid, formatted Ed25519 public key for testing
+///
+/// Returns a public key string in the format "ed25519:<base64_url_unpadded_key>"
+/// suitable for use in AuthKey constructors and other authentication tests.
+///
+/// This is a convenience function for tests that need a valid public key but
+/// don't need the corresponding private key for signing operations.
+pub fn generate_public_key() -> String {
+    let (_, verifying_key) = generate_keypair();
+    format_public_key(&verifying_key)
+}

@@ -14,7 +14,7 @@ use crate::{
     auth::{
         crypto::format_public_key,
         settings::AuthSettings,
-        types::{AuthKey, KeyStatus, Permission},
+        types::{AuthKey, Permission},
     },
     backend::BackendDB,
     constants::{ROOT, SETTINGS},
@@ -79,11 +79,11 @@ impl Database {
 
             // Create auth settings with the provided key
             let mut auth_settings_handler = AuthSettings::new();
-            let super_user_auth_key = AuthKey {
-                pubkey: format_public_key(&public_key),
-                permissions: Permission::Admin(0), // Highest priority
-                status: KeyStatus::Active,
-            };
+            let super_user_auth_key = AuthKey::active(
+                format_public_key(&public_key),
+                Permission::Admin(0), // Highest priority
+            )
+            .unwrap();
             auth_settings_handler.add_key(signing_key_name, super_user_auth_key)?;
 
             // Prepare final database settings for the initial commit

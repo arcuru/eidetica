@@ -1,7 +1,7 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::{crdt::Doc, entry::ID};
+use crate::{auth::generate_public_key, crdt::Doc, entry::ID};
 
 #[test]
 fn test_permission_min_max() {
@@ -29,18 +29,14 @@ fn test_permission_min_max() {
 
 #[test]
 fn test_auth_key_serialization() {
-    let key = AuthKey {
-        pubkey: "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk".to_string(),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let key = AuthKey::active(generate_public_key(), Permission::Write(10)).unwrap();
 
     let serialized = serde_json::to_string(&key).unwrap();
     let deserialized: AuthKey = serde_json::from_str(&serialized).unwrap();
 
-    assert_eq!(key.pubkey, deserialized.pubkey);
-    assert_eq!(key.permissions, deserialized.permissions);
-    assert_eq!(key.status, deserialized.status);
+    assert_eq!(key.pubkey(), deserialized.pubkey());
+    assert_eq!(key.permissions(), deserialized.permissions());
+    assert_eq!(key.status(), deserialized.status());
 }
 
 #[test]
@@ -85,20 +81,16 @@ fn test_delegation_path_sig_key() {
 
 #[test]
 fn test_auth_key_to_nested_value() {
-    let key = AuthKey {
-        pubkey: "ed25519:test_key".to_string(),
-        permissions: Permission::Read,
-        status: KeyStatus::Active,
-    };
+    let key = AuthKey::active(generate_public_key(), Permission::Read).unwrap();
 
     let mut nested = Doc::new();
     nested.set_json("test_key", &key).unwrap();
 
     // Test that we can retrieve it back
     let retrieved: AuthKey = nested.get_json("test_key").unwrap();
-    assert_eq!(retrieved.pubkey, key.pubkey);
-    assert_eq!(retrieved.permissions, key.permissions);
-    assert_eq!(retrieved.status, key.status);
+    assert_eq!(retrieved.pubkey(), key.pubkey());
+    assert_eq!(retrieved.permissions(), key.permissions());
+    assert_eq!(retrieved.status(), key.status());
 }
 
 #[test]
@@ -354,19 +346,20 @@ fn test_delegated_tree_ref_complete_roundtrip() {
 
 #[test]
 fn test_auth_key_nested_value_roundtrip() {
-    let original = AuthKey {
-        pubkey: "ed25519:test_key".to_string(),
-        permissions: Permission::Write(42),
-        status: KeyStatus::Revoked,
-    };
+    let original = AuthKey::new(
+        generate_public_key(),
+        Permission::Write(42),
+        KeyStatus::Revoked,
+    )
+    .unwrap();
 
     let mut nested = Doc::new();
     nested.set_json("auth_key", &original).unwrap();
     let parsed: AuthKey = nested.get_json("auth_key").unwrap();
 
-    assert_eq!(original.pubkey, parsed.pubkey);
-    assert_eq!(original.permissions, parsed.permissions);
-    assert_eq!(original.status, parsed.status);
+    assert_eq!(original.pubkey(), parsed.pubkey());
+    assert_eq!(original.permissions(), parsed.permissions());
+    assert_eq!(original.status(), parsed.status());
 }
 
 #[test]
@@ -378,7 +371,7 @@ fn test_auth_key_constructor_validation() {
     let valid_pubkey = format_public_key(&verifying_key);
 
     // Test valid key creation
-    let valid_key = AuthKey::new(&valid_pubkey, Permission::Write(10), KeyStatus::Active);
+    let valid_key = AuthKey::active(&valid_pubkey, Permission::Write(10));
     assert!(valid_key.is_ok());
 
     let key = valid_key.unwrap();
@@ -387,7 +380,7 @@ fn test_auth_key_constructor_validation() {
     assert_eq!(key.status(), &KeyStatus::Active);
 
     // Test invalid key format
-    let invalid_key = AuthKey::new("invalid_key_format", Permission::Read, KeyStatus::Active);
+    let invalid_key = AuthKey::active("invalid_key_format", Permission::Read);
     assert!(invalid_key.is_err());
 
     // Test missing ed25519 prefix
@@ -411,43 +404,25 @@ fn test_auth_key_constructor_validation() {
 }
 
 #[test]
-fn test_auth_key_validation_method() {
+fn test_auth_key_constructor_error_handling() {
     use crate::auth::crypto::{format_public_key, generate_keypair};
 
     // Generate a real key for testing
     let (_, verifying_key) = generate_keypair();
     let valid_pubkey = format_public_key(&verifying_key);
 
-    // Create key with direct construction (bypassing validation)
-    let valid_key = AuthKey {
-        pubkey: valid_pubkey,
-        permissions: Permission::Write(5),
-        status: KeyStatus::Active,
-    };
+    // Valid key construction should succeed
+    let valid_key = AuthKey::active(valid_pubkey, Permission::Write(5));
+    assert!(valid_key.is_ok());
 
-    // Should validate successfully
-    assert!(valid_key.validate().is_ok());
-
-    // Create key with invalid format
-    let invalid_key = AuthKey {
-        pubkey: "invalid_format".to_string(),
-        permissions: Permission::Read,
-        status: KeyStatus::Revoked,
-    };
-
-    // Should fail validation
-    assert!(invalid_key.validate().is_err());
+    // Invalid key construction should fail
+    let invalid_key = AuthKey::new("invalid_format", Permission::Read, KeyStatus::Revoked);
+    assert!(invalid_key.is_err());
 }
 
 #[test]
 fn test_auth_key_mutators() {
-    use crate::auth::crypto::{format_public_key, generate_keypair};
-
-    // Generate a real key for testing
-    let (_, verifying_key) = generate_keypair();
-    let valid_pubkey = format_public_key(&verifying_key);
-
-    let mut key = AuthKey::new(&valid_pubkey, Permission::Write(10), KeyStatus::Active).unwrap();
+    let mut key = AuthKey::active(generate_public_key(), Permission::Write(10)).unwrap();
 
     // Test status modification
     key.set_status(KeyStatus::Revoked);

@@ -139,15 +139,15 @@ impl SettingsStore {
             match auth.get_key(key_name) {
                 Ok(existing_key) => {
                     // Key exists - check if same public key
-                    if existing_key.pubkey == key.pubkey {
+                    if existing_key.pubkey() == key.pubkey() {
                         // Same public key - update with new permissions/status
                         auth.overwrite_key(key_name, key)
                     } else {
                         // Different public key - this is a conflict
                         Err(crate::auth::errors::AuthError::KeyNameConflict {
                             key_name: key_name.to_string(),
-                            existing_pubkey: existing_key.pubkey,
-                            new_pubkey: key.pubkey,
+                            existing_pubkey: existing_key.pubkey().to_string(),
+                            new_pubkey: key.pubkey().to_string(),
                         }
                         .into())
                     }
@@ -236,7 +236,10 @@ mod tests {
     use super::*;
     use crate::{
         Database, Instance,
-        auth::types::{KeyStatus, Permission},
+        auth::{
+            generate_public_key,
+            types::{KeyStatus, Permission},
+        },
         backend::database::InMemory,
     };
 
@@ -293,11 +296,7 @@ mod tests {
         let initial_key_count = initial_auth_settings.get_all_keys().unwrap().len();
 
         // Should be able to add an auth key
-        let auth_key = AuthKey {
-            pubkey: "ed25519:test_key".to_string(),
-            permissions: Permission::Admin(1),
-            status: KeyStatus::Active,
-        };
+        let auth_key = AuthKey::active(generate_public_key(), Permission::Admin(1)).unwrap();
 
         settings_store
             .set_auth_key("new_test_key", auth_key.clone())
@@ -305,9 +304,9 @@ mod tests {
 
         // Should be able to retrieve the key
         let retrieved_key = settings_store.get_auth_key("new_test_key").unwrap();
-        assert_eq!(retrieved_key.pubkey, auth_key.pubkey);
-        assert_eq!(retrieved_key.permissions, auth_key.permissions);
-        assert_eq!(retrieved_key.status, auth_key.status);
+        assert_eq!(retrieved_key.pubkey(), auth_key.pubkey());
+        assert_eq!(retrieved_key.permissions(), auth_key.permissions());
+        assert_eq!(retrieved_key.status(), auth_key.status());
 
         // Should have one more key than initially
         let final_auth_settings = settings_store.get_auth_settings().unwrap();
@@ -321,11 +320,7 @@ mod tests {
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        let auth_key = AuthKey {
-            pubkey: "ed25519:test_key".to_string(),
-            permissions: Permission::Write(5),
-            status: KeyStatus::Active,
-        };
+        let auth_key = AuthKey::active(generate_public_key(), Permission::Write(5)).unwrap();
 
         // Add key
         settings_store
@@ -334,15 +329,15 @@ mod tests {
 
         // Verify key exists
         let retrieved = settings_store.get_auth_key("laptop").unwrap();
-        assert_eq!(retrieved.pubkey, auth_key.pubkey);
-        assert_eq!(retrieved.status, KeyStatus::Active);
+        assert_eq!(retrieved.pubkey(), auth_key.pubkey());
+        assert_eq!(retrieved.status(), &KeyStatus::Active);
 
         // Revoke key
         settings_store.revoke_auth_key("laptop").unwrap();
 
         // Verify key is revoked
         let revoked_key = settings_store.get_auth_key("laptop").unwrap();
-        assert_eq!(revoked_key.status, KeyStatus::Revoked);
+        assert_eq!(revoked_key.status(), &KeyStatus::Revoked);
     }
 
     #[test]
@@ -354,16 +349,8 @@ mod tests {
         // Use the closure-based update
         settings_store
             .update_auth_settings(|auth| {
-                let key1 = AuthKey {
-                    pubkey: "ed25519:key1".to_string(),
-                    permissions: Permission::Admin(1),
-                    status: KeyStatus::Active,
-                };
-                let key2 = AuthKey {
-                    pubkey: "ed25519:key2".to_string(),
-                    permissions: Permission::Write(5),
-                    status: KeyStatus::Active,
-                };
+                let key1 = AuthKey::active(generate_public_key(), Permission::Admin(1)).unwrap();
+                let key2 = AuthKey::active(generate_public_key(), Permission::Write(5)).unwrap();
 
                 auth.add_key("admin", key1)?;
                 auth.add_key("writer", key2)?;
@@ -386,11 +373,8 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Add a key
-        let auth_key = AuthKey {
-            pubkey: "ed25519:validator_key".to_string(),
-            permissions: Permission::Read,
-            status: KeyStatus::Active,
-        };
+        let valid_pubkey = generate_public_key();
+        let auth_key = AuthKey::active(valid_pubkey.clone(), Permission::Read).unwrap();
         settings_store.set_auth_key("validator", auth_key).unwrap();
 
         // Get auth doc for validation
@@ -398,7 +382,7 @@ mod tests {
 
         // Should contain the key
         let validator_key: AuthKey = auth_doc.get_json("validator").unwrap();
-        assert_eq!(validator_key.pubkey, "ed25519:validator_key");
+        assert_eq!(validator_key.pubkey(), &valid_pubkey);
     }
 
     #[test]

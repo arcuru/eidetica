@@ -8,11 +8,7 @@ use tracing::{debug, info};
 
 use crate::{
     Database, Entry, Result,
-    auth::{
-        crypto::format_public_key,
-        settings::AuthSettings,
-        types::{AuthKey, KeyStatus},
-    },
+    auth::{crypto::format_public_key, settings::AuthSettings, types::AuthKey},
     constants::SETTINGS,
     crdt::Doc,
     store::DocStore,
@@ -1387,11 +1383,11 @@ impl Sync {
             Err(_) => AuthSettings::new(), // Key doesn't exist, create new
         };
 
-        let auth_key = AuthKey {
-            pubkey: request.requesting_pubkey.clone(),
-            permissions: request.requested_permission.clone(),
-            status: KeyStatus::Active,
-        };
+        let auth_key = AuthKey::active(
+            request.requesting_pubkey.clone(),
+            request.requested_permission.clone(),
+        )
+        .unwrap();
 
         // Add the new key to auth settings
         auth_settings.add_key(&request.requesting_key_name, auth_key)?;

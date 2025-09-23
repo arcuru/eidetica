@@ -10,16 +10,16 @@ use crate::{Result, auth::crypto::parse_public_key, entry::ID};
 
 /// Authentication key configuration stored in _settings.auth
 ///
-/// TODO: Migrate to use private members so every use is validated.
+/// All fields are private to ensure validation through constructors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthKey {
     /// Public key with crypto-agility prefix
     /// Currently only supports ed25519 format: "ed25519:<base64_url_unpadded_key>"
-    pub pubkey: String,
+    pubkey: String,
     /// Permission level for this key
-    pub permissions: Permission,
+    permissions: Permission,
     /// Current status of the key
-    pub status: KeyStatus,
+    status: KeyStatus,
 }
 
 impl AuthKey {
@@ -59,8 +59,10 @@ impl AuthKey {
     ) -> Result<Self> {
         let pubkey = pubkey.into();
 
-        // Validate public key format
-        parse_public_key(&pubkey)?;
+        // Validate public key format (allow wildcard "*")
+        if pubkey != "*" {
+            parse_public_key(&pubkey)?;
+        }
 
         Ok(Self {
             pubkey,

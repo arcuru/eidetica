@@ -26,7 +26,7 @@ use crate::{
     Database, Result, Store,
     auth::{
         crypto::{format_public_key, sign_entry},
-        types::{Operation, SigInfo, SigKey},
+        types::{AuthKey, Operation, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
     constants::SETTINGS,
@@ -797,11 +797,11 @@ impl Transaction {
                 let public_key = signing_key.as_ref().unwrap().verifying_key();
 
                 let mut auth_settings = crate::auth::settings::AuthSettings::new();
-                let super_user_auth_key = crate::auth::types::AuthKey {
-                    pubkey: crate::auth::crypto::format_public_key(&public_key),
-                    permissions: crate::auth::types::Permission::Admin(0), // Highest priority
-                    status: crate::auth::types::KeyStatus::Active,
-                };
+                let super_user_auth_key = AuthKey::active(
+                    format_public_key(&public_key),
+                    Permission::Admin(0), // Highest priority
+                )
+                .unwrap();
                 auth_settings.add_key(key_name, super_user_auth_key)?;
 
                 // Update the settings subtree to include auth configuration

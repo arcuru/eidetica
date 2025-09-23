@@ -139,22 +139,22 @@ fn test_permission_hierarchical_key_modification() {
     // Create resolved auth for super admin
     let super_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: super_admin.permissions,
-        key_status: super_admin.status,
+        effective_permission: super_admin.permissions().clone(),
+        key_status: super_admin.status().clone(),
     };
 
     // Create resolved auth for low admin
     let low_admin_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: low_admin.permissions,
-        key_status: low_admin.status,
+        effective_permission: low_admin.permissions().clone(),
+        key_status: low_admin.status().clone(),
     };
 
     // Create resolved auth for write key
     let write_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: high_write.permissions,
-        key_status: high_write.status,
+        effective_permission: high_write.permissions().clone(),
+        key_status: high_write.status().clone(),
     };
 
     // Super admin should be able to modify everything

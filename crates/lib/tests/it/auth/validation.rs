@@ -108,11 +108,11 @@ fn test_multiple_authenticated_entries() {
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();
 
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&public_key),
-        permissions: Permission::Admin(0), // Admin needed to create tree with auth
-        status: KeyStatus::Active,
-    };
+    let auth_key = AuthKey::active(
+        format_public_key(&public_key),
+        Permission::Admin(0), // Admin needed to create tree with auth
+    )
+    .unwrap();
     auth_settings.set_json("TEST_KEY", auth_key).unwrap();
     settings.set_node("auth", auth_settings);
 
@@ -226,11 +226,8 @@ fn test_entry_validation_cache_behavior() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
 
-    let auth_key = eidetica::auth::types::AuthKey {
-        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
-        permissions: eidetica::auth::types::Permission::Write(10),
-        status: eidetica::auth::types::KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     // Create settings with the key
     let mut settings = Doc::new();
@@ -261,7 +258,7 @@ fn test_entry_validation_cache_behavior() {
 
     // Modify the key to be revoked
     let mut revoked_auth_key = auth_key.clone();
-    revoked_auth_key.status = eidetica::auth::types::KeyStatus::Revoked;
+    revoked_auth_key.set_status(eidetica::auth::types::KeyStatus::Revoked);
 
     let mut new_settings = Doc::new();
     let mut new_auth_settings = Doc::new();
@@ -291,11 +288,8 @@ fn test_entry_validation_with_malformed_keys() {
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     // Create settings with a valid key for comparison
-    let auth_key = eidetica::auth::types::AuthKey {
-        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
-        permissions: eidetica::auth::types::Permission::Write(10),
-        status: eidetica::auth::types::KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();
@@ -324,25 +318,20 @@ fn test_entry_validation_with_malformed_keys() {
         "Correctly signed entry should validate"
     );
 
-    // Now test with malformed key in settings
-    let malformed_auth_key = eidetica::auth::types::AuthKey {
-        pubkey: "ed25519:invalid_base64_data!@#$".to_string(),
-        permissions: eidetica::auth::types::Permission::Write(10),
-        status: eidetica::auth::types::KeyStatus::Active,
-    };
+    // Test validation with mismatched signature (key exists but signature is wrong)
+    let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let mut entry_with_wrong_sig = correct_entry.clone();
 
-    let mut malformed_settings = Doc::new();
-    let mut malformed_auth_settings = Doc::new();
-    malformed_auth_settings
-        .set_json("TEST_KEY", malformed_auth_key.clone())
-        .unwrap();
-    malformed_settings.set_node("auth", malformed_auth_settings);
+    // Sign with a different key than what's in settings
+    let wrong_signature =
+        eidetica::auth::crypto::sign_entry(&entry_with_wrong_sig, &wrong_signing_key).unwrap();
+    entry_with_wrong_sig.sig.sig = Some(wrong_signature);
 
-    // Entry with same ID but malformed key in settings should fail
-    let result_malformed = validator.validate_entry(&correct_entry, &malformed_settings, None);
+    // Should fail validation because signature doesn't match the key in settings
+    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &settings, None);
     assert!(
-        result_malformed.is_err() || (result_malformed.is_ok() && !result_malformed.unwrap()),
-        "Entry should fail validation with malformed key settings"
+        result_wrong_sig.is_err() || (result_wrong_sig.is_ok() && !result_wrong_sig.unwrap()),
+        "Entry should fail validation with mismatched signature"
     );
 
     // Create entry with corrupted signature
@@ -416,11 +405,8 @@ fn test_entry_validation_with_invalid_signatures() {
     let (_wrong_signing_key, wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
 
     // Create settings with the correct public key
-    let auth_key = eidetica::auth::types::AuthKey {
-        pubkey: eidetica::auth::crypto::format_public_key(&verifying_key),
-        permissions: eidetica::auth::types::Permission::Write(10),
-        status: eidetica::auth::types::KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();

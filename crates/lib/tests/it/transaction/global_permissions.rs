@@ -7,7 +7,7 @@ use eidetica::{
     Instance,
     auth::{
         crypto::{format_public_key, generate_keypair},
-        types::{AuthKey, KeyStatus, Permission},
+        types::{AuthKey, Permission},
     },
     backend::database::InMemory,
     crdt::Doc,
@@ -34,11 +34,11 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
     let mut auth_section = Doc::new();
 
     // Add global permission key
-    let global_auth_key = AuthKey {
-        pubkey: "*".to_string(), // Wildcard pubkey means "accept any valid key"
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let global_auth_key = AuthKey::active(
+        "*", // Wildcard pubkey means "accept any valid key"
+        Permission::Write(10),
+    )
+    .unwrap();
     auth_section
         .set_json("*", &global_auth_key)
         .expect("Failed to set global auth key");
@@ -58,11 +58,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
         Some(eidetica::crdt::doc::Value::Node(node)) => node.clone(),
         _ => panic!("Expected auth section to be a node"),
     };
-    let admin_auth_key = AuthKey {
-        pubkey: admin_public_key_str,
-        permissions: Permission::Admin(1),
-        status: KeyStatus::Active,
-    };
+    let admin_auth_key = AuthKey::active(admin_public_key_str, Permission::Admin(1)).unwrap();
     auth_section
         .set_json("admin_key", &admin_auth_key)
         .expect("Failed to set admin auth key");

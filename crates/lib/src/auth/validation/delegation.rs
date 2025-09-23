@@ -279,12 +279,12 @@ impl DelegationResolver {
             }
         })?;
 
-        let public_key = parse_public_key(&auth_key.pubkey)?;
+        let public_key = parse_public_key(auth_key.pubkey())?;
 
         Ok(ResolvedAuth {
             public_key,
-            effective_permission: auth_key.permissions.clone(),
-            key_status: auth_key.status,
+            effective_permission: auth_key.permissions().clone(),
+            key_status: auth_key.status().clone(),
         })
     }
 }

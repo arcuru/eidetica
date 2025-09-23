@@ -23,7 +23,7 @@ use crate::{
     Database,
     auth::{
         crypto::{create_challenge_response, format_public_key, generate_challenge},
-        types::{AuthKey, KeyStatus},
+        types::AuthKey,
     },
     backend::BackendDB,
     entry::ID,
@@ -768,12 +768,8 @@ impl SyncHandlerImpl {
         transaction.set_auth_key(&self.device_key_name);
         let settings_store = SettingsStore::new(&transaction)?;
 
-        // Create the new auth key
-        let auth_key = AuthKey {
-            pubkey: public_key.to_string(),
-            permissions: permission,
-            status: KeyStatus::Active,
-        };
+        // Create the new auth key with validation
+        let auth_key = AuthKey::active(public_key.to_string(), permission).unwrap();
 
         // Set the key using SettingsStore (handles upsert logic)
         match settings_store.set_auth_key(key_name, auth_key.clone()) {

@@ -94,7 +94,7 @@ impl AuthSettings {
         if self.inner.get(key_name).is_some() {
             match self.inner.get_json::<AuthKey>(key_name) {
                 Ok(mut auth_key) => {
-                    auth_key.status = KeyStatus::Revoked;
+                    auth_key.set_status(KeyStatus::Revoked);
                     self.inner.set_json(key_name, auth_key)?;
                     Ok(())
                 }
@@ -180,11 +180,11 @@ impl AuthSettings {
         match sig_key {
             SigKey::Direct(key_name) => {
                 let auth_key = self.get_key(key_name)?;
-                let public_key = crate::auth::crypto::parse_public_key(&auth_key.pubkey)?;
+                let public_key = crate::auth::crypto::parse_public_key(auth_key.pubkey())?;
                 Ok(ResolvedAuth {
                     public_key,
-                    effective_permission: auth_key.permissions.clone(),
-                    key_status: auth_key.status,
+                    effective_permission: auth_key.permissions().clone(),
+                    key_status: auth_key.status().clone(),
                 })
             }
             SigKey::DelegationPath(_) => {
@@ -221,7 +221,7 @@ impl AuthSettings {
         let target_key = self.get_key(target_key_name.as_ref())?;
 
         // Use the built-in permission ordering: signing key must be >= target key
-        Ok(signing_key.effective_permission >= target_key.permissions)
+        Ok(signing_key.effective_permission >= *target_key.permissions())
     }
 
     /// Check if a signing key can create a new key with the specified permissions.
@@ -253,7 +253,10 @@ impl Default for AuthSettings {
 mod tests {
     use super::*;
     use crate::{
-        auth::types::{KeyStatus, Permission},
+        auth::{
+            generate_public_key,
+            types::{KeyStatus, Permission},
+        },
         crdt::CRDT,
     };
 
@@ -262,30 +265,22 @@ mod tests {
         let mut settings = AuthSettings::new();
 
         // Add a key
-        let auth_key = AuthKey {
-            pubkey: "ed25519:test_key".to_string(),
-            permissions: Permission::Write(10),
-            status: KeyStatus::Active,
-        };
+        let auth_key = AuthKey::active(generate_public_key(), Permission::Write(10)).unwrap();
 
         settings.add_key("KEY_LAPTOP", auth_key.clone()).unwrap();
 
         // Retrieve the key
         let retrieved = settings.get_key("KEY_LAPTOP").unwrap();
-        assert_eq!(retrieved.pubkey, auth_key.pubkey);
-        assert_eq!(retrieved.permissions, auth_key.permissions);
-        assert_eq!(retrieved.status, auth_key.status);
+        assert_eq!(retrieved.pubkey(), auth_key.pubkey());
+        assert_eq!(retrieved.permissions(), auth_key.permissions());
+        assert_eq!(retrieved.status(), auth_key.status());
     }
 
     #[test]
     fn test_revoke_key() {
         let mut settings = AuthSettings::new();
 
-        let auth_key = AuthKey {
-            pubkey: "ed25519:test_key".to_string(),
-            permissions: Permission::Admin(5),
-            status: KeyStatus::Active,
-        };
+        let auth_key = AuthKey::active(generate_public_key(), Permission::Admin(5)).unwrap();
 
         settings.add_key("KEY_LAPTOP", auth_key).unwrap();
 
@@ -294,7 +289,7 @@ mod tests {
 
         // Check that it's revoked
         let retrieved = settings.get_key("KEY_LAPTOP").unwrap();
-        assert_eq!(retrieved.status, KeyStatus::Revoked);
+        assert_eq!(retrieved.status(), &KeyStatus::Revoked);
     }
 
     #[test]
@@ -302,17 +297,19 @@ mod tests {
         let mut settings1 = AuthSettings::new();
         let mut settings2 = AuthSettings::new();
 
-        let key1 = AuthKey {
-            pubkey: "ed25519:key1".to_string(),
-            permissions: Permission::Write(10),
-            status: KeyStatus::Active,
-        };
+        let key1 = AuthKey::new(
+            generate_public_key(),
+            Permission::Write(10),
+            KeyStatus::Active,
+        )
+        .unwrap();
 
-        let key2 = AuthKey {
-            pubkey: "ed25519:key2".to_string(),
-            permissions: Permission::Admin(5),
-            status: KeyStatus::Active,
-        };
+        let key2 = AuthKey::new(
+            generate_public_key(),
+            Permission::Admin(5),
+            KeyStatus::Active,
+        )
+        .unwrap();
 
         settings1.add_key("KEY_1", key1).unwrap();
         settings2.add_key("KEY_2", key2).unwrap();
@@ -335,11 +332,12 @@ mod tests {
         let mut settings = AuthSettings::new();
 
         // Add high-priority admin key
-        let high_priority_key = AuthKey {
-            pubkey: "ed25519:admin".to_string(),
-            permissions: Permission::Admin(1), // High priority
-            status: KeyStatus::Active,
-        };
+        let high_priority_key = AuthKey::new(
+            generate_public_key(),
+            Permission::Admin(1), // High priority
+            KeyStatus::Active,
+        )
+        .unwrap();
 
         settings
             .add_key("ADMIN_KEY", high_priority_key.clone())
@@ -348,8 +346,8 @@ mod tests {
         // Create resolved auth for the admin key
         let admin_resolved = ResolvedAuth {
             public_key: crate::auth::crypto::generate_keypair().1,
-            effective_permission: high_priority_key.permissions,
-            key_status: high_priority_key.status,
+            effective_permission: high_priority_key.permissions().clone(),
+            key_status: high_priority_key.status().clone(),
         };
 
         // Should be able to create new keys with lower permissions

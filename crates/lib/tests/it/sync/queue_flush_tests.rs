@@ -7,6 +7,7 @@
 
 use crate::sync::helpers::setup;
 use eidetica::Result;
+use eidetica::auth::crypto::{format_public_key, generate_keypair};
 use eidetica::sync::peer_types::{Address, PeerStatus};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -15,7 +16,8 @@ use tokio::time::sleep;
 #[tokio::test]
 async fn test_sync_queue_operations() -> Result<()> {
     let (_instance, sync) = setup();
-    let peer_pubkey = "ed25519:test_peer_key";
+    let (_, verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&verifying_key);
 
     // Test getting sync queue
     let queue = sync.sync_queue();
@@ -60,7 +62,8 @@ async fn test_sync_queue_operations() -> Result<()> {
 #[tokio::test]
 async fn test_flush_worker_processes_queue() -> Result<()> {
     let (_instance, mut sync) = setup();
-    let peer_pubkey = "ed25519:test_peer_key";
+    let (_, verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&verifying_key);
 
     // Register a peer and add address
     sync.register_peer(peer_pubkey, Some("Test Peer"))?;
@@ -152,7 +155,8 @@ async fn test_flush_worker_lifecycle() -> Result<()> {
 #[tokio::test]
 async fn test_queue_with_peer_management() -> Result<()> {
     let (_instance, mut sync) = setup();
-    let peer_pubkey = "ed25519:test_peer_key";
+    let (_, verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&verifying_key);
 
     // Register peer
     sync.register_peer(peer_pubkey, Some("Test Peer"))?;
@@ -200,7 +204,8 @@ async fn test_queue_with_peer_management() -> Result<()> {
 #[tokio::test]
 async fn test_queue_size_triggers_flush() -> Result<()> {
     let (_instance, mut sync) = setup();
-    let peer_pubkey = "ed25519:test_peer_key";
+    let (_, verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&verifying_key);
 
     // Register peer
     sync.register_peer(peer_pubkey, Some("Test Peer"))?;

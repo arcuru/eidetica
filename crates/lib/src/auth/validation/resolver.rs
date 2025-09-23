@@ -155,7 +155,7 @@ impl KeyResolver {
         })?;
 
         // Handle global "*" permission case
-        let public_key = if key_name == "*" && auth_key.pubkey == "*" {
+        let public_key = if key_name == "*" && auth_key.pubkey() == "*" {
             // For global "*" permission, we must use the pubkey from the SigInfo
             let pubkey_str =
                 pubkey_override.ok_or_else(|| AuthError::InvalidAuthConfiguration {
@@ -164,13 +164,13 @@ impl KeyResolver {
             parse_public_key(pubkey_str)?
         } else {
             // For regular keys, use the pubkey from the auth configuration
-            parse_public_key(&auth_key.pubkey)?
+            parse_public_key(auth_key.pubkey())?
         };
 
         Ok(ResolvedAuth {
             public_key,
-            effective_permission: auth_key.permissions.clone(),
-            key_status: auth_key.status,
+            effective_permission: auth_key.permissions().clone(),
+            key_status: auth_key.status().clone(),
         })
     }
 

@@ -5,7 +5,10 @@
 
 use eidetica::{
     Database, Instance,
-    auth::types::{AuthKey, KeyStatus, Permission},
+    auth::{
+        format_public_key,
+        types::{AuthKey, Permission},
+    },
     crdt::{Doc, doc::Value},
     entry::ID,
     store::DocStore,
@@ -201,11 +204,7 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
     auth_settings
         .set_json(
             key_name.to_string(),
-            AuthKey {
-                pubkey: eidetica::auth::crypto::format_public_key(&public_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&public_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     settings.set_node("auth", auth_settings);

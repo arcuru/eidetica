@@ -151,11 +151,7 @@ fn test_nested_delegation() -> Result<()> {
     user_auth
         .set_json(
             "user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&user_key),
-                permissions: Permission::Admin(10), // Admin needed to create tree
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&user_key), Permission::Admin(10)).unwrap(),
         )
         .unwrap();
     user_settings.set_node("auth", user_auth);
@@ -167,11 +163,7 @@ fn test_nested_delegation() -> Result<()> {
     org_auth
         .set_json(
             "org_admin", // Key name matches private key ID
-            AuthKey {
-                pubkey: format_public_key(&org_admin_key),
-                permissions: Permission::Admin(5),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&org_admin_key), Permission::Admin(5)).unwrap(),
         )
         .unwrap();
 
@@ -201,11 +193,7 @@ fn test_nested_delegation() -> Result<()> {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -278,11 +266,11 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Admin(10), // Admin needed to create tree
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_user_key),
+                Permission::Admin(10), // Admin needed to create tree
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -295,11 +283,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     main_auth
         .set_json(
             "main_admin", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -350,11 +334,12 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     revoked_auth
         .set_json(
             "delegated_user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Write(10),
-                status: KeyStatus::Revoked, // Now revoked
-            },
+            AuthKey::new(
+                format_public_key(&delegated_user_key),
+                Permission::Write(10),
+                KeyStatus::Revoked, // Now revoked
+            )
+            .unwrap(),
         )
         .unwrap();
     revoked_settings.set_node("auth", revoked_auth);
@@ -393,11 +378,11 @@ fn test_delegation_depth_limits() -> Result<()> {
     delegated_auth
         .set_json(
             "user", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&user_key),
-                permissions: Permission::Admin(10), // Admin needed to create tree
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&user_key),
+                Permission::Admin(10), // Admin needed to create tree
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -409,11 +394,7 @@ fn test_delegation_depth_limits() -> Result<()> {
     main_auth
         .set_json(
             "admin", // Key name must match the private key ID
-            AuthKey {
-                pubkey: format_public_key(&admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -488,21 +469,21 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     delegated_auth
         .set_json(
             "delegated_admin",
-            AuthKey {
-                pubkey: format_public_key(&delegated_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_admin_key),
+                Permission::Admin(0),
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_auth
         .set_json(
             "delegated_user",
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Write(15), // Low-privilege write
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_user_key),
+                Permission::Write(15), // Low-privilege write
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -516,11 +497,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -587,21 +564,21 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     delegated_auth
         .set_json(
             "delegated_admin",
-            AuthKey {
-                pubkey: format_public_key(&delegated_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_admin_key),
+                Permission::Admin(0),
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_auth
         .set_json(
             "delegated_user",
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Write(12), // priority 12
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_user_key),
+                Permission::Write(12), // priority 12
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -614,11 +591,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     main_auth
@@ -677,11 +650,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
     let mut auth = Doc::new();
     auth.set_json(
         "admin",
-        AuthKey {
-            pubkey: format_public_key(&admin_key),
-            permissions: Permission::Admin(0),
-            status: KeyStatus::Active,
-        },
+        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
     )
     .unwrap();
     settings.set_node("auth", auth);
@@ -736,21 +705,17 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     delegated_auth
         .set_json(
             "delegated_admin",
-            AuthKey {
-                pubkey: format_public_key(&delegated_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&delegated_admin_key),
+                Permission::Admin(0),
+            )
+            .unwrap(),
         )
         .unwrap();
     delegated_auth
         .set_json(
             "delegated_user",
-            AuthKey {
-                pubkey: format_public_key(&delegated_user_key),
-                permissions: Permission::Write(5),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&delegated_user_key), Permission::Write(5)).unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -765,11 +730,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     main_auth

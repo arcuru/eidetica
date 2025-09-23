@@ -45,11 +45,15 @@ pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, Database) {
 
 /// Create an AuthKey with commonly used defaults
 pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> AuthKey {
-    AuthKey {
-        pubkey: key_str.to_string(),
-        permissions: permission,
-        status,
-    }
+    // Use provided key if it's valid (or the wildcard "*") otherwise generate one.
+    let chosen = if key_str == "*" || eidetica::auth::crypto::parse_public_key(key_str).is_ok() {
+        key_str.to_string()
+    } else {
+        let (_, verifying_key) = eidetica::auth::crypto::generate_keypair();
+        format_public_key(&verifying_key)
+    };
+
+    AuthKey::new(chosen, permission, status).unwrap()
 }
 
 /// Create a DB with keys pre-configured for testing
@@ -130,11 +134,12 @@ pub fn setup_complete_auth_environment(
         auth_settings
             .set_json(
                 *key_name,
-                AuthKey {
-                    pubkey: format_public_key(public_key),
-                    permissions: permission.clone(),
-                    status: status.clone(),
-                },
+                AuthKey::new(
+                    format_public_key(public_key),
+                    permission.clone(),
+                    status.clone(),
+                )
+                .unwrap(),
             )
             .unwrap();
     }
@@ -169,11 +174,12 @@ pub fn create_delegated_tree(
         auth_settings
             .set_json(
                 *key_name,
-                AuthKey {
-                    pubkey: format_public_key(&public_key),
-                    permissions: permission.clone(),
-                    status: status.clone(),
-                },
+                AuthKey::new(
+                    format_public_key(&public_key),
+                    permission.clone(),
+                    status.clone(),
+                )
+                .unwrap(),
             )
             .unwrap();
     }
@@ -239,11 +245,8 @@ impl DelegationChain {
             auth_settings
                 .set_json(
                     &key_name,
-                    AuthKey {
-                        pubkey: format_public_key(&public_key),
-                        permissions: Permission::Admin(i as u32),
-                        status: KeyStatus::Active,
-                    },
+                    AuthKey::active(format_public_key(&public_key), Permission::Admin(i as u32))
+                        .unwrap(),
                 )
                 .unwrap();
 

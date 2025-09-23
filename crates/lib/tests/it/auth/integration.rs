@@ -157,11 +157,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     auth_settings
         .set_json(
             "KEY1",
-            AuthKey {
-                pubkey: format_public_key(&key1),
-                permissions: Permission::Admin(1),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&key1), Permission::Admin(1)).unwrap(),
         )
         .unwrap();
     settings.set_node("auth", auth_settings);
@@ -183,21 +179,13 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     new_auth_settings
         .set_json(
             "KEY1",
-            AuthKey {
-                pubkey: format_public_key(&key1),
-                permissions: Permission::Admin(1),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&key1), Permission::Admin(1)).unwrap(),
         )
         .unwrap();
     new_auth_settings
         .set_json(
             "KEY2",
-            AuthKey {
-                pubkey: format_public_key(&key2),
-                permissions: Permission::Write(10),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&key2), Permission::Write(10)).unwrap(),
         )
         .unwrap();
 
@@ -239,11 +227,11 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
     auth_settings
         .set_json(
             "VALID_KEY",
-            AuthKey {
-                pubkey: format_public_key(&valid_key),
-                permissions: Permission::Admin(1), // Need admin to modify settings
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&valid_key),
+                Permission::Admin(1), // Need admin to modify settings
+            )
+            .unwrap(),
         )
         .unwrap();
     settings.set_node("auth", auth_settings);
@@ -311,31 +299,24 @@ fn test_validation_pipeline_entry_level_validation() {
     auth_settings
         .set_json(
             "ADMIN_KEY",
-            AuthKey {
-                pubkey: format_public_key(&admin_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     auth_settings
         .set_json(
             "ACTIVE_KEY",
-            AuthKey {
-                pubkey: format_public_key(&active_key),
-                permissions: Permission::Write(10),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&active_key), Permission::Write(10)).unwrap(),
         )
         .unwrap();
     auth_settings
         .set_json(
             "REVOKED_KEY",
-            AuthKey {
-                pubkey: format_public_key(&revoked_key),
-                permissions: Permission::Write(20),
-                status: KeyStatus::Revoked,
-            },
+            AuthKey::new(
+                format_public_key(&revoked_key),
+                Permission::Write(20),
+                KeyStatus::Revoked,
+            )
+            .unwrap(),
         )
         .unwrap();
 

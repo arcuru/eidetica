@@ -26,11 +26,8 @@ fn test_basic_key_resolution() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
 
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
@@ -47,11 +44,8 @@ fn test_revoked_key_validation() {
     let mut validator = AuthValidator::new();
     let (_signing_key, verifying_key) = generate_keypair();
 
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
@@ -123,11 +117,8 @@ fn test_entry_validation_success() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Write(20),
-        status: KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(20)).unwrap();
 
     let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
 
@@ -225,11 +216,12 @@ fn test_entry_validation_with_revoked_key() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
-    let revoked_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Revoked, // Key is revoked
-    };
+    let revoked_key = AuthKey::new(
+        format_public_key(&verifying_key),
+        Permission::Write(10),
+        KeyStatus::Revoked, // Key is revoked
+    )
+    .unwrap();
 
     let settings = create_test_settings_with_key("KEY_LAPTOP", &revoked_key);
 
@@ -260,11 +252,8 @@ fn test_performance_optimizations() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
 
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("PERF_KEY", &auth_key);
     let sig_key = SigKey::Direct("PERF_KEY".to_string());
@@ -296,11 +285,8 @@ fn test_basic_delegated_tree_resolution() {
 
     // Create a simple direct key resolution test
     let (_, verifying_key) = generate_keypair();
-    let auth_key = AuthKey {
-        pubkey: format_public_key(&verifying_key),
-        permissions: Permission::Admin(5),
-        status: KeyStatus::Active,
-    };
+    let auth_key =
+        AuthKey::active(format_public_key(&verifying_key), Permission::Admin(5)).unwrap();
 
     let settings = create_test_settings_with_key("DIRECT_KEY", &auth_key);
 
@@ -340,11 +326,7 @@ fn test_complete_delegation_workflow() {
     delegated_auth
         .set_json(
             "delegated_user", // Key name must match the key used for tree creation
-            AuthKey {
-                pubkey: format_public_key(&delegated_key),
-                permissions: Permission::Admin(5),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&delegated_key), Permission::Admin(5)).unwrap(),
         )
         .unwrap();
     delegated_settings.set_node("auth", delegated_auth);
@@ -361,11 +343,7 @@ fn test_complete_delegation_workflow() {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -447,11 +425,7 @@ fn test_delegated_tree_requires_tips() {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -524,11 +498,11 @@ fn test_nested_delegation_with_permission_clamping() {
     user_auth
         .set_json(
             "final_user",
-            AuthKey {
-                pubkey: format_public_key(&user_key),
-                permissions: Permission::Admin(3), // High privilege at source
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(
+                format_public_key(&user_key),
+                Permission::Admin(3), // High privilege at source
+            )
+            .unwrap(),
         )
         .unwrap();
     user_settings.set_node("auth", user_auth);
@@ -543,11 +517,7 @@ fn test_nested_delegation_with_permission_clamping() {
     intermediate_auth
         .set_json(
             "intermediate_admin",
-            AuthKey {
-                pubkey: format_public_key(&intermediate_key),
-                permissions: Permission::Admin(2),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&intermediate_key), Permission::Admin(2)).unwrap(),
         )
         .unwrap();
 
@@ -582,11 +552,7 @@ fn test_nested_delegation_with_permission_clamping() {
     main_auth
         .set_json(
             "main_admin",
-            AuthKey {
-                pubkey: format_public_key(&main_key),
-                permissions: Permission::Admin(0),
-                status: KeyStatus::Active,
-            },
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -694,11 +660,7 @@ fn test_global_permission_with_pubkey_field() {
     let (signing_key, verifying_key) = generate_keypair();
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey {
-        pubkey: "*".to_string(),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
@@ -733,11 +695,7 @@ fn test_global_permission_without_pubkey_fails() {
     let (signing_key, _) = generate_keypair();
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey {
-        pubkey: "*".to_string(),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
@@ -769,11 +727,7 @@ fn test_global_permission_resolver() {
     let (_, verifying_key) = generate_keypair();
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey {
-        pubkey: "*".to_string(),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
@@ -801,11 +755,11 @@ fn test_global_permission_insufficient_perms() {
     let (signing_key, verifying_key) = generate_keypair();
 
     // Create settings with global "*" permission but only Read access
-    let global_auth_key = AuthKey {
-        pubkey: "*".to_string(),
-        permissions: Permission::Read, // Only read permission
-        status: KeyStatus::Active,
-    };
+    let global_auth_key = AuthKey::active(
+        "*",
+        Permission::Read, // Only read permission
+    )
+    .unwrap();
 
     let settings = create_test_settings_with_key("*", &global_auth_key);
 
@@ -852,21 +806,14 @@ fn test_global_permission_vs_specific_key() {
     let mut auth_section = Doc::new();
 
     // Add specific key
-    let specific_key = AuthKey {
-        pubkey: format_public_key(&verifying_key1),
-        permissions: Permission::Admin(5),
-        status: KeyStatus::Active,
-    };
+    let specific_key =
+        AuthKey::active(format_public_key(&verifying_key1), Permission::Admin(5)).unwrap();
     auth_section
         .set_json("specific_key", &specific_key)
         .unwrap();
 
     // Add global permission
-    let global_key = AuthKey {
-        pubkey: "*".to_string(),
-        permissions: Permission::Write(10),
-        status: KeyStatus::Active,
-    };
+    let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
     auth_section.set_json("*", &global_key).unwrap();
 
     settings.set_node("auth", auth_section);

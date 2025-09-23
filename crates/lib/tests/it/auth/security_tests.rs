@@ -22,8 +22,8 @@ fn test_admin_hierarchy_enforcement() {
 
     let low_priority_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: low_admin.permissions,
-        key_status: low_admin.status,
+        effective_permission: low_admin.permissions().clone(),
+        key_status: low_admin.status().clone(),
     };
 
     let can_modify = settings
@@ -59,18 +59,20 @@ fn test_admin_hierarchy_complete_enforcement() {
     let mut settings = AuthSettings::new();
 
     // Create a super high-priority admin (priority 0 = absolute highest)
-    let super_admin = AuthKey {
-        pubkey: "ed25519:super_admin".to_string(),
-        permissions: Permission::Admin(0), // Absolute highest priority
-        status: KeyStatus::Active,
-    };
+    let (_, super_admin_key) = eidetica::auth::crypto::generate_keypair();
+    let super_admin = AuthKey::active(
+        eidetica::auth::crypto::format_public_key(&super_admin_key),
+        Permission::Admin(0), // Absolute highest priority
+    )
+    .unwrap();
 
     // Create a very low-priority admin (almost lowest possible)
-    let junior_admin = AuthKey {
-        pubkey: "ed25519:junior_admin".to_string(),
-        permissions: Permission::Admin(u32::MAX - 1), // Almost lowest priority
-        status: KeyStatus::Active,
-    };
+    let (_, junior_admin_key) = eidetica::auth::crypto::generate_keypair();
+    let junior_admin = AuthKey::active(
+        eidetica::auth::crypto::format_public_key(&junior_admin_key),
+        Permission::Admin(u32::MAX - 1), // Almost lowest priority
+    )
+    .unwrap();
 
     settings
         .add_key("SUPER_ADMIN", super_admin.clone())
@@ -81,8 +83,8 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     let junior_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: junior_admin.permissions,
-        key_status: junior_admin.status,
+        effective_permission: junior_admin.permissions().clone(),
+        key_status: junior_admin.status().clone(),
     };
 
     // This should NEVER be true - a low priority admin should not be able to modify a super admin
@@ -102,7 +104,7 @@ fn test_admin_hierarchy_complete_enforcement() {
 fn test_permission_arithmetic_correctness() {
     // Test that permission arithmetic works correctly
     let admin_max_priority = Permission::Admin(0); // Highest priority
-    let admin_min_priority = Permission::Admin(u32::MAX); // Lowest priority  
+    let admin_min_priority = Permission::Admin(u32::MAX); // Lowest priority
     let write_max_priority = Permission::Write(0); // Highest write priority
 
     // Admin permissions should never equal Write permissions
@@ -145,8 +147,8 @@ fn test_privilege_escalation_prevention() {
 
     let write_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: write_user.permissions,
-        key_status: write_user.status,
+        effective_permission: write_user.permissions().clone(),
+        key_status: write_user.status().clone(),
     };
 
     // Write users should NEVER be able to modify admin keys
@@ -180,8 +182,8 @@ fn test_key_creation_privilege_escalation_prevention() {
 
     let low_admin_resolved = ResolvedAuth {
         public_key: eidetica::auth::crypto::generate_keypair().1,
-        effective_permission: low_admin.permissions,
-        key_status: low_admin.status,
+        effective_permission: low_admin.permissions().clone(),
+        key_status: low_admin.status().clone(),
     };
 
     // Test that low admin cannot create a higher priority admin key

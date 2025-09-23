@@ -4,9 +4,20 @@
 //! including storing pending requests, listing them, and approving/rejecting them.
 
 use super::helpers::*;
+
+/// Generate a valid test public key
+fn generate_public_key() -> String {
+    let (_, verifying_key) = generate_keypair();
+    format_public_key(&verifying_key)
+}
 use eidetica::{
     Error,
-    auth::{Permission as AuthPermission, errors::AuthError, settings::AuthSettings},
+    auth::{
+        Permission as AuthPermission,
+        crypto::{format_public_key, generate_keypair},
+        errors::AuthError,
+        settings::AuthSettings,
+    },
     constants::SETTINGS,
     store::DocStore,
     sync::{
@@ -22,12 +33,9 @@ async fn test_manual_approval_stores_pending_request() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be stored as pending
-    let sync_request = create_bootstrap_request(
-        &tree_id,
-        "ed25519:test_requesting_key",
-        "laptop_key",
-        AuthPermission::Write(5),
-    );
+    let test_key = generate_public_key();
+    let sync_request =
+        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
     let response = sync_handler.handle_request(&sync_request).await;
@@ -40,10 +48,7 @@ async fn test_manual_approval_stores_pending_request() {
     let pending_requests = sync.pending_bootstrap_requests().unwrap();
     let (_, stored_request) = &pending_requests[0];
     assert_eq!(stored_request.tree_id, tree_id);
-    assert_eq!(
-        stored_request.requesting_pubkey,
-        "ed25519:test_requesting_key"
-    );
+    assert_eq!(stored_request.requesting_pubkey, test_key);
     assert_eq!(stored_request.requesting_key_name, "laptop_key");
     assert_eq!(
         stored_request.requested_permission,
@@ -60,12 +65,9 @@ async fn test_auto_approve_still_works() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be auto-approved
-    let sync_request = create_bootstrap_request(
-        &tree_id,
-        "ed25519:test_requesting_key",
-        "laptop_key",
-        AuthPermission::Write(5),
-    );
+    let test_key = generate_public_key();
+    let sync_request =
+        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
     let response = sync_handler.handle_request(&sync_request).await;
@@ -98,10 +100,11 @@ async fn test_approve_bootstrap_request() {
 
     // Create sync handler and submit bootstrap request
     let sync_handler = create_test_sync_handler(&sync);
+    let test_key = generate_public_key();
     let request_id = create_pending_bootstrap_request(
         &sync_handler,
         &tree_id,
-        "ed25519:test_requesting_key",
+        &test_key,
         "laptop_key",
         AuthPermission::Write(5),
     )
@@ -144,9 +147,12 @@ async fn test_approve_bootstrap_request() {
         .get_key("laptop_key")
         .expect("Failed to get auth key");
 
-    assert_eq!(added_key.pubkey, "ed25519:test_requesting_key");
-    assert_eq!(added_key.permissions, AuthPermission::Write(5));
-    assert_eq!(added_key.status, eidetica::auth::types::KeyStatus::Active);
+    assert_eq!(added_key.pubkey(), &test_key);
+    assert_eq!(added_key.permissions(), &AuthPermission::Write(5));
+    assert_eq!(
+        added_key.status(),
+        &eidetica::auth::types::KeyStatus::Active
+    );
 
     println!("✅ Requesting key successfully added to target database");
 
@@ -170,10 +176,11 @@ async fn test_reject_bootstrap_request() {
     );
 
     // Create a bootstrap request that will be stored as pending
+    let test_key = generate_public_key();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
-        requesting_key: Some("ed25519:test_requesting_key".to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -255,10 +262,11 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Create and store a bootstrap request
+    let test_key = generate_public_key();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
-        requesting_key: Some("ed25519:test_key".to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -309,10 +317,11 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     );
 
     // Create first bootstrap request
+    let test_key = generate_public_key();
     let sync_request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
-        requesting_key: Some("ed25519:test_requesting_key".to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -328,7 +337,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let sync_request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
-        requesting_key: Some("ed25519:test_requesting_key".to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -362,7 +371,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     // Verify all requests have correct details
     for (_, request) in &pending_requests {
         assert_eq!(request.tree_id, tree_id);
-        assert_eq!(request.requesting_pubkey, "ed25519:test_requesting_key");
+        assert_eq!(request.requesting_pubkey, test_key);
         assert_eq!(request.requesting_key_name, "laptop_key");
         assert_eq!(request.requested_permission, AuthPermission::Write(5));
         assert!(matches!(request.status, RequestStatus::Pending));
@@ -420,6 +429,9 @@ async fn test_malformed_permission_requests() {
         sync.sync_tree_root_id().clone(),
     );
 
+    // Generate a test key to use for all permission tests
+    let test_key = generate_public_key();
+
     // Test with various permission configurations to ensure they're handled properly
     let permission_tests = vec![
         (AuthPermission::Read, "Read permission"),
@@ -439,7 +451,7 @@ async fn test_malformed_permission_requests() {
         let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips: vec![],
-            requesting_key: Some("ed25519:test_key".to_string()),
+            requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(permission.clone()),
         });
