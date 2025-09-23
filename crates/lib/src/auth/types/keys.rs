@@ -6,9 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{KeyStatus, Permission};
-use crate::entry::ID;
+use crate::{Result, auth::crypto::parse_public_key, entry::ID};
 
 /// Authentication key configuration stored in _settings.auth
+///
+/// TODO: Migrate to use private members so every use is validated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthKey {
     /// Public key with crypto-agility prefix
@@ -18,6 +20,122 @@ pub struct AuthKey {
     pub permissions: Permission,
     /// Current status of the key
     pub status: KeyStatus,
+}
+
+impl AuthKey {
+    /// Create a new AuthKey with validation
+    ///
+    /// This validates the public key format and ensures all fields are valid.
+    /// Prefer this over direct struct construction for better error handling.
+    ///
+    /// # Arguments
+    /// * `pubkey` - Ed25519 public key in format "ed25519:<base64_key>"
+    /// * `permissions` - Permission level for this key
+    /// * `status` - Current status of the key
+    ///
+    /// # Returns
+    /// Result containing the AuthKey or an AuthError if validation fails
+    ///
+    /// # Examples
+    /// ```
+    /// use eidetica::auth::types::{AuthKey, Permission, KeyStatus};
+    /// use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    ///
+    /// // Generate a valid key for the example
+    /// let (_, verifying_key) = generate_keypair();
+    /// let pubkey = format_public_key(&verifying_key);
+    ///
+    /// let key = AuthKey::new(
+    ///     &pubkey,
+    ///     Permission::Write(10),
+    ///     KeyStatus::Active
+    /// )?;
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn new(
+        pubkey: impl Into<String>,
+        permissions: Permission,
+        status: KeyStatus,
+    ) -> Result<Self> {
+        let pubkey = pubkey.into();
+
+        // Validate public key format
+        parse_public_key(&pubkey)?;
+
+        Ok(Self {
+            pubkey,
+            permissions,
+            status,
+        })
+    }
+
+    /// Create a new active AuthKey (common case)
+    ///
+    /// This is a convenience constructor for creating active keys.
+    ///
+    /// # Arguments
+    /// * `pubkey` - Ed25519 public key in format "ed25519:<base64_key>"
+    /// * `permissions` - Permission level for this key
+    ///
+    /// # Returns
+    /// Result containing the active AuthKey or an AuthError if validation fails
+    ///
+    /// # Examples
+    /// ```
+    /// use eidetica::auth::types::{AuthKey, Permission};
+    /// use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    ///
+    /// // Generate a valid key for the example
+    /// let (_, verifying_key) = generate_keypair();
+    /// let pubkey = format_public_key(&verifying_key);
+    ///
+    /// let key = AuthKey::active(
+    ///     &pubkey,
+    ///     Permission::Admin(1)
+    /// )?;
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn active(pubkey: impl Into<String>, permissions: Permission) -> Result<Self> {
+        Self::new(pubkey, permissions, KeyStatus::Active)
+    }
+
+    /// Validate the format of this AuthKey
+    ///
+    /// This can be called on existing AuthKey instances to ensure they're valid.
+    /// Useful for validating keys that were created through direct construction
+    /// or deserialized from storage.
+    ///
+    /// # Returns
+    /// Result indicating success or an AuthError if validation fails
+    pub fn validate(&self) -> Result<()> {
+        parse_public_key(&self.pubkey)?;
+        Ok(())
+    }
+
+    /// Get the public key
+    pub fn pubkey(&self) -> &str {
+        &self.pubkey
+    }
+
+    /// Get the permissions
+    pub fn permissions(&self) -> &Permission {
+        &self.permissions
+    }
+
+    /// Get the status
+    pub fn status(&self) -> &KeyStatus {
+        &self.status
+    }
+
+    /// Set the status (e.g., for revocation)
+    pub fn set_status(&mut self, status: KeyStatus) {
+        self.status = status;
+    }
+
+    /// Set the permissions (e.g., for updates)
+    pub fn set_permissions(&mut self, permissions: Permission) {
+        self.permissions = permissions;
+    }
 }
 
 /// Step in a delegation path

@@ -370,6 +370,95 @@ fn test_auth_key_nested_value_roundtrip() {
 }
 
 #[test]
+fn test_auth_key_constructor_validation() {
+    use crate::auth::crypto::{format_public_key, generate_keypair};
+
+    // Generate a real valid key for testing
+    let (_, verifying_key) = generate_keypair();
+    let valid_pubkey = format_public_key(&verifying_key);
+
+    // Test valid key creation
+    let valid_key = AuthKey::new(&valid_pubkey, Permission::Write(10), KeyStatus::Active);
+    assert!(valid_key.is_ok());
+
+    let key = valid_key.unwrap();
+    assert_eq!(key.pubkey(), &valid_pubkey);
+    assert_eq!(key.permissions(), &Permission::Write(10));
+    assert_eq!(key.status(), &KeyStatus::Active);
+
+    // Test invalid key format
+    let invalid_key = AuthKey::new("invalid_key_format", Permission::Read, KeyStatus::Active);
+    assert!(invalid_key.is_err());
+
+    // Test missing ed25519 prefix
+    let no_prefix = AuthKey::new(
+        "PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
+        Permission::Admin(1),
+        KeyStatus::Active,
+    );
+    assert!(no_prefix.is_err());
+
+    // Test active constructor with another real key
+    let (_, verifying_key2) = generate_keypair();
+    let valid_pubkey2 = format_public_key(&verifying_key2);
+
+    let active_key = AuthKey::active(&valid_pubkey2, Permission::Admin(0));
+    assert!(active_key.is_ok());
+
+    let key = active_key.unwrap();
+    assert_eq!(key.status(), &KeyStatus::Active);
+    assert_eq!(key.permissions(), &Permission::Admin(0));
+}
+
+#[test]
+fn test_auth_key_validation_method() {
+    use crate::auth::crypto::{format_public_key, generate_keypair};
+
+    // Generate a real key for testing
+    let (_, verifying_key) = generate_keypair();
+    let valid_pubkey = format_public_key(&verifying_key);
+
+    // Create key with direct construction (bypassing validation)
+    let valid_key = AuthKey {
+        pubkey: valid_pubkey,
+        permissions: Permission::Write(5),
+        status: KeyStatus::Active,
+    };
+
+    // Should validate successfully
+    assert!(valid_key.validate().is_ok());
+
+    // Create key with invalid format
+    let invalid_key = AuthKey {
+        pubkey: "invalid_format".to_string(),
+        permissions: Permission::Read,
+        status: KeyStatus::Revoked,
+    };
+
+    // Should fail validation
+    assert!(invalid_key.validate().is_err());
+}
+
+#[test]
+fn test_auth_key_mutators() {
+    use crate::auth::crypto::{format_public_key, generate_keypair};
+
+    // Generate a real key for testing
+    let (_, verifying_key) = generate_keypair();
+    let valid_pubkey = format_public_key(&verifying_key);
+
+    let mut key = AuthKey::new(&valid_pubkey, Permission::Write(10), KeyStatus::Active).unwrap();
+
+    // Test status modification
+    key.set_status(KeyStatus::Revoked);
+    assert_eq!(key.status(), &KeyStatus::Revoked);
+
+    // Test permission modification
+    key.set_permissions(Permission::Admin(5));
+    assert_eq!(key.permissions(), &Permission::Admin(5));
+}
+
+#[test]
 fn test_sig_key_is_signed_by() {
     // Test direct key
     let direct_key = SigKey::Direct("KEY_LAPTOP".to_string());
