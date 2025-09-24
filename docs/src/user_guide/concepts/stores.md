@@ -41,6 +41,8 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 #### Basic Usage
 
 ```rust,ignore
+use eidetica::{store::DocStore, path};
+
 // Get a DocStore store
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("app_data")?;
@@ -51,12 +53,12 @@ store.set("author", "Alice")?;
 
 // Path-based operations for nested structures
 // This creates nested maps: {"database": {"host": "localhost", "port": "5432"}}
-store.set_path("database.host", "localhost")?;
-store.set_path("database.port", "5432")?;
+store.set_path(path!("database.host"), "localhost")?;
+store.set_path(path!("database.port"), "5432")?;
 
 // Retrieve values
 let version = store.get("version")?; // Returns a Value
-let host = store.get_path("database.host")?; // Navigate nested structure
+let host = store.get_path(path!("database.host"))?; // Returns Value
 
 op.commit()?;
 ```
@@ -67,7 +69,7 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 
 ```rust,ignore
 // This code:
-store.set_path("user.profile.name", "Bob")?;
+store.set_path(path!("user.profile.name"), "Bob")?;
 
 // Creates this structure:
 // {
@@ -149,7 +151,7 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 
 ```rust,ignore
 use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission, KeyStatus};
+use eidetica::auth::{AuthKey, Permission};
 
 // Get a SettingsStore for the current transaction
 let transaction = database.new_transaction()?;
@@ -223,7 +225,7 @@ let settings_store = SettingsStore::new(&transaction)?;
 
 // Access underlying DocStore for advanced operations
 let doc_store = settings_store.as_doc_store();
-doc_store.set_path("custom.config.option", "value")?;
+doc_store.set_path(path!("custom.config.option"), "value")?;
 
 transaction.commit()?;
 ```

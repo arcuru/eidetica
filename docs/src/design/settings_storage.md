@@ -49,29 +49,12 @@ let database_name = settings_store.get_name()?;
 let auth_settings = settings_store.get_auth_settings()?;
 ```
 
-#### Low-Level Transaction API
+#### Transaction API
 
-`Transaction::get_settings()` provides unified access to raw settings data:
-
-```rust,ignore
-pub fn get_settings(&self) -> Result<Doc> {
-    // Get historical settings from the database
-    let mut historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
-
-    // Get any staged changes to the _settings store in this operation
-    let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
-
-    // Merge using CRDT semantics
-    historical_settings = historical_settings.merge(&staged_settings)?;
-
-    Ok(historical_settings)
-}
-```
-
-The method combines:
+`Transaction::get_settings()` returns a SettingsStore that handles:
 
 - **Historical state**: Computed from all relevant entries in the database
-- **Staged changes**: Any modifications to `_settings` in the current operation
+- **Staged changes**: Any modifications to `_settings` in the current transaction
 
 ### Entry Metadata
 
@@ -195,22 +178,23 @@ pub struct AuthSettings {
 ### Reading Settings
 
 ```rust,ignore
-// In an Transaction context
-let settings = op.get_settings()?;
+// In a Transaction context
+let settings_store = transaction.get_settings()?;
+
+// Access database name
+let name = settings_store.get_name()?;
 
 // Access auth configuration
-if let Some(Value::Map(auth_map)) = settings.get("auth") {
-    // Process authentication settings
-}
+let auth_settings = settings_store.get_auth_settings()?;
 ```
 
 ### Modifying Settings
 
-#### Using SettingsStore (Recommended)
+#### Using SettingsStore
 
 ```rust,ignore
 use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission, KeyStatus};
+use eidetica::auth::{AuthKey, Permission};
 
 // Get a SettingsStore handle for type-safe operations
 let settings_store = SettingsStore::new(&transaction)?;

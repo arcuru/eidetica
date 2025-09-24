@@ -129,7 +129,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 
 ```rust,ignore
 use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission, KeyStatus};
+use eidetica::auth::{AuthKey, Permission};
 
 fn manage_settings(database: &Database) -> eidetica::Result<()> {
     let transaction = database.new_transaction()?;

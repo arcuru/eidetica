@@ -48,7 +48,7 @@ Give other users access to your database:
 
 ```rust,ignore
 use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission, KeyStatus};
+use eidetica::auth::{AuthKey, Permission};
 
 let transaction = database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
