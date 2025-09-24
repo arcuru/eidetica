@@ -60,6 +60,16 @@ tasks:
       - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
       - cargo test --doc --workspace --all-features --quiet
       - task: book:test
+  test:ignored:
+    desc: Run only ignored tests
+    aliases: [ti]
+    cmds:
+      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored ignored-only
+  test:ignored:quiet:
+    desc: Run only ignored tests with quiet output (no test stdout/stderr)
+    aliases: [tiq]
+    cmds:
+      - cargo nextest run --workspace --all-features --no-fail-fast --run-ignored ignored-only --failure-output never --success-output never
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --quiet
