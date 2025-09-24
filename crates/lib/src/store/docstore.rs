@@ -350,16 +350,6 @@ impl DocStore {
         T::try_from(&value).map_err(Into::into)
     }
 
-    /// Gets a value by path with automatic type conversion using string paths for runtime validation
-    pub fn get_path_as_str<T>(&self, path: &str) -> Result<T>
-    where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
-    {
-        let pathbuf = PathBuf::from_str(path)?;
-        let value = self.get_path(&pathbuf)?;
-        T::try_from(&value).map_err(Into::into)
-    }
-
     /// Mutable access methods for transaction-based modification
     ///
     /// These methods work with DocStore's staging model, where changes are staged
