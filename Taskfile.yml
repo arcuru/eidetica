@@ -114,6 +114,12 @@ tasks:
     desc: Clean the mdbook build directory
     cmds:
       - mdbook clean docs
+  book:stats:
+    desc: Show code block test coverage statistics
+    cmd: |
+      tested=$(grep -r '```rust$' docs/src | wc -l)
+      total=$(grep -r '```rust' docs/src | wc -l)
+      echo "${tested}/${total} Code Blocks tested"
   bench:
     desc: Run benchmarks and open HTML report
     aliases: [benchmark]
