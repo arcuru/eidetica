@@ -44,55 +44,54 @@ Here's a quick examplee showing loading a database and writing new data.
 ```rust
 # extern crate eidetica;
 # extern crate serde;
-use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{DocStore, Table}};
-use serde::{Serialize, Deserialize};
+# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{DocStore, Table}};
+# use serde::{Serialize, Deserialize};
+#
+# #[derive(Serialize, Deserialize, Clone, Debug)]
+# struct MyData {
+#     name: String,
+# }
+#
+# fn main() -> eidetica::Result<()> {
+let backend = InMemory::new();
+let db = Instance::new(Box::new(backend));
+db.add_private_key("my_private_key")?;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct MyData {
-    name: String,
-}
-
-fn main() -> eidetica::Result<()> {
-    let backend = InMemory::new();
-    let db = Instance::new(Box::new(backend));
-    db.add_private_key("my_private_key")?;
-
-    // Create/Load Database
-    let database = match db.find_database("my_database") {
-        Ok(mut databases) => databases.pop().unwrap(), // Found existing
-        Err(e) if e.is_not_found() => {
-            let mut doc = Doc::new();
-            doc.set_string("name", "my_database");
-            db.new_database(doc, "my_private_key")?
-        }
-        Err(e) => return Err(e),
-    };
-
-    // --- Writing Data ---
-    // Start a Transaction
-    let txn = database.new_transaction()?;
-    let inserted_id = { // Scope for store handles
-        // Get Store handles
-        let config = txn.get_store::<DocStore>("config")?;
-        let items = txn.get_store::<Table<MyData>>("items")?;
-
-        // Use Store methods
-        config.set("version", "1.0")?;
-        items.insert(MyData { name: "example".to_string() })?
-    }; // Handles drop, changes are staged in txn
-    // Commit changes
-    let new_entry_id = txn.commit()?;
-    println!("Committed changes, new entry ID: {}", new_entry_id);
-
-    // --- Reading Data ---
-    // Use Database::get_store_viewer for a read-only view
-    let items_viewer = database.get_store_viewer::<Table<MyData>>("items")?;
-    if let Ok(item) = items_viewer.get(&inserted_id) {
-       println!("Read item: {:?}", item);
+// Create/Load Database
+let database = match db.find_database("my_database") {
+    Ok(mut databases) => databases.pop().unwrap(), // Found existing
+    Err(e) if e.is_not_found() => {
+        let mut doc = Doc::new();
+        doc.set_string("name", "my_database");
+        db.new_database(doc, "my_private_key")?
     }
+    Err(e) => return Err(e),
+};
 
-    Ok(())
+// --- Writing Data ---
+// Start a Transaction
+let txn = database.new_transaction()?;
+let inserted_id = { // Scope for store handles
+    // Get Store handles
+    let config = txn.get_store::<DocStore>("config")?;
+    let items = txn.get_store::<Table<MyData>>("items")?;
+
+    // Use Store methods
+    config.set("version", "1.0")?;
+    items.insert(MyData { name: "example".to_string() })?
+}; // Handles drop, changes are staged in txn
+// Commit changes
+let new_entry_id = txn.commit()?;
+println!("Committed changes, new entry ID: {}", new_entry_id);
+
+// --- Reading Data ---
+// Use Database::get_store_viewer for a read-only view
+let items_viewer = database.get_store_viewer::<Table<MyData>>("items")?;
+if let Ok(item) = items_viewer.get(&inserted_id) {
+   println!("Read item: {:?}", item);
 }
+# Ok(())
+# }
 ```
 
 See [Transactions](transactions.md) and [Code Examples](examples_snippets.md) for more details.

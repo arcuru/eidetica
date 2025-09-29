@@ -20,6 +20,8 @@ DocStore is a publicly available store type that provides a document-oriented in
 
 When using `set_path()` with dot-separated paths, DocStore creates **nested map structures**, not flat keys with dots:
 
+<!-- Code block ignored: Conceptual examples and internal API usage not suitable for testing -->
+
 ```rust,ignore
 // This code:
 docstore.set_path("user.profile.name", "Alice")?;
@@ -40,6 +42,8 @@ docstore.set_path("user.profile.name", "Alice")?;
 ### Accessing Nested Data
 
 When using `get_all()` to retrieve all data, you get the nested structure and must navigate it accordingly:
+
+<!-- Code block ignored: Conceptual examples and internal API usage not suitable for testing -->
 
 ```rust,ignore
 let all_data = docstore.get_all()?;
@@ -89,6 +93,8 @@ if let Some(Value::Doc(user_doc)) = all_data.get("user") {
 
 ### Application Configuration
 
+<!-- Code block ignored: Conceptual examples and internal API usage not suitable for testing -->
+
 ```rust,ignore
 let op = database.new_transaction()?;
 let config = op.get_subtree::<DocStore>("app_config")?;
@@ -105,6 +111,8 @@ op.commit()?;
 ### Sync State Management
 
 DocStore is used internally for sync state tracking in the sync module:
+
+<!-- Code block ignored: Conceptual examples and internal API usage not suitable for testing -->
 
 ```rust,ignore
 // Creating nested sync state structure
@@ -146,6 +154,8 @@ The most common mistake is expecting `set_path("a.b.c", value)` to create a flat
 ### Incorrect get_all() Usage
 
 When using `get_all()`, remember that the returned Map contains the nested structure, not flat keys:
+
+<!-- Code block ignored: Conceptual examples and internal API usage not suitable for testing -->
 
 ```rust,ignore
 // After: docstore.set_path("config.server.port", "8080")

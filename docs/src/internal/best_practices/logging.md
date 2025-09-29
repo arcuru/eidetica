@@ -19,6 +19,8 @@ Choose log levels based on the importance and frequency of events:
 
 Use for unrecoverable errors that prevent operations from completing:
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 tracing::error!("Failed to store entry {}: {}", entry.id(), error);
 ```
@@ -33,6 +35,8 @@ tracing::error!("Failed to store entry {}: {}", entry.id(), error);
 ### WARN (`tracing::warn!`)
 
 Use for important warnings that don't prevent operation:
+
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
 
 ```rust,ignore
 tracing::warn!("Failed to send to {}: {}. Adding to retry queue.", peer, error);
@@ -49,6 +53,8 @@ tracing::warn!("Failed to send to {}: {}. Adding to retry queue.", peer, error);
 
 Use for high-level operational messages:
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 tracing::info!("Sync server started on {}", address);
 ```
@@ -64,6 +70,8 @@ tracing::info!("Sync server started on {}", address);
 
 Use for detailed operational information:
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 tracing::debug!("Syncing {} databases with peer {}", tree_count, peer_id);
 ```
@@ -78,6 +86,8 @@ tracing::debug!("Syncing {} databases with peer {}", tree_count, peer_id);
 ### TRACE (`tracing::trace!`)
 
 Use for very detailed trace information:
+
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
 
 ```rust,ignore
 tracing::trace!("Processing entry {} with {} parents", entry_id, parent_count);
@@ -100,6 +110,8 @@ For performance-critical code paths, follow these guidelines:
 2. **Avoid string formatting**: Use structured fields instead
 3. **Check before complex operations**: Use `tracing::enabled!` for expensive log data
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 // Good: Structured fields, minimal overhead
 tracing::trace!(entry_id = %entry.id(), parent_count = parents.len(), "Processing entry");
@@ -117,6 +129,8 @@ if tracing::enabled!(tracing::Level::TRACE) {
 ### Async and Background Operations
 
 Use spans to provide context for async operations:
+
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
 
 ```rust,ignore
 use tracing::{info_span, Instrument};
@@ -164,6 +178,8 @@ async fn sync_with_peer(peer_id: &str) {
 
 Prefer structured fields over string interpolation:
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 // Good: Structured fields
 tracing::info!(
@@ -183,6 +199,8 @@ tracing::info!(
 ## Error Context
 
 When logging errors, include relevant context:
+
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
 
 ```rust,ignore
 // Good: Includes context
@@ -242,6 +260,8 @@ Tests should use `println!` for outputs.
 
 ### Operation Success/Failure
 
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
+
 ```rust,ignore
 match operation() {
     Ok(result) => {
@@ -256,6 +276,8 @@ match operation() {
 ```
 
 ### Retry Logic
+
+<!-- Code block ignored: Logging pattern examples and tracing usage demonstrations not suitable for testing -->
 
 ```rust,ignore
 for attempt in 1..=max_attempts {

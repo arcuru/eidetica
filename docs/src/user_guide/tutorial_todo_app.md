@@ -1,60 +1,40 @@
 # Developer Walkthrough: Building with Eidetica
 
-This guide provides a practical walkthrough for developers starting with Eidetica, using the simple command-line [Todo Example](../../examples/todo/) to illustrate core concepts.
+This guide walks through the [Todo Example](../../examples/todo/) (`examples/todo/src/main.rs`) to explain Eidetica's core concepts. The example is a simple command-line todo app that demonstrates databases, transactions, stores, and Y-CRDT integration.
 
 ## Core Concepts
 
-Eidetica organizes data differently from traditional relational databases. Here's a breakdown of the key components you'll interact with, illustrated by the Todo example (`examples/todo/src/main.rs`).
+The Todo example demonstrates Eidetica's key components working together in a real application.
 
-Note: This example uses the Eidetica library from the workspace at `crates/lib/`.
+### 1. The Database Backend (`Instance`)
 
-### 1. The Database (`Instance`)
+The `Instance` is your main entry point. It wraps a storage backend and provides access to your databases.
 
-The `Instance` is your main entry point to interacting with an Eidetica database instance. It manages the underlying storage (the "database") and provides access to data structures called Databases.
-
-In the Todo example, we initialize or load the database using an `InMemory` database, which can be persisted to a file:
+The Todo example implements `load_or_create_db()` to handle loading existing databases or creating new ones:
 
 ```rust,ignore
-use eidetica::backend::database::InMemory;
-use eidetica::Instance;
-use std::path::PathBuf;
-use anyhow::Result;
-
 fn load_or_create_db(path: &PathBuf) -> Result<Instance> {
-    if path.exists() {
-        // Load existing DB from file
-        let database = InMemory::load_from_file(path)?;
-        let db = Instance::new(Box::new(database));
-        // Authentication keys are automatically loaded with the database
-        Ok(db)
+    let db = if path.exists() {
+        let backend = InMemory::load_from_file(path)?;
+        Instance::new(Box::new(backend))
     } else {
-        // Create a new in-memory database
-        let database = InMemory::new();
-        let db = Instance::new(Box::new(database));
-        // Add authentication key (required for all operations)
-        db.add_private_key("todo_app_key")?;
-        Ok(db)
+        let backend = InMemory::new();
+        Instance::new(Box::new(backend))
+    };
+
+    // Ensure the todo app authentication key exists
+    let existing_keys = db.list_private_keys()?;
+
+    if !existing_keys.contains(&TODO_APP_KEY_NAME.to_string()) {
+        db.add_private_key(TODO_APP_KEY_NAME)?;
+        println!("✓ New authentication key created");
     }
+
+    Ok(db)
 }
-
-fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
-    let database = db.backend();
-    let database_guard = database.lock().unwrap();
-
-    // Cast is needed to call database-specific methods like save_to_file
-    let in_memory_database = database_guard
-        .as_any()
-        .downcast_ref::<InMemory>()
-        .ok_or(anyhow::anyhow!("Failed to downcast database"))?; // Simplified error
-
-    in_memory_database.save_to_file(path)?;
-    Ok(())
-}
-
-// Usage in main:
-// let db = load_or_create_db(&cli.database_path)?;
-// save_db(&db, &cli.database_path)?;
 ```
+
+This shows how the `InMemory` backend can persist to disk and how authentication keys are managed.
 
 ### 2. Databases (`Database`)
 
@@ -63,92 +43,45 @@ A `Database` is a primary organizational unit within a `Instance`. Think of it s
 The Todo example uses a single Database named "todo":
 
 ```rust,ignore
-use eidetica::Instance;
-use eidetica::Database;
-use anyhow::Result;
+fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
+    let database_name = "todo";
 
-fn load_or_create_todo_tree(db: &Instance) -> Result<Database> {
-    let tree_name = "todo";
-    let auth_key = "todo_app_key"; // Must match the key added to the database
-
-    // Attempt to find an existing database by name using find_database
-    match db.find_database(tree_name) {
+    // Try to find the database by name
+    let mut database = match db.find_database(database_name) {
         Ok(mut databases) => {
-            // Found one or more databases with the name.
-            // We arbitrarily take the first one found.
-            // In a real app, you might want specific logic for duplicates.
-            println!("Found existing todo database.");
-            Ok(databases.pop().unwrap()) // Safe unwrap as find_database errors if empty
+            databases.pop().unwrap() // unwrap is safe because find_database errors if empty
         }
         Err(e) if e.is_not_found() => {
             // If not found, create a new one
             println!("No existing todo database found, creating a new one...");
-            let mut doc = eidetica::crdt::Doc::new(); // Database settings
-            doc.set("name", tree_name);
-            let database = db.new_database(doc, auth_key)?;
+            let mut settings = Doc::new();
+            settings.set_string("name", database_name);
 
-            // No initial commit needed here as stores like Table handle
-            // their creation upon first access within an operation.
-
-            Ok(database)
+            db.new_database(settings, TODO_APP_KEY_NAME)?
         }
-        Err(e) => {
-            // Handle other potential errors from find_database
-            Err(e.into())
-        }
-    }
-}
+        Err(e) => return Err(e),
+    };
 
-// Usage in main:
-// let todo_database = load_or_create_todo_database(&db)?;
-```
+    // Set the default authentication key for this database
+    database.set_default_auth_key(TODO_APP_KEY_NAME);
 
-### 3. Transactions (`Transaction`)
-
-All modifications to a `Database`'s data happen within a `Transaction`. Transactions ensure atomicity – similar to transactions in traditional databases. Changes made within a transaction are only applied to the Database when the transaction is successfully committed.
-
-Every transaction is automatically authenticated using the database's default signing key. This ensures that all changes are cryptographically verified and traceable.
-
-```rust,ignore
-use eidetica::Database;
-use anyhow::Result;
-
-fn some_data_modification(database: &Database) -> eidetica::Result<()> {
-    // Start an authenticated atomic transaction
-    let op = database.new_transaction()?; // Automatically uses the database's default signing key
-
-    // ... perform data changes using the 'op' handle ...
-
-    // Commit the changes atomically (automatically signed)
-    op.commit()?;
-
-    Ok(())
+    Ok(database)
 }
 ```
 
-Read-only access also typically uses a `Transaction` to ensure a consistent view of the data at a specific point in time.
+This shows how `find_database()` searches for existing databases by name, and `set_default_auth_key()` configures automatic authentication for all transactions.
 
-### 4. Stores (`Store`)
+### 3. Transactions and Stores
 
-`Stores` are the heart of data storage within a `Database`. Unlike rigid tables in SQL databases, Stores are highly flexible containers.
+All data modifications happen within a `Transaction`. Transactions ensure atomicity and are automatically authenticated using the database's default signing key.
 
-- **Analogy:** You can think of a Store _loosely_ like a table or a collection within a Database.
-- **Flexibility:** Stores aren't tied to a single data type or structure. They are generic containers identified by a name (e.g., "todos").
-- **Implementations:** Eidetica provides several `Store` implementations for common data patterns. The Todo example uses `Table<T>`, which is specialized for storing collections of structured data (like rows) where each item has a unique ID. Other implementations might exist for key-value pairs, lists, etc.
-- **Extensibility:** You can implement your own `Store` types to model complex or domain-specific data structures.
+Within a transaction, you access `Stores` - flexible containers for different types of data. The Todo example uses `Table<Todo>` to store todo items with unique IDs.
 
-The Todo example uses a `Table` to store `Todo` structs:
+### 4. The Todo Data Structure
 
-<!-- TODO: Example has complex chrono serde dependencies and Result<()> return type issues -->
+The example defines a `Todo` struct that must implement `Serialize` and `Deserialize` to work with Eidetica:
 
 ```rust,ignore
-use eidetica::{Database, Error};
-use eidetica::store::Table;
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use anyhow::{anyhow, Result};
-
-// Define the data structure (must be Serializable + Deserializable)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub title: String,
@@ -157,71 +90,97 @@ pub struct Todo {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+impl Todo {
+    pub fn new(title: String) -> Self {
+        Self {
+            title,
+            completed: false,
+            created_at: Utc::now(),
+            completed_at: None,
+        }
+    }
+
+    pub fn complete(&mut self) {
+        self.completed = true;
+        self.completed_at = Some(Utc::now());
+    }
+}
+```
+
+### 5. Adding a Todo
+
+The `add_todo()` function shows how to insert data into a `Table` store:
+
+```rust,ignore
 fn add_todo(database: &Database, title: String) -> Result<()> {
+    // Start an atomic transaction (uses default auth key)
     let op = database.new_transaction()?;
-    // Get a handle to the 'todos' store, specifying its type is Table<Todo>
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
+
+    // Get a handle to the 'todos' Table store
+    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+
+    // Create a new todo
     let todo = Todo::new(title);
-    // Insert the data - Table assigns an ID
+
+    // Insert the todo into the Table
+    // The Table will generate a unique ID for it
     let todo_id = todos_store.insert(todo)?;
+
+    // Commit the transaction
     op.commit()?;
-    println!("Added todo with ID: {}", todo_id);
+
+    println!("Added todo with ID: {todo_id}");
+
     Ok(())
 }
+```
 
+### 6. Updating a Todo
+
+The `complete_todo()` function demonstrates reading and updating data:
+
+```rust,ignore
 fn complete_todo(database: &Database, id: &str) -> Result<()> {
+    // Start an atomic transaction (uses default auth key)
     let op = database.new_transaction()?;
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
-    // Get data by ID
-    let mut todo = todos_store.get(id).map_err(|e| anyhow!("Get failed: {}", e))?;
+
+    // Get a handle to the 'todos' Table store
+    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+
+    // Get the todo from the Table
+    let mut todo = todos_store.get(id)?;
+
+    // Mark the todo as complete
     todo.complete();
-    // Update data by ID
+
+    // Update the todo in the Table
     todos_store.set(id, todo)?;
+
+    // Commit the transaction
     op.commit()?;
-    Ok(())
-}
 
-fn list_todos(database: &Database) -> Result<()> {
-    let op = database.new_transaction()?;
-    let todos_store = op.get_subtree::<Table<Todo>>("todos")?;
-    // Search/scan the store
-    let todos_with_ids = todos_store.search(|_| true)?; // Get all
-    // ... print todos ...
     Ok(())
 }
 ```
 
-### 5. Data Modeling (`Serialize`, `Deserialize`)
+These examples show the typical pattern: start a transaction, get a store handle, perform operations, and commit.
 
-Eidetica leverages the `serde` framework for data serialization. Any data structure you want to store needs to implement `serde::Serialize` and `serde::Deserialize`. This allows you to store complex Rust types directly.
+### 7. Y-CRDT Integration (`YDoc`)
 
-<!-- TODO: Example requires chrono serde feature which causes multiple rlib candidates error -->
-
-```rust,ignore
-#[derive(Debug, Clone, Serialize, Deserialize)] // Serde traits
-pub struct Todo {
-    pub title: String,
-    pub completed: bool,
-    pub created_at: DateTime<Utc>,
-    pub completed_at: Option<DateTime<Utc>>,
-}
-```
-
-### 6. Y-CRDT Integration (`YDoc`)
-
-The Todo example also demonstrates the use of `YDoc` for collaborative data structures, specifically for user information and preferences. This requires the "y-crdt" feature flag.
-
-<!-- TODO: YDoc example causes Y-CRDT runtime errors with empty data structures -->
+The example also uses `YDoc` stores for user information and preferences. Y-CRDTs are designed for collaborative editing:
 
 ```rust,ignore
-use eidetica::store::YDoc;
-use eidetica::y_crdt::{Map, Transact};
-
-fn set_user_info(database: &Database, name: Option<&String>, email: Option<&String>, bio: Option<&String>) -> Result<()> {
+fn set_user_info(
+    database: &Database,
+    name: Option<&String>,
+    email: Option<&String>,
+    bio: Option<&String>,
+) -> Result<()> {
+    // Start an atomic transaction (uses default auth key)
     let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_subtree::<YDoc>("user_info")?;
+    let user_info_store = op.get_store::<YDoc>("user_info")?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -241,38 +200,19 @@ fn set_user_info(database: &Database, name: Option<&String>, email: Option<&Stri
         Ok(())
     })?;
 
-    op.commit()?;
-    Ok(())
-}
-
-fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
-    let op = database.new_transaction()?;
-
-    // Get a handle to the 'user_prefs' YDoc store
-    let user_prefs_store = op.get_subtree::<YDoc>("user_prefs")?;
-
-    // Update user preference using the Y-CRDT document
-    user_prefs_store.with_doc_mut(|doc| {
-        let prefs_map = doc.get_or_insert_map("preferences");
-        let mut txn = doc.transact_mut();
-        prefs_map.insert(&mut txn, key, value);
-        Ok(())
-    })?;
-
+    // Commit the transaction
     op.commit()?;
     Ok(())
 }
 ```
 
-**Multiple Store Types in One Database:**
+The example demonstrates using different store types in one database:
 
-The Todo example demonstrates how different store types can coexist within the same database:
+- **"todos"** (`Table<Todo>`): Stores todo items with automatic ID generation
+- **"user_info"** (`YDoc`): Stores user profile using Y-CRDT Maps
+- **"user_prefs"** (`YDoc`): Stores preferences using Y-CRDT Maps
 
-- **"todos"** (Table<Todo>): Stores todo items with automatic ID generation
-- **"user_info"** (YDoc): Stores user profile information using Y-CRDT Maps
-- **"user_prefs"** (YDoc): Stores user preferences using Y-CRDT Maps
-
-This shows how Eidetica allows you to choose the most appropriate data structure for each type of data within your application, optimizing for different use cases (record storage vs. collaborative editing).
+This shows how you can choose the most appropriate data structure for each type of data.
 
 ## Running the Todo Example
 

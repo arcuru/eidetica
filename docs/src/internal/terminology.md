@@ -88,6 +88,8 @@ User Application
 
 ### Internal Implementation
 
+<!-- Code block ignored: Conceptual examples showing internal naming conventions, not compilable code -->
+
 ```rust,ignore
 // Correct - dealing with Entry internals
 entry.tree.root  // TreeNode field
@@ -96,6 +98,8 @@ builder.set_subtree_data_mut()  // Working with subtree data structures
 ```
 
 ### Public APIs
+
+<!-- Code block ignored: Conceptual examples showing API naming conventions, not compilable code -->
 
 ```rust,ignore
 // Correct - user-facing abstractions

@@ -16,6 +16,8 @@ Subtree parent relationships are a critical aspect of Eidetica's Merkle-CRDT arc
 
 Example structure:
 
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
+
 ```rust,ignore
 Entry {
     tree: TreeNode {
@@ -35,6 +37,8 @@ Entry {
 ### Non-Root Subtree Entries
 
 Subsequent entries in the subtree have the previous subtree entries as parents:
+
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
 
 ```rust,ignore
 Entry {
@@ -59,6 +63,8 @@ The system uses multi-layer validation to ensure DAG integrity and ID format cor
 ### 1. Entry Layer: Structural and Format Validation
 
 The `Entry::validate()` method enforces critical invariants:
+
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
 
 ```rust,ignore
 /// CRITICAL VALIDATION RULES:
@@ -102,6 +108,8 @@ This prevents the creation of orphaned nodes and ensures all IDs are properly fo
 
 The `EntryBuilder::build()` method automatically validates entries before returning them:
 
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
+
 ```rust,ignore
 pub fn build(mut self) -> Result<Entry> {
     // 1. Sort and deduplicate parent lists
@@ -121,6 +129,8 @@ This means validation errors are caught immediately when building entries, provi
 ### 3. Transaction Layer: Automatic Parent Discovery
 
 When a transaction accesses a subtree for the first time, only then does it determine the correct subtree parents:
+
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
 
 ```rust,ignore
 // Get subtree tips based on transaction context
@@ -150,6 +160,8 @@ The transaction system handles:
 
 The backend `put()` method serves as the **final validation gate** before persistence:
 
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
+
 ```rust,ignore
 /// CRITICAL VALIDATION GATE: Final check before persistence
 pub(crate) fn put(
@@ -167,6 +179,8 @@ pub(crate) fn put(
 ### 5. LCA Traversal: Subtree Root Detection
 
 During LCA (Lowest Common Ancestor) calculations, the system correctly identifies subtree roots:
+
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
 
 ```rust,ignore
 match entry.subtree_parents(subtree) {
@@ -222,6 +236,8 @@ The transaction system correctly handles finding subtree parents in diamond patt
 
 ### Creating Entries Through Transactions (Recommended)
 
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
+
 ```rust,ignore
 // The transaction automatically handles subtree parent discovery
 let op = database.new_transaction()?;
@@ -231,6 +247,8 @@ let entry_id = op.commit()?; // Parents automatically determined
 ```
 
 ### Manual Entry Creation (Internal Only)
+
+<!-- Code block ignored: Internal implementation examples and conceptual code structures not suitable for testing -->
 
 ```rust,ignore
 // ✅ CORRECT: Root entry (doesn't need parents)

@@ -26,6 +26,8 @@ The `InMemory` database is currently the primary storage implementation:
 
 Example usage:
 
+<!-- Code block ignored: Requires file system access during testing -->
+
 ```rust,ignore
 // Create a new in-memory database
 use eidetica::backend::database::InMemory;

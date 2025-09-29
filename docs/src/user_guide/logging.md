@@ -4,32 +4,29 @@ Eidetica uses the `tracing` crate for structured logging throughout the library.
 
 ## Quick Start
 
-To enable logging in your Eidetica application, add `tracing-subscriber` to your dependencies and initialize it in your main function:
+Eidetica uses the `tracing` crate, which means you can attach any subscriber to capture and format logs. The simplest approach is using `tracing-subscriber`:
 
 ```toml
 [dependencies]
 eidetica = "0.1"
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
-
-<!-- TODO: Example causes multiple rlib candidates error for tracing_subscriber dependency -->
 
 ```rust,ignore
 use tracing_subscriber::EnvFilter;
 
-fn main() {
-    // Initialize tracing with environment filter
+fn main() -> eidetica::Result<()> {
+    // Initialize tracing subscriber to see Eidetica logs
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("eidetica=info".parse().unwrap())
-        )
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // Your application code here
+    // Now all Eidetica operations will log according to RUST_LOG
+    // ...
 }
 ```
+
+You can customize formatting, filtering, and output destinations. See the [tracing-subscriber documentation](https://docs.rs/tracing-subscriber) for advanced configuration options.
 
 ## Configuring Log Levels
 
@@ -74,83 +71,30 @@ Eidetica uses the following log levels:
   - Detailed CRDT operations
   - Network protocol messages
 
-## Examples
+## Using Eidetica with Logging
 
-### Basic Application Logging
-
-```rust,ignore
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
-use tracing_subscriber::EnvFilter;
-
-fn main() -> eidetica::Result<()> {
-    // Set up logging with default info level
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("eidetica=info".parse().unwrap())
-        )
-        .init();
-
-    let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
-
-    // Add private key first
-    db.add_private_key("my_key")?;
-
-    // Create a database
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "my_database");
-    let database = db.new_database(settings, "my_key")?;
-
-    Ok(())
-}
-```
-
-### Custom Logging Configuration
-
-```rust,ignore
-use tracing_subscriber::{fmt, EnvFilter};
-use tracing_subscriber::prelude::*;
-
-fn main() {
-    // Configure logging with custom format and filtering
-    let filter = EnvFilter::try_new(
-        "eidetica=debug,eidetica::sync=trace"
-    ).unwrap();
-
-    tracing_subscriber::registry()
-        .with(fmt::layer()
-            .with_target(false)  // Don't show target module
-            .compact()            // Use compact formatting
-        )
-        .with(filter)
-        .init();
-
-    // Your application code here
-}
-```
-
-### Logging in Tests
-
-For tests, you can use `tracing-subscriber`'s test utilities:
+Once you've initialized a tracing subscriber, all Eidetica operations will automatically emit structured logs that you can capture and filter:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    use tracing_subscriber::EnvFilter;
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+#
+# fn main() -> eidetica::Result<()> {
+let backend = Box::new(InMemory::new());
+let db = Instance::new(backend);
 
-    #[test]
-    fn test_with_logging() {
-        // Initialize logging for this test
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_test_writer()
-            .try_init();
+// Add private key first
+db.add_private_key("my_key")?;
 
-        // Test code here - logs will be captured with test output
-    }
-}
+// Create a database - this will log at INFO level
+let mut settings = Doc::new();
+settings.set("name", "my_database");
+let database = db.new_database(settings, "my_key")?;
+
+// Operations will emit logs at appropriate levels
+// Use RUST_LOG to control what you see
+# Ok(())
+# }
 ```
 
 ## Performance Considerations

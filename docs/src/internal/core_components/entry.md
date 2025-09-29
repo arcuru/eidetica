@@ -84,6 +84,8 @@ All IDs in Eidetica must be valid SHA-256 hashes represented as 64-character low
 
 An Entry contains the following internal data structures:
 
+<!-- Code block ignored: Conceptual struct diagram showing internal data structures, not actual compilable code -->
+
 ```rust,ignore
 struct Entry {
     // Main tree node - the core Merkle-DAG structure

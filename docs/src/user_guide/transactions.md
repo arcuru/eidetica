@@ -22,103 +22,117 @@ Using a `Transaction` follows a distinct lifecycle:
 
 1.  **Creation**: Start an authenticated transaction from a `Database` instance.
 
-    ```rust,ignore
-    extern crate eidetica;
-    use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-
-    fn main() -> eidetica::Result<()> {
-        // Setup database
-        let backend = InMemory::new();
-        let db = Instance::new(Box::new(backend));
-        db.add_private_key("key")?;
-        let mut settings = Doc::new();
-        settings.set_string("name", "test");
-        let database = db.new_database(settings, "key")?;
-
-        let _txn = database.new_transaction()?; // Automatically uses the database's default signing key
-        Ok(())
-    }
+    ```rust
+    # extern crate eidetica;
+    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    #
+    # fn main() -> eidetica::Result<()> {
+    # // Setup database
+    # let backend = InMemory::new();
+    # let db = Instance::new(Box::new(backend));
+    # db.add_private_key("key")?;
+    # let mut settings = Doc::new();
+    # settings.set_string("name", "test");
+    # let database = db.new_database(settings, "key")?;
+    #
+    let _txn = database.new_transaction()?; // Automatically uses the database's default signing key
+    # Ok(())
+    # }
     ```
 
 2.  **Store Access**: Get handles to the specific `Store`s you want to interact with. This implicitly loads the current state (tips) of that store into the transaction if accessed for the first time.
 
-    ```rust,ignore
-    extern crate eidetica;
-    extern crate serde;
-    use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
-    use serde::{Serialize, Deserialize};
+    ```rust
+    # extern crate eidetica;
+    # extern crate serde;
+    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
+    # use serde::{Serialize, Deserialize};
+    #
+    # #[derive(Clone, Debug, Serialize, Deserialize)]
+    # struct User {
+    #     name: String,
+    # }
+    #
+    # fn main() -> eidetica::Result<()> {
+    # // Setup database and transaction
+    # let backend = InMemory::new();
+    # let db = Instance::new(Box::new(backend));
+    # db.add_private_key("key")?;
+    # let mut settings = Doc::new();
+    # settings.set_string("name", "test");
+    # let database = db.new_database(settings, "key")?;
+    let txn = database.new_transaction()?;
 
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct User {
-        name: String,
-    }
+    // Get handles within a scope or manage their lifetime
+    let _users_store = txn.get_store::<Table<User>>("users")?;
+    let _config_store = txn.get_store::<DocStore>("config")?;
+    let _settings_store = SettingsStore::new(&txn)?;  // For database settings
 
-    fn main() -> eidetica::Result<()> {
-        // Setup database and transaction
-        let backend = InMemory::new();
-        let db = Instance::new(Box::new(backend));
-        db.add_private_key("key")?;
-        let mut settings = Doc::new();
-        settings.set_string("name", "test");
-        let database = db.new_database(settings, "key")?;
-        let txn = database.new_transaction()?;
-
-        // Get handles within a scope or manage their lifetime
-        let _users_store = txn.get_store::<Table<User>>("users")?;
-        let _config_store = txn.get_store::<DocStore>("config")?;
-        let _settings_store = SettingsStore::new(&txn)?;  // For database settings
-
-        txn.commit()?;
-        Ok(())
-    }
+    txn.commit()?;
+    # Ok(())
+    # }
     ```
 
 3.  **Staging Changes**: Use the methods provided by the `Store` handles (`set`, `insert`, `get`, `remove`, etc.). These methods interact with the data staged _within the `Transaction`_.
 
-    ```rust,ignore
-    extern crate eidetica;
-    extern crate serde;
-    extern crate chrono;
-    use eidetica::store::{Table, DocStore, SettingsStore};
-    use serde::{Serialize, Deserialize};
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct User {
-        name: String,
-    }
-
-    fn example(users_store: &Table<User>, config_store: &DocStore, settings_store: &SettingsStore, user_id: &str) -> eidetica::Result<()> {
-        users_store.insert(User { name: "Alice".to_string() })?;
-        let _current_name = users_store.get(user_id)?;
-        config_store.set("last_updated", chrono::Utc::now().to_rfc3339())?;
-        settings_store.set_name("Updated Database Name")?;  // Manage database settings
-        Ok(())
-    }
+    ```rust
+    # extern crate eidetica;
+    # extern crate serde;
+    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}};
+    # use serde::{Serialize, Deserialize};
+    #
+    # #[derive(Clone, Debug, Serialize, Deserialize)]
+    # struct User {
+    #     name: String,
+    # }
+    #
+    # fn main() -> eidetica::Result<()> {
+    # // Setup database and transaction
+    # let backend = InMemory::new();
+    # let db = Instance::new(Box::new(backend));
+    # db.add_private_key("key")?;
+    # let mut settings = Doc::new();
+    # settings.set_string("name", "test");
+    # let database = db.new_database(settings, "key")?;
+    # let txn = database.new_transaction()?;
+    # let users_store = txn.get_store::<Table<User>>("users")?;
+    # let config_store = txn.get_store::<DocStore>("config")?;
+    # let settings_store = SettingsStore::new(&txn)?;
+    #
+    // Insert a new user and get their ID
+    let user_id = users_store.insert(User { name: "Alice".to_string() })?;
+    let _current_user = users_store.get(&user_id)?;
+    config_store.set("last_updated", "2024-01-15T10:30:00Z")?;
+    settings_store.set_name("Updated Database Name")?;  // Manage database settings
+    #
+    # txn.commit()?;
+    # Ok(())
+    # }
     ```
 
     _Note: `get` methods within a transaction read from the staged state, reflecting any changes already made within the same transaction._
 
 4.  **Commit**: Finalize the changes. This consumes the `Transaction` object, calculates the final `Entry` content based on staged changes, cryptographically signs the entry, writes the new `Entry` to the `Database`, and returns the `ID` of the newly created `Entry`.
 
-    ```rust,ignore
-    extern crate eidetica;
-    use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-
-    fn main() -> eidetica::Result<()> {
-        // Setup database
-        let backend = InMemory::new();
-        let db = Instance::new(Box::new(backend));
-        db.add_private_key("key")?;
-        let mut settings = Doc::new();
-        settings.set_string("name", "test");
-        let database = db.new_database(settings, "key")?;
-
-        // Create transaction and commit
-        let txn = database.new_transaction()?;
-        let new_entry_id = txn.commit()?;
-        println!("Changes committed. New state represented by Entry: {}", new_entry_id);
-        Ok(())
-    }
+    ```rust
+    # extern crate eidetica;
+    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    #
+    # fn main() -> eidetica::Result<()> {
+    # // Setup database
+    # let backend = InMemory::new();
+    # let db = Instance::new(Box::new(backend));
+    # db.add_private_key("key")?;
+    # let mut settings = Doc::new();
+    # settings.set_string("name", "test");
+    # let database = db.new_database(settings, "key")?;
+    #
+    // Create transaction and commit
+    let txn = database.new_transaction()?;
+    let new_entry_id = txn.commit()?;
+    println!("Changes committed. New state represented by Entry: {}", new_entry_id);
+    # Ok(())
+    # }
     ```
 
     _After `commit()`, the `txn` variable is no longer valid._
@@ -127,60 +141,96 @@ Using a `Transaction` follows a distinct lifecycle:
 
 Within transactions, you can manage database settings using `SettingsStore`. This provides type-safe access to database configuration and authentication settings:
 
-```rust,ignore
-use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission};
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "settings_example");
+# let database = db.new_database(settings, "admin")?;
+# // Generate keypairs for old user and add it first so we can revoke it
+# let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
+# let old_user_public_key = format_public_key(&old_user_verifying_key);
+# let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(15))?;
+# let setup_txn = database.new_transaction()?;
+# let setup_store = SettingsStore::new(&setup_txn)?;
+# setup_store.set_auth_key("old_user", old_user_key)?;
+# setup_txn.commit()?;
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
-fn manage_settings(database: &Database) -> eidetica::Result<()> {
-    let transaction = database.new_transaction()?;
-    let settings_store = SettingsStore::new(&transaction)?;
+// Update database name
+settings_store.set_name("Production Database")?;
 
-    // Update database name
-    settings_store.set_name("Production Database")?;
+// Generate keypairs for new users (hidden in production code)
+# let (_new_user_signing_key, new_user_verifying_key) = generate_keypair();
+# let new_user_public_key = format_public_key(&new_user_verifying_key);
+# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
+# let alice_public_key = format_public_key(&alice_verifying_key);
 
-    // Add authentication keys
-    let new_user_key = AuthKey::active(
-        "ed25519:new_user_public_key",
-        Permission::Write(10),
-    )?;
-    settings_store.set_auth_key("new_user", new_user_key)?;
+// Add authentication keys
+let new_user_key = AuthKey::active(
+    &new_user_public_key,
+    Permission::Write(10),
+)?;
+settings_store.set_auth_key("new_user", new_user_key)?;
 
-    // Complex auth operations atomically
-    settings_store.update_auth_settings(|auth| {
-        auth.overwrite_key("alice", alice_key)?;
-        auth.revoke_key("old_user")?;
-        Ok(())
-    })?;
-
-    transaction.commit()?;
+// Complex auth operations atomically
+let alice_key = AuthKey::active(&alice_public_key, Permission::Write(5))?;
+settings_store.update_auth_settings(|auth| {
+    auth.overwrite_key("alice", alice_key)?;
+    auth.revoke_key("old_user")?;
     Ok(())
-}
+})?;
+
+transaction.commit()?;
+# Ok(())
+# }
 ```
 
 This ensures that settings changes are atomic and properly authenticated alongside other database modifications.
 
 ## Read-Only Access
 
-While `Transaction`s are essential for writes, you can perform reads without an explicit `Transaction` using `Database::get_subtree_viewer`:
+While `Transaction`s are essential for writes, you can perform reads without an explicit `Transaction` using `Database::get_store_viewer`:
 
-```rust,ignore
-extern crate eidetica;
-extern crate serde;
-use eidetica::{Database, store::Table};
-use serde::{Serialize, Deserialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct User {
-    name: String,
+```rust
+# extern crate eidetica;
+# extern crate serde;
+# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use serde::{Serialize, Deserialize};
+#
+# #[derive(Clone, Debug, Serialize, Deserialize)]
+# struct User {
+#     name: String,
+# }
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database with some data
+# let backend = InMemory::new();
+# let db = Instance::new(Box::new(backend));
+# db.add_private_key("key")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "test");
+# let database = db.new_database(settings, "key")?;
+# // Insert test data
+# let txn = database.new_transaction()?;
+# let users_store = txn.get_store::<Table<User>>("users")?;
+# let user_id = users_store.insert(User { name: "Alice".to_string() })?;
+# txn.commit()?;
+#
+let users_viewer = database.get_store_viewer::<Table<User>>("users")?;
+if let Ok(_user) = users_viewer.get(&user_id) {
+    // Read data based on the current tips of the 'users' store
 }
-
-fn example(database: Database, user_id: &str) -> eidetica::Result<()> {
-    let users_viewer = database.get_store_viewer::<Table<User>>("users")?;
-    if let Ok(_user) = users_viewer.get(user_id) {
-        // Read data based on the current tips of the 'users' store
-    }
-    Ok(())
-}
+# Ok(())
+# }
 ```
 
 A `SubtreeViewer` provides read-only access based on the latest committed state (tips) of that specific store at the time the viewer is created. It does _not_ allow modifications and does not require a `commit()`.

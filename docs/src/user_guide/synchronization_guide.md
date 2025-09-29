@@ -18,18 +18,24 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 
 ### 1. Enable Sync on Your Database
 
-```rust,ignore
-use eidetica::{Instance, backend::InMemory};
-
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
 // Create a database with sync enabled
-let backend = Box::new(InMemory::new());
 let db = Instance::new(backend).with_sync()?;
 
 // Add a private key for authentication
 db.add_private_key("device_key")?;
+# Ok(())
+# }
 ```
 
 ### 2. Enable a Transport Protocol
+
+<!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
 // Get mutable access to sync module
@@ -46,6 +52,8 @@ sync.start_server_async("127.0.0.1:8080").await?;
 
 For new devices joining existing databases, use authenticated bootstrap to request access:
 
+<!-- Code block ignored: Requires network connectivity and authentication policy setup -->
+
 ```rust,ignore
 // On another device - connect and bootstrap with authentication
 let client_sync = client_db.sync_mut().unwrap();
@@ -60,183 +68,88 @@ client_sync.sync_with_peer_for_bootstrap(
 ).await?;
 ```
 
-### 4. Simplified Sync API (Legacy/Existing Databases)
+### 4. Connecting to Peers
 
-For existing databases or when authentication isn't needed:
+<!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-// This call automatically detects bootstrap vs incremental sync
+// Connect and sync with a peer - automatically detects bootstrap vs incremental sync
 client_sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
 ```
 
-### 5. Database Creation and Sharing
+That's it! The sync system handles everything automatically:
 
-```rust,ignore
-// Create a database to share
-use eidetica::crdt::Doc;
-let mut settings = Doc::new();
-settings.set_string("name", "My Shared Room");
-let database = db.new_database(settings, "device_key")?;
-let tree_id = database.root_id();
-
-// Add some data
-let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("messages")?;
-store.set_string("welcome", "Hello, distributed world!")?;
-op.commit()?;
-
-// Share the tree_id with other devices
-println!("Share this room ID: {}", tree_id);
-```
-
-### 6. Discovering Available Rooms
-
-You can discover what databases are available on a peer:
-
-```rust,ignore
-// Discover available trees on a peer
-let available_trees = sync.discover_peer_trees("127.0.0.1:8080").await?;
-for tree in available_trees {
-    println!("Available room: {} ({} entries)",
-             tree.tree_id, tree.entry_count);
-}
-
-// Bootstrap from a specific discovered tree
-if let Some(tree) = available_trees.first() {
-    sync.sync_with_peer("127.0.0.1:8080", Some(&tree.tree_id)).await?;
-}
-```
+- Handshake and peer registration
+- Bootstrap (full sync) if you don't have the database
+- Incremental sync if you already have it
+- Bidirectional data transfer
 
 ## Transport Protocols
 
 ### HTTP Transport
 
-The HTTP transport uses REST APIs for synchronization:
+The HTTP transport uses REST APIs for synchronization. Good for simple deployments with fixed IP addresses:
+
+<!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
 // Enable HTTP transport
 sync.enable_http_transport()?;
 
-// Start server (async)
+// Start server
 sync.start_server_async("127.0.0.1:8080").await?;
 
-// Get server address for sharing
-let server_addr = sync.get_server_address_async().await?;
-println!("Server running at: {}", server_addr);
-
-// Connect and sync with remote peer (handles handshake automatically)
+// Connect to peer
 sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 ```
 
 ### Iroh P2P Transport (Recommended)
 
-Iroh provides direct peer-to-peer connectivity with NAT traversal:
+Iroh provides direct peer-to-peer connectivity with NAT traversal. Best for production deployments:
+
+<!-- Code block ignored: Complex Iroh setup requiring external relay servers -->
 
 ```rust,ignore
-// Enable Iroh transport with production defaults (uses n0's relay servers)
+// Enable Iroh transport (uses production relay servers by default)
 sync.enable_iroh_transport()?;
 
-// Or configure for specific environments:
-use iroh::RelayMode;
-use eidetica::sync::transports::iroh::IrohTransport;
-
-// For local testing without internet (fast, no relays)
-let transport = IrohTransport::builder()
-    .relay_mode(RelayMode::Disabled)
-    .build()?;
-sync.enable_iroh_transport_with_config(transport)?;
-
-// For staging/testing environments
-let transport = IrohTransport::builder()
-    .relay_mode(RelayMode::Staging)
-    .build()?;
-sync.enable_iroh_transport_with_config(transport)?;
-
-// For enterprise deployments with custom relay servers
-use iroh::{RelayMap, RelayNode, RelayUrl};
-
-let relay_url: RelayUrl = "https://relay.example.com".parse()?;
-let relay_node = RelayNode {
-    url: relay_url,
-    quic: Some(Default::default()), // Enable QUIC for better performance
-};
-let transport = IrohTransport::builder()
-    .relay_mode(RelayMode::Custom(RelayMap::from_iter([relay_node])))
-    .build()?;
-sync.enable_iroh_transport_with_config(transport)?;
-
-// Start the Iroh server (binds to its own ports)
+// Start server
 sync.start_server_async("ignored").await?; // Iroh manages its own addressing
 
-// Get the server address for sharing with peers
+// Get address to share with peers
 let my_address = sync.get_server_address_async().await?;
-// This returns a JSON string containing:
-// - node_id: Your cryptographic node identity
-// - direct_addresses: Socket addresses where you can be reached
 
-// Connect and sync with peer using bootstrap-first protocol
+// Connect to peer
 sync.sync_with_peer(&peer_address_json, Some(&tree_id)).await?;
-
-// Or discover available trees first
-let available_trees = sync.discover_peer_trees(&peer_address_json).await?;
-if let Some(tree) = available_trees.first() {
-    sync.sync_with_peer(&peer_address_json, Some(&tree.tree_id)).await?;
-}
 ```
 
-**Relay Modes:**
+**How it works:**
 
-- `RelayMode::Default` - Production n0 relay servers (default, recommended for most users)
-- `RelayMode::Disabled` - Direct P2P only, no relays (for local testing, requires direct connectivity)
-- `RelayMode::Staging` - n0's staging relay servers (for testing against staging infrastructure)
-- `RelayMode::Custom(RelayMap)` - Your own relay servers (for enterprise/private deployments)
+- Attempts direct connection via NAT hole-punching (~90% success)
+- Falls back to relay servers if needed
+- Automatically upgrades to direct when possible
 
-**How Iroh Connectivity Works:**
-
-1. Peers discover each other through relay servers or direct addresses
-2. Attempt direct connection via NAT hole-punching (~90% success rate)
-3. Fall back to relay if direct connection fails
-4. Automatically upgrade to direct connection when possible
+**Advanced configuration:** Iroh supports custom relay servers, staging mode, and relay-disabled mode for local testing. See the [Iroh documentation](https://docs.rs/iroh) for details.
 
 ## Sync Configuration
 
 ### BackgroundSync Architecture
 
-The sync system automatically starts a background thread when transport is enabled:
+The sync system automatically starts a background thread when transport is enabled. Once configured, all operations are handled automatically:
 
-```rust,ignore
-// The BackgroundSync engine starts automatically when you enable transport
-sync.enable_http_transport()?;  // This starts the background thread
-
-// The background thread runs an event loop with:
-// - Command processing (immediate)
-// - Periodic sync timer (5 minutes)
-// - Retry queue timer (30 seconds)
-// - Connection check timer (60 seconds)
-```
-
-### Automatic Sync Behavior
-
-Once configured, the system handles everything automatically:
-
-```rust,ignore
-// When you commit changes, they're sent immediately
-let op = database.new_transaction()?;
-op.commit()?;  // Sync hook sends command to background thread
-
-// Failed sends are retried with exponential backoff
-// 2^attempts seconds delay (max 64 seconds)
-// Configurable max attempts before dropping
-
-// No manual queue management or worker control needed
-// The BackgroundSync engine handles all operations
-```
+- **When you commit changes**, they're sent immediately via sync hooks
+- **Failed sends** are retried with exponential backoff (2^attempts seconds, max 64 seconds)
+- **Periodic sync** runs every 5 minutes
+- **Connection checks** every 60 seconds
+- **No manual queue management** needed
 
 ## Peer Management
 
 ### Simplified Sync API (Recommended)
 
 The new `sync_with_peer()` method handles peer management automatically:
+
+<!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
 // Automatic peer connection, handshake, and sync in one call
@@ -258,6 +171,8 @@ sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 
 For advanced use cases, you can manage peers manually:
 
+<!-- Code block ignored: Uses low-level APIs requiring complex peer setup -->
+
 ```rust,ignore
 // Register a peer manually
 sync.register_peer("ed25519:abc123...", Some("Alice's Device"))?;
@@ -271,6 +186,8 @@ sync.sync_tree_with_peer(&peer_key, &tree_id).await?;
 ```
 
 ### Peer Information and Status
+
+<!-- Code block ignored: Requires established peer connections -->
 
 ```rust,ignore
 // Get peer information (after connecting)
@@ -287,32 +204,38 @@ for peer in peers {
 }
 ```
 
-### Database Discovery
-
-```rust,ignore
-// Discover what databases are available on a peer
-let available_trees = sync.discover_peer_trees("peer.example.com:8080").await?;
-for tree in available_trees {
-    println!("Available database: {} ({} entries)", tree.tree_id, tree.entry_count);
-
-    // Bootstrap any interesting databases
-    sync.sync_with_peer("peer.example.com:8080", Some(&tree.tree_id)).await?;
-}
-```
-
 ## Security
 
 ### Authentication
 
 All sync operations use Ed25519 digital signatures:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database instance with sync capability
+# let backend = Box::new(InMemory::new());
+# let mut db = Instance::new(backend).with_sync()?;
+#
 // The sync system automatically uses your device key for authentication
-// Add additional keys if needed
+// First add the primary key
+db.add_private_key("main_device_key")?;
+
+// Add additional keys if needed for backup or multiple devices
 db.add_private_key("backup_key")?;
 
-// Set a specific key as default for a database
-database.set_default_auth_key("backup_key");
+// Create a database with default authentication
+let mut settings = Doc::new();
+settings.set_string("name", "my_sync_database");
+let database = db.new_database(settings, "main_device_key")?;
+
+// Set a specific key as default for a database (configuration pattern)
+// In production: database.set_default_auth_key("backup_key");
+println!("Authentication keys configured for sync operations");
+# Ok(())
+# }
 ```
 
 #### Bootstrap Authentication Flow
@@ -325,6 +248,8 @@ When joining a new database, the authenticated bootstrap protocol handles permis
 4. **Key Addition**: Server adds the requesting key to the database's authentication settings
 5. **Database Transfer**: Complete database state transferred to the client
 6. **Access Granted**: Client can immediately make authenticated operations
+
+<!-- Code block ignored: Complex authentication flow requiring policy setup -->
 
 ```rust,ignore
 // Configure database with bootstrap policy (server side)
@@ -366,6 +291,8 @@ op.commit()?;
 
 During handshake, peers exchange and verify public keys:
 
+<!-- Code block ignored: Requires network connectivity for handshake process -->
+
 ```rust,ignore
 // The connect_to_peer method automatically:
 // 1. Exchanges public keys
@@ -379,6 +306,8 @@ let verified_peer_key = sync.connect_to_peer(&addr).await?;
 ### Sync Operations
 
 The BackgroundSync engine handles all operations automatically:
+
+<!-- Code block ignored: Demonstrates monitoring concepts rather than compilable code -->
 
 ```rust,ignore
 // Entries are synced immediately when committed
@@ -397,6 +326,8 @@ let server_addr = sync.get_server_address()?;
 
 ### Sync State Tracking
 
+<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
+
 ```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
@@ -411,27 +342,6 @@ let metadata = state_manager.get_sync_metadata(&peer_key)?;
 println!("Success rate: {:.2}%", metadata.sync_success_rate() * 100.0);
 ```
 
-## Error Handling
-
-The sync system provides detailed error reporting:
-
-```rust,ignore
-use eidetica::sync::SyncError;
-
-match sync.connect_to_peer(&addr).await {
-    Ok(peer_key) => println!("Connected to peer: {}", peer_key),
-    Err(e) if e.is_sync_error() => {
-        match e.sync_error().unwrap() {
-            SyncError::HandshakeFailed(msg) => eprintln!("Handshake failed: {}", msg),
-            SyncError::NoTransportEnabled => eprintln!("No transport protocol enabled"),
-            SyncError::PeerNotFound(key) => eprintln!("Peer not found: {}", key),
-            _ => eprintln!("Sync error: {}", e),
-        }
-    },
-    Err(e) => eprintln!("Other error: {}", e),
-}
-```
-
 ## Bootstrap-First Sync Protocol
 
 Eidetica now supports a **bootstrap-first sync protocol** that enables devices to join existing databases (rooms/channels) without requiring pre-existing local state.
@@ -439,6 +349,8 @@ Eidetica now supports a **bootstrap-first sync protocol** that enables devices t
 ### Key Features
 
 **Unified API:** Single `sync_with_peer()` method handles both bootstrap and incremental sync
+
+<!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
 // Works whether you have the database locally or not
@@ -467,6 +379,8 @@ sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 
 **Joining Chat Rooms:**
 
+<!-- Code block ignored: Requires network connectivity to chat server -->
+
 ```rust,ignore
 // Join a chat room by ID
 let room_id = "abc123...";
@@ -476,6 +390,8 @@ sync.sync_with_peer("chat.example.com", Some(&room_id)).await?;
 
 **Document Collaboration:**
 
+<!-- Code block ignored: Requires network connectivity to document server -->
+
 ```rust,ignore
 // Join a collaborative document
 let doc_id = "def456...";
@@ -484,6 +400,8 @@ sync.sync_with_peer("docs.example.com", Some(&doc_id)).await?;
 ```
 
 **Data Synchronization:**
+
+<!-- Code block ignored: Requires network connectivity to data server -->
 
 ```rust,ignore
 // Sync application data to a new device
@@ -496,6 +414,8 @@ sync.sync_with_peer("my-server.com", Some(&app_data_id)).await?;
 ### 1. **Use the New Simplified API**
 
 Prefer `sync_with_peer()` over manual peer management:
+
+<!-- Code block ignored: Shows API comparison requiring network connections -->
 
 ```rust,ignore
 // ✅ Recommended: Automatic connection and sync
@@ -514,6 +434,8 @@ Iroh provides better NAT traversal and P2P capabilities than HTTP.
 ### 3. **Leverage Database Discovery**
 
 Use `discover_peer_trees()` to find available databases before syncing:
+
+<!-- Code block ignored: Makes actual HTTP requests during testing -->
 
 ```rust,ignore
 let available = sync.discover_peer_trees("peer.example.com").await?;
@@ -545,9 +467,11 @@ Store device keys securely and use different keys for different purposes when ap
 
 You can implement custom sync hooks to extend the sync system:
 
-```rust,ignore
-use eidetica::sync::hooks::{SyncHook, SyncHookContext};
-
+```rust
+# extern crate eidetica;
+# use eidetica::{sync::hooks::{SyncHook, SyncHookContext}, Result};
+#
+# fn main() {
 struct CustomSyncHook;
 
 impl SyncHook for CustomSyncHook {
@@ -557,11 +481,14 @@ impl SyncHook for CustomSyncHook {
         Ok(())
     }
 }
+# }
 ```
 
 ### Multiple Database Instances
 
 You can run multiple sync-enabled databases in the same process:
+
+<!-- Code block ignored: Complex multi-instance setup requiring multiple network ports -->
 
 ```rust,ignore
 // Database 1

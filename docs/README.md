@@ -42,8 +42,8 @@ This approach builds the eidetica library with a consistent feature set, avoidin
 
 ### Testing Strategy
 
-- Code blocks marked with ```rust are compiled and validated
-- Code blocks marked with ```rust,ignore are shown but not tested
+- Code blocks marked with ` ```rust ` are compiled and validated
+- Code blocks marked with ` ```rust,ignore ` are shown but not tested
 
 This allows testing critical examples while showing complex scenarios for illustration.
 
@@ -60,50 +60,51 @@ Documentation examples are validated in:
 
 ### Tested Examples
 
-Template for examples that should be compiled and validated:
+Template for examples that should be compiled and validated (it might be best to view these unrendered):
 
 ```rust
-extern crate eidetica;
-use eidetica::{backend::database::InMemory, Instance};
+# extern crate eidetica;
+# use eidetica::{backend::database::InMemory, Instance};
+#
+# fn create_database() -> eidetica::Result<()> {
+// Create an in-memory database
+let database = InMemory::new();
+let _db = Instance::new(Box::new(database));
 
-fn create_database() -> eidetica::Result<()> {
-    // Create an in-memory database
-    let database = InMemory::new();
-    let _db = Instance::new(Box::new(database));
-
-    // Your example code here
-    Ok(())
-}
+// Your example code here
+# Ok(())
+# }
 ```
 
 ### Illustration Examples
 
-Template for examples that are for illustration only:
+Template for examples that demonstrate concepts but can't be tested due to external requirements:
+
+<!-- Code block ignored: Requires network connectivity for peer synchronization -->
 
 ```rust,ignore
-use eidetica::{InMemory, Instance, Doc, DocStore, Table};
-use serde::{Serialize, Deserialize};
+use eidetica::{Instance, backend::database::InMemory};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-struct MyData {
-    name: String,
-}
+// Start a sync server
+let mut sync = instance.sync();
+sync.start_server("0.0.0.0:8080").await?;
 
-fn complex_workflow() -> eidetica::Result<()> {
-    // Complex example that shows concepts but isn't tested
-    // These can use any APIs without worrying about compilation
-    Ok(())
-}
+// Connect from another instance on a different machine
+let mut client_sync = client_instance.sync();
+client_sync.sync_with_peer("server.example.com:8080", None).await?;
+
+// Data automatically synchronizes between peers
 ```
 
 ### Guidelines
 
-1. Test core API usage examples
-2. Use `,ignore` for complex illustrations that would require a large amount of setup/teardown
-3. Keep tested examples simple and focused
-4. Use `extern crate eidetica;` and real module paths
-5. Use descriptive function names instead of `main()` or `example()`
-6. Return `eidetica::Result<()>` for proper error handling
+1. **Test core API usage examples** - Make examples testable whenever possible
+2. **Hide setup code in tested examples** - Use `#` prefix for imports, extern crate, function signatures, and boilerplate that aren't relevant to the concept being taught
+3. **Focus on concepts** - Show the important API calls and configuration patterns, hiding irrelevant scaffolding
+4. **Add explanations for ignored blocks** - Always use `<!-- Code block ignored: reason -->` comments before ` ```rust,ignore ` blocks
+5. **Keep tested examples simple** - One concept per example, minimal external dependencies
+6. **Use proper error handling** - Return `eidetica::Result<()>` and handle errors appropriately
+7. **Follow CLAUDE.md guidelines** - See ../CLAUDE.md for detailed documentation standards
 
 ### Testing Changes
 

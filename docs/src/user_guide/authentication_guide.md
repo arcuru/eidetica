@@ -6,14 +6,15 @@ How to use Eidetica's authentication system for securing your data.
 
 Every Eidetica database requires authentication. Here's the minimal setup:
 
-```rust,ignore
-use eidetica::{Instance, backend::database::InMemory};
-use eidetica::crdt::Doc;
-
-// Create database
-let database = InMemory::new();
-let db = Instance::new(Box::new(database));
-
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::crdt::Doc;
+#
+# fn main() -> eidetica::Result<()> {
+# let database = InMemory::new();
+# let db = Instance::new(Box::new(database));
+#
 // Add an authentication key (generates Ed25519 keypair)
 db.add_private_key("my_key")?;
 
@@ -26,6 +27,8 @@ let database = db.new_database(settings, "my_key")?;
 let op = database.new_transaction()?;
 // ... make changes ...
 op.commit()?;  // Automatically signed
+# Ok(())
+# }
 ```
 
 ## Key Concepts
@@ -46,81 +49,150 @@ op.commit()?;  // Automatically signed
 
 Give other users access to your database:
 
-```rust,ignore
-use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission};
-
-let transaction = database.new_transaction()?;
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "auth_example");
+# let database = db.new_database(settings, "admin")?;
+# let transaction = database.new_transaction()?;
+# // Generate a keypair for the new user
+# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
+# let alice_public_key = format_public_key(&alice_verifying_key);
 let settings_store = SettingsStore::new(&transaction)?;
 
 // Add a user with write access
 let user_key = AuthKey::active(
-    "ed25519:USER_PUBLIC_KEY_HERE",
+    &alice_public_key,
     Permission::Write(10),
 )?;
 settings_store.set_auth_key("alice", user_key)?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 ### Making Data Public
 
 Allow anyone to read your database:
 
-```rust,ignore
-let transaction = database.new_transaction()?;
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::store::SettingsStore;
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::crdt::Doc;
+#
+# fn main() -> eidetica::Result<()> {
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "admin")?;
+# let transaction = database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
 
 // Wildcard key for public read access
 let public_key = AuthKey::active(
     "*",
-    Permission::Read(1),
+    Permission::Read,
 )?;
 settings_store.set_auth_key("*", public_key)?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 ### Revoking Access
 
 Remove a user's access:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::store::SettingsStore;
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::crdt::Doc;
+#
+# fn main() -> eidetica::Result<()> {
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "admin")?;
+// First add alice key so we can revoke it
+let transaction_setup = database.new_transaction()?;
+let settings_setup = SettingsStore::new(&transaction_setup)?;
+settings_setup.set_auth_key("alice", AuthKey::active("*", Permission::Write(10))?)?;
+transaction_setup.commit()?;
 let transaction = database.new_transaction()?;
+
 let settings_store = SettingsStore::new(&transaction)?;
 
 // Revoke the key
 settings_store.revoke_auth_key("alice")?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 Note: Historical entries created by revoked keys remain valid.
 
 ## Multi-User Setup Example
 
-```rust,ignore
-// Initial setup with admin hierarchy
-let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "multi_user_example");
+# let database = db.new_database(settings, "admin")?;
+# let transaction = database.new_transaction()?;
+# let settings_store = SettingsStore::new(&transaction)?;
+#
+// Generate keypairs for different users
+let (_super_admin_signing_key, super_admin_verifying_key) = generate_keypair();
+let super_admin_public_key = format_public_key(&super_admin_verifying_key);
+
+let (_dept_admin_signing_key, dept_admin_verifying_key) = generate_keypair();
+let dept_admin_public_key = format_public_key(&dept_admin_verifying_key);
+
+let (_user1_signing_key, user1_verifying_key) = generate_keypair();
+let user1_public_key = format_public_key(&user1_verifying_key);
 
 // Use update_auth_settings for complex multi-key setup
 settings_store.update_auth_settings(|auth| {
     // Super admin (priority 0 - highest)
     auth.overwrite_key("super_admin", AuthKey::active(
-        "ed25519:SUPER_ADMIN_KEY",
+        &super_admin_public_key,
         Permission::Admin(0),
     )?)?;
 
     // Department admin (priority 10)
     auth.overwrite_key("dept_admin", AuthKey::active(
-        "ed25519:DEPT_ADMIN_KEY",
+        &dept_admin_public_key,
         Permission::Admin(10),
     )?)?;
 
     // Regular users (priority 100)
     auth.overwrite_key("user1", AuthKey::active(
-        "ed25519:USER1_KEY",
+        &user1_public_key,
         Permission::Write(100),
     )?)?;
 
@@ -128,6 +200,8 @@ settings_store.update_auth_settings(|auth| {
 })?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 ## Key Management Tips
@@ -145,8 +219,9 @@ transaction.commit()?;
 
 Databases can delegate authentication to other databases:
 
+<!-- Code block ignored: Complex authentication flow requiring policy setup -->
+
 ```rust,ignore
-// In main database, delegate to a user's personal database
 let transaction = main_database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
 
@@ -201,6 +276,8 @@ When new devices join existing databases through bootstrap synchronization, Eide
 
 By default, bootstrap requests are **rejected** for security:
 
+<!-- Code block ignored: Requires network connectivity to peer server -->
+
 ```rust,ignore
 // Bootstrap will fail without explicit policy configuration
 client_sync.sync_with_peer_for_bootstrap(
@@ -215,8 +292,9 @@ client_sync.sync_with_peer_for_bootstrap(
 
 To allow automatic key approval, configure the bootstrap policy:
 
+<!-- Code block ignored: Complex authentication flow requiring policy setup -->
+
 ```rust,ignore
-// Configure database with bootstrap auto-approval policy
 let mut settings = Doc::new();
 settings.set_string("name", "Team Chat Room");
 

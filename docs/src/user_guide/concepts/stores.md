@@ -40,9 +40,17 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 
 #### Basic Usage
 
-```rust,ignore
-use eidetica::{store::DocStore, path};
-
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let db = Instance::new(backend);
+# db.add_private_key("test_key")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "test_key")?;
 // Get a DocStore store
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("app_data")?;
@@ -61,13 +69,27 @@ let version = store.get("version")?; // Returns a Value
 let host = store.get_path(path!("database.host"))?; // Returns Value
 
 op.commit()?;
+# Ok(())
+# }
 ```
 
 #### Important: Path Operations Create Nested Structures
 
 When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not flat keys with dots:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let db = Instance::new(backend);
+# db.add_private_key("test_key")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "test_key")?;
+# let op = database.new_transaction()?;
+# let store = op.get_store::<DocStore>("app_data")?;
 // This code:
 store.set_path(path!("user.profile.name"), "Bob")?;
 
@@ -81,6 +103,9 @@ store.set_path(path!("user.profile.name"), "Bob")?;
 // }
 
 // NOT: { "user.profile.name": "Bob" } ❌
+# op.commit()?;
+# Ok(())
+# }
 ```
 
 Use cases for `DocStore`:
@@ -95,7 +120,19 @@ Use cases for `DocStore`:
 
 The `Table<T>` store manages collections of serializable items, similar to a table in a database:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# extern crate serde;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
+# use serde::{Serialize, Deserialize};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let db = Instance::new(backend);
+# db.add_private_key("test_key")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "test_key")?;
 // Define a struct for your data
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
@@ -132,8 +169,9 @@ let active_users = users.search(|user| user.active)?;
 for (id, user) in active_users {
     println!("Active user: {} (ID: {})", user.name, id);
 }
-
-op.commit()?;
+# op.commit()?;
+# Ok(())
+# }
 ```
 
 Use cases for `Table`:
@@ -149,10 +187,17 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 
 #### Basic Usage
 
-```rust,ignore
-use eidetica::store::SettingsStore;
-use eidetica::auth::{AuthKey, Permission};
-
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let db = Instance::new(backend);
+# db.add_private_key("test_key")?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let database = db.new_database(settings, "test_key")?;
 // Get a SettingsStore for the current transaction
 let transaction = database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
@@ -165,38 +210,84 @@ let name = settings_store.get_name()?;
 println!("Database name: {}", name);
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 #### Authentication Management
 
 `SettingsStore` provides convenient methods for managing authentication keys:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "stores_auth_example");
+# let database = db.new_database(settings, "admin")?;
+# // Generate a keypair for the new user
+# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
+# let alice_public_key = format_public_key(&alice_verifying_key);
 let transaction = database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
 
 // Add a new authentication key
 let auth_key = AuthKey::active(
-    "ed25519:user_public_key_here",
+    &alice_public_key,
     Permission::Write(10),
 )?;
 settings_store.set_auth_key("alice", auth_key)?;
 
 // Get an authentication key
 let key = settings_store.get_auth_key("alice")?;
-println!("Alice's key: {}", key.pubkey);
+println!("Alice's key: {}", key.pubkey());
 
 // Revoke a key
 settings_store.revoke_auth_key("alice")?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 #### Complex Updates with Closures
 
 For complex operations that need to be atomic, use the `update_auth_settings` method:
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "complex_auth_example");
+# let database = db.new_database(settings, "admin")?;
+# // Generate keypairs for multiple users
+# let (_bob_signing_key, bob_verifying_key) = generate_keypair();
+# let bob_public_key = format_public_key(&bob_verifying_key);
+# let bob_key = AuthKey::active(&bob_public_key, Permission::Write(20))?;
+# let (_charlie_signing_key, charlie_verifying_key) = generate_keypair();
+# let charlie_public_key = format_public_key(&charlie_verifying_key);
+# let charlie_key = AuthKey::active(&charlie_public_key, Permission::Admin(15))?;
+# let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
+# let old_user_public_key = format_public_key(&old_user_verifying_key);
+# let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(30))?;
+# // Add old_user first so we can revoke it
+# let setup_txn = database.new_transaction()?;
+# let setup_store = SettingsStore::new(&setup_txn)?;
+# setup_store.set_auth_key("old_user", old_user_key)?;
+# setup_txn.commit()?;
 let transaction = database.new_transaction()?;
 let settings_store = SettingsStore::new(&transaction)?;
 
@@ -213,11 +304,17 @@ settings_store.update_auth_settings(|auth| {
 })?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
 #### Advanced Usage
 
+<!-- Code block ignored: Demonstrates advanced API patterns rather than compilable code -->
+
 For operations not covered by the convenience methods, access the underlying DocStore:
+
+<!-- Code block ignored: Demonstrates advanced API patterns rather than compilable code -->
 
 ```rust,ignore
 let transaction = database.new_transaction()?;
@@ -242,11 +339,20 @@ Use cases for `SettingsStore`:
 
 The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborative editing. This requires the "y-crdt" feature:
 
-```rust,ignore
-// Enable in Cargo.toml: eidetica = { features = ["y-crdt"] }
-use eidetica::store::YDoc;
-use eidetica::y_crdt::{Map, Text, Transact};
-
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::YDoc};
+# use eidetica::y_crdt::{Map, Text, Transact};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let backend = InMemory::new();
+# let db = Instance::new(Box::new(backend));
+# db.add_private_key("test_key")?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "y_crdt_stores");
+# let database = db.new_database(settings, "test_key")?;
+#
 // Get a YDoc store
 let op = database.new_transaction()?;
 let doc_store = op.get_store::<YDoc>("document")?;
@@ -268,15 +374,9 @@ doc_store.with_doc_mut(|doc| {
     Ok(())
 })?;
 
-// Apply updates from other collaborators
-let external_update = receive_update_from_network();
-doc_store.apply_update(&external_update)?;
-
-// Get updates to send to others
-let update = doc_store.get_update()?;
-broadcast_update(update);
-
 op.commit()?;
+# Ok(())
+# }
 ```
 
 Use cases for `YDoc`:
@@ -288,6 +388,8 @@ Use cases for `YDoc`:
 
 ## Store Implementation Details
 
+<!-- Code block ignored: Shows trait definition rather than complete implementation -->
+
 Each Store implementation in Eidetica:
 
 1. Implements the `Store` trait
@@ -296,6 +398,8 @@ Each Store implementation in Eidetica:
 4. Manages the store's history within the Database
 
 The `Store` trait defines the minimal interface:
+
+<!-- Code block ignored: Shows trait definition rather than complete implementation -->
 
 ```rust,ignore
 pub trait Store: Sized {

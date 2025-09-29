@@ -6,6 +6,8 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 
 ### Basic Sync Setup
 
+<!-- Code block ignored: Attempts to bind to network port during testing -->
+
 ```rust,ignore
 use eidetica::{Instance, backend::InMemory};
 
@@ -24,24 +26,36 @@ sync.start_server_async("127.0.0.1:8080").await?;
 
 ### Understanding BackgroundSync
 
-<!-- TODO: Example uses sync_mut() method that doesn't exist in current implementation -->
-
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database instance with sync capability
+# let backend = Box::new(InMemory::new());
+# let mut db = Instance::new(backend).with_sync()?;
+#
 // The BackgroundSync engine starts automatically with transport
-db.sync_mut()?.enable_http_transport()?; // Starts background thread
+let sync = db.sync_mut().unwrap();
+sync.enable_http_transport()?; // Starts background thread
 
-// Background thread handles:
-// - Command processing (immediate)
-// - Periodic sync (5 min intervals)
-// - Retry queue (30 sec intervals)
-// - Connection checks (60 sec intervals)
+// Background thread configuration and behavior:
+// - Command processing (immediate response to commits)
+// - Periodic sync operations (5 minute intervals)
+// - Retry queue processing (30 second intervals)
+// - Connection health checks (60 second intervals)
 
 // All sync operations are automatic - no manual queue management needed
+println!("BackgroundSync configured with automatic operation timers");
+# Ok(())
+# }
 ```
 
 ## Peer Management
 
 ### Authenticated Bootstrap (Recommended for New Databases)
+
+<!-- Code block ignored: Requires network connectivity and authentication flow -->
 
 ```rust,ignore
 // For new devices joining existing databases with authentication
@@ -62,6 +76,8 @@ sync.sync_with_peer_for_bootstrap(
 
 ### Simplified Sync (Legacy/Existing Databases)
 
+<!-- Code block ignored: Requires network connectivity to peer server -->
+
 ```rust,ignore
 // Single call handles connection, handshake, and sync detection
 sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
@@ -74,6 +90,8 @@ sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 ```
 
 ### Database Discovery
+
+<!-- Code block ignored: Makes actual HTTP requests during testing -->
 
 ```rust,ignore
 // Discover available databases on a peer
@@ -89,6 +107,8 @@ if let Some(tree) = available_trees.first() {
 ```
 
 ### Manual Peer Registration (Advanced)
+
+<!-- Code block ignored: Uses low-level APIs requiring complex peer setup -->
 
 ```rust,ignore
 // Register peer manually (for advanced use cases)
@@ -107,6 +127,8 @@ sync.sync_tree_with_peer(&peer_key, &tree_id).await?;
 ```
 
 ### Peer Status Management
+
+<!-- Code block ignored: Requires established peer connections -->
 
 ```rust,ignore
 // List all peers
@@ -133,9 +155,15 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 
 ### Create and Share Database
 
-```rust,ignore
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let db = Instance::new(backend).with_sync()?;
+# db.add_private_key("device_key")?;
 // Create a database to share
-use eidetica::crdt::Doc;
 let mut settings = Doc::new();
 settings.set_string("name", "My Chat Room");
 settings.set_string("description", "A room for team discussions");
@@ -145,15 +173,19 @@ let tree_id = database.root_id();
 
 // Add some initial data
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("messages")?;
+let store = op.get_store::<DocStore>("messages")?;
 store.set_string("welcome", "Welcome to the room!")?;
 op.commit()?;
 
 // Share the tree_id with others
 println!("Room ID: {}", tree_id);
+# Ok(())
+# }
 ```
 
 ### Bootstrap from Shared Database
+
+<!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
 // Join someone else's database using the tree_id
@@ -163,16 +195,18 @@ sync.sync_with_peer("peer.example.com:8080", Some(&room_id)).await?;
 // You now have the full database locally
 let database = db.load_database(&room_id)?;
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("messages")?;
+let store = op.get_store::<DocStore>("messages")?;
 println!("Welcome message: {}", store.get_string("welcome")?);
 ```
 
 ### Ongoing Synchronization
 
+<!-- Code block ignored: Requires network connectivity to peer server -->
+
 ```rust,ignore
 // All changes automatically sync after bootstrap
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("messages")?;
+let store = op.get_store::<DocStore>("messages")?;
 store.set_string("my_message", "Hello everyone!")?;
 op.commit()?; // Automatically syncs to all connected peers
 
@@ -181,6 +215,8 @@ sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 ```
 
 ### Advanced: Manual Sync Relationships
+
+<!-- Code block ignored: Uses low-level APIs requiring peer setup -->
 
 ```rust,ignore
 // For fine-grained control (usually not needed)
@@ -200,12 +236,14 @@ sync.remove_tree_sync(&peer_key, &tree_id)?;
 
 ### Basic Data Changes
 
+<!-- Code block ignored: Demonstrates auto-sync concepts rather than compilable code -->
+
 ```rust,ignore
 use eidetica::store::DocStore;
 
 // Any database operation automatically triggers sync
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("data")?;
+let store = op.get_store::<DocStore>("data")?;
 
 store.set_string("message", "Hello World")?;
 store.set_path("user.name", "Alice")?;
@@ -217,10 +255,12 @@ op.commit()?; // Entries queued for sync to all configured peers
 
 ### Bulk Operations
 
+<!-- Code block ignored: Demonstrates auto-sync concepts rather than compilable code -->
+
 ```rust,ignore
 // Multiple operations in single commit
 let op = database.new_transaction()?;
-let store = op.get_subtree::<DocStore>("data")?;
+let store = op.get_store::<DocStore>("data")?;
 
 for i in 0..100 {
     store.set_string(&format!("item_{}", i), &format!("value_{}", i))?;
@@ -233,6 +273,8 @@ op.commit()?;
 ## Monitoring and Diagnostics
 
 ### Server Control
+
+<!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
 // Start/stop sync server
@@ -250,6 +292,8 @@ sync.stop_server()?;
 ```
 
 ### Sync State Tracking
+
+<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
 
 ```rust,ignore
 // Get sync state manager
@@ -272,6 +316,8 @@ if let Some(meta) = metadata {
 ```
 
 ### Sync State Tracking
+
+<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
 
 ```rust,ignore
 use eidetica::sync::state::SyncStateManager;
@@ -302,6 +348,8 @@ for entry in history {
 
 ### Common Error Patterns
 
+<!-- Code block ignored: Requires network connectivity for error examples -->
+
 ```rust,ignore
 use eidetica::sync::SyncError;
 
@@ -331,6 +379,8 @@ match sync.connect_to_peer(&addr).await {
 
 ### Monitoring Sync Health
 
+<!-- Code block ignored: Requires established peer connections -->
+
 ```rust,ignore
 // Check server status
 if !sync.is_server_running() {
@@ -353,6 +403,8 @@ for peer in peers {
 
 ### Development Setup
 
+<!-- Code block ignored: Attempts to bind to network port during testing -->
+
 ```rust,ignore
 // Fast, responsive sync for development
 // Enable HTTP transport for easy debugging
@@ -365,6 +417,8 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 ```
 
 ### Production Setup
+
+<!-- Code block ignored: Complex Iroh setup requiring external relay servers -->
 
 ```rust,ignore
 // Use Iroh for production deployments (defaults to n0's relay servers)
@@ -397,6 +451,8 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ### Multi-Database Setup
 
+<!-- Code block ignored: Complex multi-instance setup requiring multiple network ports -->
+
 ```rust,ignore
 // Run multiple sync-enabled databases
 let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
@@ -415,6 +471,8 @@ let peer = db2.sync_mut()?.connect_to_peer(&addr).await?;
 ## Testing Patterns
 
 ### Testing with Iroh (No Relays)
+
+<!-- Code block ignored: Complex test setup requiring Iroh transport configuration -->
 
 ```rust,ignore
 #[tokio::test]
@@ -454,6 +512,8 @@ async fn test_iroh_sync_local() -> Result<()> {
 
 ### Mock Peer Setup (HTTP)
 
+<!-- Code block ignored: Complex test setup requiring multiple instances and network ports -->
+
 ```rust,ignore
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
@@ -483,7 +543,7 @@ async fn test_sync_between_peers() -> Result<()> {
 
     // Test sync
     let op1 = tree1.new_transaction()?;
-    let store1 = op1.get_subtree::<DocStore>("data")?;
+    let store1 = op1.get_store::<DocStore>("data")?;
     store1.set_string("test", "value")?;
     op1.commit()?;
 

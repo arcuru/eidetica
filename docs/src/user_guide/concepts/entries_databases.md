@@ -35,7 +35,7 @@ Key characteristics of Databases:
 You interact with Databases through Transactions:
 
 ```rust
-extern crate eidetica;
+# extern crate eidetica;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::DocStore, Database};
 #
 # use eidetica::Result;
@@ -77,13 +77,35 @@ When you commit a transaction, Eidetica:
 
 Each Database maintains its settings as a key-value store in a special "settings" store:
 
-```rust,ignore
-// Get the settings store
-let settings = database.get_settings()?;
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore, Database};
+#
+# fn main() -> eidetica::Result<()> {
+# // Setup database for testing
+# let db = Instance::new(Box::new(InMemory::new()));
+# db.add_private_key("test_key")?;
+# let mut settings_doc = Doc::new();
+# settings_doc.set("name", "example_database");
+# settings_doc.set("version", "1.0.0");
+# let database = db.new_database(settings_doc, "test_key")?;
+// Access database settings through a transaction
+let transaction = database.new_transaction()?;
+let settings_store = SettingsStore::new(&transaction)?;
 
-// Access settings
-let name = settings.get("name")?;
-let version = settings.get("version")?;
+// Access common settings
+let name = settings_store.get_name()?;
+println!("Database name: {}", name);
+
+// Access custom settings via the underlying DocStore
+let doc_store = settings_store.as_doc_store();
+if let Ok(version_value) = doc_store.get("version") {
+    println!("Database version available");
+}
+
+transaction.commit()?;
+# Ok(())
+# }
 ```
 
 Common settings include:
@@ -95,14 +117,15 @@ Common settings include:
 
 ## Tips and History
 
-Databases in Eidetica maintain a concept of "tips" - the latest entries in the database's history:
+Databases in Eidetica maintain a concept of "tips" - the latest entries in the database's history. Tips represent the current state of the database and are managed automatically by the system.
 
-```rust,ignore
-// Get the current tip entries
-let tips = database.get_tips()?;
-```
+When you create transactions and commit changes, Eidetica automatically:
 
-Tips represent the current state of the database. As new transactions are committed, new tips are created, and the history grows. This historical information remains accessible, allowing you to:
+- Updates the database tips to point to your new entries
+- Maintains the complete history of all previous states
+- Ensures efficient access to the current state through tip tracking
+
+This historical information remains accessible, allowing you to:
 
 - Track all changes to data over time
 - Reconstruct the state at any point in history (requires manual traversal or specific backend support - see [Backends](backends.md))

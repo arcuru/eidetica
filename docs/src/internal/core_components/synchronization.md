@@ -75,6 +75,8 @@ graph TB
 
 The main `Sync` struct is now a **thin frontend** that communicates with a background sync engine:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 pub struct Sync {
     /// Communication channel to the background sync engine
@@ -98,6 +100,8 @@ pub struct Sync {
 ### 2. BackgroundSync Engine (`sync/background.rs`)
 
 The `BackgroundSync` struct handles all sync operations in a single background thread and **accesses peer state directly from the sync database**:
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 pub struct BackgroundSync {
@@ -127,6 +131,8 @@ BackgroundSync accesses peer and relationship data directly from the sync databa
 - Single source of truth eliminates state synchronization issues
 
 **Command types:**
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 pub enum SyncCommand {
@@ -163,6 +169,8 @@ All operations are non-blocking and handled concurrently within the single backg
 **Server initialization:**
 
 When starting a server, BackgroundSync creates a `SyncHandlerImpl` with database access:
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 // Inside handle_start_server()
@@ -203,6 +211,8 @@ This architecture:
 
 The hook system automatically detects when entries need synchronization:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 pub trait SyncHook: Send + Sync {
     fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
@@ -229,6 +239,8 @@ The hook implementation is per-peer, allowing targeted synchronization. Commands
 
 The `PeerManager` handles peer registration and relationship management:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 impl PeerManager {
     /// Register a new peer
@@ -251,6 +263,8 @@ impl PeerManager {
 ### 6. Sync State Tracking (`sync/state.rs`)
 
 Persistent state tracking for synchronization progress:
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 pub struct SyncCursor {
@@ -283,6 +297,8 @@ sync_state/
 
 Modular transport system supporting multiple protocols with **SyncHandler architecture**:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 pub trait SyncTransport: Send + Sync {
     /// Start server with handler for processing requests
@@ -299,6 +315,8 @@ pub trait SyncTransport: Send + Sync {
 **SyncHandler Architecture:**
 
 The transport layer uses a callback-based handler pattern to enable database access:
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 pub trait SyncHandler: Send + Sync {
@@ -336,6 +354,8 @@ Eidetica implements a **bootstrap-first sync protocol** that enables devices to 
 
 **Unified SyncTree Protocol:** Replaced multiple request/response types with single `SyncTreeRequest`:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 pub struct SyncTreeRequest {
     pub tree_id: ID,
@@ -356,6 +376,8 @@ pub struct IncrementalResponse {
 ```
 
 **Auto-Detection Logic:** Server automatically determines sync type:
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 async fn handle_sync_tree(&self, request: &SyncTreeRequest) -> SyncResponse {
@@ -411,6 +433,8 @@ sequenceDiagram
 ### API Integration
 
 **New Simplified API:**
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 // Single method handles both bootstrap and incremental
@@ -485,6 +509,8 @@ Eidetica implements **semantic duplicate prevention** through Merkle-CRDT tip co
 3. **Smart Filtering**: Only send entries the peer doesn't have (based on DAG analysis)
 4. **Ancestor Inclusion**: Automatically include necessary parent entries
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 // Background sync's smart duplicate prevention
 async fn sync_tree_with_peer(&self, peer_pubkey: &str, tree_id: &ID, address: &Address) -> Result<()> {
@@ -537,6 +563,8 @@ sequenceDiagram
 
 The `find_entries_to_send` method performs sophisticated DAG analysis:
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 fn find_entries_to_send(&self, our_tips: &[ID], their_tips: &[ID]) -> Result<Vec<Entry>> {
     // Find tips that peer doesn't have
@@ -570,6 +598,8 @@ The smart duplicate prevention integrates seamlessly with the command architectu
 
 **Direct Entry Sends:**
 
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
+
 ```rust,ignore
 // Via SendEntries command - caller determines what to send
 self.command_tx.send(SyncCommand::SendEntries {
@@ -579,6 +609,8 @@ self.command_tx.send(SyncCommand::SendEntries {
 ```
 
 **Database Synchronization:**
+
+<!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 // Via SyncWithPeer command - background sync determines what to send
