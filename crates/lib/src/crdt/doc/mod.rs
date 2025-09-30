@@ -254,10 +254,10 @@ impl Doc {
         self.root.get_path(path)
     }
 
-    /// Gets a value by path from a string, validating at runtime.
-    pub fn get_path_str(&self, path: &str) -> Result<Option<&Value>, PathError> {
-        let path_buf = PathBuf::from_str(path)?;
-        Ok(self.get_path(&path_buf))
+    /// Gets a value by path from a string, normalizing at runtime.
+    pub fn get_path_str(&self, path: &str) -> Option<&Value> {
+        let path_buf = PathBuf::from_str(path).unwrap(); // Infallible
+        self.get_path(&path_buf)
     }
 
     /// Gets a text value by path
@@ -341,14 +341,14 @@ impl Doc {
         self.root.set_path(path, value)
     }
 
-    /// Sets a value at the given path from a string, validating at runtime.
+    /// Sets a value at the given path from a string, normalizing at runtime.
     pub fn set_path_str(
         &mut self,
         path: &str,
         value: impl Into<Value>,
-    ) -> Result<Result<Option<Value>, CRDTError>, PathError> {
-        let path_buf = PathBuf::from_str(path)?;
-        Ok(self.set_path(&path_buf, value))
+    ) -> Result<Option<Value>, CRDTError> {
+        let path_buf = PathBuf::from_str(path).unwrap(); // Infallible
+        self.set_path(&path_buf, value)
     }
 
     /// Returns an iterator over all key-value pairs (excluding tombstones)

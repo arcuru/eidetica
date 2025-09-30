@@ -268,18 +268,24 @@ mod tests {
 
     #[test]
     fn test_path_error_conversion() {
-        let path_error = PathError::EmptyComponent { position: 1 };
+        let path_error = PathError::InvalidComponent {
+            component: "user.name".to_string(),
+            reason: "components cannot contain dots".to_string(),
+        };
         let crdt_error: CRDTError = path_error.into();
 
         match crdt_error {
             CRDTError::InvalidPath { path } => {
-                assert!(path.contains("Path component at position 1 is empty"));
+                assert!(path.contains("components cannot contain dots"));
             }
             _ => panic!("Expected InvalidPath variant"),
         }
 
         // Test conversion through main Error type
-        let path_error = PathError::LeadingDot;
+        let path_error = PathError::InvalidComponent {
+            component: "test.value".to_string(),
+            reason: "components cannot contain dots".to_string(),
+        };
         let main_error: crate::Error = CRDTError::from(path_error).into();
         assert_eq!(main_error.module(), "crdt");
     }

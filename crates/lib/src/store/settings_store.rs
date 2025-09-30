@@ -60,7 +60,7 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub fn set_name(&self, name: &str) -> Result<()> {
-        self.inner.set("name", name)
+        self.inner.set_result("name", name)
     }
 
     /// Get the current authentication settings as an AuthSettings instance

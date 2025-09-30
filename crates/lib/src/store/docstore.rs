@@ -50,6 +50,68 @@ impl DocStore {
         // First check if there's any data in the atomic op itself
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
 
+        // If there's local data, try to get the key from it
+        if let Ok(data) = local_data {
+            match data.get(key) {
+                Some(Value::Deleted) => {
+                    return Err(StoreError::KeyNotFound {
+                        store: self.name.clone(),
+                        key: key.to_string(),
+                    }
+                    .into());
+                }
+                Some(value) => return Ok(value.clone()),
+                None => {
+                    // Key not in local data, continue to backend
+                }
+            }
+        }
+
+        // Otherwise, get the full state from the backend
+        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+
+        // Return the value from the full state
+        match data.get(key) {
+            Some(value) => Ok(value.clone()),
+            None => Err(StoreError::KeyNotFound {
+                store: self.name.clone(),
+                key: key.to_string(),
+            }
+            .into()),
+        }
+    }
+
+    /// Gets a value associated with a key from the Store (HashMap-like API).
+    ///
+    /// This method returns an Option for compatibility with std::HashMap.
+    /// Returns `None` if the key is not found or is deleted.
+    ///
+    /// # Arguments
+    /// * `key` - The key to retrieve the value for.
+    ///
+    /// # Returns
+    /// An `Option` containing the cloned Value if found, or `None`.
+    pub fn get_option(&self, key: impl AsRef<str>) -> Option<Value> {
+        self.get(key).ok()
+    }
+
+    /// Gets a value associated with a key from the Store (Result-based API for backward compatibility).
+    ///
+    /// This method prioritizes returning data staged within the current `Transaction`.
+    /// If the key is not found in the staged data it retrieves the fully merged historical
+    /// state from the backend up to the point defined by the `Transaction`'s parents and
+    /// returns the value from there.
+    ///
+    /// # Arguments
+    /// * `key` - The key to retrieve the value for.
+    ///
+    /// # Returns
+    /// A `Result` containing the MapValue if found, or `Error::NotFound`.
+    pub fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
+        let key = key.as_ref();
+        // First check if there's any data in the atomic op itself
+        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+
         // If there's data in the operation and it contains the key, return that
         if let Ok(data) = local_data
             && let Some(value) = data.get(key)
@@ -83,7 +145,7 @@ impl DocStore {
     /// or if the value is not a string.
     pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
         let key_ref = key.as_ref();
-        match self.get(key_ref)? {
+        match self.get_result(key_ref)? {
             Value::Text(value) => Ok(value),
             Value::Node(_) => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
@@ -117,17 +179,16 @@ impl DocStore {
     /// `Doc` instance's subtree name. The change is **not** persisted to the backend
     /// until the `Transaction::commit()` method is called.
     ///
-    /// Calling this method on a `Doc` obtained via `Database::get_store_viewer` is possible
-    /// but the changes will be ephemeral and discarded, as the viewer's underlying `Transaction`
-    /// is not intended to be committed.
-    ///
     /// # Arguments
     /// * `key` - The key to set.
-    /// * `value` - The value to associate with the key (can be &str, String, MapValue, etc.)
+    /// * `value` - The value to associate with the key (can be &str, String, Value, etc.)
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     pub fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        let key = key.into();
+        let value = value.into();
+
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -135,7 +196,77 @@ impl DocStore {
             .unwrap_or_default();
 
         // Update the data
-        data.as_hashmap_mut().insert(key.into(), value.into());
+        data.as_hashmap_mut().insert(key, value);
+
+        // Serialize and update the atomic op
+        let serialized = serde_json::to_string(&data)?;
+        self.atomic_op.update_subtree(&self.name, &serialized)
+    }
+
+    /// Sets a key-value pair (HashMap-like API).
+    ///
+    /// Returns the previous value if one existed, or None if the key was not present.
+    /// This follows std::HashMap::insert() semantics.
+    ///
+    /// # Arguments
+    /// * `key` - The key to set.
+    /// * `value` - The value to associate with the key (can be &str, String, Value, etc.)
+    ///
+    /// # Returns
+    /// An `Option<Value>` containing the previous value, or `None` if no previous value.
+    pub fn insert(&self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
+        let key = key.into();
+        let value = value.into();
+
+        // Get current data from the atomic op, or create new if not existing
+        let mut data = self
+            .atomic_op
+            .get_local_data::<Doc>(&self.name)
+            .unwrap_or_default();
+
+        // Get the previous value (if any) before setting
+        let previous = data
+            .get(&key)
+            .cloned()
+            .filter(|v| !matches!(v, Value::Deleted));
+
+        // Update the data
+        data.as_hashmap_mut().insert(key, value);
+
+        // Serialize and update the atomic op
+        let serialized =
+            serde_json::to_string(&data).expect("Failed to serialize data during insert operation");
+        self.atomic_op
+            .update_subtree(&self.name, &serialized)
+            .expect("Failed to update subtree during insert operation");
+
+        previous
+    }
+
+    /// Sets a key-value pair (Result-based API for backward compatibility).
+    ///
+    /// This method updates the `Map` data held within the `Transaction` for this
+    /// `Doc` instance's subtree name. The change is **not** persisted to the backend
+    /// until the `Transaction::commit()` method is called.
+    ///
+    /// # Arguments
+    /// * `key` - The key to set.
+    /// * `value` - The value to associate with the key (can be &str, String, Value, etc.)
+    ///
+    /// # Returns
+    /// A `Result<()>` indicating success or an error during serialization or staging.
+    pub fn set_result(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        let key = key.into();
+        let value = value.into();
+
+        // Get current data from the atomic op, or create new if not existing
+        let mut data = self
+            .atomic_op
+            .get_local_data::<Doc>(&self.name)
+            .unwrap_or_default();
+
+        // Update the data
+        data.as_hashmap_mut().insert(key, value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -195,7 +326,7 @@ impl DocStore {
 
     /// Legacy method for backward compatibility - now just an alias to set
     pub fn set_value(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        self.set(key, value.into())
+        self.set(key, value)
     }
 
     /// Legacy method for backward compatibility - now just an alias to get
@@ -237,12 +368,8 @@ impl DocStore {
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Any segment of the path doesn't exist
-    /// - A non-final segment has the wrong type (not a node or list)
-    /// - The DocStore operation fails
+    /// # Returns
+    /// A `Result<Value>` containing the value if found, or an error if not found.
     pub fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
         // First check if there's any local staged data
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
@@ -266,6 +393,22 @@ impl DocStore {
             }
             .into()),
         }
+    }
+
+    /// Gets a value by path using dot notation (HashMap-like API).
+    ///
+    /// # Returns
+    /// An `Option<Value>` containing the value if found, or `None` if not found.
+    pub fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
+        self.get_path(path).ok()
+    }
+
+    /// Gets a value by path using dot notation (Result-based API for backward compatibility).
+    ///
+    /// # Returns
+    /// A `Result<Value>` containing the value if found, or an error if not found.
+    pub fn get_path_result(&self, path: impl AsRef<Path>) -> Result<Value> {
+        self.get_path(path)
     }
 }
 
@@ -391,7 +534,7 @@ impl DocStore {
             Ok(existing) => Ok(existing),
             Err(_) => {
                 // Key doesn't exist or wrong type - set default and return it
-                self.set(key_str, default.clone())?;
+                self.set_result(key_str, default.clone())?;
                 Ok(default)
             }
         }
@@ -546,12 +689,12 @@ impl DocStore {
         }
     }
 
-    /// Get or insert a value at a path with string paths for runtime validation
+    /// Get or insert a value at a path with string paths for runtime normalization
     pub fn get_or_insert_path_str<T>(&self, path: &str, default: T) -> Result<T>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
     {
-        let pathbuf = PathBuf::from_str(path)?;
+        let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
         self.get_or_insert_path(&pathbuf, default)
     }
 
@@ -605,13 +748,13 @@ impl DocStore {
         Ok(())
     }
 
-    /// Modify a value or insert a default with string paths for runtime validation
+    /// Modify a value or insert a default with string paths for runtime normalization
     pub fn modify_or_insert_path_str<T, F>(&self, path: &str, default: T, f: F) -> Result<()>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
-        let pathbuf = PathBuf::from_str(path)?;
+        let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
         self.modify_or_insert_path(&pathbuf, default, f)
     }
 
@@ -702,9 +845,9 @@ impl DocStore {
         self.atomic_op.update_subtree(&self.name, &serialized)
     }
 
-    /// Sets a value at the given path with string paths for runtime validation
+    /// Sets a value at the given path with string paths for runtime normalization
     pub fn set_path_str(&self, path: &str, value: impl Into<Value>) -> Result<()> {
-        let pathbuf = PathBuf::from_str(path)?;
+        let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
         self.set_path(&pathbuf, value)
     }
 
@@ -756,13 +899,13 @@ impl DocStore {
         Ok(())
     }
 
-    /// Modify a value at a path with string paths for runtime validation
+    /// Modify a value at a path with string paths for runtime normalization
     pub fn modify_path_str<T, F>(&self, path: &str, f: F) -> Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
-        let pathbuf = PathBuf::from_str(path)?;
+        let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
         self.modify_path(&pathbuf, f)
     }
 
@@ -974,13 +1117,10 @@ impl DocStore {
         }
     }
 
-    /// Returns true if the DocStore contains the given path with string paths for runtime validation
+    /// Returns true if the DocStore contains the given path with string paths for runtime normalization
     pub fn contains_path_str(&self, path: &str) -> bool {
-        if let Ok(pathbuf) = PathBuf::from_str(path) {
-            self.contains_path(&pathbuf)
-        } else {
-            false
-        }
+        let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
+        self.contains_path(&pathbuf)
     }
 
     /// Gets a mutable editor for a value associated with the given key.
