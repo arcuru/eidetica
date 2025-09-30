@@ -203,7 +203,7 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
     let mut auth_settings = Doc::new();
     auth_settings
         .set_json(
-            key_name.to_string(),
+            key_name,
             AuthKey::active(format_public_key(&public_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();

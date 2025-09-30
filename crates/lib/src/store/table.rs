@@ -190,7 +190,7 @@ where
             })?;
 
         // Update the data
-        data.set(key_str.to_string(), serialized_row);
+        data.set(key_str, serialized_row);
 
         // Serialize and update the atomic op
         let serialized_data =

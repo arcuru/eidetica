@@ -172,8 +172,8 @@ pub fn build_complex_merge_data() -> (Map, Map) {
 /// Create a test Map with some initial data
 pub fn setup_test_map() -> Map {
     let mut map = Doc::new();
-    map.set_string("key1".to_string(), "value1".to_string());
-    map.set_string("key2".to_string(), "value2".to_string());
+    map.set_string("key1", "value1".to_string());
+    map.set_string("key2", "value2".to_string());
     map.into()
 }
 
@@ -197,21 +197,21 @@ pub fn create_complex_map() -> Map {
     let mut map = Doc::new();
 
     // Add basic values
-    map.set_string("title".to_string(), "My Document".to_string());
-    map.set("priority".to_string(), Value::Int(42));
-    map.set("published".to_string(), Value::Bool(true));
+    map.set_string("title", "My Document".to_string());
+    map.set("priority", Value::Int(42));
+    map.set("published", Value::Bool(true));
 
     // Add nested map
     let mut metadata = Doc::new();
-    metadata.set_string("author".to_string(), "Alice".to_string());
-    metadata.set_string("version".to_string(), "1.0".to_string());
-    map.set("metadata".to_string(), metadata);
+    metadata.set_string("author", "Alice".to_string());
+    metadata.set_string("version", "1.0".to_string());
+    map.set("metadata", metadata);
 
     // Add list
     let mut tags = List::new();
     tags.push(Value::Text("important".to_string()));
     tags.push(Value::Text("draft".to_string()));
-    map.set("tags".to_string(), Value::List(tags));
+    map.set("tags", Value::List(tags));
 
     map.into()
 }
@@ -219,13 +219,13 @@ pub fn create_complex_map() -> Map {
 /// Create a Map with mixed value types for comprehensive testing
 pub fn create_mixed_value_map() -> Map {
     let mut map = Doc::new();
-    map.set("null_val".to_string(), Value::Null);
-    map.set("bool_val".to_string(), Value::Bool(true));
-    map.set("int_val".to_string(), Value::Int(123));
-    map.set("text_val".to_string(), Value::Text("hello".to_string()));
-    map.set("map_val".to_string(), Doc::new());
-    map.set("list_val".to_string(), Value::List(List::new()));
-    map.set("deleted_val".to_string(), Value::Deleted);
+    map.set("null_val", Value::Null);
+    map.set("bool_val", Value::Bool(true));
+    map.set("int_val", Value::Int(123));
+    map.set("text_val", Value::Text("hello".to_string()));
+    map.set("map_val", Doc::new());
+    map.set("list_val", Value::List(List::new()));
+    map.set("deleted_val", Value::Deleted);
     map.into()
 }
 
@@ -249,7 +249,7 @@ pub fn create_mixed_list() -> List {
     list.push(Value::Text("mixed".to_string()));
 
     let mut nested_map = Doc::new();
-    nested_map.set_string("nested".to_string(), "value".to_string());
+    nested_map.set_string("nested", "value".to_string());
     list.push(nested_map);
 
     list

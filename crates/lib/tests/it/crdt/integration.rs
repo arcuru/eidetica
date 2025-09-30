@@ -15,14 +15,14 @@ fn test_crdt_map_basic_operations() {
     let mut map = Doc::new();
 
     // Test set and get
-    map.set_string("key1".to_string(), "value1".to_string());
+    map.set_string("key1", "value1".to_string());
     match map.get("key1") {
         Some(Value::Text(value)) => assert_eq!(value, "value1"),
         other => panic!("Expected text value, got: {other:?}"),
     }
 
     // Test update
-    map.set_string("key1".to_string(), "updated_value".to_string());
+    map.set_string("key1", "updated_value".to_string());
     match map.get("key1") {
         Some(Value::Text(value)) => assert_eq!(value, "updated_value"),
         other => panic!("Expected updated text value, got: {other:?}"),
@@ -55,12 +55,12 @@ fn test_crdt_map_merge_semantics() {
 fn test_crdt_commutativity() {
     // Create non-conflicting maps to ensure commutativity
     let mut map1 = Doc::new();
-    map1.set_string("key1".to_string(), "value1".to_string());
-    map1.set_string("shared".to_string(), "from_map1".to_string());
+    map1.set_string("key1", "value1".to_string());
+    map1.set_string("shared", "from_map1".to_string());
 
     let mut map2 = Doc::new();
-    map2.set_string("key2".to_string(), "value2".to_string());
-    map2.set_string("different".to_string(), "from_map2".to_string());
+    map2.set_string("key2", "value2".to_string());
+    map2.set_string("different", "from_map2".to_string());
 
     // Test that A ⊕ B = B ⊕ A for non-conflicting maps
     let merge_1_2 = map1.merge(&map2).expect("Merge 1->2 should succeed");
@@ -165,21 +165,21 @@ fn test_crdt_with_lists_integration() {
     let mut items = eidetica::crdt::doc::List::new();
     items.push(Value::Text("item1".to_string()));
     items.push(Value::Text("item2".to_string()));
-    doc.set("items".to_string(), Value::List(items));
+    doc.set("items", Value::List(items));
 
     // Create a branch and add different items
     let mut branch = doc.clone();
     if let Some(Value::List(list)) = branch.get("items") {
         let mut list_clone = list.clone();
         list_clone.push(Value::Text("item3".to_string()));
-        branch.set("items".to_string(), Value::List(list_clone));
+        branch.set("items", Value::List(list_clone));
     }
 
     // In main doc, add a different item
     if let Some(Value::List(list)) = doc.get("items") {
         let mut list_clone = list.clone();
         list_clone.push(Value::Text("item4".to_string()));
-        doc.set("items".to_string(), Value::List(list_clone));
+        doc.set("items", Value::List(list_clone));
     }
 
     // Merge
@@ -202,11 +202,11 @@ fn test_crdt_tombstone_behavior_integration() {
     let mut doc2 = Doc::new();
 
     // Both start with the same data
-    doc1.set_string("shared".to_string(), "original".to_string());
-    doc2.set_string("shared".to_string(), "original".to_string());
+    doc1.set_string("shared", "original".to_string());
+    doc2.set_string("shared", "original".to_string());
 
     // doc1 updates the value
-    doc1.set_string("shared".to_string(), "updated".to_string());
+    doc1.set_string("shared", "updated".to_string());
 
     // doc2 deletes the value
     doc2.remove("shared");

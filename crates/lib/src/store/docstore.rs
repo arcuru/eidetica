@@ -195,8 +195,8 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        // Update the data
-        data.as_hashmap_mut().insert(key, value);
+        // Update the data using unified path interface
+        data.set(&key, value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -376,7 +376,7 @@ impl DocStore {
 
         // If there's local data, try to get the path from it
         if let Ok(data) = local_data
-            && let Some(value) = data.get_path(&path)
+            && let Some(value) = data.get(&path)
         {
             return Ok(value.clone());
         }
@@ -385,7 +385,7 @@ impl DocStore {
         let data: Doc = self.atomic_op.get_full_state(&self.name)?;
 
         // Get the path from the full state
-        match data.get_path(&path) {
+        match data.get(&path) {
             Some(value) => Ok(value.clone()),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
@@ -836,9 +836,8 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        // Use Doc's set_path method to handle the path logic
-        data.set_path(&path, value)
-            .map_err(|e| -> crate::Error { e.into() })?;
+        // Use Doc's try_set method to handle the path logic and propagate errors
+        data.try_set(&path, value)?;
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -1104,14 +1103,14 @@ impl DocStore {
     pub fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first
         if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
-            && local_data.get_path(&path).is_some()
+            && local_data.get(&path).is_some()
         {
             return true;
         }
 
         // Check backend data
         if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
-            backend_data.get_path(&path).is_some()
+            backend_data.get(&path).is_some()
         } else {
             false
         }

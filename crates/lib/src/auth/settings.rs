@@ -74,7 +74,8 @@ impl AuthSettings {
     /// Use this method when you intentionally want to replace an existing key.
     /// This provides clear intent and prevents accidental overwrites.
     pub fn overwrite_key(&mut self, key_name: impl Into<String>, key: AuthKey) -> Result<()> {
-        self.inner.set_json(key_name, key)?;
+        let key_name_str = key_name.into();
+        self.inner.set_json(key_name_str, key)?;
         Ok(())
     }
 
@@ -84,7 +85,8 @@ impl AuthSettings {
         key_name: impl Into<String>,
         tree_ref: DelegatedTreeRef,
     ) -> Result<()> {
-        self.inner.set_json(key_name, tree_ref)?;
+        let key_name_str = key_name.into();
+        self.inner.set_json(key_name_str, tree_ref)?;
         Ok(())
     }
 

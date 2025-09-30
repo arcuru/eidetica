@@ -169,14 +169,17 @@ fn test_doc_path_with_lists() {
 }
 
 #[test]
-fn test_doc_path_errors() {
+fn test_doc_path_behaviors() {
     let mut map = Doc::new();
 
     map.set("scalar", "value");
 
-    // Test setting path through scalar value
-    let result = map.set_path(path!("scalar.nested"), "should_fail");
-    assert!(result.is_err());
+    // Test setting path through scalar value - should replace scalar with node
+    let result = map.set_path(path!("scalar.nested"), "new_value");
+    assert!(result.is_ok());
+
+    // Verify that "scalar" is now a node containing "nested" = "new_value"
+    assert_eq!(map.get_text("scalar.nested"), Some("new_value"));
 
     // Test empty path - should return an error
     let result2 = map.set_path(path!(), "value");

@@ -21,7 +21,7 @@ fn test_settings_tips_in_metadata() {
 
     // Create initial settings
     let mut settings = Doc::new();
-    settings.set("name".to_string(), "test_tree".to_string());
+    settings.set("name", "test_tree".to_string());
 
     // Create a tree with authentication
     let tree = db.new_database(settings, key_id).unwrap();
@@ -107,8 +107,8 @@ fn test_entry_get_settings_from_subtree() {
 
     // Create initial settings with some data
     let mut settings = Doc::new();
-    settings.set("name".to_string(), "test_tree".to_string());
-    settings.set("version".to_string(), "1.0".to_string());
+    settings.set("name", "test_tree".to_string());
+    settings.set("version", "1.0".to_string());
 
     // Create a tree
     let tree = db.new_database(settings.clone(), key_id).unwrap();
@@ -226,8 +226,8 @@ fn test_settings_metadata_with_complex_operations() {
 
     // Create tree with initial settings
     let mut initial_settings = Doc::new();
-    initial_settings.set("name".to_string(), "ComplexTree".to_string());
-    initial_settings.set("version".to_string(), "1.0".to_string());
+    initial_settings.set("name", "ComplexTree".to_string());
+    initial_settings.set("version", "1.0".to_string());
     let tree = db.new_database(initial_settings, key_id).unwrap();
 
     // Create several data operations
@@ -400,7 +400,7 @@ fn test_metadata_consistency_across_operations() {
     db.add_private_key(key_id).unwrap();
 
     let mut settings = Doc::new();
-    settings.set("initial".to_string(), "true".to_string());
+    settings.set("initial", "true".to_string());
     let tree = db.new_database(settings, key_id).unwrap();
 
     // Create authenticated operation

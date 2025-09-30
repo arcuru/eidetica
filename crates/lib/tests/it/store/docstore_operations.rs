@@ -1001,9 +1001,16 @@ fn test_docstore_path_mutation_interoperability() {
     // Mix direct and path-based operations
     dict.set("level1", "direct").expect("Failed to set direct");
 
-    // Trying to set a nested path when level1 is not a map should fail
+    // Setting a nested path when level1 is not a map should replace level1 with a node
     let result = dict.set_path(path!("level1.nested"), "path_based");
-    assert!(result.is_err()); // Should fail because level1 is a string, not a map
+    assert!(result.is_ok()); // Should succeed by replacing level1 with a node
+
+    // Verify that level1 is now a node containing "nested" = "path_based"
+    assert_eq!(
+        dict.get_string("level1.nested")
+            .expect("Failed to get level1.nested"),
+        "path_based"
+    );
 
     // However, we can set level1 to be a map structure directly
     dict.set_path(path!("level1_map.nested"), "path_based")

@@ -84,7 +84,7 @@ pub fn setup_authenticated_tree(
     for ((key_name, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
         auth_settings
             .set_json(
-                key_name.to_string(),
+                key_name,
                 auth_key(
                     &format_public_key(public_key),
                     permission.clone(),

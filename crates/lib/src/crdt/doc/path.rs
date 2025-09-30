@@ -94,8 +94,8 @@ pub fn normalize_path(input: &str) -> String {
 /// let profile = Component::new("profile").unwrap();
 /// let empty = Component::new("").unwrap();  // Empty is allowed
 ///
-/// // Invalid components
-/// assert!(Component::new("user.name").is_err()); // Dots not allowed
+/// // Invalid components (only dots are forbidden)
+/// assert!(Component::new("user.name").is_err()); // Contains dot
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Component {
@@ -331,6 +331,16 @@ impl PathBuf {
 }
 
 impl Path {
+    /// Creates a Path from a string slice.
+    ///
+    /// This is a zero-cost operation that wraps the string without validation or normalization.
+    /// Normalization happens during path processing operations when needed.
+    ///
+    /// This follows the same pattern as `std::path::Path::new()`.
+    pub fn new(s: &str) -> &Path {
+        unsafe { Path::from_str_unchecked(s) }
+    }
+
     /// Creates a Path from a string without validation.
     ///
     /// # Safety
@@ -428,6 +438,18 @@ impl AsRef<str> for Path {
 impl AsRef<str> for PathBuf {
     fn as_ref(&self) -> &str {
         &self.inner
+    }
+}
+
+impl AsRef<Path> for str {
+    fn as_ref(&self) -> &Path {
+        Path::new(self)
+    }
+}
+
+impl AsRef<Path> for String {
+    fn as_ref(&self) -> &Path {
+        self.as_str().as_ref()
     }
 }
 

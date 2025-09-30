@@ -178,7 +178,7 @@ pub fn assert_tombstone_hidden(map: &Map, key: &str) {
 pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
     let mut map = Doc::new();
     for (key, value) in data {
-        map.set_string(key.to_string(), value.to_string());
+        map.set_string(key, value.to_string());
     }
     Value::Node(map.into())
 }

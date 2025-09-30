@@ -75,13 +75,13 @@ fn test_tree_validation_rejects_foreign_entries() {
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
-    settings1.set_string("name".to_string(), "tree1".to_string());
+    settings1.set_string("name", "tree1".to_string());
     let tree1 = db
         .new_database(settings1, "test_key")
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
-    settings2.set_string("name".to_string(), "tree2".to_string());
+    settings2.set_string("name", "tree2".to_string());
     let tree2 = db
         .new_database(settings2, "test_key")
         .expect("Failed to create tree2");
@@ -136,13 +136,13 @@ fn test_tree_validation_get_entries() {
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
-    settings1.set_string("name".to_string(), "tree1".to_string());
+    settings1.set_string("name", "tree1".to_string());
     let tree1 = db
         .new_database(settings1, "test_key")
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
-    settings2.set_string("name".to_string(), "tree2".to_string());
+    settings2.set_string("name", "tree2".to_string());
     let tree2 = db
         .new_database(settings2, "test_key")
         .expect("Failed to create tree2");

@@ -61,8 +61,8 @@ fn test_transaction_nested_values() {
 
     // Create and set a nested map value
     let mut nested = Doc::new();
-    nested.set_string("inner1".to_string(), "value1".to_string());
-    nested.set_string("inner2".to_string(), "value2".to_string());
+    nested.set_string("inner1", "value1".to_string());
+    nested.set_string("inner2", "value2".to_string());
 
     // Use the new set_value method to store a map
     store1.set_value("map_key", nested).unwrap();

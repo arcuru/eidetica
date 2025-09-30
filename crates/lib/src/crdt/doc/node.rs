@@ -338,10 +338,12 @@ impl Node {
                     }
                 }
                 _ => {
-                    // Can't navigate through non-node value
-                    return Err(CRDTError::InvalidPath {
-                        path: path.to_string(),
-                    });
+                    // Replace scalar value with new node to allow navigation
+                    *entry = Value::Node(Node::new());
+                    match entry {
+                        Value::Node(node) => current = node,
+                        _ => unreachable!(),
+                    }
                 }
             }
         }
