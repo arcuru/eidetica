@@ -224,7 +224,7 @@ settings.set_string("name", "Team Chat Room");
 let mut auth_doc = Doc::new();
 let mut policy_doc = Doc::new();
 policy_doc.set_json("bootstrap_auto_approve", true)?;
-auth_doc.set_node("policy", policy_doc);
+auth_doc.set_doc("policy", policy_doc);
 
 // Include initial admin key
 auth_doc.set_json("admin_device", serde_json::json!({
@@ -233,7 +233,7 @@ auth_doc.set_json("admin_device", serde_json::json!({
     "status": "Active"
 }))?;
 
-settings.set_node("auth", auth_doc);
+settings.set_doc("auth", auth_doc);
 
 let database = instance.new_database(settings, "admin_device")?;
 ```

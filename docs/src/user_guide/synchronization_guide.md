@@ -335,8 +335,8 @@ let mut auth_doc = Doc::new();
 let mut policy_doc = Doc::new();
 // Enable auto-approval for team collaboration
 policy_doc.set_json("bootstrap_auto_approve", true)?;
-auth_doc.set_node("policy", policy_doc);
-settings.set_node("auth", auth_doc);
+auth_doc.set_doc("policy", policy_doc);
+settings.set_doc("auth", auth_doc);
 
 let database = instance.new_database(settings, "admin_key")?;
 

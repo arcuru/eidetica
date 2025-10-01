@@ -98,7 +98,7 @@ Authentication configuration is stored in the special `_settings` store under th
 
 The `_settings` store uses the `crate::crdt::Doc` type, which is a hierarchical CRDT that resolves conflicts using Last-Write-Wins (LWW) semantics. The ordering for LWW is determined deterministically by the DAG design (see CRDT documentation for details).
 
-**Clarification**: Throughout this document, when we refer to `Doc`, this is the hierarchical CRDT document type that wraps internal Node structures supporting nested maps. The `_settings` store specifically uses `Doc` to enable complex authentication configurations.
+**Clarification**: Throughout this document, when we refer to `Doc`, this is the hierarchical CRDT document type supporting nested structures. The `_settings` store specifically uses `Doc` to enable complex authentication configurations including nested policy documents and key management.
 
 ### Permission Hierarchy
 

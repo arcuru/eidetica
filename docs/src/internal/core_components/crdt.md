@@ -10,21 +10,29 @@ Trait-based system for Conflict-free Replicated Data Types enabling deterministi
 
 **Multiple CRDT Support**: Different CRDT types can be used for different stores within the same database.
 
-## Doc and Node Types
+## Doc Type
 
-**Doc**: The main CRDT document type that users interact with
+**Doc**: The main CRDT document type
 
-- Wraps the internal Node structure for clean API boundaries
+- Hierarchical document structure supporting nested data
 - Provides document-level operations (get, set, merge, etc.)
-- Handles path-based operations for nested data access
-- Separates user-facing API from internal implementation
+- Handles path-based operations for nested data access (dot notation)
+- Supports the Value enum for different data types
 
-**Node**: Internal database structure implementing the actual CRDT logic
+**Value Types**:
 
-- Supports nested maps and values via the Value enum
-- Value types: Text (string), Node (nested map), List (ordered collection), Deleted (tombstone)
+- Text (string)
+- Int (i64 integer)
+- Bool (boolean)
+- Doc (nested document)
+- List (ordered collection with CRDT positioning)
+- Deleted (tombstone marker)
+
+**CRDT Behavior**:
+
 - Recursive merging for nested structures
-- Last-write-wins strategy for conflicting values
+- Last-write-wins strategy for conflicting leaf values
+- Tombstones for deletion tracking
 - Type-aware conflict resolution
 
 ## Tombstones

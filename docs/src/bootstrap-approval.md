@@ -330,7 +330,7 @@ let settings_store = SettingsStore::new(&transaction)?;
 settings_store.update_auth_settings(|auth| {
     let mut policy_doc = eidetica::crdt::Doc::new();
     policy_doc.set_json("bootstrap_auto_approve", true)?;
-    auth.as_doc().set_node("policy", policy_doc)?;
+    auth.as_doc().set_doc("policy", policy_doc)?;
     Ok(())
 })?;
 
@@ -346,8 +346,8 @@ let mut auth_doc = Doc::new();
 let mut policy_doc = Doc::new();
 
 policy_doc.set_json("bootstrap_auto_approve", true)?;
-auth_doc.set_node("policy", policy_doc);
-settings.set_node("auth", auth_doc);
+auth_doc.set_doc("policy", policy_doc);
+settings.set_doc("auth", auth_doc);
 ```
 
 ### Manual Approval Workflow
