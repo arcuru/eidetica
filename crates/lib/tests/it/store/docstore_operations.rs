@@ -1024,7 +1024,7 @@ fn test_docstore_path_mutation_interoperability() {
     let level1_value = dict.get("level1_map").expect("Failed to get level1_map");
     match level1_value {
         Value::Doc(_) => {} // Expected
-        _ => panic!("Expected level1_map to be a Node after path operation"),
+        _ => panic!("Expected level1_map to be a Doc after path operation"),
     }
 
     // Verify nested value is accessible

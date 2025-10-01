@@ -9,7 +9,7 @@
  * - auth: Tests for the authentication system, organized by auth submodules
  * - instance: Tests for the Instance struct and related functionality
  * - backend: Tests for the Backend trait and implementations
- * - crdt: Tests for the CRDT implementations (Doc, Node, List, Value types)
+ * - crdt: Tests for the CRDT implementations (Doc, List, Value types)
  * - data: Tests for the CRDT trait and implementations (e.g., KVOverWrite)
  * - entry: Tests for the Entry struct and related functionality
  * - database: Tests for the Database struct and related functionality

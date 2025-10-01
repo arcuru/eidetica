@@ -44,16 +44,13 @@ use crate::crdt::{
 
 // Submodules
 pub mod list;
-pub mod node;
 #[cfg(test)]
 mod node_tests;
 pub mod path;
 pub mod value;
 
-// Path re-exports (no conflicts)
 // Convenience re-exports for core Doc types
 pub use list::List;
-pub use node::Node;
 pub use path::{Path, PathBuf, PathError};
 pub use value::Value;
 
@@ -701,7 +698,7 @@ impl Doc {
     }
 
     /// Get a mutable reference to a nested Doc by key
-    pub fn get_doc_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Node> {
+    pub fn get_doc_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Doc> {
         match self.get_mut(key)? {
             Value::Doc(node) => Some(node),
             _ => None,

@@ -1,6 +1,6 @@
 //! CRDT integration tests
 //!
-//! This module tests the CRDT implementations including Doc, Node, List, and Value types.
+//! This module tests the CRDT implementations including Doc, List, and Value types.
 //! Tests are organized by CRDT type for better maintainability.
 
 mod doc_advanced_tests;
