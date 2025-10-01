@@ -271,7 +271,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                 println!("✅ Auth value found - type: {:?}", value);
 
                 // The auth section exists but keys might be stored as JSON strings
-                if let Value::Node(auth_node) = value {
+                if let Value::Doc(auth_node) = value {
                     println!("✅ Auth is a Node");
 
                     // Try to get the key entry - it might be JSON string
@@ -289,7 +289,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                                 stored_pubkey, client_pubkey,
                                 "Stored pubkey should match client's pubkey"
                             );
-                        } else if let Value::Node(key_node) = key_value {
+                        } else if let Value::Doc(key_node) = key_value {
                             // It's a proper node
                             if let Some(stored_pubkey) = key_node.get_text("pubkey") {
                                 println!("✅ Client key found with pubkey: {}", stored_pubkey);

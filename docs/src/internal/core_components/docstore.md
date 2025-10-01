@@ -10,7 +10,7 @@ DocStore is a publicly available store type that provides a document-oriented in
 
 **Public API**: DocStore is exposed as part of the public store API and can be used in applications.
 
-**Doc CRDT Based**: Wraps the `crdt::Doc` type which uses Node structures internally for deterministic merging of concurrent changes.
+**Doc CRDT Based**: Wraps the `crdt::Doc` type which provides deterministic merging of concurrent changes.
 
 **Path-Based Operations**: Supports both flat key-value storage and path-based access to nested structures.
 
@@ -48,9 +48,9 @@ let all_data = docstore.get_all()?;
 let value = all_data.get("user.profile.name");  // ❌ Returns None
 
 // Correct way - navigate the nested structure
-if let Some(Value::Node(user_node)) = all_data.get("user") {
-    if let Some(Value::Node(profile_node)) = user_node.get("profile") {
-        if let Some(Value::Text(name)) = profile_node.get("name") {
+if let Some(Value::Doc(user_doc)) = all_data.get("user") {
+    if let Some(Value::Doc(profile_doc)) = user_doc.get("profile") {
+        if let Some(Value::Text(name)) = profile_doc.get("name") {
             println!("Name: {}", name);  // ✅ "Alice"
         }
     }
@@ -126,8 +126,8 @@ sync_state.set_path(history_path, history_json)?;
 let all_data = sync_state.get_all()?;
 
 // Navigate to history entries
-if let Some(Value::Node(history_node)) = all_data.get("history") {
-    for (sync_id, entry_value) in history_node.iter() {
+if let Some(Value::Doc(history_doc)) = all_data.get("history") {
+    for (sync_id, entry_value) in history_doc.iter() {
         // Process each history entry
         if let Value::Text(json_str) = entry_value {
             let entry: SyncHistoryEntry = serde_json::from_str(json_str)?;

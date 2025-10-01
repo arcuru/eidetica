@@ -64,7 +64,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 
     let mut new_auth_settings = tree.get_settings()?.get_all()?;
     new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
-    settings_store.set_value("auth", Value::Node(new_auth_settings.into()))?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings.into()))?;
     op.commit()?;
 
     // Try to resolve delegation to non-existent tree
@@ -110,7 +110,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
     let mut corrupted_delegate = Doc::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
-    auth.set("corrupted_delegate", Value::Node(corrupted_delegate.into()));
+    auth.set("corrupted_delegate", Value::Doc(corrupted_delegate.into()));
 
     let mut settings = Doc::new();
     settings.set_node("auth", auth);

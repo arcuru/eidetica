@@ -287,10 +287,10 @@ fn test_dict_update_nested_value() {
 
         // Verify the update within the same operation
         match dict.get("level1").expect("Failed to get level1") {
-            Value::Node(retrieved_l1_map) => {
+            Value::Doc(retrieved_l1_map) => {
                 // Check if level2_map exists with the expected content
                 match retrieved_l1_map.get("level2_map") {
-                    Some(Value::Node(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                    Some(Value::Doc(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
                         Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
                         _ => panic!("Expected string 'deep_value' at deep_key"),
                     },
@@ -309,10 +309,10 @@ fn test_dict_update_nested_value() {
 
     // Verify the structure after commit
     match viewer.get("level1").expect("Viewer: Failed to get level1") {
-        Value::Node(retrieved_l1_map) => {
+        Value::Doc(retrieved_l1_map) => {
             // Check if level2_map exists with expected content
             match retrieved_l1_map.get("level2_map") {
-                Some(Value::Node(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
+                Some(Value::Doc(retrieved_l2_map)) => match retrieved_l2_map.get("deep_key") {
                     Some(Value::Text(val)) => assert_eq!(val, "deep_value"),
                     _ => panic!("Viewer: Expected string 'deep_value' at deep_key"),
                 },
@@ -341,7 +341,7 @@ fn test_dict_comprehensive_operations() {
         let mut nested = Doc::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
-        dict.set_value("nested", Value::Node(nested.clone().into()))
+        dict.set_value("nested", Value::Doc(nested.clone().into()))
             .expect("Failed to set nested map");
     }
 
@@ -407,9 +407,9 @@ fn test_docstore_path_based_access() {
     let mut profile_doc = Doc::new();
     profile_doc.set("email", "alice@example.com");
     profile_doc.set("verified", true);
-    user_doc.set("profile", Value::Node(profile_doc.into()));
+    user_doc.set("profile", Value::Doc(profile_doc.into()));
 
-    dict.set("user", Value::Node(user_doc.into()))
+    dict.set("user", Value::Doc(user_doc.into()))
         .expect("Failed to set user");
 
     // Test get_path() for various path levels
@@ -544,7 +544,7 @@ fn test_docstore_path_mixed_with_staging() {
         let mut config_doc = Doc::new();
         config_doc.set("version", "1.0");
         config_doc.set("debug", false);
-        dict.set("config", Value::Node(config_doc.into()))
+        dict.set("config", Value::Doc(config_doc.into()))
             .expect("Failed to set config");
 
         op.commit().expect("Failed to commit initial data");
@@ -572,7 +572,7 @@ fn test_docstore_path_mixed_with_staging() {
     updated_config.set("version", "2.0"); // Update version
     updated_config.set("debug", false); // Keep debug same
     updated_config.set("environment", "production"); // Add new field
-    dict.set("config", Value::Node(updated_config.into()))
+    dict.set("config", Value::Doc(updated_config.into()))
         .expect("Failed to stage config update");
     dict.set("new_key", "new_value")
         .expect("Failed to stage new key");
@@ -1019,7 +1019,7 @@ fn test_docstore_path_mutation_interoperability() {
     // Verify that level1_map is now a map
     let level1_value = dict.get("level1_map").expect("Failed to get level1_map");
     match level1_value {
-        Value::Node(_) => {} // Expected
+        Value::Doc(_) => {} // Expected
         _ => panic!("Expected level1_map to be a Node after path operation"),
     }
 

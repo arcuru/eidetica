@@ -248,7 +248,7 @@ mod tests {
                 reason: "conflict".to_string(),
             },
             CRDTError::TypeMismatch {
-                expected: "Node".to_string(),
+                expected: "Doc".to_string(),
                 actual: "Text".to_string(),
             },
             CRDTError::InvalidPath {

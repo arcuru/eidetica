@@ -55,7 +55,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
 
     // Add admin key to auth settings for database creation
     let mut auth_section = match settings.get("auth") {
-        Some(eidetica::crdt::doc::Value::Node(node)) => node.clone(),
+        Some(eidetica::crdt::doc::Value::Doc(node)) => node.clone(),
         _ => panic!("Expected auth section to be a node"),
     };
     let admin_auth_key = AuthKey::active(admin_public_key_str, Permission::Admin(1)).unwrap();

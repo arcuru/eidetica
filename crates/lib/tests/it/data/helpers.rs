@@ -57,7 +57,7 @@ pub fn assert_nested_value(map: &Node, path: &[&str], expected: &str) {
     // Navigate to the parent of the final key
     for &key in &path[..path.len() - 1] {
         match current.get(key) {
-            Some(Value::Node(inner)) => current = inner,
+            Some(Value::Doc(inner)) => current = inner,
             _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
         }
     }
@@ -106,7 +106,7 @@ pub fn assert_path_deleted(map: &Node, path: &[&str]) {
         let mut current = map;
         for &key in &path[..path.len() - 1] {
             match current.get(key) {
-                Some(Value::Node(inner)) => current = inner,
+                Some(Value::Doc(inner)) => current = inner,
                 _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
             }
         }
@@ -164,7 +164,7 @@ pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
 /// Assert that a value is a Map with expected content
 pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
     match value {
-        Value::Node(map) => {
+        Value::Doc(map) => {
             for &key in expected_keys {
                 assert!(
                     map.as_hashmap().contains_key(key),

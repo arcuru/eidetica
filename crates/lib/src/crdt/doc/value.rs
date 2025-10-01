@@ -9,8 +9,10 @@ use std::fmt;
 
 // Forward declarations for types defined in other modules
 use super::list::List;
-use super::node::Node;
-use crate::crdt::{CRDTError, traits::Data};
+use crate::crdt::{
+    CRDTError,
+    traits::{CRDT, Data},
+};
 
 /// Values that can be stored in CRDT documents.
 ///
@@ -27,7 +29,7 @@ use crate::crdt::{CRDTError, traits::Data};
 /// - [`Value::Text`] - UTF-8 text strings
 ///
 /// ## Branch Values (Container Nodes)
-/// - [`Value::Node`] - Nested document structures
+/// - [`Value::Doc`] - Nested document structures
 /// - [`Value::List`] - Ordered collections with stable positioning
 ///
 /// ## CRDT Semantics
@@ -61,7 +63,7 @@ use crate::crdt::{CRDTError, traits::Data};
 /// # CRDT Merge Behavior
 ///
 /// - **Leaf values**: Last-write-wins semantics
-/// - **Branch values**: Structural merging (recursive for Node, positional for List)
+/// - **Branch values**: Structural merging (recursive for Doc, positional for List)
 /// - **Tombstones**: Deletion markers that win over any non-deleted value
 /// - **Resurrection**: Non-deleted values can overwrite tombstones
 ///
@@ -89,7 +91,7 @@ pub enum Value {
 
     // Branch values (can contain other nodes)
     /// Sub-tree containing other nodes
-    Node(Node),
+    Doc(crate::crdt::Doc),
     /// Ordered collection of values
     List(List),
 
@@ -109,7 +111,7 @@ impl Value {
 
     /// Returns true if this is a branch value (can contain other nodes)
     pub fn is_branch(&self) -> bool {
-        matches!(self, Value::Node(_) | Value::List(_))
+        matches!(self, Value::Doc(_) | Value::List(_))
     }
 
     /// Returns true if this value represents a deletion
@@ -129,7 +131,7 @@ impl Value {
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Text(_) => "text",
-            Value::Node(_) => "node",
+            Value::Doc(_) => "doc",
             Value::List(_) => "list",
             Value::Deleted => "deleted",
         }
@@ -184,18 +186,18 @@ impl Value {
         self.as_text().unwrap_or("")
     }
 
-    /// Attempts to convert to a node (returns immutable reference)
-    pub fn as_node(&self) -> Option<&Node> {
+    /// Attempts to convert to a Doc (returns immutable reference)
+    pub fn as_node(&self) -> Option<&crate::crdt::Doc> {
         match self {
-            Value::Node(node) => Some(node),
+            Value::Doc(node) => Some(node),
             _ => None,
         }
     }
 
-    /// Attempts to convert to a mutable node reference
-    pub fn as_node_mut(&mut self) -> Option<&mut Node> {
+    /// Attempts to convert to a mutable Doc reference
+    pub fn as_node_mut(&mut self) -> Option<&mut crate::crdt::Doc> {
         match self {
-            Value::Node(node) => Some(node),
+            Value::Doc(node) => Some(node),
             _ => None,
         }
     }
@@ -232,10 +234,14 @@ impl Value {
 
         // Handle specific cases without moving self
         match other {
-            Value::Node(other_node) => {
-                if let Value::Node(self_node) = self {
-                    // For in-place merge, use the Node's merge method
-                    self_node.merge_in_place(other_node);
+            Value::Doc(other_node) => {
+                if let Value::Doc(self_node) = self {
+                    // For in-place merge, use the Doc's merge method via CRDT trait
+                    // We can't do in-place merge easily with Doc, so we'll replace for now
+                    match self_node.merge(other_node) {
+                        Ok(merged) => *self_node = merged,
+                        Err(_) => *self = other.clone(), // Fallback on error
+                    }
                 } else {
                     // Different types, replace with other
                     *self = other.clone();
@@ -283,7 +289,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Int(n) => n.to_string(),
             Value::Text(s) => format!("\"{}\"", s.replace('\"', "\\\"")),
-            Value::Node(node) => node.to_json_string(),
+            Value::Doc(doc) => doc.to_json_string(),
             Value::List(list) => {
                 let mut result = String::with_capacity(list.len() * 8); // Reasonable initial capacity
                 result.push('[');
@@ -308,7 +314,7 @@ impl fmt::Display for Value {
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
             Value::Text(s) => write!(f, "{s}"),
-            Value::Node(node) => write!(f, "{node}"),
+            Value::Doc(doc) => write!(f, "{doc}"),
             Value::List(list) => {
                 write!(f, "[")?;
                 for (i, item) in list.iter().enumerate() {
@@ -381,9 +387,9 @@ impl From<&str> for Value {
     }
 }
 
-impl From<Node> for Value {
-    fn from(value: Node) -> Self {
-        Value::Node(value)
+impl From<crate::crdt::Doc> for Value {
+    fn from(value: crate::crdt::Doc) -> Self {
+        Value::Doc(value)
     }
 }
 
@@ -396,12 +402,6 @@ impl From<List> for Value {
 // Convenience conversion from Doc to Value for ergonomic API usage
 // This allows Doc instances to be used directly in contexts expecting Value,
 // particularly useful in testing and when building nested document structures.
-// The conversion extracts the Doc's root Node and wraps it in a Value::Node.
-impl From<crate::crdt::Doc> for Value {
-    fn from(doc: crate::crdt::Doc) -> Self {
-        Value::Node(doc.into())
-    }
-}
 
 // TryFrom implementations for better type coercion
 impl TryFrom<&Value> for String {
@@ -452,14 +452,14 @@ impl TryFrom<&Value> for bool {
 // Users should use the existing as_node() and as_list() methods for references
 // Or clone into owned types when needed
 
-impl TryFrom<&Value> for Node {
+impl TryFrom<&Value> for crate::crdt::Doc {
     type Error = CRDTError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Node(node) => Ok(node.clone()),
+            Value::Doc(doc) => Ok(doc.clone()),
             _ => Err(CRDTError::TypeMismatch {
-                expected: "Node".to_string(),
+                expected: "Doc".to_string(),
                 actual: format!("{value:?}"),
             }),
         }

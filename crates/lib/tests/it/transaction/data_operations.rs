@@ -82,7 +82,7 @@ fn test_transaction_nested_values() {
 
     // Check the nested map
     match store2.get("map_key").unwrap() {
-        Value::Node(map) => {
+        Value::Doc(map) => {
             match map.get("inner1") {
                 Some(Value::Text(value)) => assert_eq!(value, "value1"),
                 _ => panic!("Expected string value for inner1"),
@@ -210,7 +210,7 @@ fn test_nested_map_operations() {
     let nested_value = create_nested_map(&[("key1", "val1"), ("key2", "val2")]);
 
     match nested_value {
-        Value::Node(map) => {
+        Value::Doc(map) => {
             assert_eq!(map.get_text("key1"), Some("val1"));
             assert_eq!(map.get_text("key2"), Some("val2"));
         }

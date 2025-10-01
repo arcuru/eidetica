@@ -132,7 +132,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     // Check that auth section was NOT modified to include unauthorized key
     if let Some(auth_node) = server_auth_settings.get("auth")
-        && let Value::Node(auth_doc) = auth_node
+        && let Value::Doc(auth_doc) = auth_node
     {
         // EXPECTED SECURE BEHAVIOR: Should NOT contain the unauthorized client key
         assert!(
@@ -249,7 +249,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     // Check that NO auth section was created by unauthorized bootstrap
     if let Some(auth_node) = server_auth_settings.get("auth")
-        && let Value::Node(auth_doc) = auth_node
+        && let Value::Doc(auth_doc) = auth_node
     {
         // EXPECTED SECURE BEHAVIOR: Auth config should NOT be created by unauthorized bootstrap
         assert!(
@@ -564,7 +564,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .expect("Failed to get all settings");
 
     if let Some(auth_node) = server_auth_settings.get("auth")
-        && let Value::Node(auth_doc) = auth_node
+        && let Value::Doc(auth_doc) = auth_node
     {
         // EXPECTED SECURE BEHAVIOR: Greedy client should NOT be in auth config
         assert!(

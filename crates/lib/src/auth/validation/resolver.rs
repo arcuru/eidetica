@@ -55,7 +55,7 @@ impl KeyResolver {
 
     /// Resolve authentication identifier with pubkey override for global permissions
     ///
-    /// # Arguments  
+    /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `settings` - Document settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
@@ -138,7 +138,7 @@ impl KeyResolver {
 
         // Extract the auth Node from the Value
         let auth_nested = match auth_section {
-            Value::Node(auth_map) => auth_map,
+            Value::Doc(auth_map) => auth_map,
             _ => {
                 return Err(AuthError::InvalidAuthConfiguration {
                     reason: "Auth section must be a nested map".to_string(),

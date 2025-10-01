@@ -42,7 +42,7 @@ fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
     // Verify intermediate map structure
     let profile_path = ["user", "profile"];
     match dict.get_at_path(profile_path)? {
-        Value::Node(profile_map) => {
+        Value::Doc(profile_map) => {
             assert_text_value(profile_map.get("email").unwrap(), "test@example.com");
         }
         _ => panic!("Expected user.profile to be a map"),
@@ -69,11 +69,11 @@ fn test_dict_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
 
     // Verify intermediate maps were created
     match dict.get_at_path(["a", "b"])? {
-        Value::Node(_) => (),
+        Value::Doc(_) => (),
         other => panic!("Expected a.b to be a map, got {other:?}"),
     }
     match dict.get_at_path(["a"])? {
-        Value::Node(_) => (),
+        Value::Doc(_) => (),
         other => panic!("Expected a to be a map, got {other:?}"),
     }
 
@@ -96,7 +96,7 @@ fn test_dict_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
 
     // Verify that 'user.profile' is now a map
     match dict.get_at_path(["user", "profile"])? {
-        Value::Node(profile_map) => {
+        Value::Doc(profile_map) => {
             assert_text_value(profile_map.get("name").unwrap(), "charlie");
         }
         _ => panic!("Expected user.profile to be a map after overwrite"),
@@ -167,7 +167,7 @@ fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
 
     // Getting the root should return a map (the entire Doc contents)
     match dict.get_at_path(&path)? {
-        Value::Node(_) => (),
+        Value::Doc(_) => (),
         other => panic!("Expected Map for root path, got {other:?}"),
     }
 
@@ -242,7 +242,7 @@ fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
 
     // Verify intermediate structures
     match dict.get_at_path(["user"])? {
-        Value::Node(user_map) => {
+        Value::Doc(user_map) => {
             assert!(user_map.as_hashmap().contains_key("profile"));
             assert!(user_map.as_hashmap().contains_key("settings"));
         }
@@ -250,7 +250,7 @@ fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
     }
 
     match dict.get_at_path(["user", "profile"])? {
-        Value::Node(_) => {
+        Value::Doc(_) => {
             let profile_map = dict.get_at_path(["user", "profile"])?;
             assert_map_contains(&profile_map, &["name", "email"]);
         }

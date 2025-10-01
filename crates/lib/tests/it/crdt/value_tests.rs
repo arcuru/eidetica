@@ -51,7 +51,7 @@ fn test_map_value_basic_types() {
 
 #[test]
 fn test_map_value_branch_types() {
-    let map_val = Value::Node(Node::new());
+    let map_val = Value::Doc(Node::new());
     let list_val = Value::List(List::new());
 
     assert!(!map_val.is_leaf());
@@ -73,7 +73,7 @@ fn test_map_value_type_names() {
     assert_eq!(Value::Bool(true).type_name(), "bool");
     assert_eq!(Value::Int(42).type_name(), "int");
     assert_eq!(Value::Text("hello".to_string()).type_name(), "text");
-    assert_eq!(Value::Node(Node::new()).type_name(), "node");
+    assert_eq!(Value::Doc(Node::new()).type_name(), "doc");
     assert_eq!(Value::List(List::new()).type_name(), "list");
     assert_eq!(Value::Deleted.type_name(), "deleted");
 }
@@ -83,7 +83,7 @@ fn test_map_value_accessors() {
     let bool_val = Value::Bool(true);
     let int_val = Value::Int(42);
     let text_val = Value::Text("hello".to_string());
-    let map_val = Value::Node(Node::new());
+    let map_val = Value::Doc(Node::new());
     let list_val = Value::List(List::new());
 
     // Test as_bool
@@ -408,7 +408,7 @@ fn test_all_value_types_helper() {
     assert!(type_names.contains(&"bool"));
     assert!(type_names.contains(&"int"));
     assert!(type_names.contains(&"text"));
-    assert!(type_names.contains(&"node"));
+    assert!(type_names.contains(&"doc"));
     assert!(type_names.contains(&"list"));
     assert!(type_names.contains(&"deleted"));
 }

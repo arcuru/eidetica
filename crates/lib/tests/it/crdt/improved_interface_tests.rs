@@ -49,21 +49,21 @@ fn test_doc_get_as_method() {
     doc.set("score", 98.5f64 as i64); // Convert to i64 for CRDT
 
     // Test successful type inference
-    let name: Result<String> = doc.get_as("name");
+    let name: Result<String> = doc.get_as_old("name");
     assert_eq!(name.unwrap(), "Alice");
 
-    let age: Result<i64> = doc.get_as("age");
+    let age: Result<i64> = doc.get_as_old("age");
     assert_eq!(age.unwrap(), 30);
 
-    let active: Result<bool> = doc.get_as("active");
+    let active: Result<bool> = doc.get_as_old("active");
     assert!(active.unwrap());
 
     // Test missing key
-    let missing: Result<String> = doc.get_as("missing");
+    let missing: Result<String> = doc.get_as_old("missing");
     assert!(missing.is_err());
 
     // Test type mismatch
-    let wrong_type: Result<i64> = doc.get_as("name");
+    let wrong_type: Result<i64> = doc.get_as_old("name");
     assert!(wrong_type.is_err());
 }
 
@@ -75,13 +75,13 @@ fn test_node_get_as_method() {
     node.set("enabled", false);
 
     // Test successful type inference
-    let name = node.get_as::<String>("name");
+    let name = node.get_as_old::<String>("name");
     assert_eq!(name.unwrap(), "Bob");
 
-    let count = node.get_as::<i64>("count");
+    let count = node.get_as_old::<i64>("count");
     assert_eq!(count.unwrap(), 100);
 
-    let enabled = node.get_as::<bool>("enabled");
+    let enabled = node.get_as_old::<bool>("enabled");
     assert!(!enabled.unwrap());
 }
 
@@ -98,18 +98,18 @@ fn test_mixed_path_and_direct_access() {
         .unwrap();
 
     // Access top-level values with both methods
-    let root_direct: Result<String> = doc.get_as("top_level");
+    let root_direct: Result<String> = doc.get_as_old("top_level");
     assert_eq!(root_direct.unwrap(), "root_value");
 
     let root_via_path: Result<String> = doc.get_path_as(path!("top_level"));
     assert_eq!(root_via_path.unwrap(), "root_value");
 
     // Access nested values set via path using direct access to intermediate nodes
-    let user_node: Result<Node> = doc.get_as("user");
+    let user_node: Result<Node> = doc.get_as_old("user");
     let user = user_node.unwrap();
-    let profile_node = user.get_as::<Node>("profile");
+    let profile_node = user.get_as_old::<Node>("profile");
     let profile = profile_node.unwrap();
-    let profile_name = profile.get_as::<String>("name");
+    let profile_name = profile.get_as_old::<String>("name");
     assert_eq!(profile_name.unwrap(), "Charlie");
 
     // Access nested values using path methods
@@ -130,7 +130,7 @@ fn test_mixed_path_and_direct_access() {
         doc.get_path_as::<i64>(path!("user.profile.age")).unwrap(),
         26
     );
-    let user_again: Result<Node> = doc.get_as("user");
+    let user_again: Result<Node> = doc.get_as_old("user");
     let profile_age = user_again.unwrap().get_path_as::<i64>(path!("profile.age"));
     assert_eq!(profile_age.unwrap(), 26);
 
@@ -158,13 +158,13 @@ fn test_convenience_methods() {
     doc.set_path(path!("config.theme"), "dark").unwrap();
 
     // Test get_as with type inference (clean and safe)
-    let name: String = doc.get_as("name").unwrap();
+    let name: String = doc.get_as_old("name").unwrap();
     assert_eq!(name, "Dave");
 
-    let level: i64 = doc.get_as("level").unwrap();
+    let level: i64 = doc.get_as_old("level").unwrap();
     assert_eq!(level, 5);
 
-    let premium: bool = doc.get_as("premium").unwrap();
+    let premium: bool = doc.get_as_old("premium").unwrap();
     assert!(premium);
 
     // Test get_path_as method
@@ -172,13 +172,13 @@ fn test_convenience_methods() {
     assert_eq!(theme, "dark");
 
     // Test get_as with .ok() for safe access (returns Option)
-    let name_opt: Option<String> = doc.get_as("name").ok();
+    let name_opt: Option<String> = doc.get_as_old("name").ok();
     assert_eq!(name_opt, Some("Dave".to_string()));
 
-    let missing_opt: Option<String> = doc.get_as("missing").ok();
+    let missing_opt: Option<String> = doc.get_as_old("missing").ok();
     assert_eq!(missing_opt, None);
 
-    let wrong_type_opt: Option<i64> = doc.get_as("name").ok(); // String as i64
+    let wrong_type_opt: Option<i64> = doc.get_as_old("name").ok(); // String as i64
     assert_eq!(wrong_type_opt, None);
 }
 
@@ -226,12 +226,12 @@ fn test_interface_comparison() -> eidetica::Result<()> {
     assert_eq!(old_specific, Some("Hello World"));
 
     // New generic way
-    let new_way: Result<String> = doc.get_as("message");
+    let new_way: Result<String> = doc.get_as_old("message");
     let new_way_str = new_way.unwrap();
     assert_eq!(new_way_str, "Hello World");
 
     // New method way (most ergonomic)
-    let method_way: String = doc.get_as("message")?;
+    let method_way: String = doc.get_as_old("message")?;
     assert_eq!(method_way, "Hello World");
 
     // All should be equivalent but new ways are more ergonomic
@@ -254,9 +254,9 @@ fn test_backwards_compatibility() {
     assert_eq!(doc.get_bool("flag"), Some(true));
 
     // New methods should work alongside old ones
-    let text: String = doc.get_as("text").unwrap();
-    let number: i64 = doc.get_as("number").unwrap();
-    let flag: bool = doc.get_as("flag").unwrap();
+    let text: String = doc.get_as_old("text").unwrap();
+    let number: i64 = doc.get_as_old("number").unwrap();
+    let flag: bool = doc.get_as_old("flag").unwrap();
 
     assert_eq!(text, "test");
     assert_eq!(number, 123);
@@ -291,7 +291,7 @@ fn test_mutable_access_methods_mixed() {
         *count += 5;
     })
     .unwrap();
-    assert_eq!(doc.get_as::<i64>("counter").unwrap(), 5);
+    assert_eq!(doc.get_as_old::<i64>("counter").unwrap(), 5);
     assert_eq!(doc.get_path_as::<i64>(path!("counter")).unwrap(), 5);
 
     // Modify nested value via path, verify with direct node access
@@ -304,8 +304,8 @@ fn test_mutable_access_methods_mixed() {
     assert_eq!(doc.get_path_as::<i64>(path!("stats.views")).unwrap(), 200);
 
     // Verify via direct node access
-    let stats_node: Result<Node> = doc.get_as("stats");
-    let views_direct = stats_node.unwrap().get_as::<i64>("views");
+    let stats_node: Result<Node> = doc.get_as_old("stats");
+    let views_direct = stats_node.unwrap().get_as_old::<i64>("views");
     assert_eq!(views_direct.unwrap(), 200);
 
     // Modify direct key, then use path to access it

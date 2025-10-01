@@ -180,7 +180,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
     for (key, value) in data {
         map.set_string(key, value.to_string());
     }
-    Value::Node(map.into())
+    Value::Doc(map.into())
 }
 
 /// Setup operation with nested Map values
@@ -210,7 +210,7 @@ pub fn assert_nested_data(
 
     // Check nested map
     match dict.get(map_key).unwrap() {
-        Value::Node(map) => {
+        Value::Doc(map) => {
             for (key, expected_value) in nested_data {
                 match map.get(key) {
                     Some(Value::Text(value)) => assert_eq!(value, *expected_value),

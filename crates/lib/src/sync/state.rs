@@ -321,7 +321,7 @@ impl<'a> SyncStateManager<'a> {
         let mut history_entries = Vec::new();
 
         // The history data is stored as nested structure under the "history" key
-        if let Some(Value::Node(history_node)) = all_data.get("history") {
+        if let Some(Value::Doc(history_node)) = all_data.get("history") {
             // Iterate through all history entries (each is stored under its sync_id)
             for (_sync_id, value) in history_node.iter() {
                 if let Value::Text(json_str) = value
@@ -357,14 +357,14 @@ impl<'a> SyncStateManager<'a> {
         let mut peers = std::collections::HashSet::new();
 
         // Check metadata node for peers
-        if let Some(Value::Node(metadata_node)) = all_data.get("metadata") {
+        if let Some(Value::Doc(metadata_node)) = all_data.get("metadata") {
             for (peer_key, _) in metadata_node.iter() {
                 peers.insert(peer_key.to_string());
             }
         }
 
         // Check cursors node for peers
-        if let Some(Value::Node(cursors_node)) = all_data.get("cursors") {
+        if let Some(Value::Doc(cursors_node)) = all_data.get("cursors") {
             for (peer_key, _) in cursors_node.iter() {
                 peers.insert(peer_key.to_string());
             }
@@ -389,7 +389,7 @@ impl<'a> SyncStateManager<'a> {
         let mut cleaned_count = 0;
 
         // The history data is stored as nested structure under the "history" key
-        if let Some(Value::Node(history_node)) = all_data.get("history") {
+        if let Some(Value::Doc(history_node)) = all_data.get("history") {
             for (sync_id, value) in history_node.iter() {
                 if let Value::Text(json_str) = value
                     && let Ok(history_entry) = serde_json::from_str::<SyncHistoryEntry>(json_str)

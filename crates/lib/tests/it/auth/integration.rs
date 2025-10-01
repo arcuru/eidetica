@@ -190,7 +190,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .unwrap();
 
     settings_store
-        .set_value("auth", Value::Node(new_auth_settings.into()))
+        .set_value("auth", Value::Doc(new_auth_settings.into()))
         .expect("Failed to update auth settings");
 
     let entry_id1 = op1.commit().expect("Failed to commit settings change");

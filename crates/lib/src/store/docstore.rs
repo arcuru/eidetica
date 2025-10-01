@@ -147,10 +147,10 @@ impl DocStore {
         let key_ref = key.as_ref();
         match self.get_result(key_ref)? {
             Value::Text(value) => Ok(value),
-            Value::Node(_) => Err(StoreError::TypeMismatch {
+            Value::Doc(_) => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
                 expected: "String".to_string(),
-                actual: "Node".to_string(),
+                actual: "Doc".to_string(),
             }
             .into()),
             Value::List(_) => Err(StoreError::TypeMismatch {
@@ -301,13 +301,13 @@ impl DocStore {
         }
     }
 
-    /// Convenience method to get a Node value.
+    /// Convenience method to get a nested Doc value.
     pub fn get_node(&self, key: impl AsRef<str>) -> Result<Doc> {
         match self.get(key)? {
-            Value::Node(node) => Ok(node.into()),
+            Value::Doc(node) => Ok(node),
             _ => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
-                expected: "Node".to_string(),
+                expected: "Doc".to_string(),
                 actual: "Other".to_string(),
             }
             .into()),
@@ -319,9 +319,9 @@ impl DocStore {
         self.set(key, Value::List(list.into()))
     }
 
-    /// Convenience method to set a node value.
+    /// Convenience method to set a nested Doc value.
     pub fn set_node(&self, key: impl Into<String>, node: impl Into<Doc>) -> Result<()> {
-        self.set(key, Value::Node(node.into().into()))
+        self.set(key, Value::Doc(node.into()))
     }
 
     /// Legacy method for backward compatibility - now just an alias to set
@@ -347,7 +347,7 @@ impl DocStore {
     ///
     /// # Path Syntax
     ///
-    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Docs**: Navigate by key name (e.g., "user.profile.name")
     /// - **Lists**: Navigate by index (e.g., "items.0.title")
     /// - **Mixed**: Combine both (e.g., "users.0.tags.1")
     ///
@@ -779,7 +779,7 @@ impl DocStore {
     ///
     /// # Path Syntax
     ///
-    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Docs**: Navigate by key name (e.g., "user.profile.name")
     /// - **Creating structure**: Intermediate nodes are created automatically
     /// - **Overwriting**: If a path segment points to a non-node value, it will be overwritten
     ///
@@ -812,9 +812,9 @@ impl DocStore {
     ///
     /// // Or navigate the nested structure manually from get_all()
     /// let all = store.get_all()?;
-    /// // all.get("user") returns a Node, NOT all.get("user.profile.name")
-    /// if let Some(Value::Node(user)) = all.get("user") {
-    ///     if let Some(Value::Node(profile)) = user.get("profile") {
+    /// // all.get("user") returns a Doc, NOT all.get("user.profile.name")
+    /// if let Some(Value::Doc(user)) = all.get("user") {
+    ///     if let Some(Value::Doc(profile)) = user.get("profile") {
     ///         assert_eq!(profile.get("name"), Some(&Value::Text("Alice".to_string())));
     ///     }
     /// }
@@ -971,7 +971,7 @@ impl DocStore {
     /// # Important: Understanding Nested Structure
     ///
     /// When using `set_path()` with dot-notation paths, the data is stored as **nested maps**.
-    /// The returned Doc will contain the top-level keys, with nested structures as `Value::Node` values.
+    /// The returned Doc will contain the top-level keys, with nested structures as `Value::Doc` values.
     ///
     /// ## Example:
     /// ```rust,no_run
@@ -994,7 +994,7 @@ impl DocStore {
     /// assert_eq!(all_data.as_hashmap().len(), 2); // Only 2 top-level keys
     ///
     /// // To access nested data from get_all():
-    /// if let Some(Value::Node(user_node)) = all_data.get("user") {
+    /// if let Some(Value::Doc(user_node)) = all_data.get("user") {
     ///     // user_node contains "name" and "age" as its children
     ///     assert_eq!(user_node.get("name"), Some(&Value::Text("Alice".to_string())));
     ///     assert_eq!(user_node.get("age"), Some(&Value::Text("30".to_string())));
@@ -1077,7 +1077,7 @@ impl DocStore {
     /// # Path Syntax
     ///
     /// Uses the same dot notation as other path methods:
-    /// - **Nodes**: Navigate by key name (e.g., "user.profile.name")
+    /// - **Docs**: Navigate by key name (e.g., "user.profile.name")
     /// - **Lists**: Navigate by index (e.g., "items.0.title")
     /// - **Mixed**: Combine both (e.g., "users.0.tags.1")
     ///
@@ -1146,7 +1146,7 @@ impl DocStore {
     ///
     /// The path is a slice of strings, where each string is a key in the
     /// nested map structure. If the path is empty, it retrieves the entire
-    /// content of this Doc's named subtree as a `Value::Node`.
+    /// content of this Doc's named subtree as a `Value::Doc`.
     ///
     /// This method operates on the fully merged view of the Doc's data,
     /// including any local changes from the current `Transaction` layered on top
@@ -1170,14 +1170,14 @@ impl DocStore {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
             // Requesting the root of this Doc's named subtree
-            return Ok(Value::Node(self.get_all()?.into()));
+            return Ok(Value::Doc(self.get_all()?));
         }
 
-        let mut current_value_view = Value::Node(self.get_all()?.into());
+        let mut current_value_view = Value::Doc(self.get_all()?);
 
         for key_segment_s in path_slice.iter() {
             match current_value_view {
-                Value::Node(node) => match node.get(key_segment_s.as_ref()) {
+                Value::Doc(node) => match node.get(key_segment_s.as_ref()) {
                     Some(next_value) => {
                         current_value_view = next_value.clone();
                     }
@@ -1209,7 +1209,7 @@ impl DocStore {
                     // Expected a node to continue traversal, but found something else.
                     return Err(StoreError::TypeMismatch {
                         store: self.name.clone(),
-                        expected: "Node".to_string(),
+                        expected: "Doc".to_string(),
                         actual: "non-node value".to_string(),
                     }
                     .into());
@@ -1249,7 +1249,7 @@ impl DocStore {
     ///
     /// # Errors
     ///
-    /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Node`.
+    /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Doc`.
     /// * `Error::Serialize` if the updated subtree data cannot be serialized to JSON.
     /// * Potentially other errors from `Transaction::update_subtree`.
     pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
@@ -1261,14 +1261,14 @@ impl DocStore {
         if path_slice.is_empty() {
             // Setting the root of this Doc's named subtree.
             // The value must be a node.
-            if let Value::Node(node) = value {
+            if let Value::Doc(node) = value {
                 let serialized_data = serde_json::to_string(&node)?;
                 return self.atomic_op.update_subtree(&self.name, &serialized_data);
             } else {
                 return Err(StoreError::TypeMismatch {
                     store: self.name.clone(),
-                    expected: "Node".to_string(),
-                    actual: "non-node value".to_string(),
+                    expected: "Doc".to_string(),
+                    actual: "non-doc value".to_string(),
                 }
                 .into());
             }
@@ -1285,14 +1285,14 @@ impl DocStore {
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.clone().into();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Node(Node::default())) {
-                Value::Node(node) => node,
+            current_map_mut = match entry.or_insert_with(|| Value::Doc(Node::default())) {
+                Value::Doc(node) => node,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = Value::Node(Node::default());
+                    *non_map_val = Value::Doc(Node::default());
                     match non_map_val {
-                        Value::Node(node) => node,
+                        Value::Doc(node) => node,
                         _ => unreachable!("Just assigned a map"),
                     }
                 }
@@ -1363,7 +1363,7 @@ impl<'a> ValueEditor<'a> {
     /// If the path specified by `self.keys` does not exist, it will be created.
     /// Intermediate non-map values in the path will be overwritten by maps as needed.
     /// If `self.keys` is empty (editor points to root), the provided `value` must
-    /// be a `Value::Node`.
+    /// be a `Value::Doc`.
     ///
     /// Returns `Error::InvalidOperation` if setting the root and `value` is not a node.
     pub fn set(&self, value: Value) -> Result<()> {

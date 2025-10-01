@@ -59,7 +59,7 @@ impl Database {
     ) -> Result<Self> {
         let signing_key_name = signing_key_name.as_ref();
         // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Node(auth_map)) if !auth_map.as_hashmap().is_empty());
+        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
 
         let (super_user_key_name, final_database_settings) = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key

@@ -84,7 +84,7 @@ mod test_node {
             assert!(!value.is_branch(), "Value should not be branch: {value:?}");
         }
 
-        let branch_values = vec![Value::Node(Node::new()), Value::List(List::new())];
+        let branch_values = vec![Value::Doc(Node::new()), Value::List(List::new())];
 
         for value in &branch_values {
             assert!(value.is_branch(), "Value should be branch: {value:?}");
@@ -99,7 +99,7 @@ mod test_node {
         assert_eq!(Value::Bool(true).type_name(), "bool");
         assert_eq!(Value::Int(42).type_name(), "int");
         assert_eq!(Value::Text("test".to_string()).type_name(), "text");
-        assert_eq!(Value::Node(Node::new()).type_name(), "node");
+        assert_eq!(Value::Doc(Node::new()).type_name(), "doc");
         assert_eq!(Value::List(List::new()).type_name(), "list");
         assert_eq!(Value::Deleted.type_name(), "deleted");
     }

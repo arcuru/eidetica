@@ -63,7 +63,7 @@ pub use crate::path;
 /// The main CRDT document type for Eidetica.
 ///
 /// `Doc` provides the primary interface for CRDT document operations,
-/// wrapping the internal [`Node`] structure to provide clear API boundaries.
+/// providing a unified tree structure for CRDT operations.
 /// This type handles document-level operations like merging, serialization,
 /// and high-level data access patterns.
 ///
@@ -115,30 +115,35 @@ pub use crate::path;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Doc {
-    /// Internal node structure handling the actual CRDT logic
-    root: Node,
+    /// Child nodes indexed by string keys
+    children: HashMap<String, Value>,
 }
 
 impl Doc {
     /// Creates a new empty document
     pub fn new() -> Self {
-        Self { root: Node::new() }
+        Self {
+            children: HashMap::new(),
+        }
     }
 
     /// Returns true if this document has no data (excluding tombstones)
     pub fn is_empty(&self) -> bool {
-        self.root.is_empty()
+        self.children.values().all(|v| matches!(v, Value::Deleted))
     }
 
     /// Returns the number of direct keys (excluding tombstones)
     pub fn len(&self) -> usize {
-        self.root.len()
+        self.children
+            .values()
+            .filter(|v| !matches!(v, Value::Deleted))
+            .count()
     }
 
     /// Returns true if the document contains the given key
     pub fn contains_key(&self, key: impl AsRef<Path>) -> bool {
         let path_buf = PathBuf::from_str(key.as_ref().as_str()).unwrap(); // Infallible
-        self.root.get_path(&path_buf).is_some()
+        self.get_path(&path_buf).is_some()
     }
 
     /// Returns true if the given key contains a tombstone (deleted value).
@@ -153,24 +158,103 @@ impl Doc {
             // FIXME: This is a limitation of the current design
             false
         } else {
-            // For direct keys, delegate to root
-            self.root.is_tombstone(path_str)
+            // For direct keys, check our children directly
+            matches!(self.children.get(path_str), Some(Value::Deleted))
         }
     }
 
     /// Gets a value by key or path (immutable reference)
     pub fn get(&self, key: impl AsRef<Path>) -> Option<&Value> {
         let path_buf = PathBuf::from_str(key.as_ref().as_str()).unwrap(); // Infallible
-        self.root.get_path(&path_buf)
+        self.get_path(&path_buf)
+    }
+
+    /// Gets a value at a path using dot notation (deprecated: use `get()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get()` instead - it now handles both keys and paths automatically"
+    )]
+    pub fn get_path(&self, path: impl AsRef<Path>) -> Option<&Value> {
+        let path = path.as_ref();
+        let segments: Vec<_> = path.components().collect();
+
+        if segments.is_empty() {
+            return None;
+        }
+
+        // Start with the first segment to get into our structure
+        let first_segment = segments.first()?;
+        let mut current_value = match self.children.get(*first_segment) {
+            Some(Value::Deleted) => return None, // Hide tombstones
+            value => value?,
+        };
+
+        // Navigate through remaining segments
+        for segment in &segments[1..] {
+            match current_value {
+                Value::Doc(doc) => {
+                    current_value = match doc.children.get(*segment) {
+                        Some(Value::Deleted) => return None, // Hide tombstones
+                        value => value?,
+                    };
+                }
+                Value::List(list) => {
+                    // Try to parse segment as list index
+                    let index: usize = segment.parse().ok()?;
+                    current_value = list.get(index)?;
+                }
+                _ => return None, // Can't navigate further
+            }
+        }
+
+        Some(current_value)
     }
 
     /// Gets a mutable reference to a value by key or path
     pub fn get_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Value> {
         let path_buf = PathBuf::from_str(key.as_ref().as_str()).unwrap(); // Infallible
-        self.root.get_path_mut(&path_buf)
+        self.get_path_mut(&path_buf)
     }
 
-    /// Gets a text value by key or path
+    /// Gets a mutable reference to a value at a path (deprecated: use `get_mut()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_mut()` instead - it now handles both keys and paths automatically"
+    )]
+    pub fn get_path_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut Value> {
+        let path = path.as_ref();
+        let segments: Vec<_> = path.components().collect();
+
+        if segments.is_empty() {
+            return None;
+        }
+
+        let mut current = self;
+
+        // Navigate to the parent of the target
+        for segment in &segments[..segments.len() - 1] {
+            match current.children.get_mut(*segment) {
+                Some(Value::Doc(doc)) => {
+                    // Now Value::Doc contains a Doc, so we can navigate
+                    current = doc;
+                }
+                _ => return None, // Can't navigate further
+            }
+        }
+
+        // Get the final value
+        let final_key = segments.last()?;
+        match current.children.get_mut(*final_key) {
+            Some(Value::Deleted) => None, // Hide tombstones
+            value => value,
+        }
+    }
+
+    /// Gets a text value by key or path (deprecated: use `get_as::<String>()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as::<String>()` instead for type-safe value retrieval"
+    )]
     pub fn get_text(&self, key: impl AsRef<Path>) -> Option<&str> {
         match self.get(key)? {
             Value::Text(s) => Some(s),
@@ -178,7 +262,11 @@ impl Doc {
         }
     }
 
-    /// Gets an integer value by key or path
+    /// Gets an integer value by key or path (deprecated: use `get_as::<i64>()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as::<i64>()` instead for type-safe value retrieval"
+    )]
     pub fn get_int(&self, key: impl AsRef<Path>) -> Option<i64> {
         match self.get(key)? {
             Value::Int(i) => Some(*i),
@@ -186,7 +274,11 @@ impl Doc {
         }
     }
 
-    /// Gets a boolean value by key or path
+    /// Gets a boolean value by key or path (deprecated: use `get_as::<bool>()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as::<bool>()` instead for type-safe value retrieval"
+    )]
     pub fn get_bool(&self, key: impl AsRef<Path>) -> Option<bool> {
         match self.get(key)? {
             Value::Bool(b) => Some(*b),
@@ -194,15 +286,23 @@ impl Doc {
         }
     }
 
-    /// Gets a nested document by key or path (returns Doc wrapper)
+    /// Gets a nested document by key or path (deprecated: use `get_as::<Doc>()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as::<Doc>()` instead for type-safe value retrieval"
+    )]
     pub fn get_doc(&self, key: impl AsRef<Path>) -> Option<Doc> {
         match self.get(key)? {
-            Value::Node(node) => Some(Doc::from_node(node.clone())),
+            Value::Doc(doc) => Some(doc.clone()),
             _ => None,
         }
     }
 
-    /// Gets a list value by key or path
+    /// Gets a list value by key or path (deprecated: use `get_as()` instead)
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as()` for type-safe value retrieval (note: lists require special handling for references)"
+    )]
     pub fn get_list(&self, key: impl AsRef<Path>) -> Option<&List> {
         match self.get(key)? {
             Value::List(list) => Some(list),
@@ -210,7 +310,7 @@ impl Doc {
         }
     }
 
-    /// Gets a value by key with automatic type conversion using TryFrom
+    /// Gets a value by key with automatic type conversion using TryFrom (deprecated: use `get_as()` instead)
     ///
     /// This provides a generic interface that can convert to any type that implements
     /// `TryFrom<&Value>`, making the API more ergonomic by reducing type specification.
@@ -226,15 +326,19 @@ impl Doc {
     /// doc.set("active", true);
     ///
     /// // Type inference makes this clean
-    /// let name: Result<String> = doc.get_as("name");
-    /// let age: Result<i64> = doc.get_as("age");
-    /// let active: Result<bool> = doc.get_as("active");
+    /// let name: Result<String> = doc.get_as_old("name");
+    /// let age: Result<i64> = doc.get_as_old("age");
+    /// let active: Result<bool> = doc.get_as_old("active");
     ///
     /// assert_eq!(name.unwrap(), "Alice");
     /// assert_eq!(age.unwrap(), 30);
     /// assert_eq!(active.unwrap(), true);
     /// ```
-    pub fn get_as<T>(&self, key: impl AsRef<Path>) -> crate::Result<T>
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `get_as()` instead - returns Option<T> rather than Result<T> for cleaner error handling"
+    )]
+    pub fn get_as_old<T>(&self, key: impl AsRef<Path>) -> crate::Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
@@ -249,6 +353,42 @@ impl Doc {
         }
     }
 
+    /// Gets a value by key with automatic type conversion using TryFrom
+    ///
+    /// Returns Some(T) if the value exists and can be converted to type T.
+    /// Returns None if the key doesn't exist or type conversion fails.
+    ///
+    /// This is the recommended method for type-safe value retrieval as it provides
+    /// a cleaner Option-based interface compared to the Result-based `get_as()` method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("name", "Alice");
+    /// doc.set("age", 30);
+    /// doc.set("active", true);
+    ///
+    /// // Returns Some when value exists and type matches
+    /// assert_eq!(doc.get_as::<String>("name"), Some("Alice".to_string()));
+    /// assert_eq!(doc.get_as::<i64>("age"), Some(30));
+    /// assert_eq!(doc.get_as::<bool>("active"), Some(true));
+    ///
+    /// // Returns None when key doesn't exist
+    /// assert_eq!(doc.get_as::<String>("missing"), None);
+    ///
+    /// // Returns None when type doesn't match
+    /// assert_eq!(doc.get_as::<i64>("name"), None);
+    /// ```
+    pub fn get_as<T>(&self, key: impl AsRef<Path>) -> Option<T>
+    where
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
+    {
+        let value = self.get(key)?;
+        T::try_from(value).ok()
+    }
+
     /// Sets a value at the given key or path, returns the old value if present
     ///
     /// This method automatically creates intermediate nodes for nested paths.
@@ -260,14 +400,18 @@ impl Doc {
 
         // For simple keys (no dots), use direct assignment
         if !path_str.contains('.') {
-            self.root.set(path_str, value)
+            let old = self.children.insert(path_str.to_string(), value.into());
+            match old {
+                Some(Value::Deleted) => None, // Don't return tombstones
+                value => value,
+            }
         } else {
             // For paths, use set_path - errors should be handled by caller
             // but we return None for this non-Result interface
             // Path operations can fail (e.g., trying to set through scalar)
             // For this Option-returning interface, we return None
             // Use try_set() for Result-based error handling
-            self.root.set_path(&path_buf, value).unwrap_or_default()
+            self.set_path(&path_buf, value).unwrap_or_default()
         }
     }
 
@@ -293,11 +437,71 @@ impl Doc {
 
         // For simple keys (no dots), use direct assignment
         if !path_str.contains('.') {
-            Ok(self.root.set(path_str, value))
+            let old = self.children.insert(path_str.to_string(), value.into());
+            Ok(match old {
+                Some(Value::Deleted) => None, // Don't return tombstones
+                value => value,
+            })
         } else {
             // For paths, use set_path and return the Result
-            self.root.set_path(&path_buf, value).map_err(Into::into)
+            self.set_path(&path_buf, value).map_err(Into::into)
         }
+    }
+
+    /// Sets a value at a path using dot notation, creating intermediate nodes as needed
+    pub fn set_path(
+        &mut self,
+        path: impl AsRef<Path>,
+        value: impl Into<Value>,
+    ) -> Result<Option<Value>, CRDTError> {
+        let path = path.as_ref();
+        let segments: Vec<_> = path.components().collect();
+
+        if segments.is_empty() {
+            return Err(CRDTError::InvalidPath {
+                path: "(empty path)".to_string(),
+            });
+        }
+
+        let mut current = self;
+
+        // Navigate to the parent, creating intermediate nodes as needed
+        for segment in &segments[..segments.len() - 1] {
+            let entry = current
+                .children
+                .entry(segment.to_string())
+                .or_insert_with(|| Value::Doc(Doc::new()));
+            match entry {
+                Value::Doc(doc) => {
+                    current = doc;
+                }
+                Value::Deleted => {
+                    // Replace tombstone with new node
+                    *entry = Value::Doc(Doc::new());
+                    match entry {
+                        Value::Doc(doc) => current = doc,
+                        _ => unreachable!(),
+                    }
+                }
+                _ => {
+                    // Replace scalar value with new node to allow navigation
+                    *entry = Value::Doc(Doc::new());
+                    match entry {
+                        Value::Doc(doc) => current = doc,
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        // Set the final value
+        let final_key = segments.last().unwrap();
+        let old = current.children.insert(final_key.to_string(), value.into());
+
+        Ok(match old {
+            Some(Value::Deleted) => None, // Don't return tombstones
+            value => value,
+        })
     }
 
     /// Removes a value by key or path, returns the old value if present.
@@ -309,7 +513,13 @@ impl Doc {
 
         // For simple keys (no dots), use direct remove
         if !path_str.contains('.') {
-            self.root.remove(path_str)
+            let key = path_str.to_string();
+            let old_value = self.children.get(&key).cloned();
+            self.children.insert(key, Value::Deleted);
+            match old_value {
+                Some(Value::Deleted) => None, // Don't return tombstones
+                value => value,
+            }
         } else {
             // For paths, get the current value first, then set to tombstone
             let _current = self.get(key)?.clone();
@@ -328,7 +538,7 @@ impl Doc {
 
         // For simple keys (no dots), use direct delete
         if !path_str.contains('.') {
-            self.root.delete(path_str)
+            self.remove(path_str).is_some()
         } else {
             // Nested path deletion is not supported in current design
             false
@@ -343,83 +553,81 @@ impl Doc {
     ///
     /// ```
     /// # use eidetica::crdt::Doc;
-    /// # use eidetica::Result;
     /// let mut doc = Doc::new();
     /// doc.set("user.profile.name", "Alice");
     /// doc.set("user.profile.age", 30);
     ///
     /// // Type inference with path access
-    /// let name: Result<String> = doc.get_as("user.profile.name");
-    /// let age: Result<i64> = doc.get_as("user.profile.age");
+    /// let name = doc.get_as::<String>("user.profile.name");
+    /// let age = doc.get_as::<i64>("user.profile.age");
     ///
-    /// assert_eq!(name.unwrap(), "Alice");
-    /// assert_eq!(age.unwrap(), 30);
+    /// assert_eq!(name, Some("Alice".to_string()));
+    /// assert_eq!(age, Some(30));
     /// ```
     /// Returns an iterator over all key-value pairs (excluding tombstones)
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.root.iter()
+        self.children
+            .iter()
+            .filter(|(_, v)| !matches!(v, Value::Deleted))
     }
 
     /// Returns a mutable iterator over all key-value pairs (excluding tombstones)
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Value)> {
-        self.root.iter_mut()
+        self.children.iter_mut()
     }
 
     /// Returns an iterator over all keys (excluding tombstones)
     pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.root.keys()
+        self.children
+            .iter()
+            .filter(|(_, v)| !matches!(v, Value::Deleted))
+            .map(|(k, _)| k)
     }
 
     /// Returns an iterator over all values (excluding tombstones)
     pub fn values(&self) -> impl Iterator<Item = &Value> {
-        self.root.values()
+        self.children
+            .values()
+            .filter(|v| !matches!(v, Value::Deleted))
     }
 
     /// Returns a mutable iterator over all values (excluding tombstones)
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.root.values_mut()
+        self.children.values_mut()
     }
 
     /// Clears all data from this document
     pub fn clear(&mut self) {
-        self.root.clear()
+        let keys: Vec<_> = self.children.keys().cloned().collect();
+        for key in keys {
+            self.children.insert(key, Value::Deleted);
+        }
     }
 
     /// Converts to a JSON-like string representation for human-readable output.
     ///
     /// See [`Doc::to_json_string`] for detailed documentation.
     pub fn to_json_string(&self) -> String {
-        self.root.to_json_string()
+        let mut result = String::with_capacity(self.children.len() * 16);
+        result.push('{');
+        let mut first = true;
+        for (key, value) in self.iter() {
+            if !first {
+                result.push(',');
+            }
+            result.push_str(&format!("\"{}\":{}", key, value.to_json_string()));
+            first = false;
+        }
+        result.push('}');
+        result
     }
 
     // Deprecated wrapper methods for backward compatibility
 
-    /// Sets a value at the given path (deprecated: use `try_set()` instead)
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use `try_set()` instead - it now accepts both keys and paths"
-    )]
-    pub fn set_path(
-        &mut self,
-        path: impl AsRef<Path>,
-        value: impl Into<Value>,
-    ) -> crate::Result<Option<Value>> {
-        self.try_set(path, value)
-    }
-
-    /// Gets a value at the given path (deprecated: use `get()` instead)
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use `get()` instead - it now accepts both keys and paths"
-    )]
-    pub fn get_path(&self, path: impl AsRef<Path>) -> Option<&Value> {
-        self.get(path)
-    }
-
     /// Gets a text value at the given path (deprecated: use `get_text()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_text()` instead - it now accepts both keys and paths"
+        note = "Use `get_as::<String>()` instead for type-safe value retrieval"
     )]
     pub fn get_text_at_path(&self, path: impl AsRef<Path>) -> Option<&str> {
         self.get_text(path)
@@ -428,7 +636,7 @@ impl Doc {
     /// Gets an integer value at the given path (deprecated: use `get_int()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_int()` instead - it now accepts both keys and paths"
+        note = "Use `get_as::<i64>()` instead for type-safe value retrieval"
     )]
     pub fn get_int_at_path(&self, path: impl AsRef<Path>) -> Option<i64> {
         self.get_int(path)
@@ -437,7 +645,7 @@ impl Doc {
     /// Gets a boolean value at the given path (deprecated: use `get_bool()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_bool()` instead - it now accepts both keys and paths"
+        note = "Use `get_as::<bool>()` instead for type-safe value retrieval"
     )]
     pub fn get_bool_at_path(&self, path: impl AsRef<Path>) -> Option<bool> {
         self.get_bool(path)
@@ -446,7 +654,7 @@ impl Doc {
     /// Gets a nested document at the given path (deprecated: use `get_doc()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_doc()` instead - it now accepts both keys and paths"
+        note = "Use `get_as::<Doc>()` instead for type-safe value retrieval"
     )]
     pub fn get_doc_at_path(&self, path: impl AsRef<Path>) -> Option<Doc> {
         self.get_doc(path)
@@ -455,7 +663,7 @@ impl Doc {
     /// Gets a list value at the given path (deprecated: use `get_list()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_list()` instead - it now accepts both keys and paths"
+        note = "Use `get_as()` for type-safe value retrieval (note: lists require special handling for references)"
     )]
     pub fn get_list_at_path(&self, path: impl AsRef<Path>) -> Option<&List> {
         self.get_list(path)
@@ -464,34 +672,25 @@ impl Doc {
     /// Gets a value with type conversion at the given path (deprecated: use `get_as()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_as()` instead - it now accepts both keys and paths"
+        note = "Use `get_as()` instead for type-safe value retrieval with cleaner Option-based interface"
     )]
     pub fn get_as_at_path<T>(&self, path: impl AsRef<Path>) -> crate::Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
-        self.get_as(path)
-    }
-
-    /// Gets a mutable value at the given path (deprecated: use `get_mut()` instead)
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use `get_mut()` instead - it now accepts both keys and paths"
-    )]
-    pub fn get_path_mut(&mut self, path: impl AsRef<Path>) -> Option<&mut Value> {
-        self.get_mut(path)
+        self.get_as_old(path)
     }
 
     /// Gets a value with type conversion at the given path (deprecated: use `get_as()` instead)
     #[deprecated(
         since = "0.1.0",
-        note = "Use `get_as()` instead - it now accepts both keys and paths"
+        note = "Use `get_as()` instead for type-safe value retrieval with cleaner Option-based interface"
     )]
     pub fn get_path_as<T>(&self, path: impl AsRef<Path>) -> crate::Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
-        self.get_as(path)
+        self.get_as_old(path)
     }
 
     /// Modifies a value in-place at the given path (deprecated: use `modify()` instead)
@@ -516,7 +715,8 @@ impl Doc {
     ///
     /// Most users should prefer the document-level methods instead.
     pub fn as_node(&self) -> &Node {
-        &self.root
+        // Since Node is now an alias for Doc, return self
+        self
     }
 
     /// Provides mutable access to the internal node structure for advanced operations
@@ -528,31 +728,35 @@ impl Doc {
     ///
     /// Most users should prefer the document-level methods instead.
     pub fn as_node_mut(&mut self) -> &mut Node {
-        &mut self.root
+        // Since Node is now an alias for Doc, return self
+        self
     }
 
-    /// Extracts the internal root node, consuming the Doc
+    /// Consumes the Doc and returns it (identity function for backward compatibility)
     ///
-    /// This method is useful for converting from Doc back to Node when needed
-    /// for internal operations or backwards compatibility.
+    /// Since Node is now an alias for Doc, this is an identity function
+    /// maintained for backward compatibility.
     pub fn into_root(self) -> Node {
-        self.root
+        // Since Node is now an alias for Doc, return self
+        self
     }
 
-    /// Creates a new Doc from a Node
+    /// Creates a new Doc (identity function for backward compatibility)
     ///
-    /// This method is useful for converting from Node to Doc when transitioning
-    /// between the internal representation and the public API.
+    /// Since Node is now an alias for Doc, this is an identity function
+    /// maintained for backward compatibility.
     pub fn from_node(node: Node) -> Self {
-        Doc { root: node }
+        // Since Node is now an alias for Doc, this is just an identity function
+        node
     }
 
-    /// Clones the internal Node structure
+    /// Returns a clone of this Doc
     ///
-    /// This method is useful when you need a Node copy for use in Value::Node
+    /// This method is useful when you need a Doc copy for use in Value::Doc
     /// or other internal CRDT operations.
     pub fn clone_as_node(&self) -> Node {
-        self.root.clone()
+        // Since Node is now an alias for Doc, clone self
+        self.clone()
     }
 }
 
@@ -560,13 +764,23 @@ impl CRDT for Doc {
     /// Merges another document into this one using CRDT semantics.
     ///
     /// This implements the core CRDT merge operation at the document level,
-    /// delegating to the internal Node's merge implementation while providing
-    /// a clean document-level interface.
+    /// providing deterministic conflict resolution following CRDT semantics.
     ///
-    /// See [`Node::merge`] for detailed merge semantics and examples.
+    /// Merge combines the key-value pairs from both documents, resolving
+    /// conflicts deterministically using CRDT rules.
     fn merge(&self, other: &Self) -> crate::Result<Self> {
-        let merged_root = self.root.merge(&other.root)?;
-        Ok(Doc { root: merged_root })
+        let mut result = self.clone();
+        for (key, other_value) in &other.children {
+            match result.children.get_mut(key) {
+                Some(self_value) => {
+                    self_value.merge(other_value);
+                }
+                None => {
+                    result.children.insert(key.clone(), other_value.clone());
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -578,14 +792,26 @@ impl Default for Doc {
 
 impl fmt::Display for Doc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.root)
+        write!(f, "{{")?;
+        let mut first = true;
+        for (key, value) in self.iter() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{key}: {value}")?;
+            first = false;
+        }
+        write!(f, "}}")
     }
 }
 
 impl FromIterator<(String, Value)> for Doc {
     fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
-        let root = Node::from_pairs(iter);
-        Doc { root }
+        let mut doc = Doc::new();
+        for (key, value) in iter {
+            doc.set(key, value);
+        }
+        doc
     }
 }
 
@@ -617,9 +843,9 @@ impl Doc {
         self.with(key, Value::List(value.into()))
     }
 
-    /// Builder method to set a child node
+    /// Builder method to set a nested Doc
     pub fn with_node(self, key: impl AsRef<Path>, value: impl Into<Node>) -> Self {
-        self.with(key, Value::Node(value.into()))
+        self.with(key, Value::Doc(value.into()))
     }
 }
 
@@ -638,9 +864,13 @@ impl Doc {
     {
         let path_str = key.as_ref().as_str();
 
-        // For simple keys (no dots), delegate to Node's set_json
+        // For simple keys (no dots), set as JSON string
         if !path_str.contains('.') {
-            self.root.set_json(path_str, value)?;
+            let json =
+                serde_json::to_string(&value).map_err(|e| CRDTError::SerializationFailed {
+                    reason: e.to_string(),
+                })?;
+            self.set(path_str, Value::Text(json));
         } else {
             // For paths, serialize to JSON string and set as text
             let json =
@@ -659,9 +889,29 @@ impl Doc {
     {
         let path_str = key.as_ref().as_str();
 
-        // For simple keys (no dots), delegate to Node's get_json
+        // For simple keys (no dots), get and deserialize JSON
         if !path_str.contains('.') {
-            self.root.get_json(path_str)
+            match self.children.get(path_str) {
+                Some(Value::Text(json)) => serde_json::from_str::<T>(json).map_err(|e| {
+                    CRDTError::DeserializationFailed {
+                        reason: format!("Failed to deserialize JSON for key '{path_str}': {e}"),
+                    }
+                    .into()
+                }),
+                Some(Value::Deleted) => Err(CRDTError::ElementNotFound {
+                    key: path_str.to_string(),
+                }
+                .into()),
+                Some(other) => Err(CRDTError::TypeMismatch {
+                    expected: "Text (JSON string)".to_string(),
+                    actual: format!("{other:?}"),
+                }
+                .into()),
+                None => Err(CRDTError::ElementNotFound {
+                    key: path_str.to_string(),
+                }
+                .into()),
+            }
         } else {
             // For paths, get the value and try to deserialize as JSON
             let key_ref = key.as_ref();
@@ -696,28 +946,36 @@ impl Doc {
         self
     }
 
-    /// Set a key-value pair where the value is a nested node
-    pub fn set_node(&mut self, key: impl AsRef<Path>, value: impl Into<Node>) -> &mut Self {
-        self.set(key, Value::Node(value.into()));
+    /// Set a key-value pair where the value is a nested Doc
+    pub fn set_node(&mut self, key: impl AsRef<Path>, value: Doc) -> &mut Self {
+        self.set(key, Value::Doc(value));
         self
     }
 
-    /// Get a mutable reference to a nested node by key
+    /// Get a reference to a nested Doc by key
+    pub fn get_node(&self, key: impl AsRef<Path>) -> Option<&Doc> {
+        match self.get(key)? {
+            Value::Doc(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    /// Get a mutable reference to a nested Doc by key
     pub fn get_node_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Node> {
         match self.get_mut(key)? {
-            Value::Node(node) => Some(node),
+            Value::Doc(node) => Some(node),
             _ => None,
         }
     }
 
     /// Get a reference to the internal HashMap for advanced access
     pub fn as_hashmap(&self) -> &HashMap<String, Value> {
-        self.root.as_hashmap()
+        &self.children
     }
 
     /// Get a mutable reference to the internal HashMap for advanced access
     pub fn as_hashmap_mut(&mut self) -> &mut HashMap<String, Value> {
-        self.root.as_hashmap_mut()
+        &mut self.children
     }
 
     /// List operations compatibility methods
@@ -725,7 +983,35 @@ impl Doc {
     where
         K: Into<String>,
     {
-        self.root.list_add(key, value)
+        let key = key.into();
+
+        // Get or create the list
+        let list = match self.children.get_mut(&key) {
+            Some(Value::List(list)) => list,
+            Some(Value::Deleted) => {
+                // Replace tombstone with new list
+                let mut new_list = List::new();
+                let index = new_list.push(value);
+                self.children.insert(key, Value::List(new_list));
+                return Ok(index.to_string());
+            }
+            Some(_) => {
+                return Err(CRDTError::TypeMismatch {
+                    expected: "List".to_string(),
+                    actual: "other type".to_string(),
+                }
+                .into());
+            }
+            None => {
+                // Create new list
+                let mut new_list = List::new();
+                let index = new_list.push(value);
+                self.children.insert(key, Value::List(new_list));
+                return Ok(index.to_string());
+            }
+        };
+
+        Ok(list.push(value).to_string())
     }
 
     /// List remove operation - tombstones element by position ID
@@ -733,7 +1019,19 @@ impl Doc {
     where
         K: Into<String> + AsRef<str>,
     {
-        self.root.list_remove(key, id)
+        let index: usize = id.parse().map_err(|_| CRDTError::InvalidPath {
+            path: format!("Invalid list index: {id}"),
+        })?;
+
+        match self.children.get_mut(key.as_ref()) {
+            Some(Value::List(list)) => Ok(list.remove(index).is_some()),
+            Some(_) => Err(CRDTError::TypeMismatch {
+                expected: "List".to_string(),
+                actual: "other type".to_string(),
+            }
+            .into()),
+            None => Ok(false), // Key doesn't exist
+        }
     }
 
     /// Get an element by its ID from a list
@@ -741,7 +1039,12 @@ impl Doc {
     where
         K: AsRef<str>,
     {
-        self.root.list_get(key, id)
+        let index: usize = id.parse().ok()?;
+        match self.children.get(key.as_ref()) {
+            Some(Value::List(list)) => list.get(index),
+            Some(Value::Deleted) => None, // Hide tombstones
+            _ => None,
+        }
     }
 
     /// Get all element IDs from a list in order
@@ -749,7 +1052,13 @@ impl Doc {
     where
         K: AsRef<str>,
     {
-        self.root.list_ids(key)
+        match self.children.get(key.as_ref()) {
+            Some(Value::List(list)) => {
+                // Return index-based IDs as strings
+                (0..list.len()).map(|i| i.to_string()).collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Get list length (excluding tombstones)
@@ -757,7 +1066,10 @@ impl Doc {
     where
         K: AsRef<str>,
     {
-        self.root.list_len(key)
+        match self.children.get(key.as_ref()) {
+            Some(Value::List(list)) => list.len(),
+            _ => 0,
+        }
     }
 
     /// Check if list is empty
@@ -765,7 +1077,10 @@ impl Doc {
     where
         K: AsRef<str>,
     {
-        self.root.list_is_empty(key)
+        match self.children.get(key.as_ref()) {
+            Some(Value::List(list)) => list.is_empty(),
+            _ => true, // Non-existent lists are considered empty
+        }
     }
 
     /// Clear list
@@ -773,7 +1088,18 @@ impl Doc {
     where
         K: AsRef<str>,
     {
-        self.root.list_clear(key)
+        match self.children.get_mut(key.as_ref()) {
+            Some(Value::List(list)) => {
+                list.clear();
+                Ok(())
+            }
+            Some(_) => Err(CRDTError::TypeMismatch {
+                expected: "List".to_string(),
+                actual: "other type".to_string(),
+            }
+            .into()),
+            None => Ok(()), // Nothing to clear
+        }
     }
 
     /// Convenience methods for ergonomic access with better error handling
@@ -837,13 +1163,13 @@ impl Doc {
     /// doc.modify::<i64, _>("count", |count| {
     ///     *count += 10;
     /// })?;
-    /// assert_eq!(doc.get_as::<i64>("count")?, 15);
+    /// assert_eq!(doc.get_as::<i64>("count"), Some(15));
     ///
     /// // Modify string
     /// doc.modify::<String, _>("text", |text| {
     ///     text.push_str(" world");
     /// })?;
-    /// assert_eq!(doc.get_as::<String>("text")?, "hello world");
+    /// assert_eq!(doc.get_as::<String>("text"), Some("hello world".to_string()));
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     pub fn modify<T, F>(&mut self, key: impl AsRef<Path> + Clone, f: F) -> crate::Result<()>
@@ -852,7 +1178,7 @@ impl Doc {
         F: FnOnce(&mut T),
     {
         // Try to get and convert the current value
-        let mut value = self.get_as::<T>(key.clone())?;
+        let mut value = self.get_as_old::<T>(key.clone())?;
 
         // Apply the modification
         f(&mut value);
@@ -864,17 +1190,8 @@ impl Doc {
 }
 
 // Conversion implementations
-impl From<Node> for Doc {
-    fn from(node: Node) -> Self {
-        Doc { root: node }
-    }
-}
-
-impl From<Doc> for Node {
-    fn from(doc: Doc) -> Self {
-        doc.root
-    }
-}
+// Node is now an alias for Doc, so no conversion implementations needed
+// The standard From<T> for T implementation in core handles this automatically
 
 // Data trait implementation
 impl Data for Doc {}

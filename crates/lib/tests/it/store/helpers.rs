@@ -61,7 +61,7 @@ pub fn create_dict_with_nested_map(
     // Set nested map
     let mut nested = Doc::new();
     nested.set_string("inner", "nested_value");
-    dict.set_value("key2", Value::Node(nested.into())).unwrap();
+    dict.set_value("key2", Value::Doc(nested.into())).unwrap();
 
     op.commit().unwrap()
 }
@@ -156,7 +156,7 @@ pub fn assert_dict_list_data(
 /// Verify nested Map structure in DocStore
 pub fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&str, &str)]) {
     match dict.get(map_key).unwrap() {
-        Value::Node(map) => {
+        Value::Doc(map) => {
             for (key, expected_value) in nested_data {
                 match map.get(key) {
                     Some(Value::Text(value)) => assert_eq!(value, *expected_value),

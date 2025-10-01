@@ -119,7 +119,7 @@ fn test_doc_recursive_merge() {
 
     // Level 2 - should contain keys from both sources
     match merged.get("level2").unwrap() {
-        Value::Node(level2_merged) => {
+        Value::Doc(level2_merged) => {
             // Both unique keys should be present
             assert_text_value(level2_merged.get("level2_key1").unwrap(), "level2_value1");
             assert_text_value(level2_merged.get("level2_key2").unwrap(), "level2_value2");
@@ -129,7 +129,7 @@ fn test_doc_recursive_merge() {
 
             // Level 3 - should contain keys from both sources
             match level2_merged.get("level3").unwrap() {
-                Value::Node(level3_merged) => {
+                Value::Doc(level3_merged) => {
                     assert_text_value(level3_merged.get("level3_key1").unwrap(), "level3_value1");
                     assert_text_value(level3_merged.get("level3_key2").unwrap(), "level3_value2");
                 }
@@ -159,7 +159,7 @@ fn test_doc_type_conflicts() {
     // Direction 1: map1 -> map2 (map should win)
     let merged1 = map1.merge(&map2).expect("Merge 1 failed");
     match merged1.get("conflict_key").unwrap() {
-        Value::Node(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
+        Value::Doc(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
         _ => panic!("Expected map to win in merge 1"),
     }
 
@@ -182,7 +182,7 @@ fn test_doc_complex_merge_with_tombstones() {
 
     // Verify level1
     match merged.get("level1").unwrap() {
-        Value::Node(level1_merged) => {
+        Value::Doc(level1_merged) => {
             // Verify level1.key1 (only in map1, should be preserved)
             assert_text_value(level1_merged.get("key1").unwrap(), "value1");
 
@@ -244,7 +244,7 @@ fn test_doc_multi_generation_updates() {
 
     // Verify gen4
     match gen4.get("key").unwrap() {
-        Value::Node(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
+        Value::Doc(m) => assert_text_value(m.get("inner").unwrap(), "inner_value"),
         _ => panic!("Expected map in gen4"),
     }
 }

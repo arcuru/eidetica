@@ -59,7 +59,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
     )?;
     let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
     new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
-    settings_store.set_value("auth", Value::Node(new_auth_settings.into()))?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings.into()))?;
     op.commit()?;
 
     // Test delegated tree validation
@@ -107,7 +107,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
     let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
     new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
-    settings_store.set_value("auth", Value::Node(new_auth_settings.into()))?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings.into()))?;
     op.commit()?;
 
     // Test permission clamping

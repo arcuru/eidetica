@@ -74,7 +74,7 @@ pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
     // Navigate to the parent of the final key
     for &key in &path[..path.len() - 1] {
         match current.get(key) {
-            Some(Value::Node(inner)) => current = inner,
+            Some(Value::Doc(inner)) => current = inner,
             _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
         }
     }
@@ -102,7 +102,7 @@ pub fn assert_path_deleted(map: &Map, path: &[&str]) {
         let mut current = map;
         for &key in &path[..path.len() - 1] {
             match current.get(key) {
-                Some(Value::Node(inner)) => current = inner,
+                Some(Value::Doc(inner)) => current = inner,
                 _ => panic!("Expected map at path segment '{key}' in path {path:?}"),
             }
         }
@@ -285,7 +285,7 @@ pub fn create_all_value_types() -> Vec<Value> {
         Value::Int(-123),
         Value::Text("test".to_string()),
         Value::Text("".to_string()),
-        Value::Node(Map::new()),
+        Value::Doc(Map::new()),
         Value::List(List::new()),
         Value::Deleted,
     ]
@@ -418,7 +418,7 @@ pub fn create_large_map(size: usize) -> Map {
     map.into_root()
 }
 
-/// Create a large List for performance testing  
+/// Create a large List for performance testing
 pub fn create_large_list(size: usize) -> List {
     let mut list = List::new();
     for i in 0..size {
