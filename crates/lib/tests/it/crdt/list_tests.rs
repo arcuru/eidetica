@@ -423,13 +423,13 @@ fn test_list_insert_with_nested_values() {
     assert!(list.insert(1, nested_list).is_ok());
 
     assert_eq!(list.len(), 2);
-    assert!(list.get(0).unwrap().as_node().is_some());
+    assert!(list.get(0).unwrap().as_doc().is_some());
     assert!(list.get(1).unwrap().as_list().is_some());
 
     // Verify nested content
-    let map = list.get(0).unwrap().as_node().unwrap();
-    assert_eq!(map.get_text("name"), Some("Alice"));
-    assert_eq!(map.get_int("age"), Some(30));
+    let map = list.get(0).unwrap().as_doc().unwrap();
+    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
+    assert_eq!(map.get_as::<i64>("age"), Some(30));
 
     let inner_list = list.get(1).unwrap().as_list().unwrap();
     assert_eq!(inner_list.len(), 3);

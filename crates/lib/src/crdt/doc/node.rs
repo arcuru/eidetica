@@ -12,7 +12,7 @@
 /// # Migration
 ///
 /// Code that used Node should now use Doc instead:
-/// - `Node::new()` becomes `Doc::new()`
+/// - `Doc::new()` becomes `Doc::new()`
 /// - `Value::Doc(node)` becomes `Value::Doc(doc)`
 /// - All Node methods are now available on Doc
 ///

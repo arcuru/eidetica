@@ -88,7 +88,7 @@ impl Database {
 
             // Prepare final database settings for the initial commit
             let mut final_database_settings = initial_settings.clone();
-            final_database_settings.set_node("auth", auth_settings_handler.as_doc().clone());
+            final_database_settings.set_doc("auth", auth_settings_handler.as_doc().clone());
 
             (signing_key_name.to_string(), final_database_settings)
         };

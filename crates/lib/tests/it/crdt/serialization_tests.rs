@@ -6,7 +6,7 @@
 
 use eidetica::crdt::{
     Doc,
-    doc::{List, Node, Value, list::Position, path},
+    doc::{List, Value, list::Position, path},
 };
 
 use crate::crdt::helpers::*;
@@ -271,24 +271,33 @@ fn test_serde_json_round_trip_doc() {
 
     // Compare the maps
     assert_eq!(
-        original_map.get_text("name"),
-        deserialized_map.get_text("name")
-    );
-    assert_eq!(original_map.get_int("age"), deserialized_map.get_int("age"));
-    assert_eq!(
-        original_map.get_bool("active"),
-        deserialized_map.get_bool("active")
+        original_map.get_as::<String>("name"),
+        deserialized_map.get_as::<String>("name")
     );
     assert_eq!(
-        original_map.get_int("score"),
-        deserialized_map.get_int("score")
+        original_map.get_as::<i64>("age"),
+        deserialized_map.get_as::<i64>("age")
+    );
+    assert_eq!(
+        original_map.get_as::<bool>("active"),
+        deserialized_map.get_as::<bool>("active")
+    );
+    assert_eq!(
+        original_map.get_as::<i64>("score"),
+        deserialized_map.get_as::<i64>("score")
     ); // 95.5 -> 95
 
     // Test nested map
-    let orig_nested = original_map.get_doc("address").unwrap();
-    let deser_nested = deserialized_map.get_doc("address").unwrap();
-    assert_eq!(orig_nested.get_text("city"), deser_nested.get_text("city"));
-    assert_eq!(orig_nested.get_int("zip"), deser_nested.get_int("zip"));
+    let orig_nested = original_map.get_as::<Doc>("address").unwrap();
+    let deser_nested = deserialized_map.get_as::<Doc>("address").unwrap();
+    assert_eq!(
+        orig_nested.get_as::<String>("city"),
+        deser_nested.get_as::<String>("city")
+    );
+    assert_eq!(
+        orig_nested.get_as::<i64>("zip"),
+        deser_nested.get_as::<i64>("zip")
+    );
 
     // Test map equality (should be equal)
     assert_eq!(original_map, deserialized_map);
@@ -373,28 +382,34 @@ fn test_serde_json_round_trip_complex_structure() {
     assert_eq!(root, deserialized_root);
 
     // Verify specific nested access works
-    assert_eq!(deserialized_root.get_text("app_name"), Some("Eidetica"));
     assert_eq!(
-        deserialized_root.get_int_at_path(path!("config.timeout")),
+        deserialized_root.get_as::<String>("app_name"),
+        Some("Eidetica".to_string())
+    );
+    assert_eq!(
+        deserialized_root.get_as::<i64>(path!("config.timeout")),
         Some(30)
     );
     assert_eq!(
-        deserialized_root.get_bool_at_path(path!("config.debug")),
+        deserialized_root.get_as::<bool>(path!("config.debug")),
         Some(false)
     );
 
     // Verify list access
-    let features_list = deserialized_root.get_list("features").unwrap();
+    let features_list = deserialized_root.get_as::<List>("features").unwrap();
     assert_eq!(features_list.len(), 3);
     assert_eq!(features_list.get(0).unwrap().as_text(), Some("auth"));
 
     // Verify nested list of maps
-    let users_list = deserialized_root.get_list("users").unwrap();
+    let users_list = deserialized_root.get_as::<List>("users").unwrap();
     assert_eq!(users_list.len(), 2);
 
-    let first_user = users_list.get(0).unwrap().as_node().unwrap();
-    assert_eq!(first_user.get_text("name"), Some("Alice"));
-    assert_eq!(first_user.get_bool("admin"), Some(true));
+    let first_user = users_list.get(0).unwrap().as_doc().unwrap();
+    assert_eq!(
+        first_user.get_as::<String>("name"),
+        Some("Alice".to_string())
+    );
+    assert_eq!(first_user.get_as::<bool>("admin"), Some(true));
 }
 
 #[test]
@@ -525,19 +540,25 @@ fn test_serialization_helpers_integration() {
     let _roundtrip_result = test_json_roundtrip(&complex_map).unwrap();
 
     // Verify the complex map has the expected structure by checking internal API
-    assert_eq!(complex_map.get_text("title"), Some("My Document"));
-    assert_eq!(complex_map.get_int("priority"), Some(42));
-    assert_eq!(complex_map.get_bool("published"), Some(true));
-    assert!(complex_map.get_node("metadata").is_some());
-    assert!(complex_map.get_list("tags").is_some());
+    assert_eq!(
+        complex_map.get_as::<String>("title"),
+        Some("My Document".to_string())
+    );
+    assert_eq!(complex_map.get_as::<i64>("priority"), Some(42));
+    assert_eq!(complex_map.get_as::<bool>("published"), Some(true));
+    assert!(complex_map.get_doc("metadata").is_some());
+    assert!(complex_map.get_as::<List>("tags").is_some());
 
     // Test that serialization doesn't fail
     let json = serde_json::to_string(&complex_map).unwrap();
     assert!(!json.is_empty());
 
     // Test that it deserializes back correctly
-    let deserialized: Node = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.get_text("title"), Some("My Document"));
+    let deserialized: Doc = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        deserialized.get_as::<String>("title"),
+        Some("My Document".to_string())
+    );
 }
 
 #[test]
@@ -546,7 +567,7 @@ fn test_mixed_value_serialization() {
 
     // Test that all value types can be serialized and deserialized
     let json = serde_json::to_string(&mixed_map).unwrap();
-    let deserialized: Node = serde_json::from_str(&json).unwrap();
+    let deserialized: Doc = serde_json::from_str(&json).unwrap();
 
     // Check that basic value types are preserved
     assert_eq!(mixed_map.get("null_val"), deserialized.get("null_val"));
@@ -555,7 +576,7 @@ fn test_mixed_value_serialization() {
     assert_eq!(mixed_map.get("text_val"), deserialized.get("text_val"));
 
     // Verify complex types
-    assert!(deserialized.get("map_val").unwrap().as_node().is_some());
+    assert!(deserialized.get("map_val").unwrap().as_doc().is_some());
     assert!(deserialized.get("list_val").unwrap().as_list().is_some());
 
     // Note: Deleted values should be handled correctly in serialization
@@ -573,7 +594,7 @@ fn test_large_structure_serialization() {
 
     // Test Map serialization
     let map_json = serde_json::to_string(&large_map).unwrap();
-    let deserialized_map: Node = serde_json::from_str(&map_json).unwrap();
+    let deserialized_map: Doc = serde_json::from_str(&map_json).unwrap();
     assert_eq!(large_map.len(), deserialized_map.len());
 
     // Test List serialization
@@ -582,8 +603,20 @@ fn test_large_structure_serialization() {
     assert_eq!(large_list.len(), deserialized_list.len());
 
     // Verify a few specific entries
-    assert_eq!(large_map.get_text("key_0"), Some("value_0"));
-    assert_eq!(large_map.get_text("key_99"), Some("value_99"));
-    assert_eq!(deserialized_map.get_text("key_0"), Some("value_0"));
-    assert_eq!(deserialized_map.get_text("key_99"), Some("value_99"));
+    assert_eq!(
+        large_map.get_as::<String>("key_0"),
+        Some("value_0".to_string())
+    );
+    assert_eq!(
+        large_map.get_as::<String>("key_99"),
+        Some("value_99".to_string())
+    );
+    assert_eq!(
+        deserialized_map.get_as::<String>("key_0"),
+        Some("value_0".to_string())
+    );
+    assert_eq!(
+        deserialized_map.get_as::<String>("key_99"),
+        Some("value_99".to_string())
+    );
 }

@@ -6,7 +6,7 @@
 use eidetica::{
     crdt::{
         Doc,
-        doc::{Value, path},
+        doc::{List, Value, path},
     },
     store::DocStore,
 };
@@ -181,7 +181,7 @@ fn test_dict_list_nonexistent_key() {
         assert_key_not_found(dict.get("nonexistent"));
 
         // Test getting non-existent list with get_list should also return NotFound
-        let list_result = dict.get_list("nonexistent");
+        let list_result = dict.get_as::<List>("nonexistent");
         assert!(list_result.is_err());
 
         // Create a new list
@@ -192,7 +192,9 @@ fn test_dict_list_nonexistent_key() {
             .expect("Failed to set new list");
 
         // Verify the new list was created
-        let retrieved_list = dict.get_list("new_list").expect("Failed to get new list");
+        let retrieved_list = dict
+            .get_as::<List>("new_list")
+            .expect("Failed to get new list");
         assert_eq!(retrieved_list.len(), 1);
         assert_eq!(
             retrieved_list.get(0),
@@ -229,7 +231,9 @@ fn test_dict_list_persistence() {
             .expect("Failed to get Doc");
 
         // List should persist from previous operation
-        let colors = dict.get_list("colors").expect("Failed to get colors list");
+        let colors = dict
+            .get_as::<List>("colors")
+            .expect("Failed to get colors list");
         assert_eq!(colors.len(), 2);
         assert_eq!(colors.get(0), Some(&Value::Text("red".to_string())));
         assert_eq!(colors.get(1), Some(&Value::Text("green".to_string())));
@@ -279,7 +283,7 @@ fn test_dict_update_nested_value() {
         l2_map.set_string("deep_key", "deep_value");
 
         let mut new_l1_map = Doc::new();
-        new_l1_map.set_node("level2_map", l2_map);
+        new_l1_map.set_doc("level2_map", l2_map);
 
         // Completely replace the previous value at level1
         dict.set_value("level1", new_l1_map.clone())
@@ -341,7 +345,7 @@ fn test_dict_comprehensive_operations() {
         let mut nested = Doc::new();
         nested.set_string("nested_key1", "nested_value1");
         nested.set_string("nested_key2", "nested_value2");
-        dict.set_value("nested", Value::Doc(nested.clone().into()))
+        dict.set_value("nested", Value::Doc(nested.clone()))
             .expect("Failed to set nested map");
     }
 
@@ -407,9 +411,9 @@ fn test_docstore_path_based_access() {
     let mut profile_doc = Doc::new();
     profile_doc.set("email", "alice@example.com");
     profile_doc.set("verified", true);
-    user_doc.set("profile", Value::Doc(profile_doc.into()));
+    user_doc.set("profile", Value::Doc(profile_doc));
 
-    dict.set("user", Value::Doc(user_doc.into()))
+    dict.set("user", Value::Doc(user_doc))
         .expect("Failed to set user");
 
     // Test get_path() for various path levels
@@ -544,7 +548,7 @@ fn test_docstore_path_mixed_with_staging() {
         let mut config_doc = Doc::new();
         config_doc.set("version", "1.0");
         config_doc.set("debug", false);
-        dict.set("config", Value::Doc(config_doc.into()))
+        dict.set("config", Value::Doc(config_doc))
             .expect("Failed to set config");
 
         op.commit().expect("Failed to commit initial data");
@@ -572,7 +576,7 @@ fn test_docstore_path_mixed_with_staging() {
     updated_config.set("version", "2.0"); // Update version
     updated_config.set("debug", false); // Keep debug same
     updated_config.set("environment", "production"); // Add new field
-    dict.set("config", Value::Doc(updated_config.into()))
+    dict.set("config", Value::Doc(updated_config))
         .expect("Failed to stage config update");
     dict.set("new_key", "new_value")
         .expect("Failed to stage new key");

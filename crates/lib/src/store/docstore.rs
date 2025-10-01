@@ -4,7 +4,7 @@ use crate::{
     Result, Store, Transaction,
     crdt::{
         CRDT, Doc,
-        doc::{List, Node, Path, PathBuf, PathError, Value},
+        doc::{List, Path, PathBuf, PathError, Value},
     },
     store::errors::StoreError,
 };
@@ -1279,18 +1279,18 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        let mut current_map_mut = subtree_data.as_node_mut();
+        let mut current_map_mut = &mut subtree_data;
 
         // Traverse or create path segments up to the parent of the target key.
         for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
             let key_segment_string = key_segment_s.clone().into();
             let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Doc(Node::default())) {
+            current_map_mut = match entry.or_insert_with(|| Value::Doc(Doc::default())) {
                 Value::Doc(node) => node,
                 non_map_val => {
                     // If a non-map value exists at an intermediate path segment,
                     // overwrite it with a map to continue.
-                    *non_map_val = Value::Doc(Node::default());
+                    *non_map_val = Value::Doc(Doc::default());
                     match non_map_val {
                         Value::Doc(node) => node,
                         _ => unreachable!("Just assigned a map"),

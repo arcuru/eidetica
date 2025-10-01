@@ -17,7 +17,7 @@ fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
         key_name.to_string(),
         serde_json::to_string(&auth_key).unwrap().into(),
     );
-    settings.set_node("auth", auth_section);
+    settings.set_doc("auth", auth_section);
     settings
 }
 
@@ -329,7 +329,7 @@ fn test_complete_delegation_workflow() {
             AuthKey::active(format_public_key(&delegated_key), Permission::Admin(5)).unwrap(),
         )
         .unwrap();
-    delegated_settings.set_node("auth", delegated_auth);
+    delegated_settings.set_doc("auth", delegated_auth);
 
     let delegated_tree = db
         .new_database(delegated_settings, "delegated_user")
@@ -367,7 +367,7 @@ fn test_complete_delegation_workflow() {
         )
         .unwrap();
 
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
     let main_tree = db.new_database(main_settings, "main_admin").unwrap();
 
     // Test delegation resolution
@@ -446,7 +446,7 @@ fn test_delegated_tree_requires_tips() {
         )
         .unwrap();
 
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
@@ -505,7 +505,7 @@ fn test_nested_delegation_with_permission_clamping() {
             .unwrap(),
         )
         .unwrap();
-    user_settings.set_node("auth", user_auth);
+    user_settings.set_doc("auth", user_auth);
     let user_tree = db.new_database(user_settings, "final_user").unwrap();
     let user_tips = user_tree.get_tips().unwrap();
 
@@ -538,7 +538,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    intermediate_settings.set_node("auth", intermediate_auth);
+    intermediate_settings.set_doc("auth", intermediate_auth);
     let intermediate_tree = db
         .new_database(intermediate_settings, "intermediate_admin")
         .unwrap();
@@ -574,7 +574,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
     let main_tree = db.new_database(main_settings, "main_admin").unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User
@@ -816,7 +816,7 @@ fn test_global_permission_vs_specific_key() {
     let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
     auth_section.set_json("*", &global_key).unwrap();
 
-    settings.set_node("auth", auth_section);
+    settings.set_doc("auth", auth_section);
 
     // Test 1: Entry signed with specific key should work normally
     let mut entry1 = Entry::root_builder()

@@ -108,7 +108,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
     let mut auth_doc = eidetica::crdt::Doc::new();
     let mut policy_doc = eidetica::crdt::Doc::new();
     policy_doc.set_json("bootstrap_auto_approve", true).unwrap();
-    auth_doc.set_node("policy", policy_doc);
+    auth_doc.set_doc("policy", policy_doc);
 
     // Add admin key
     auth_doc
@@ -122,7 +122,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
         )
         .unwrap();
 
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
     let server_database = server_instance.new_database(settings, server_key).unwrap();
     let test_tree_id = server_database.root_id().clone();
 

@@ -4,13 +4,13 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use eidetica::{
-    crdt::{
-        Doc,
-        doc::{Value, node::Node as Map},
-    },
+    crdt::{Doc, doc::Value},
     entry::ID,
     store::{DocStore, Store},
 };
+
+// Type alias for local usage
+type Map = Doc;
 
 use crate::helpers::*;
 
@@ -114,7 +114,7 @@ pub fn assert_dict_contains(dict: &DocStore, expected_data: &[(&str, &str)]) {
 
 /// Get all data from a DocStore as a Map for detailed inspection
 pub fn get_dict_data(dict: &DocStore) -> Map {
-    dict.get_all().unwrap().into()
+    dict.get_all().unwrap()
 }
 
 /// Verify that all expected data exists in a Doc's Map
@@ -180,7 +180,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
     for (key, value) in data {
         map.set_string(key, value.to_string());
     }
-    Value::Doc(map.into())
+    Value::Doc(map)
 }
 
 /// Setup operation with nested Map values

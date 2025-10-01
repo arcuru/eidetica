@@ -61,7 +61,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     policy_doc
         .set_json("bootstrap_auto_approve", true)
         .expect("set policy json");
-    auth_doc.set_node("policy", policy_doc);
+    auth_doc.set_doc("policy", policy_doc);
     // Include server admin key for initial database creation
     auth_doc
         .set_json(
@@ -84,7 +84,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             }),
         )
         .expect("Failed to set global auth");
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
     let mut server_database = server_instance
         .new_database(settings, SERVER_KEY_NAME)
         .expect("Failed to create server database");
@@ -291,7 +291,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                             );
                         } else if let Value::Doc(key_node) = key_value {
                             // It's a proper node
-                            if let Some(stored_pubkey) = key_node.get_text("pubkey") {
+                            if let Some(stored_pubkey) = key_node.get_as::<String>("pubkey") {
                                 println!("✅ Client key found with pubkey: {}", stored_pubkey);
                                 assert_eq!(
                                     stored_pubkey, client_pubkey,
@@ -507,7 +507,7 @@ async fn test_global_key_bootstrap() {
         )
         .expect("Failed to set admin auth");
 
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "admin_key")
@@ -631,7 +631,7 @@ async fn test_multiple_databases_sync() {
         policy_doc
             .set_json("bootstrap_auto_approve", true)
             .expect("set policy json");
-        auth_doc.set_node("policy", policy_doc);
+        auth_doc.set_doc("policy", policy_doc);
 
         // Include server admin key for initial database creation
         auth_doc
@@ -645,7 +645,7 @@ async fn test_multiple_databases_sync() {
             )
             .expect("Failed to set admin auth");
 
-        settings.set_node("auth", auth_doc);
+        settings.set_doc("auth", auth_doc);
 
         let database = server_instance
             .new_database(settings, SERVER_KEY_NAME)

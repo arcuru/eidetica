@@ -54,7 +54,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         )
         .expect("Failed to set server admin auth");
 
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     // Create the database
     let server_database = server_instance
@@ -408,7 +408,7 @@ async fn test_bootstrap_with_revoked_key() {
         )
         .expect("Failed to set revoked client auth");
 
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "server_admin")
@@ -507,7 +507,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .expect("Failed to set server admin auth");
 
     // TODO: Add policy configuration that limits new client permissions to Read only
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "server_admin")

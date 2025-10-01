@@ -67,7 +67,7 @@ fn test_crdt_commutativity() {
     let merge_2_1 = map2.merge(&map1).expect("Merge 2->1 should succeed");
 
     // Results should be identical for non-conflicting merges
-    assert_maps_equivalent(merge_1_2.as_node(), merge_2_1.as_node());
+    assert_maps_equivalent(&merge_1_2, &merge_2_1);
 }
 
 #[test]
@@ -78,9 +78,9 @@ fn test_crdt_associativity() {
     let mut map_c = base.clone();
 
     // Add non-conflicting changes
-    map_a.set_string("source_a".to_string(), "A".to_string());
-    map_b.set_string("source_b".to_string(), "B".to_string());
-    map_c.set_string("source_c".to_string(), "C".to_string());
+    map_a.set_string("source_a", "A".to_string());
+    map_b.set_string("source_b", "B".to_string());
+    map_c.set_string("source_c", "C".to_string());
 
     // Test that (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)
     let left_assoc = map_a
@@ -114,14 +114,14 @@ fn test_complex_crdt_scenario() {
     let mut branch = doc.clone();
 
     // Make different changes to each branch
-    doc.set_string("title".to_string(), "Updated Title".to_string());
-    doc.set("priority".to_string(), Value::Int(100));
+    doc.set_string("title", "Updated Title".to_string());
+    doc.set("priority", Value::Int(100));
 
     // In the branch, modify nested data
     if let Some(Value::Doc(metadata)) = branch.get("metadata") {
         let mut metadata_clone = metadata.clone();
-        metadata_clone.set_string("editor".to_string(), "Bob".to_string());
-        branch.set("metadata".to_string(), metadata_clone);
+        metadata_clone.set_string("editor", "Bob".to_string());
+        branch.set("metadata", metadata_clone);
     }
 
     // Merge the branches
@@ -131,25 +131,25 @@ fn test_complex_crdt_scenario() {
     // Note: CRDT merge behavior is deterministic but may not favor any particular branch
     // We just verify that merge completed and some value is present
     assert!(
-        merged.get_text("title").is_some(),
+        merged.get_as::<String>("title").is_some(),
         "Title should be present after merge"
     );
 
     assert!(
-        merged.get_int("priority").is_some(),
+        merged.get_as::<i64>("priority").is_some(),
         "Priority should be present after merge"
     );
 
     // Check nested metadata
     if let Some(Value::Doc(metadata)) = merged.get("metadata") {
         assert_eq!(
-            metadata.get_text("author"),
-            Some("Alice"),
+            metadata.get_as::<String>("author"),
+            Some("Alice".to_string()),
             "Original author should be preserved"
         );
         assert_eq!(
-            metadata.get_text("editor"),
-            Some("Bob"),
+            metadata.get_as::<String>("editor"),
+            Some("Bob".to_string()),
             "Editor should be added from branch"
         );
     } else {
@@ -268,9 +268,12 @@ fn test_crdt_api_ergonomics() {
     doc.set("published", true);
 
     // Test typed getters
-    assert_eq!(doc.get_text("title"), Some("My Document"));
-    assert_eq!(doc.get_int("priority"), Some(42));
-    assert_eq!(doc.get_bool("published"), Some(true));
+    assert_eq!(
+        doc.get_as::<String>("title"),
+        Some("My Document".to_string())
+    );
+    assert_eq!(doc.get_as::<i64>("priority"), Some(42));
+    assert_eq!(doc.get_as::<bool>("published"), Some(true));
 
     // Test direct comparison
     assert!(*doc.get("title").unwrap() == "My Document");
@@ -281,8 +284,8 @@ fn test_crdt_api_ergonomics() {
     doc.set_path(path!("user.name"), "Alice")
         .expect("Path set should work");
     assert_eq!(
-        doc.get_text_at_path(path!("user.name")),
-        Some("Alice"),
+        doc.get_as::<String>(path!("user.name")),
+        Some("Alice".to_string()),
         "Path get should work"
     );
 }

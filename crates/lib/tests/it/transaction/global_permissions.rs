@@ -43,7 +43,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
         .set_json("*", &global_auth_key)
         .expect("Failed to set global auth key");
 
-    settings.set_node("auth", auth_section);
+    settings.set_doc("auth", auth_section);
 
     // Create database (we need an admin key to create the database initially)
     let (admin_signing_key, admin_verifying_key) = generate_keypair();
@@ -62,7 +62,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
     auth_section
         .set_json("admin_key", &admin_auth_key)
         .expect("Failed to set admin auth key");
-    settings.set_node("auth", auth_section);
+    settings.set_doc("auth", auth_section);
 
     let database = instance
         .new_database(settings, "admin_key")

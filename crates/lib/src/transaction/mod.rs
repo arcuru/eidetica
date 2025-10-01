@@ -807,7 +807,7 @@ impl Transaction {
                 // Update the settings subtree to include auth configuration
                 // We need to merge with existing settings and add the auth section
                 let mut updated_settings = effective_settings_for_validation.clone();
-                updated_settings.set_node("auth", auth_settings.as_doc().clone());
+                updated_settings.set_doc("auth", auth_settings.as_doc().clone());
 
                 // Update the SETTINGS subtree data in the entry builder
                 let settings_json = serde_json::to_string(&updated_settings)?;

@@ -76,10 +76,7 @@ impl SettingsStore {
             Ok(auth_value) => {
                 // Convert the Value to a Doc and create AuthSettings from it
                 match auth_value {
-                    crate::crdt::doc::Value::Doc(auth_node) => {
-                        let auth_doc = Doc::from_node(auth_node);
-                        Ok(AuthSettings::from_doc(auth_doc))
-                    }
+                    crate::crdt::doc::Value::Doc(auth_doc) => Ok(AuthSettings::from_doc(auth_doc)),
                     _ => {
                         // Auth exists but isn't a node - return empty AuthSettings
                         Ok(AuthSettings::new())

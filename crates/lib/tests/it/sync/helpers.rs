@@ -228,7 +228,7 @@ pub fn setup_bootstrap_server(
     policy_doc
         .set_json("bootstrap_auto_approve", auto_approve)
         .expect("Failed to set policy");
-    auth_doc.set_node("policy", policy_doc);
+    auth_doc.set_doc("policy", policy_doc);
 
     // Add server admin key to auth settings
     let server_pubkey = instance
@@ -265,7 +265,7 @@ pub fn setup_bootstrap_server(
         )
         .expect("Failed to set device key auth");
 
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     let database = instance
         .new_database(settings, "server_admin")

@@ -212,7 +212,7 @@ impl SyncHandlerImpl {
 
         let auth_settings = settings_store.get_auth_settings()?;
 
-        if let Some(policy_doc) = auth_settings.as_doc().get_doc("policy") {
+        if let Some(policy_doc) = auth_settings.as_doc().get_as::<crate::crdt::Doc>("policy") {
             // Read as JSON-encoded bool to match set_json storage
             if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
                 return Ok(flag);

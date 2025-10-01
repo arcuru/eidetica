@@ -160,7 +160,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
             AuthKey::active(format_public_key(&key1), Permission::Admin(1)).unwrap(),
         )
         .unwrap();
-    settings.set_node("auth", auth_settings);
+    settings.set_doc("auth", auth_settings);
 
     let tree = db
         .new_database(settings, "KEY1")
@@ -190,7 +190,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .unwrap();
 
     settings_store
-        .set_value("auth", Value::Doc(new_auth_settings.into()))
+        .set_value("auth", Value::Doc(new_auth_settings))
         .expect("Failed to update auth settings");
 
     let entry_id1 = op1.commit().expect("Failed to commit settings change");
@@ -234,7 +234,7 @@ fn test_validation_pipeline_with_corrupted_auth_data() {
             .unwrap(),
         )
         .unwrap();
-    settings.set_node("auth", auth_settings);
+    settings.set_doc("auth", auth_settings);
 
     let tree = db
         .new_database(settings, "VALID_KEY")
@@ -320,7 +320,7 @@ fn test_validation_pipeline_entry_level_validation() {
         )
         .unwrap();
 
-    settings.set_node("auth", auth_settings);
+    settings.set_doc("auth", auth_settings);
     let tree = db
         .new_database(settings, "ADMIN_KEY")
         .expect("Failed to create tree");

@@ -48,7 +48,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_node("auth", auth);
+    settings.set_doc("auth", auth);
 
     // This should work - empty key is technically valid
     let tree = db.new_database(settings, "")?;
@@ -263,7 +263,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_node("auth", auth);
+    settings.set_doc("auth", auth);
     let tree = db.new_database(settings, "admin")?;
     let tree_tips = tree.get_tips()?;
 

@@ -211,8 +211,8 @@ fn test_nested_map_operations() {
 
     match nested_value {
         Value::Doc(map) => {
-            assert_eq!(map.get_text("key1"), Some("val1"));
-            assert_eq!(map.get_text("key2"), Some("val2"));
+            assert_eq!(map.get_as::<String>("key1"), Some("val1".to_string()));
+            assert_eq!(map.get_as::<String>("key2"), Some("val2".to_string()));
         }
         _ => panic!("Expected Map value"),
     }

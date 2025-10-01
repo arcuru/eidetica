@@ -6,8 +6,11 @@
 // Helper functions are self-contained and don't need external imports
 use eidetica::crdt::{
     CRDT, Doc,
-    doc::{List, Node as Map, Value, list::Position},
+    doc::{List, Value, list::Position},
 };
+
+// Type alias for local usage
+type Map = Doc;
 
 // ===== MAP HELPERS =====
 
@@ -17,7 +20,7 @@ pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Map {
     for (key, value) in pairs {
         map.set_string(*key, *value);
     }
-    map.into()
+    map
 }
 
 /// Create a nested Map structure with multiple levels
@@ -25,9 +28,9 @@ pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
     let mut map = Doc::new();
     for (outer_key, inner_pairs) in nested_data {
         let inner_map = create_map_with_values(inner_pairs);
-        map.set_node(*outer_key, inner_map);
+        map.set_doc(*outer_key, inner_map);
     }
-    map.into()
+    map
 }
 
 /// Create two maps for merge testing with specified overlap
@@ -131,10 +134,10 @@ pub fn create_complex_nested_structure() -> Map {
     // Level 3
     let mut level3 = Doc::new();
     level3.set_string("level3_key1", "level3_value1");
-    level2.set_node("level3", level3);
+    level2.set_doc("level3", level3);
 
-    root.set_node("level2", level2);
-    root.into()
+    root.set_doc("level2", level2);
+    root
 }
 
 /// Build test data for multi-generation update scenarios
@@ -154,7 +157,7 @@ pub fn build_complex_merge_data() -> (Map, Map) {
     level1a.set_string("key1", "value1");
     level1a.set_string("to_delete", "will_be_deleted");
     level1a.set_string("to_update", "initial_value");
-    map1.set_node("level1", level1a);
+    map1.set_doc("level1", level1a);
     map1.set_string("top_level_key", "top_value");
 
     let mut map2 = Doc::new();
@@ -162,11 +165,11 @@ pub fn build_complex_merge_data() -> (Map, Map) {
     level1b.set_string("key2", "value2");
     level1b.remove("to_delete");
     level1b.set_string("to_update", "updated_value");
-    map2.set_node("level1", level1b);
+    map2.set_doc("level1", level1b);
     map2.remove("top_level_key");
     map2.set_string("new_top_key", "new_top_value");
 
-    (map1.into(), map2.into())
+    (map1, map2)
 }
 
 /// Create a test Map with some initial data
@@ -174,7 +177,7 @@ pub fn setup_test_map() -> Map {
     let mut map = Doc::new();
     map.set_string("key1", "value1".to_string());
     map.set_string("key2", "value2".to_string());
-    map.into()
+    map
 }
 
 /// Create two concurrent Maps with different modifications
@@ -182,12 +185,12 @@ pub fn setup_concurrent_maps() -> (Map, Map) {
     let base = setup_test_map();
 
     let mut map1 = base.clone();
-    map1.set_string("branch".to_string(), "left".to_string());
-    map1.set_string("unique1".to_string(), "from_map1".to_string());
+    map1.set_string("branch", "left".to_string());
+    map1.set_string("unique1", "from_map1".to_string());
 
     let mut map2 = base.clone();
-    map2.set_string("branch".to_string(), "right".to_string());
-    map2.set_string("unique2".to_string(), "from_map2".to_string());
+    map2.set_string("branch", "right".to_string());
+    map2.set_string("unique2", "from_map2".to_string());
 
     (map1, map2)
 }
@@ -213,7 +216,7 @@ pub fn create_complex_map() -> Map {
     tags.push(Value::Text("draft".to_string()));
     map.set("tags", Value::List(tags));
 
-    map.into()
+    map
 }
 
 /// Create a Map with mixed value types for comprehensive testing
@@ -226,7 +229,7 @@ pub fn create_mixed_value_map() -> Map {
     map.set("map_val", Doc::new());
     map.set("list_val", Value::List(List::new()));
     map.set("deleted_val", Value::Deleted);
-    map.into()
+    map
 }
 
 // ===== LIST HELPERS =====
@@ -415,7 +418,7 @@ pub fn create_large_map(size: usize) -> Map {
     for i in 0..size {
         map.set(format!("key_{i}"), Value::Text(format!("value_{i}")));
     }
-    map.into_root()
+    map
 }
 
 /// Create a large List for performance testing

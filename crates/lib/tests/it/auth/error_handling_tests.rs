@@ -64,7 +64,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 
     let mut new_auth_settings = tree.get_settings()?.get_all()?;
     new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings.into()))?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
     op.commit()?;
 
     // Try to resolve delegation to non-existent tree
@@ -110,10 +110,10 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
     let mut corrupted_delegate = Doc::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
-    auth.set("corrupted_delegate", Value::Doc(corrupted_delegate.into()));
+    auth.set("corrupted_delegate", Value::Doc(corrupted_delegate));
 
     let mut settings = Doc::new();
-    settings.set_node("auth", auth);
+    settings.set_doc("auth", auth);
     let tree = db.new_database(settings, "admin")?;
 
     // Try to resolve corrupted delegation
@@ -161,7 +161,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
         .unwrap();
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set_node("auth", delegated_auth);
+    delegated_settings.set_doc("auth", delegated_auth);
     let delegated_tree = db.new_database(delegated_settings, "admin_in_delegated_tree")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
@@ -192,7 +192,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
         .unwrap();
 
     let mut main_settings = Doc::new();
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
     let main_tree = db.new_database(main_settings, "main_admin")?;
 
     // Try to use admin key from delegated tree through restricted delegation
@@ -253,7 +253,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
         .unwrap();
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set_node("auth", delegated_auth);
+    delegated_settings.set_doc("auth", delegated_auth);
     let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let real_tips = delegated_tree.get_tips()?;
 
@@ -283,7 +283,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
         .unwrap();
 
     let mut main_settings = Doc::new();
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
     let main_tree = db.new_database(main_settings, "admin")?;
 
     // Try to use delegation with fake/tampered tips
@@ -352,7 +352,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
         .unwrap();
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set_node("auth", delegated_auth);
+    delegated_settings.set_doc("auth", delegated_auth);
     let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
     let delegated_tips = delegated_tree.get_tips()?;
 
@@ -382,7 +382,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
         .unwrap();
 
     let mut main_settings = Doc::new();
-    main_settings.set_node("auth", main_auth);
+    main_settings.set_doc("auth", main_auth);
     let main_tree = db.new_database(main_settings, "admin")?;
 
     // Test accessing active key through delegation
@@ -447,7 +447,7 @@ fn test_validation_cache_error_conditions() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_node("auth", auth);
+    settings.set_doc("auth", auth);
     let tree = db.new_database(settings, "admin")?;
 
     let mut validator = AuthValidator::new();
@@ -534,7 +534,7 @@ fn test_concurrent_validation_basic() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_node("auth", auth);
+    settings.set_doc("auth", auth);
     let tree = db.new_database(settings, "admin")?;
     let tree_settings = Arc::new(tree.get_settings()?.get_all()?);
 

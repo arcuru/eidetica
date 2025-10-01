@@ -6,7 +6,10 @@
 #[cfg(feature = "y-crdt")]
 use eidetica::store::YDoc;
 use eidetica::{
-    crdt::{Doc, doc::Value},
+    crdt::{
+        Doc,
+        doc::{List, Value},
+    },
     store::{DocStore, Table},
 };
 use serde::{Deserialize, Serialize};
@@ -61,7 +64,7 @@ pub fn create_dict_with_nested_map(
     // Set nested map
     let mut nested = Doc::new();
     nested.set_string("inner", "nested_value");
-    dict.set_value("key2", Value::Doc(nested.into())).unwrap();
+    dict.set_value("key2", Value::Doc(nested)).unwrap();
 
     op.commit().unwrap()
 }
@@ -145,7 +148,7 @@ pub fn assert_dict_list_data(
     expected_items: &[&str],
 ) {
     let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
-    let list = viewer.get_list(list_key).unwrap();
+    let list = viewer.get_as::<List>(list_key).unwrap();
 
     assert_eq!(list.len(), expected_items.len());
     for (i, expected_item) in expected_items.iter().enumerate() {

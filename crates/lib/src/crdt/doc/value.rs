@@ -10,7 +10,7 @@ use std::fmt;
 // Forward declarations for types defined in other modules
 use super::list::List;
 use crate::crdt::{
-    CRDTError,
+    CRDTError, Doc,
     traits::{CRDT, Data},
 };
 
@@ -91,7 +91,7 @@ pub enum Value {
 
     // Branch values (can contain other nodes)
     /// Sub-tree containing other nodes
-    Doc(crate::crdt::Doc),
+    Doc(Doc),
     /// Ordered collection of values
     List(List),
 
@@ -187,7 +187,7 @@ impl Value {
     }
 
     /// Attempts to convert to a Doc (returns immutable reference)
-    pub fn as_node(&self) -> Option<&crate::crdt::Doc> {
+    pub fn as_doc(&self) -> Option<&Doc> {
         match self {
             Value::Doc(node) => Some(node),
             _ => None,
@@ -195,7 +195,7 @@ impl Value {
     }
 
     /// Attempts to convert to a mutable Doc reference
-    pub fn as_node_mut(&mut self) -> Option<&mut crate::crdt::Doc> {
+    pub fn as_doc_mut(&mut self) -> Option<&mut Doc> {
         match self {
             Value::Doc(node) => Some(node),
             _ => None,
@@ -387,8 +387,8 @@ impl From<&str> for Value {
     }
 }
 
-impl From<crate::crdt::Doc> for Value {
-    fn from(value: crate::crdt::Doc) -> Self {
+impl From<Doc> for Value {
+    fn from(value: Doc) -> Self {
         Value::Doc(value)
     }
 }
@@ -418,7 +418,19 @@ impl TryFrom<&Value> for String {
     }
 }
 
-// Note: &str TryFrom is tricky due to lifetimes - users should use String or the existing as_text() method
+impl<'a> TryFrom<&'a Value> for &'a str {
+    type Error = CRDTError;
+
+    fn try_from(value: &'a Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Text(s) => Ok(s),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "&str".to_string(),
+                actual: format!("{value:?}"),
+            }),
+        }
+    }
+}
 
 impl TryFrom<&Value> for i64 {
     type Error = CRDTError;
@@ -452,7 +464,7 @@ impl TryFrom<&Value> for bool {
 // Users should use the existing as_node() and as_list() methods for references
 // Or clone into owned types when needed
 
-impl TryFrom<&Value> for crate::crdt::Doc {
+impl TryFrom<&Value> for Doc {
     type Error = CRDTError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {

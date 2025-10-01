@@ -7,7 +7,7 @@
 use eidetica::{
     crdt::{
         CRDT, Doc,
-        doc::{List, Node, Value},
+        doc::{List, Value},
     },
     path,
 };
@@ -37,8 +37,8 @@ fn test_doc_basic_operations() {
     assert!(!map.contains_key("nonexistent"));
 
     // Test get with flexible input
-    assert_eq!(map.get_text("name"), Some("Alice"));
-    assert_eq!(map.get_int("age"), Some(30));
+    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
+    assert_eq!(map.get_as::<i64>("age"), Some(30));
     assert!(map.get("nonexistent").is_none());
 }
 
@@ -50,7 +50,7 @@ fn test_doc_overwrite_values() {
     let old_val = map.set("key", "modified");
 
     assert_eq!(old_val.as_ref().and_then(|v| v.as_text()), Some("original"));
-    assert_eq!(map.get_text("key"), Some("modified"));
+    assert_eq!(map.get_as::<String>("key"), Some("modified".to_string()));
     assert_eq!(map.len(), 1); // Should still be 1
 }
 
@@ -106,7 +106,10 @@ fn test_doc_get_mut() {
         name.push_str(" Smith");
     }
 
-    assert_eq!(map.get_text("name"), Some("Alice Smith"));
+    assert_eq!(
+        map.get_as::<String>("name"),
+        Some("Alice Smith".to_string())
+    );
 
     // Test get_mut on non-existent key
     assert!(map.get_mut("nonexistent").is_none());
@@ -130,24 +133,24 @@ fn test_doc_path_operations() {
 
     // Test get_path
     assert_eq!(
-        map.get_text_at_path(path!("user.profile.name")),
-        Some("Alice")
+        map.get_as::<String>(path!("user.profile.name")),
+        Some("Alice".to_string())
     );
-    assert_eq!(map.get_int_at_path(path!("user.profile.age")), Some(30));
+    assert_eq!(map.get_as::<i64>(path!("user.profile.age")), Some(30));
     assert_eq!(
-        map.get_text_at_path(path!("user.settings.theme")),
-        Some("dark")
+        map.get_as::<String>(path!("user.settings.theme")),
+        Some("dark".to_string())
     );
-    assert!(map.get_path(path!("nonexistent.path")).is_none());
+    assert!(map.get(path!("nonexistent.path")).is_none());
 
     // Test get_path_mut
-    if let Some(Value::Text(name)) = map.get_path_mut(path!("user.profile.name")) {
+    if let Some(Value::Text(name)) = map.get_mut(path!("user.profile.name")) {
         name.push_str(" Smith");
     }
 
     assert_eq!(
-        map.get_text_at_path(path!("user.profile.name")),
-        Some("Alice Smith")
+        map.get_as::<String>(path!("user.profile.name")),
+        Some("Alice Smith".to_string())
     );
 }
 
@@ -162,10 +165,16 @@ fn test_doc_path_with_lists() {
     map.set("items", list);
 
     // Test path access with list indices
-    assert_eq!(map.get_text_at_path(path!("items.0")), Some("item1"));
-    assert_eq!(map.get_text_at_path(path!("items.1")), Some("item2"));
-    assert!(map.get_path(path!("items.2")).is_none());
-    assert!(map.get_path(path!("items.invalid")).is_none());
+    assert_eq!(
+        map.get_as::<String>(path!("items.0")),
+        Some("item1".to_string())
+    );
+    assert_eq!(
+        map.get_as::<String>(path!("items.1")),
+        Some("item2".to_string())
+    );
+    assert!(map.get(path!("items.2")).is_none());
+    assert!(map.get(path!("items.invalid")).is_none());
 }
 
 #[test]
@@ -179,7 +188,10 @@ fn test_doc_path_behaviors() {
     assert!(result.is_ok());
 
     // Verify that "scalar" is now a node containing "nested" = "new_value"
-    assert_eq!(map.get_text("scalar.nested"), Some("new_value"));
+    assert_eq!(
+        map.get_as::<String>("scalar.nested"),
+        Some("new_value".to_string())
+    );
 
     // Test empty path - should return an error
     let result2 = map.set_path(path!(), "value");
@@ -188,7 +200,7 @@ fn test_doc_path_behaviors() {
     // Test path with single component
     let result3 = map.set_path(path!("single"), "value");
     assert!(result3.is_ok());
-    assert_eq!(map.get_text("single"), Some("value"));
+    assert_eq!(map.get_as::<String>("single"), Some("value".to_string()));
 }
 
 // ===== ITERATORS =====
@@ -225,7 +237,10 @@ fn test_doc_iterators() {
         }
     }
 
-    assert_eq!(map.get_text("name"), Some("Alice Smith"));
+    assert_eq!(
+        map.get_as::<String>("name"),
+        Some("Alice Smith".to_string())
+    );
 }
 
 // ===== BUILDER PATTERN =====
@@ -236,19 +251,19 @@ fn test_doc_builder_pattern() {
         .with_text("name", "Alice")
         .with_int("age", 30)
         .with_bool("active", true)
-        .with_node("profile", Doc::new().with_text("bio", "Developer"))
+        .with_doc("profile", Doc::new().with_text("bio", "Developer"))
         .with_list("tags", List::new());
 
-    assert_eq!(map.get_text("name"), Some("Alice"));
-    assert_eq!(map.get_int("age"), Some(30));
-    assert_eq!(map.get_bool("active"), Some(true));
-    assert!(map.get_doc("profile").is_some());
-    assert!(map.get_list("tags").is_some());
+    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
+    assert_eq!(map.get_as::<i64>("age"), Some(30));
+    assert_eq!(map.get_as::<bool>("active"), Some(true));
+    assert!(map.get_as::<Doc>("profile").is_some());
+    assert!(map.get_as::<List>("tags").is_some());
 
     // Test nested access
     assert_eq!(
-        map.get_text_at_path(path!("profile.bio")),
-        Some("Developer")
+        map.get_as::<String>(path!("profile.bio")),
+        Some("Developer".to_string())
     );
 }
 
@@ -282,9 +297,9 @@ fn test_doc_crdt_merge() {
 
     let merged = map1.merge(&map2).unwrap();
 
-    assert_eq!(merged.get_text("name"), Some("Bob")); // Last write wins
-    assert_eq!(merged.get_int("age"), Some(30));
-    assert_eq!(merged.get_text("city"), Some("NYC"));
+    assert_eq!(merged.get_as::<String>("name"), Some("Bob".to_string())); // Last write wins
+    assert_eq!(merged.get_as::<i64>("age"), Some(30));
+    assert_eq!(merged.get_as::<String>("city"), Some("NYC".to_string()));
 }
 
 #[test]
@@ -295,11 +310,11 @@ fn test_doc_from_iterator() {
         ("active".to_string(), Value::Bool(true)),
     ];
 
-    let map: Node = pairs.into_iter().collect();
+    let map: Doc = pairs.into_iter().collect();
 
-    assert_eq!(map.get_text("name"), Some("Alice"));
-    assert_eq!(map.get_int("age"), Some(30));
-    assert_eq!(map.get_bool("active"), Some(true));
+    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
+    assert_eq!(map.get_as::<i64>("age"), Some(30));
+    assert_eq!(map.get_as::<bool>("active"), Some(true));
 }
 
 // ===== LIST INTEGRATION TESTS =====
@@ -518,24 +533,33 @@ fn test_serde_json_round_trip_map() {
 
     // Compare the maps
     assert_eq!(
-        original_map.get_text("name"),
-        deserialized_map.get_text("name")
-    );
-    assert_eq!(original_map.get_int("age"), deserialized_map.get_int("age"));
-    assert_eq!(
-        original_map.get_bool("active"),
-        deserialized_map.get_bool("active")
+        original_map.get_as::<String>("name"),
+        deserialized_map.get_as::<String>("name")
     );
     assert_eq!(
-        original_map.get_int("score"),
-        deserialized_map.get_int("score")
+        original_map.get_as::<i64>("age"),
+        deserialized_map.get_as::<i64>("age")
+    );
+    assert_eq!(
+        original_map.get_as::<bool>("active"),
+        deserialized_map.get_as::<bool>("active")
+    );
+    assert_eq!(
+        original_map.get_as::<i64>("score"),
+        deserialized_map.get_as::<i64>("score")
     ); // 95.5 -> 95
 
     // Test nested map
-    let orig_nested = original_map.get_doc("address").unwrap();
-    let deser_nested = deserialized_map.get_doc("address").unwrap();
-    assert_eq!(orig_nested.get_text("city"), deser_nested.get_text("city"));
-    assert_eq!(orig_nested.get_int("zip"), deser_nested.get_int("zip"));
+    let orig_nested = original_map.get_as::<Doc>("address").unwrap();
+    let deser_nested = deserialized_map.get_as::<Doc>("address").unwrap();
+    assert_eq!(
+        orig_nested.get_as::<String>("city"),
+        deser_nested.get_as::<String>("city")
+    );
+    assert_eq!(
+        orig_nested.get_as::<i64>("zip"),
+        deser_nested.get_as::<i64>("zip")
+    );
 
     // Test map equality (should be equal)
     assert_eq!(original_map, deserialized_map);
@@ -591,28 +615,34 @@ fn test_serde_json_round_trip_complex_structure() {
     assert_eq!(root, deserialized_root);
 
     // Verify specific nested access works
-    assert_eq!(deserialized_root.get_text("app_name"), Some("Eidetica"));
     assert_eq!(
-        deserialized_root.get_int_at_path(path!("config.timeout")),
+        deserialized_root.get_as::<String>("app_name"),
+        Some("Eidetica".to_string())
+    );
+    assert_eq!(
+        deserialized_root.get_as::<i64>(path!("config.timeout")),
         Some(30)
     );
     assert_eq!(
-        deserialized_root.get_bool_at_path(path!("config.debug")),
+        deserialized_root.get_as::<bool>(path!("config.debug")),
         Some(false)
     );
 
     // Verify list access
-    let features_list = deserialized_root.get_list("features").unwrap();
+    let features_list = deserialized_root.get_as::<List>("features").unwrap();
     assert_eq!(features_list.len(), 3);
     assert_eq!(features_list.get(0).unwrap().as_text(), Some("auth"));
 
     // Verify nested list of maps
-    let users_list = deserialized_root.get_list("users").unwrap();
+    let users_list = deserialized_root.get_as::<List>("users").unwrap();
     assert_eq!(users_list.len(), 2);
 
-    let first_user = users_list.get(0).unwrap().as_node().unwrap();
-    assert_eq!(first_user.get_text("name"), Some("Alice"));
-    assert_eq!(first_user.get_bool("admin"), Some(true));
+    let first_user = users_list.get(0).unwrap().as_doc().unwrap();
+    assert_eq!(
+        first_user.get_as::<String>("name"),
+        Some("Alice".to_string())
+    );
+    assert_eq!(first_user.get_as::<bool>("admin"), Some(true));
 }
 
 // ===== TOMBSTONE TESTS =====
@@ -694,7 +724,7 @@ fn test_doc_is_tombstone_overwrite_behavior() {
     map.set("key", "new_value");
     assert!(!map.is_tombstone("key")); // No longer a tombstone
     assert!(map.contains_key("key")); // Visible in public API again
-    assert_eq!(map.get_text("key"), Some("new_value"));
+    assert_eq!(map.get_as::<String>("key"), Some("new_value".to_string()));
 }
 
 #[test]

@@ -7,7 +7,7 @@
 use eidetica::{
     crdt::{
         Doc,
-        doc::{List, Node, Value},
+        doc::{List, Value},
     },
     path,
 };
@@ -51,7 +51,7 @@ fn test_map_value_basic_types() {
 
 #[test]
 fn test_map_value_branch_types() {
-    let map_val = Value::Doc(Node::new());
+    let map_val = Value::Doc(Doc::new());
     let list_val = Value::List(List::new());
 
     assert!(!map_val.is_leaf());
@@ -73,7 +73,7 @@ fn test_map_value_type_names() {
     assert_eq!(Value::Bool(true).type_name(), "bool");
     assert_eq!(Value::Int(42).type_name(), "int");
     assert_eq!(Value::Text("hello".to_string()).type_name(), "text");
-    assert_eq!(Value::Doc(Node::new()).type_name(), "doc");
+    assert_eq!(Value::Doc(Doc::new()).type_name(), "doc");
     assert_eq!(Value::List(List::new()).type_name(), "list");
     assert_eq!(Value::Deleted.type_name(), "deleted");
 }
@@ -83,7 +83,7 @@ fn test_map_value_accessors() {
     let bool_val = Value::Bool(true);
     let int_val = Value::Int(42);
     let text_val = Value::Text("hello".to_string());
-    let map_val = Value::Doc(Node::new());
+    let map_val = Value::Doc(Doc::new());
     let list_val = Value::List(List::new());
 
     // Test as_bool
@@ -104,8 +104,8 @@ fn test_map_value_accessors() {
     assert!(text_val == "hello");
 
     // Test as_node
-    assert!(map_val.as_node().is_some());
-    assert!(bool_val.as_node().is_none());
+    assert!(map_val.as_doc().is_some());
+    assert!(bool_val.as_doc().is_none());
 
     // Test as_list
     assert!(list_val.as_list().is_some());
@@ -117,13 +117,13 @@ fn test_map_value_from_impls() {
     let from_bool: Value = true.into();
     let from_i64: Value = 42i64.into();
     let from_string: Value = "hello".into();
-    let from_node: Value = Node::new().into();
+    let from_node: Value = Doc::new().into();
     let from_list: Value = List::new().into();
 
     assert_eq!(from_bool.as_bool(), Some(true));
     assert_eq!(from_i64.as_int(), Some(42));
     assert_eq!(from_string.as_text(), Some("hello"));
-    assert!(from_node.as_node().is_some());
+    assert!(from_node.as_doc().is_some());
     assert!(from_list.as_list().is_some());
 }
 
@@ -239,9 +239,9 @@ fn test_cleaner_api_examples() {
     assert_eq!(map.get("active").and_then(|v| v.as_bool()), Some(true));
 
     // New clean way with typed getters
-    assert_eq!(map.get_text("name"), Some("Alice"));
-    assert_eq!(map.get_int("age"), Some(30));
-    assert_eq!(map.get_bool("active"), Some(true));
+    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
+    assert_eq!(map.get_as::<i64>("age"), Some(30));
+    assert_eq!(map.get_as::<bool>("active"), Some(true));
 
     // Even cleaner with direct comparisons on Value!
     assert!(*map.get("name").unwrap() == "Alice");
@@ -254,19 +254,18 @@ fn test_cleaner_api_examples() {
 
     // Old verbose way (still works)
     assert_eq!(
-        map.get_path(path!("user.profile.bio"))
-            .and_then(|v| v.as_text()),
+        map.get(path!("user.profile.bio")).and_then(|v| v.as_text()),
         Some("Developer")
     );
 
     // New clean way with typed getters
     assert_eq!(
-        map.get_text_at_path(path!("user.profile.bio")),
-        Some("Developer")
+        map.get_as::<String>(path!("user.profile.bio")),
+        Some("Developer".to_string())
     );
 
     // Even cleaner with direct comparisons on Value!
-    assert!(*map.get_path(path!("user.profile.bio")).unwrap() == "Developer");
+    assert!(*map.get(path!("user.profile.bio")).unwrap() == "Developer");
 
     // Convenience methods for Value
     let value = Value::Text("hello".to_string());

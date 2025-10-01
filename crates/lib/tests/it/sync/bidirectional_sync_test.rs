@@ -69,7 +69,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     policy_doc
         .set_json("bootstrap_auto_approve", true)
         .expect("set policy json");
-    auth_doc.set_node("policy", policy_doc);
+    auth_doc.set_doc("policy", policy_doc);
     // Include device1 admin key for initial database creation
     let device1_admin_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
@@ -85,7 +85,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             }),
         )
         .expect("Failed to set admin auth");
-    settings.set_node("auth", auth_doc);
+    settings.set_doc("auth", auth_doc);
 
     let mut device1_database = device1_instance
         .new_database(settings, CHAT_APP_KEY)

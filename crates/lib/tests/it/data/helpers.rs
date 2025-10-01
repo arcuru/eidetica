@@ -6,12 +6,12 @@
 use eidetica::{
     Database, Instance, Transaction,
     backend::database::InMemory,
-    crdt::{
-        Doc,
-        doc::{Node, Value},
-    },
+    crdt::{Doc, doc::Value},
     store::DocStore,
 };
+
+// Type alias for local usage
+type Node = Doc;
 
 // ===== BASIC SETUP HELPERS =====
 
@@ -86,10 +86,10 @@ pub fn create_complex_nested_structure() -> Node {
     // Level 3
     let mut level3 = Doc::new();
     level3.set_string("level3_key1", "level3_value1");
-    level2.set_node("level3", level3);
+    level2.set_doc("level3", level3);
 
-    root.set_node("level2", level2);
-    root.into()
+    root.set_doc("level2", level2);
+    root
 }
 
 /// Assert that a path is deleted (tombstone exists)
@@ -127,18 +127,18 @@ pub fn create_mixed_map() -> Node {
 
     let mut nested = Doc::new();
     nested.set_string("nested_key", "nested_value");
-    map.set_node("map_val", nested);
+    map.set_doc("map_val", nested);
 
     // Create a tombstone
     map.remove("deleted_val");
 
-    map.into()
+    map
 }
 
 /// Test serialization roundtrip for a Node
 pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
-    let deserialized: Node = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
     // Compare the hashmaps directly since Map doesn't implement PartialEq
     let original_hashmap = map.as_hashmap();
