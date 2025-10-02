@@ -90,6 +90,10 @@ tasks:
     desc: Generate coverage data
     aliases: [cov]
     cmd: cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
+  coverage:ignored:
+    desc: Generate coverage data including ignored tests
+    aliases: [cov:i]
+    cmd: cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm --ignored --no-fail-fast
   todo-test:
     desc: Run the todo example integration test
     dir: examples/todo
