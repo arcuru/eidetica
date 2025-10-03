@@ -2,23 +2,38 @@
 
 ## Purpose and Architecture
 
-Instance acts as the orchestration layer between application code and the underlying storage systems. It manages multiple independent Databases (analogous to databases), handles cryptographic authentication, and coordinates with pluggable storage backends.
+Instance manages the multi-user infrastructure and system resources. It separates infrastructure management from contextual operations, providing user account management and coordinating with pluggable storage backends. All contextual operations (database creation, key management) run through User sessions after login.
 
-Each Instance instance maintains a unique device identity through an automatically-generated Ed25519 keypair, enabling secure multi-device synchronization.
+Each Instance maintains a unique device identity (`_device_key`) through an automatically-generated Ed25519 keypair, enabling system database authentication and secure multi-device synchronization.
 
 ## Key Responsibilities
 
-**Database Management**: Creates and provides access to Databases, each representing an independent history of data entries.
+**User Management**: Creates and authenticates user accounts with optional password protection.
 
-**Authentication Infrastructure**: Manages Ed25519 private keys for signing operations and validating permissions. All operations require authenticated access.
+**System Database Management**: Maintains system databases (`_instance`, `_users`, `_databases`) for infrastructure operations.
 
 **Backend Coordination**: Interfaces with pluggable storage backends (currently just InMemory) while abstracting storage details from higher-level code.
 
-**Device Identity**: Automatically maintains device-specific cryptographic identity for sync operations.
+**Device Identity**: Automatically maintains device-specific cryptographic identity (`_device_key`) for system operations and sync.
 
 ## Design Principles
 
-- **Authentication-First**: Every operation requires cryptographic validation
+- **Infrastructure Focus**: Instance manages infrastructure, User handles operations
+- **User-Centric**: All database and key operations run in User context after login
 - **Pluggable Storage**: Storage backends can be swapped without affecting application logic
-- **Multi-Database**: Supports multiple independent data collections within a single instance
+- **Multi-User**: Always multi-user underneath, supporting both passwordless and password-protected users
 - **Sync-Ready**: Built-in device identity and hooks for distributed synchronization
+
+## Architecture Layers
+
+Instance provides infrastructure management:
+
+- **User Account Management**: Create users with optional passwords, login to obtain User sessions
+- **System Databases**: Maintain `_instance`, `_users`, `_databases` for infrastructure
+- **Backend Access**: Coordinate storage operations through pluggable backends
+
+User provides contextual operations (returned from login):
+
+- **Database Operations**: Create, load, and find databases in user context
+- **Key Management**: Add private keys, list keys, get signing keys
+- **Session Management**: Logout to clear decrypted keys from memory

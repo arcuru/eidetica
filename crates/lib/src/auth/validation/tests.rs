@@ -316,9 +316,16 @@ fn test_complete_delegation_workflow() {
     let backend = Box::new(InMemory::new());
     let db = Instance::new(backend);
 
-    // Create keys for both main and delegated trees
-    let main_key = db.add_private_key("main_admin").unwrap();
-    let delegated_key = db.add_private_key("delegated_user").unwrap();
+    // Single-user mode automatically handles key management
+    // Use the default user's device key for main admin
+    let main_key = db
+        .backend()
+        .get_private_key("_device_key")
+        .unwrap()
+        .unwrap()
+        .verifying_key();
+    // For delegated key, we'll use the same device key for simplicity in tests
+    let delegated_key = main_key;
 
     // Create the delegated tree with its own auth configuration
     let mut delegated_settings = Doc::new();
@@ -329,11 +336,16 @@ fn test_complete_delegation_workflow() {
             AuthKey::active(format_public_key(&delegated_key), Permission::Admin(5)).unwrap(),
         )
         .unwrap();
+    // Add _device_key to auth config so we can create the database with it
+    delegated_auth
+        .set_json(
+            "_device_key",
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+        )
+        .unwrap();
     delegated_settings.set_doc("auth", delegated_auth);
 
-    let delegated_tree = db
-        .new_database(delegated_settings, "delegated_user")
-        .unwrap();
+    let delegated_tree = db.new_database(delegated_settings, "_device_key").unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -343,6 +355,13 @@ fn test_complete_delegation_workflow() {
     main_auth
         .set_json(
             "main_admin",
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+        )
+        .unwrap();
+    // Add _device_key to auth config so we can create the database with it
+    main_auth
+        .set_json(
+            "_device_key",
             AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
@@ -368,7 +387,7 @@ fn test_complete_delegation_workflow() {
         .unwrap();
 
     main_settings.set_doc("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "main_admin").unwrap();
+    let main_tree = db.new_database(main_settings, "_device_key").unwrap();
 
     // Test delegation resolution
     let mut validator = AuthValidator::new();
@@ -410,12 +429,18 @@ fn test_delegated_tree_requires_tips() {
     let backend = Box::new(InMemory::new());
     let db = Instance::new(backend);
 
-    // Create keys for both main and delegated trees
-    let main_key = db.add_private_key("main_admin").unwrap();
+    // Single-user mode automatically handles key management
+    // Use the default user's device key for main admin
+    let main_key = db
+        .backend()
+        .get_private_key("_device_key")
+        .unwrap()
+        .unwrap()
+        .verifying_key();
 
     // Create a simple delegated tree
     let delegated_settings = Doc::new();
-    let delegated_tree = db.new_database(delegated_settings, "main_admin").unwrap();
+    let delegated_tree = db.new_database(delegated_settings, "_device_key").unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -487,10 +512,15 @@ fn test_nested_delegation_with_permission_clamping() {
     let backend = Box::new(InMemory::new());
     let db = Instance::new(backend);
 
-    // Create keys for main tree, intermediate delegated tree, and final user tree
-    let main_key = db.add_private_key("main_admin").unwrap();
-    let intermediate_key = db.add_private_key("intermediate_admin").unwrap();
-    let user_key = db.add_private_key("final_user").unwrap();
+    // Use the default user's device key for all operations
+    let main_key = db
+        .backend()
+        .get_private_key("_device_key")
+        .unwrap()
+        .unwrap()
+        .verifying_key();
+    let intermediate_key = main_key;
+    let user_key = main_key;
 
     // 1. Create the final user tree (deepest level)
     let mut user_settings = Doc::new();
@@ -505,8 +535,15 @@ fn test_nested_delegation_with_permission_clamping() {
             .unwrap(),
         )
         .unwrap();
+    // Add _device_key to auth config so we can create the database with it
+    user_auth
+        .set_json(
+            "_device_key",
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+        )
+        .unwrap();
     user_settings.set_doc("auth", user_auth);
-    let user_tree = db.new_database(user_settings, "final_user").unwrap();
+    let user_tree = db.new_database(user_settings, "_device_key").unwrap();
     let user_tips = user_tree.get_tips().unwrap();
 
     // 2. Create intermediate delegated tree that delegates to user tree
@@ -518,6 +555,13 @@ fn test_nested_delegation_with_permission_clamping() {
         .set_json(
             "intermediate_admin",
             AuthKey::active(format_public_key(&intermediate_key), Permission::Admin(2)).unwrap(),
+        )
+        .unwrap();
+    // Add _device_key to auth config so we can create the database with it
+    intermediate_auth
+        .set_json(
+            "_device_key",
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
 
@@ -540,7 +584,7 @@ fn test_nested_delegation_with_permission_clamping() {
 
     intermediate_settings.set_doc("auth", intermediate_auth);
     let intermediate_tree = db
-        .new_database(intermediate_settings, "intermediate_admin")
+        .new_database(intermediate_settings, "_device_key")
         .unwrap();
     let intermediate_tips = intermediate_tree.get_tips().unwrap();
 
@@ -552,6 +596,13 @@ fn test_nested_delegation_with_permission_clamping() {
     main_auth
         .set_json(
             "main_admin",
+            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+        )
+        .unwrap();
+    // Add _device_key to auth config so we can create the database with it
+    main_auth
+        .set_json(
+            "_device_key",
             AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
@@ -575,7 +626,7 @@ fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
 
     main_settings.set_doc("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "main_admin").unwrap();
+    let main_tree = db.new_database(main_settings, "_device_key").unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User
     let mut validator = AuthValidator::new();

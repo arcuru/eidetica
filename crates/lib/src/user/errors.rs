@@ -32,9 +32,6 @@ pub enum UserError {
     #[error("Decryption failed: {reason}")]
     DecryptionFailed { reason: String },
 
-    #[error("No implicit user available (use multi-user mode)")]
-    NoImplicitUser,
-
     #[error("Operation requires admin permission")]
     InsufficientPermissions,
 
@@ -61,4 +58,13 @@ pub enum UserError {
         key_id: String,
         database_id: crate::entry::ID,
     },
+
+    #[error("Password required for operation: {operation}")]
+    PasswordRequired { operation: String },
+
+    #[error("Invalid key format: {reason}")]
+    InvalidKeyFormat { reason: String },
+
+    #[error("No keys available for user")]
+    NoKeysAvailable,
 }

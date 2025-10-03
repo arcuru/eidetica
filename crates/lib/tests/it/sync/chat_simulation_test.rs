@@ -48,8 +48,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     let server_pubkey = server_instance
         .get_formatted_public_key(SERVER_KEY_NAME)
-        .expect("Failed to get server public key")
-        .expect("Server key should exist");
+        .expect("Failed to get server public key");
     println!("📍 Server public key: {}", server_pubkey);
 
     // Create a database (like creating a chat room)
@@ -143,8 +142,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     let client_pubkey = client_instance
         .get_formatted_public_key(CLIENT_KEY_NAME)
-        .expect("Failed to get client public key")
-        .expect("Client key should exist");
+        .expect("Failed to get client public key");
     println!("📍 Client public key: {}", client_pubkey);
 
     // Verify client doesn't have the database initially
@@ -479,8 +477,7 @@ async fn test_global_key_bootstrap() {
     // Add admin key to auth settings as well (required for database creation)
     let admin_pubkey = server_instance
         .get_formatted_public_key("admin_key")
-        .expect("Failed to get admin public key")
-        .expect("Admin key should exist");
+        .expect("Failed to get admin public key");
 
     // Add global write permission to auth settings
     let mut auth_doc = Doc::new();
@@ -616,8 +613,7 @@ async fn test_multiple_databases_sync() {
     // Get server public key for auth configuration
     let server_pubkey = server_instance
         .get_formatted_public_key(SERVER_KEY_NAME)
-        .expect("Failed to get server public key")
-        .expect("Server key should exist");
+        .expect("Failed to get server public key");
 
     // Create three different databases (chat rooms)
     let mut room_ids = Vec::new();

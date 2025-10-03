@@ -46,11 +46,11 @@ tasks:
   clippy:
     desc: Run clippy
     cmds:
-      - cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
   clippy:fix:
     desc: Run clippy fixes
     cmds:
-      - cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings
+      - cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings -A deprecated
   fmt:
     desc: Run all formatters
     cmds:

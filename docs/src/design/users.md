@@ -47,10 +47,10 @@ The current implementation has no concept of users:
 
 ### Architecture Overview
 
-The system uses separate system databases for different concerns:
+The system separates infrastructure management (Instance) from contextual operations (User):
 
 ```text
-Instance
+Instance (Infrastructure Layer)
 ├── Backend Storage (local only, not in databases)
 │   └── _device_key (SigningKey for Instance identity)
 │
@@ -64,14 +64,18 @@ Instance
 │   └── _sync
 │       └── Sync configuration and bootstrap requests
 │
-└── User Databases (one per user)
-    ├── Password-protected
-    ├── Encrypted private keys
-    ├── Database → SigKey mappings
-    └── User preferences
+└── User Management
+    ├── User creation (with or without password)
+    └── User login (returns User session)
+
+User (Operations Layer - returned from login)
+├── User session with decrypted keys
+├── Database operations (new, load, find)
+├── Key management (add, list, get)
+└── User preferences
 ```
 
-**Key Architectural Principle**: The library always uses the multi-user architecture underneath, with ergonomic wrappers providing single-user simplicity when needed.
+**Key Architectural Principle**: Instance handles infrastructure (user accounts, backend, system databases). User handles all contextual operations (database creation, key management). All operations run in a User context after login.
 
 ### Core Data Structures
 
@@ -92,10 +96,12 @@ pub struct UserInfo {
     pub user_database_id: ID,
 
     /// Password hash (using Argon2id)
-    pub password_hash: String,
+    /// None for passwordless users (single-user embedded mode)
+    pub password_hash: Option<String>,
 
     /// Salt for password hashing (base64 encoded string)
-    pub password_salt: String,
+    /// None for passwordless users (single-user embedded mode)
+    pub password_salt: Option<String>,
 
     /// User account creation timestamp
     pub created_at: u64,
@@ -155,11 +161,11 @@ pub struct UserKey {
     /// Key identifier (typically the base64-encoded public key string)
     pub key_id: String,
 
-    /// Encrypted private key (encrypted with user's password-derived key)
-    pub encrypted_private_key: Vec<u8>,
+    /// Private key bytes (encrypted or unencrypted based on encryption field)
+    pub private_key_bytes: Vec<u8>,
 
-    /// Encryption nonce/IV
-    pub nonce: Vec<u8>,
+    /// Encryption metadata
+    pub encryption: KeyEncryption,
 
     /// Display name for this key
     pub display_name: Option<String>,
@@ -173,6 +179,18 @@ pub struct UserKey {
     /// Database-specific SigKey mappings
     /// Maps: Database ID → SigKey used in that database's auth settings
     pub database_sigkeys: HashMap<ID, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum KeyEncryption {
+    /// Key is encrypted with password-derived key
+    Encrypted {
+        /// Encryption nonce/IV (12 bytes for AES-GCM)
+        nonce: Vec<u8>,
+    },
+    /// Key is stored unencrypted (passwordless users only)
+    Unencrypted,
 }
 ```
 
@@ -313,91 +331,105 @@ Users are created by administrators or self-registration:
 
 ### Library Architecture Layers
 
-The library provides a layered architecture with a single implementation underneath and ergonomic wrappers on top:
+The library separates infrastructure (Instance) from contextual operations (User):
 
-#### Core Layer: Always Multi-User
+#### Instance Layer: Infrastructure Management
 
-All Instance initialization creates the multi-user foundation:
+Instance manages the multi-user infrastructure and system resources:
 
-**Initialization Steps:**
+**Initialization:**
 
 1. Load or generate `_device_key` from backend
 2. Create system databases (`_instance`, `_users`, `_databases`) authenticated with `_device_key`
-3. Initialize InstanceCore with backend and system databases
+3. Initialize Instance with backend and system databases
+
+**Responsibilities:**
+
+- User account management (create, login)
+- System database maintenance
+- Backend coordination
+- Database tracking
 
 **Key Points:**
 
-- System databases (`_instance`, `_users`, `_databases`) always exist
-- `_device_key` stored in backend provides Instance identity
-- All database operations go through user context internally
-- This is the foundation for both single-user and multi-user modes
+- Instance is always multi-user underneath
+- No direct database or key operations
+- All operations require a User session
 
-#### Single-User Ergonomics Layer
+#### User Layer: Contextual Operations
 
-The simple API for embedded applications provides seamless single-user experience:
+User represents an authenticated session with decrypted keys:
 
-**Initialization:**
+**Creation:**
 
-- `Instance::new()` creates default user automatically with auto-generated password
-- Default user auto-logged in and stored as implicit user
-- Returns Instance in SingleUser mode
+- Returned from `Instance::login_user(username, Option<password>)`
+- Contains decrypted private keys in memory
+- Has access to user's preferences and database mappings
 
-**Operation Pattern:**
+**Responsibilities:**
 
-- All database and key operations delegate to implicit user
-- No explicit user login or session management required
-- Errors if no implicit user available
+- Database operations (new_database, load_database, find_database)
+- Key management (add_private_key, list_keys, get_signing_key)
+- Database preferences
+- Bootstrap approval
+
+**Key Points:**
+
+- All database creation and key management happens through User
+- Keys are zeroized on logout or drop
+- Clean separation between users
+
+#### Passwordless Users
+
+For embedded/single-user scenarios, users can be created without passwords:
+
+**Creation:**
+
+```rust,ignore
+// Create passwordless user
+instance.create_user("alice", None)?;
+
+// Login without password
+let user = instance.login_user("alice", None)?;
+
+// Use User API normally
+let db = user.new_database(settings)?;
+```
 
 **Characteristics:**
 
+- No authentication overhead
+- Keys stored unencrypted in user database
 - Perfect for embedded apps, CLI tools, single-user deployments
-- No authentication overhead for simple use cases
-- Transparent user context in all operations
+- Still uses full User API for operations
 
-#### Explicit Multi-User Layer
+#### Password-Protected Users
 
-The full API for multi-user servers and applications:
+For multi-user scenarios, users have password-based authentication:
 
-**Initialization:**
+**Creation:**
 
-- `Instance::new_multiuser()` has no implicit user
-- Returns Instance in MultiUser mode
+```rust,ignore
+// Create password-protected user
+instance.create_user("bob", Some("password123"))?;
 
-**User Management:**
+// Login with password verification
+let user = instance.login_user("bob", Some("password123"))?;
 
-- Explicit `create_user()` for user account creation
-- Explicit `login_user()` returns User session object
-- All operations performed through User object
+// Use User API normally
+let db = user.new_database(settings)?;
+```
 
 **Characteristics:**
 
-- Full control over user sessions and lifecycle
-- Password-based authentication required
+- Argon2id password hashing
+- AES-256-GCM key encryption
 - Perfect for servers, multi-tenant applications
 - Clear separation between users
 
-#### Binary Usage
-
-The binary (multi-user sync server) builds on the explicit multi-user API:
-
-<!-- Code block ignored: Missing Instance type and backend definition -->
-
-```rust,ignore
-// bin/main.rs
-let instance = Instance::new_multiuser(backend)?;
-let sync = instance.with_sync()?;
-
-// Expose HTTP/gRPC endpoints for:
-// - User creation/authentication
-// - Database operations per-user
-// - Sync protocol handling
-```
-
-The binary is simply the library in explicit multi-user mode with network transport layers.
-
 ### Instance API
 
-The Instance API has two modes: single-user (ergonomic) and multi-user (explicit).
+Instance manages infrastructure and user accounts:
 
 #### Initialization
 
@@ -405,91 +437,33 @@ The Instance API has two modes: single-user (ergonomic) and multi-user (explicit
 
 ```rust,ignore
 impl Instance {
-    // === Single-User Mode ===
-
-    /// Create instance with implicit default user (simple API)
+    /// Create instance
     /// - Loads/generates _device_key from backend
     /// - Creates system databases (_instance, _users, _databases)
-    /// - Creates and auto-logs in default user
-    /// - All operations use implicit user context
     pub fn new(backend: Box<dyn BackendDB>) -> Result<Self>;
-
-    // === Multi-User Mode ===
-
-    /// Create instance without implicit user (explicit API)
-    /// - Loads/generates _device_key from backend
-    /// - Creates system databases (_instance, _users, _databases)
-    /// - Requires explicit user login for operations
-    pub fn new_multiuser(backend: Box<dyn BackendDB>) -> Result<Self>;
 }
 ```
 
-#### Single-User Convenience Methods
-
-These methods work with the implicit default user (only available in single-user mode):
+#### User Management
 
 <!-- Code block ignored: API interface showing function signatures without bodies -->
 
 ```rust,ignore
 impl Instance {
-    // === Database Operations (single-user convenience) ===
-
-    /// Create database using implicit user
-    pub fn new_database(&self, settings: Doc) -> Result<Database>;
-
-    /// Load database (available in both modes)
-    pub fn load_database(&self, root_id: &ID) -> Result<Database>;
-
-    // === Key Management (single-user convenience) ===
-
-    /// Add private key to implicit user's keyring
-    pub fn add_private_key(&self, display_name: Option<&str>) -> Result<String>;
-
-    /// Get implicit user's keys for a database
-    pub fn get_keys_for_database(
-        &self,
-        database_id: &ID,
-    ) -> Result<Vec<(String, Permission)>>;
-
-    // === Database Preferences (single-user convenience) ===
-
-    /// Add database to implicit user's preferences
-    pub fn add_database_preference(
-        &self,
-        database_id: &ID,
-        preferences: UserDatabasePreferences,
-    ) -> Result<()>;
-
-    /// List implicit user's database preferences
-    pub fn list_database_preferences(&self) -> Result<Vec<UserDatabasePreferences>>;
-}
-```
-
-#### Explicit User Management
-
-These methods are available in both modes:
-
-<!-- Code block ignored: API interface showing function signatures without bodies -->
-
-```rust,ignore
-impl Instance {
-    // === User Management ===
-
     /// Create a new user account
-    /// Returns (user_uuid, user_info) where user_uuid is the generated primary key
+    /// Returns user_uuid (the generated primary key)
     pub fn create_user(
         &self,
         username: &str,
-        password: &str,
-        display_name: Option<&str>,
-    ) -> Result<(String, UserInfo)>;
+        password: Option<&str>,
+    ) -> Result<String>;
 
-    /// Login a user with password (returns User session object)
+    /// Login a user (returns User session object)
     /// Searches by username; errors if duplicate usernames detected
     pub fn login_user(
         &self,
         username: &str,
-        password: &str,
+        password: Option<&str>,
     ) -> Result<User>;
 
     /// List all users (returns usernames)
@@ -497,34 +471,6 @@ impl Instance {
 
     /// Disable a user account
     pub fn disable_user(&self, username: &str) -> Result<()>;
-
-    // === Database Tracking ===
-
-    /// Register a database in the tracking table
-    pub fn register_database(
-        &self,
-        database_id: &ID,
-        name: Option<&str>,
-    ) -> Result<()>;
-
-    /// Get tracking info for a database
-    pub fn get_database_tracking(&self, database_id: &ID) -> Result<Option<DatabaseTracking>>;
-
-    /// List all tracked databases
-    pub fn list_tracked_databases(&self) -> Result<Vec<DatabaseTracking>>;
-
-    /// Update database tracking (add user, update metadata)
-    pub fn update_database_tracking(
-        &self,
-        database_id: &ID,
-        update: DatabaseTrackingUpdate,
-    ) -> Result<()>;
-}
-
-pub enum DatabaseTrackingUpdate {
-    AddUser(String),
-    RemoveUser(String),
-    UpdateMetadata(HashMap<String, String>),
 }
 ```
 
@@ -534,6 +480,9 @@ pub enum DatabaseTrackingUpdate {
 
 ````rust,ignore
 /// User session object, returned after successful login
+///
+/// Represents an authenticated user with decrypted private keys loaded in memory.
+/// All contextual operations (database creation, key management) happen through User.
 pub struct User {
     user_uuid: String,   // Stable internal UUID (Table primary key)
     username: String,    // Username (login identifier)
@@ -550,7 +499,10 @@ impl User {
     /// Get the username (login identifier)
     pub fn username(&self) -> &str;
 
-    // === Database Loading ===
+    // === Database Operations ===
+
+    /// Create a new database in this user's context
+    pub fn new_database(&self, settings: Doc) -> Result<Database>;
 
     /// Load a database using this user's keys
     ///
@@ -586,6 +538,9 @@ impl User {
     /// tx.commit()?;
     /// ```
     pub fn load_database(&self, database_id: &ID) -> Result<Database>;
+
+    /// Find databases by name
+    pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>>;
 
     /// Find the best key for accessing a database
     ///
@@ -627,134 +582,24 @@ impl User {
 
     /// Generate a new private key for this user
     pub fn add_private_key(
-        &self,
+        &mut self,
         display_name: Option<&str>,
     ) -> Result<String>;
-
-    /// Import an existing private key
-    pub fn import_private_key(
-        &self,
-        private_key: SigningKey,
-        display_name: Option<&str>,
-    ) -> Result<String>;
-
-    /// Get public key for a stored key
-    pub fn get_public_key(&self, key_id: &str) -> Result<Option<VerifyingKey>>;
 
     /// List all key IDs owned by this user
     pub fn list_keys(&self) -> Result<Vec<String>>;
 
-    /// Set the SigKey that a key uses in a specific database
-    pub fn set_database_sigkey(
-        &self,
-        key_id: &str,
-        database_id: &ID,
-        sigkey: &str,
-    ) -> Result<()>;
-
-    /// Get the SigKey that a key uses in a specific database
-    pub fn get_database_sigkey(
-        &self,
-        key_id: &str,
-        database_id: &ID,
-    ) -> Result<Option<String>>;
-
-    /// Remove a key from user's keyring
-    pub fn remove_key(&self, key_id: &str) -> Result<()>;
-
-    // === Database Preferences ===
-
-    /// Add a database to user's preferences
-    pub fn add_database_preference(
-        &self,
-        database_id: &ID,
-        preferences: UserDatabasePreferences,
-    ) -> Result<()>;
-
-    /// Update database preferences
-    pub fn update_database_preference(
-        &self,
-        database_id: &ID,
-        update: DatabasePreferenceUpdate,
-    ) -> Result<()>;
-
-    /// Get preferences for a database
-    pub fn get_database_preference(
-        &self,
-        database_id: &ID,
-    ) -> Result<Option<UserDatabasePreferences>>;
-
-    /// List all databases this user cares about
-    pub fn list_database_preferences(&self) -> Result<Vec<UserDatabasePreferences>>;
-
-    /// Remove database from preferences
-    pub fn remove_database_preference(&self, database_id: &ID) -> Result<()>;
-
-    // === Key Discovery ===
-
-    /// Find keys this user has that can access a database
-    /// Optionally filtered by minimum permission
-    pub fn get_keys_for_database(
-        &self,
-        database_id: &ID,
-        min_permission: Option<Permission>,
-    ) -> Result<Vec<(String, Permission)>>;
-
-    /// Find the best key for accessing a database
-    pub fn find_key_for_database(
-        &self,
-        database_id: &ID,
-    ) -> Result<Option<String>>;
-
-    // === Bootstrap Management ===
-
-    /// Approve a bootstrap request using this user's admin key
-    ///
-    /// This method:
-    /// 1. Finds one of this user's keys with Admin permission for the target database
-    /// 2. Creates a transaction using that key's SigKey
-    /// 3. Adds the requesting key to the database's auth settings
-    /// 4. Updates the bootstrap request status to Approved
-    ///
-    /// Requires: User must have Admin permission for the target database
-    pub fn approve_bootstrap_request(
-        &self,
-        request_id: &str,
-        tree_id: &ID,
-    ) -> Result<()>;
-
-    /// Reject a bootstrap request
-    ///
-    /// Updates the bootstrap request status to Rejected.
-    /// No keys are added to the database.
-    pub fn reject_bootstrap_request(
-        &self,
-        request_id: &str,
-    ) -> Result<()>;
+    /// Get a signing key by its ID
+    pub fn get_signing_key(&self, key_id: &str) -> Result<SigningKey>;
 
     // === Session Management ===
 
-    /// Get user ID
-    pub fn user_id(&self) -> &str;
-
     /// Logout (clears decrypted keys from memory)
     pub fn logout(self) -> Result<()>;
-
-    /// Change user password (re-encrypts all keys)
-    pub fn change_password(
-        &mut self,
-        old_password: &str,
-        new_password: &str,
-    ) -> Result<()>;
-}
-
-pub enum DatabasePreferenceUpdate {
-    EnableSync(bool),
-    SetSyncSettings(SyncSettings),
-    SetPreferredSigKey(String),
-    UpdateNotes(String),
 }
 ````
+
+**Note**: Additional User methods for database preferences, key discovery, and bootstrap management are planned but not yet implemented in the current phase.
 
 ### UserKeyManager (Internal)
 
@@ -780,22 +625,37 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 ### User Creation Flow
 
-1. Admin calls `instance.create_user()` with username and password
+**Password-Protected User:**
+
+1. Admin calls `instance.create_user(username, Some(password))`
 2. System searches `_users` Table for existing username (race condition possible)
 3. System hashes password with Argon2id and random salt
 4. Generates default Ed25519 keypair for the user (kept in memory only)
 5. Retrieves instance `_device_key` public key from backend
 6. Creates user database with authentication for both `_device_key` (Admin) and user's key (Admin)
-7. Encrypts user's private key with password-derived key
+7. Encrypts user's private key with password-derived key (AES-256-GCM)
 8. Stores encrypted key in user database `keys` Table (using public key as identifier, signed with `_device_key`)
 9. Creates UserInfo and inserts into `_users` Table (auto-generates UUID primary key)
-10. Returns (user_uuid, UserInfo) tuple
+10. Returns user_uuid
 
-**Note**: The user's keypair is never stored unencrypted in the backend. It exists only as encrypted data in the user's private database. The user database is authenticated with both the instance `_device_key` (for admin operations) and the user's default key (for user ownership). Initial entries are signed with `_device_key`.
+**Passwordless User:**
+
+1. Admin calls `instance.create_user(username, None)`
+2. System searches `_users` Table for existing username (race condition possible)
+3. Generates default Ed25519 keypair for the user (kept in memory only)
+4. Retrieves instance `_device_key` public key from backend
+5. Creates user database with authentication for both `_device_key` (Admin) and user's key (Admin)
+6. Stores unencrypted private key in user database `keys` Table (marked as Unencrypted)
+7. Creates UserInfo with None for password fields and inserts into `_users` Table
+8. Returns user_uuid
+
+**Note**: For password-protected users, the keypair is never stored unencrypted in the backend. For passwordless users, keys are stored unencrypted for instant access. The user database is authenticated with both the instance `_device_key` (for admin operations) and the user's default key (for user ownership). Initial entries are signed with `_device_key`.
 
 ### Login Flow
 
-1. User calls `instance.login_user()` with username and credentials
+**Password-Protected User:**
+
+1. User calls `instance.login_user(username, Some(password))`
 2. System searches `_users` Table by username
 3. If multiple users with same username found, returns `DuplicateUsersDetected` error
 4. Verifies password against stored hash
@@ -806,6 +666,28 @@ See [key_management.md](./key_management.md) for detailed implementation.
 9. Creates UserKeyManager with decrypted keys
 10. Updates last_login timestamp in `_users` Table (using UUID)
 11. Returns User session object (contains both user_uuid and username)
+
+**Passwordless User:**
+
+1. User calls `instance.login_user(username, None)`
+2. System searches `_users` Table by username
+3. If multiple users with same username found, returns `DuplicateUsersDetected` error
+4. Verifies UserInfo has no password (password_hash and password_salt are None)
+5. Loads user's private database
+6. Loads unencrypted keys from user database
+7. Creates UserKeyManager with keys (no decryption needed)
+8. Returns User session object (contains both user_uuid and username)
+
+### Database Creation Flow
+
+1. User obtains User session via login
+2. User creates database settings (Doc with name, etc.)
+3. Calls `user.new_database(settings)`
+4. System selects first available signing key from user's keyring
+5. Creates database using `Database::new()` for root entry creation
+6. Stores database_sigkeys mapping in UserKey for future loads
+7. Returns Database object
+8. User can now create transactions and perform operations on the database
 
 ### Database Access Flow
 
@@ -818,7 +700,7 @@ The user accesses databases through the `User.load_database()` method, which han
    - Selects key with highest permission level
 3. System retrieves decrypted SigningKey from UserKeyManager
 4. System gets SigKey mapping via `get_database_sigkey()`
-5. System creates Database with `Database::new_with_key()`
+5. System loads Database with `Database::load_with_key()`
    - Database stores KeySource::Provided with signing key and sigkey
 6. User creates transactions normally: `database.new_transaction()`
    - Transaction automatically receives provided key from Database
@@ -830,21 +712,24 @@ The user accesses databases through the `User.load_database()` method, which han
 
 ### Key Addition Flow
 
-1. User calls `user.add_private_key()` with optional display name
+**Password-Protected User:**
+
+1. User calls `user.add_private_key(display_name)`
 2. System generates new Ed25519 keypair
-3. Encrypts private key with user's password-derived key
-4. Creates UserKey metadata
+3. Encrypts private key with user's password-derived key (AES-256-GCM)
+4. Creates UserKey metadata with Encrypted variant
 5. Stores encrypted key in user database
 6. Adds to in-memory UserKeyManager
-7. User maps key to database with `user.set_database_sigkey()`
-8. Adds key to database auth settings via transaction
+7. Returns key_id
 
-### Database Preference Management
+**Passwordless User:**
 
-1. User creates UserDatabasePreferences with sync settings and preferences
-2. Calls `user.add_database_preference()` to store preferences
-3. Instance updates database tracking to add user to database's user list
-4. User can query preferences with `user.list_database_preferences()`
+1. User calls `user.add_private_key(display_name)`
+2. System generates new Ed25519 keypair
+3. Creates UserKey metadata with Unencrypted variant
+4. Stores unencrypted key in user database
+5. Adds to in-memory UserKeyManager
+6. Returns key_id
 
 ## Bootstrap Integration
 
@@ -983,26 +868,24 @@ The Users system provides the architectural context:
 
 ## Conclusion
 
-The Users system provides a unified architecture that supports both embedded applications and multi-user servers:
+The Users system provides a clean separation between infrastructure (Instance) and contextual operations (User):
 
 **Core Architecture:**
 
+- Instance manages infrastructure: user accounts, backend, system databases
+- User handles all contextual operations: database creation, key management
 - Separate system databases (`_instance`, `_users`, `_databases`, `_sync`)
-- Instance identity (`_device_key`) stored in backend, not password-protected
+- Instance identity (`_device_key`) stored in backend for system database authentication
 - Strong isolation between users
-- Password-based authentication with encrypted key storage
-- Per-user key management and database preferences
 
-**Layered API:**
+**User Types:**
 
-- **Single-User Mode**: Simple `Instance::new()` with implicit default user, perfect for embedded apps
-- **Multi-User Mode**: Explicit `Instance::new_multiuser()` requiring user login, perfect for servers
-- **Binary**: Builds on multi-user mode with network transport layers
+- **Passwordless Users**: Optional password support enables instant login without authentication overhead, perfect for embedded apps
+- **Password-Protected Users**: Argon2id password hashing and AES-256-GCM key encryption for multi-user scenarios
 
 **Key Benefits:**
 
-- One implementation underneath (always multi-user)
-- Ergonomic wrappers for different use cases
-- No migration burden (new architecture only)
-- Clean separation between library (core + APIs) and binary (network layer)
+- Clean separation: Instance = infrastructure, User = operations
+- All operations run in User context after login
+- Flexible authentication: users can have passwords or not
 - Instance restart just loads `_device_key` from backend

@@ -38,8 +38,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
-        .expect("Failed to get server admin public key")
-        .expect("Server admin key should exist");
+        .expect("Failed to get server admin public key");
 
     // Set strict auth policy - only server_admin has permission to manage auth
     let mut auth_doc = Doc::new();
@@ -82,8 +81,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     let client_pubkey = client_instance
         .get_formatted_public_key("unauthorized_client")
-        .expect("Failed to get client public key")
-        .expect("Client key should exist");
+        .expect("Failed to get client public key");
 
     println!(
         "👤 Client attempting bootstrap with unauthorized key: {}",
@@ -205,8 +203,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     let _client_pubkey = client_instance
         .get_formatted_public_key("client_key")
-        .expect("Failed to get client public key")
-        .expect("Client key should exist");
+        .expect("Failed to get client public key");
 
     let client_sync = client_instance.sync_mut().expect("Client should have sync");
     client_sync
@@ -373,13 +370,11 @@ async fn test_bootstrap_with_revoked_key() {
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
-        .expect("Failed to get server admin public key")
-        .expect("Server admin key should exist");
+        .expect("Failed to get server admin public key");
 
     let revoked_client_pubkey = server_instance
         .get_formatted_public_key("revoked_client")
-        .expect("Failed to get revoked client public key")
-        .expect("Revoked client key should exist");
+        .expect("Failed to get revoked client public key");
 
     // Create database with auth configuration including the revoked key
     let mut settings = Doc::new();
@@ -487,8 +482,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
-        .expect("Failed to get server admin public key")
-        .expect("Server admin key should exist");
+        .expect("Failed to get server admin public key");
 
     // Create database with restrictive auth policy
     let mut settings = Doc::new();

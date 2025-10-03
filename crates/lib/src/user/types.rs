@@ -10,6 +10,8 @@ use crate::entry::ID;
 ///
 /// Users are stored in a Table with auto-generated UUID primary keys.
 /// The username field is used for login and must be unique.
+///
+/// Passwordless users have None for password fields.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserInfo {
     /// Unique username (login identifier)
@@ -19,11 +21,12 @@ pub struct UserInfo {
     pub user_database_id: ID,
 
     /// Password hash (using Argon2id)
-    pub password_hash: String,
+    /// None for passwordless users
+    pub password_hash: Option<String>,
 
-    // TODO: The salt is also stored inside password_hash in the PHC format, remove this redundant storage.
     /// Salt for password hashing (base64 encoded string)
-    pub password_salt: String,
+    /// None for passwordless users
+    pub password_salt: Option<String>,
 
     /// User account creation timestamp
     pub created_at: u64,
@@ -66,17 +69,33 @@ pub struct UserPreferences {
     pub properties: HashMap<String, String>,
 }
 
-/// User's encrypted private key with database mappings
+/// Key encryption metadata
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum KeyEncryption {
+    /// Key is encrypted with password-derived key
+    Encrypted {
+        /// Encryption nonce/IV (12 bytes for AES-GCM)
+        nonce: Vec<u8>,
+    },
+    /// Key is stored unencrypted (passwordless users only)
+    Unencrypted,
+}
+
+/// User's private key with database mappings
+///
+/// Keys can be either encrypted (for password-protected users) or
+/// unencrypted (for passwordless single-user mode).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
     /// Local key identifier (public key or special name like "_device_key")
     pub key_id: String,
 
-    /// Encrypted private key (encrypted with user's password-derived key)
-    pub encrypted_private_key: Vec<u8>,
+    /// Private key bytes (encrypted or unencrypted based on encryption field)
+    pub private_key_bytes: Vec<u8>,
 
-    /// Encryption nonce/IV (12 bytes for AES-GCM)
-    pub nonce: Vec<u8>,
+    /// Encryption metadata
+    pub encryption: KeyEncryption,
 
     /// Display name for this key
     pub display_name: Option<String>,

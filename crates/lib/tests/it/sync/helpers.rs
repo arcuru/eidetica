@@ -233,8 +233,7 @@ pub fn setup_bootstrap_server(
     // Add server admin key to auth settings
     let server_pubkey = instance
         .get_formatted_public_key("server_admin")
-        .expect("Failed to get server public key")
-        .expect("Server admin key should exist");
+        .expect("Failed to get server public key");
 
     auth_doc
         .set_json(
@@ -251,8 +250,7 @@ pub fn setup_bootstrap_server(
     // The sync handler needs this key to authenticate when operating on the database
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
-        .expect("Failed to get device public key")
-        .expect("Device key should exist");
+        .expect("Failed to get device public key");
 
     auth_doc
         .set_json(

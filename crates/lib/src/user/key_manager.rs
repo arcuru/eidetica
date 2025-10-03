@@ -11,7 +11,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::{
     crypto::{decrypt_private_key, derive_encryption_key, encrypt_private_key},
     errors::UserError,
-    types::UserKey,
+    types::{KeyEncryption, UserKey},
 };
 use crate::Result;
 
@@ -21,7 +21,7 @@ use crate::Result;
 ///
 /// This struct holds sensitive cryptographic material in memory:
 /// - `decrypted_keys`: Contains plaintext SigningKeys (ed25519_dalek implements Drop with zeroization)
-/// - `encryption_key`: Password-derived key (zeroized via manual Zeroize impl)
+/// - `encryption_key`: Password-derived key (zeroized via manual Zeroize impl), None for passwordless users
 ///
 /// All sensitive data is zeroized when the struct is dropped.
 pub struct UserKeyManager {
@@ -32,7 +32,8 @@ pub struct UserKeyManager {
     key_metadata: HashMap<String, UserKey>,
 
     /// User's password-derived encryption key (for saving new keys)
-    encryption_key: Vec<u8>,
+    /// None for passwordless users
+    encryption_key: Option<Vec<u8>>,
 }
 
 impl UserKeyManager {
@@ -56,11 +57,36 @@ impl UserKeyManager {
         let mut manager = Self {
             decrypted_keys: HashMap::with_capacity(capacity),
             key_metadata: HashMap::with_capacity(capacity),
-            encryption_key,
+            encryption_key: Some(encryption_key),
         };
 
         // Add all keys using add_key
         for user_key in encrypted_keys {
+            manager.add_key(user_key)?;
+        }
+
+        Ok(manager)
+    }
+
+    /// Create from unencrypted keys (for passwordless users)
+    ///
+    /// Keys are stored and loaded unencrypted for performance.
+    ///
+    /// # Arguments
+    /// * `keys` - Vec of UserKey entries with unencrypted private_key_bytes
+    ///
+    /// # Returns
+    /// A UserKeyManager with all keys ready for use
+    pub fn new_passwordless(keys: Vec<UserKey>) -> Result<Self> {
+        let capacity = keys.len();
+        let mut manager = Self {
+            decrypted_keys: HashMap::with_capacity(capacity),
+            key_metadata: HashMap::with_capacity(capacity),
+            encryption_key: None,
+        };
+
+        // Add all keys
+        for user_key in keys {
             manager.add_key(user_key)?;
         }
 
@@ -78,25 +104,40 @@ impl UserKeyManager {
         self.decrypted_keys.get(key_id)
     }
 
-    /// Add a key to the manager from encrypted metadata
+    /// Add a key to the manager from metadata
     ///
-    /// Decrypts the key from the provided metadata and stores it in memory.
-    /// Use `serialize_keys()` to get updated encrypted keys for storage.
+    /// Handles both encrypted and unencrypted keys based on metadata.
+    /// Use `serialize_keys()` to get updated keys for storage.
     ///
     /// # Arguments
-    /// * `metadata` - The UserKey metadata with encrypted_private_key and nonce
+    /// * `metadata` - The UserKey metadata with private_key_bytes and encryption info
     ///
     /// # Returns
-    /// Ok(()) if the key was successfully decrypted and added
+    /// Ok(()) if the key was successfully added
     pub fn add_key(&mut self, metadata: UserKey) -> Result<()> {
         let key_id = metadata.key_id.clone();
 
-        // Decrypt the key from metadata
-        let signing_key = decrypt_private_key(
-            &metadata.encrypted_private_key,
-            &metadata.nonce,
-            &self.encryption_key,
-        )?;
+        // Decrypt or deserialize the key based on encryption status
+        let signing_key = match &metadata.encryption {
+            KeyEncryption::Encrypted { nonce } => {
+                // Encrypted key - needs decryption
+                let encryption_key =
+                    self.encryption_key
+                        .as_ref()
+                        .ok_or_else(|| UserError::PasswordRequired {
+                            operation: "decrypt encrypted key".to_string(),
+                        })?;
+                decrypt_private_key(&metadata.private_key_bytes, nonce, encryption_key)?
+            }
+            KeyEncryption::Unencrypted => {
+                // Unencrypted key - direct deserialization
+                SigningKey::from_bytes(metadata.private_key_bytes.as_slice().try_into().map_err(
+                    |_| UserError::InvalidKeyFormat {
+                        reason: "Invalid key length".to_string(),
+                    },
+                )?)
+            }
+        };
 
         self.decrypted_keys.insert(key_id.clone(), signing_key);
         self.key_metadata.insert(key_id, metadata);
@@ -104,15 +145,16 @@ impl UserKeyManager {
         Ok(())
     }
 
-    /// Encrypt and serialize all keys for storage
+    /// Serialize all keys for storage
     ///
-    /// Re-encrypts all keys with the current encryption key and returns
-    /// updated UserKey metadata suitable for storing in the database.
+    /// Returns UserKey metadata suitable for storing in the database.
+    /// Encrypted keys are re-encrypted with the current encryption key.
+    /// Unencrypted keys are serialized directly.
     ///
     /// Keys are returned in sorted order by key_id for deterministic output.
     ///
     /// # Returns
-    /// Vec of UserKey with updated encrypted_private_key and nonce, sorted by key_id
+    /// Vec of UserKey with updated private_key_bytes and encryption info, sorted by key_id
     pub fn serialize_keys(&self) -> Result<Vec<UserKey>> {
         let mut serialized = Vec::new();
 
@@ -125,14 +167,29 @@ impl UserKeyManager {
                     key_id: key_id.clone(),
                 })?;
 
-            // Re-encrypt the key
-            let (encrypted_key, nonce) = encrypt_private_key(signing_key, &self.encryption_key)?;
+            // Encrypt or serialize based on encryption status
+            let (private_key_bytes, encryption) = match &metadata.encryption {
+                KeyEncryption::Encrypted { .. } => {
+                    // Re-encrypt the key
+                    let encryption_key = self.encryption_key.as_ref().ok_or_else(|| {
+                        UserError::PasswordRequired {
+                            operation: "encrypt key".to_string(),
+                        }
+                    })?;
+                    let (encrypted_key, nonce) = encrypt_private_key(signing_key, encryption_key)?;
+                    (encrypted_key, KeyEncryption::Encrypted { nonce })
+                }
+                KeyEncryption::Unencrypted => {
+                    // Serialize unencrypted
+                    (signing_key.to_bytes().to_vec(), KeyEncryption::Unencrypted)
+                }
+            };
 
             // Create updated UserKey
             let updated_key = UserKey {
                 key_id: key_id.clone(),
-                encrypted_private_key: encrypted_key,
-                nonce,
+                private_key_bytes,
+                encryption,
                 display_name: metadata.display_name.clone(),
                 created_at: metadata.created_at,
                 last_used: metadata.last_used,
@@ -168,6 +225,8 @@ impl UserKeyManager {
 
     /// Get the encryption key for encrypting new keys
     ///
+    /// Returns None for passwordless users.
+    ///
     /// # Security Considerations
     ///
     /// This method exposes the raw password-derived encryption key. It should only be used
@@ -185,15 +244,17 @@ impl UserKeyManager {
     ///
     /// The `pub(super)` visibility ensures this remains internal to the user module only.
     #[allow(dead_code)]
-    pub(super) fn encryption_key(&self) -> &[u8] {
-        &self.encryption_key
+    pub(super) fn encryption_key(&self) -> Option<&[u8]> {
+        self.encryption_key.as_deref()
     }
 }
 
 impl Zeroize for UserKeyManager {
     fn zeroize(&mut self) {
-        // Zeroize the encryption key
-        self.encryption_key.zeroize();
+        // Zeroize the encryption key if present
+        if let Some(key) = &mut self.encryption_key {
+            key.zeroize();
+        }
 
         // Clear the HashMap - this drops all SigningKeys (which zeroizes via ed25519_dalek's Drop)
         self.decrypted_keys.clear();
@@ -221,8 +282,8 @@ mod tests {
 
         UserKey {
             key_id: key_id.to_string(),
-            encrypted_private_key: encrypted_key,
-            nonce,
+            private_key_bytes: encrypted_key,
+            encryption: KeyEncryption::Encrypted { nonce },
             display_name: Some(format!("Test key {}", key_id)),
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -312,12 +373,14 @@ mod tests {
         let serialized_key = &serialized[0];
         assert_eq!(serialized_key.key_id, "key1");
 
-        let decrypted = decrypt_private_key(
-            &serialized_key.encrypted_private_key,
-            &serialized_key.nonce,
-            &encryption_key,
-        )
-        .unwrap();
+        // Extract nonce from encryption metadata
+        let nonce = match &serialized_key.encryption {
+            KeyEncryption::Encrypted { nonce } => nonce,
+            KeyEncryption::Unencrypted => panic!("Expected encrypted key"),
+        };
+
+        let decrypted =
+            decrypt_private_key(&serialized_key.private_key_bytes, nonce, &encryption_key).unwrap();
         assert_eq!(decrypted.to_bytes(), key1.to_bytes());
     }
 

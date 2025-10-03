@@ -68,9 +68,9 @@ pub struct Transaction {
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
     /// The database this transaction belongs to
     db: Database,
-    /// Optional authentication key name for backend lookup (traditional mode)
+    /// Optional authentication key name for backend lookup
     auth_key_name: Option<String>,
-    /// Optional provided signing key for user context (user mode)
+    /// Optional provided signing key when key is already decrypted
     /// Tuple contains (SigningKey, SigKey identifier)
     provided_signing_key: Option<(ed25519_dalek::SigningKey, String)>,
     /// Optional sync hooks to execute after successful commit
@@ -184,7 +184,7 @@ impl Transaction {
     /// Set signing key directly for user context (internal API).
     ///
     /// This method is used when a Database is created with a user-provided key
-    /// (via `Database::new_with_key()`). The provided SigningKey is already
+    /// (via `Database::load_with_key()`). The provided SigningKey is already
     /// decrypted and ready to use, eliminating the need for backend key lookup.
     ///
     /// # Arguments
@@ -775,11 +775,11 @@ impl Transaction {
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
 
-        // Priority: check provided_signing_key first (user mode), then fall back to auth_key_name (traditional mode)
+        // Priority: check provided_signing_key first, then fall back to auth_key_name
         let (signing_key, _sigkey_identifier) = if let Some((ref provided_key, ref sigkey)) =
             self.provided_signing_key
         {
-            // User mode: use provided signing key directly
+            // Use provided signing key directly (already decrypted from UserKeyManager)
             let key_clone = provided_key.clone();
 
             // Build SigInfo using the provided sigkey identifier
@@ -797,7 +797,7 @@ impl Transaction {
 
             (Some(key_clone), sigkey.clone())
         } else if let Some(key_name) = &self.auth_key_name {
-            // Traditional mode: look up private key from backend
+            // Look up private key from backend storage
             let signing_key = self.db.backend().get_private_key(key_name)?;
 
             if signing_key.is_none() {

@@ -243,9 +243,8 @@ mod tests {
     fn create_test_database() -> Database {
         let backend = Box::new(InMemory::new());
         let instance = Instance::new(backend);
-        instance.add_private_key("test_key").unwrap();
 
-        let database = instance.new_database_default("test_key").unwrap();
+        let database = instance.new_database_default("_device_key").unwrap();
 
         // Set initial database name using transaction
         let transaction = database.new_transaction().unwrap();

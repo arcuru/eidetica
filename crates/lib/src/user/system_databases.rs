@@ -12,7 +12,7 @@ use super::{
     crypto::{derive_encryption_key, encrypt_private_key, hash_password},
     errors::UserError,
     key_manager::UserKeyManager,
-    types::{UserInfo, UserKey, UserStatus},
+    types::{KeyEncryption, UserInfo, UserKey, UserStatus},
 };
 use crate::{
     Database, Result,
@@ -135,16 +135,16 @@ pub fn create_databases_tracking(
 /// Create a new user account
 ///
 /// This function:
-/// 1. Hashes the user's password
+/// 1. Optionally hashes the user's password (if provided)
 /// 2. Generates a device keypair for the user
-/// 3. Creates a user database for storing encrypted keys
+/// 3. Creates a user database for storing keys (encrypted or unencrypted)
 /// 4. Creates UserInfo and stores it in _users database with auto-generated UUID
 ///
 /// # Arguments
 /// * `users_db` - The _users system database
 /// * `backend` - The database backend
 /// * `username` - Unique username for login
-/// * `password` - User's password (will be hashed)
+/// * `password` - Optional password. If None, creates passwordless user (instant login, no encryption)
 ///
 /// # Returns
 /// A tuple of (user_uuid, UserInfo) where user_uuid is the generated primary key
@@ -152,10 +152,9 @@ pub fn create_user(
     users_db: &Database,
     backend: Arc<dyn BackendDB>,
     username: impl AsRef<str>,
-    password: impl AsRef<str>,
+    password: Option<&str>,
 ) -> Result<(String, UserInfo)> {
     let username = username.as_ref();
-    let password = password.as_ref();
     // FIXME: Race condition - multiple concurrent creates with same username
     // can both succeed, creating duplicate users. This requires either:
     // 1. Distributed locking mechanism
@@ -173,8 +172,14 @@ pub fn create_user(
         .into());
     }
 
-    // 1. Hash password
-    let (password_hash, password_salt) = hash_password(password)?;
+    // 1. Hash password if provided
+    let (password_hash, password_salt) = match password {
+        Some(pwd) => {
+            let (hash, salt) = hash_password(pwd)?;
+            (Some(hash), Some(salt))
+        }
+        None => (None, None),
+    };
 
     // 2. Generate default keypair for this user (kept in memory only)
     let (user_private_key, user_public_key) = generate_keypair();
@@ -215,26 +220,45 @@ pub fn create_user(
     let user_database = Database::new(user_db_settings, backend.clone(), "_device_key")?;
     let user_database_id = user_database.root_id().clone();
 
-    // 4. Encrypt user's private key and store in user database
-    let encryption_key = derive_encryption_key(password, &password_salt)?;
-    let (encrypted_key, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
+    // 4. Store user's private key (encrypted or unencrypted based on password)
+    let user_key = match (password, &password_salt) {
+        (Some(pwd), Some(salt)) => {
+            // Password-protected: encrypt the key
+            let encryption_key = derive_encryption_key(pwd, salt)?;
+            let (encrypted_key, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
+
+            UserKey {
+                key_id: user_public_key_str.clone(),
+                private_key_bytes: encrypted_key,
+                encryption: KeyEncryption::Encrypted { nonce },
+                display_name: Some("Default Key".to_string()),
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                last_used: None,
+                database_sigkeys: std::collections::HashMap::new(),
+            }
+        }
+        _ => {
+            // Passwordless: store unencrypted
+            UserKey {
+                key_id: user_public_key_str.clone(),
+                private_key_bytes: user_private_key.to_bytes().to_vec(),
+                encryption: KeyEncryption::Unencrypted,
+                display_name: Some("Default Key".to_string()),
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                last_used: None,
+                database_sigkeys: std::collections::HashMap::new(),
+            }
+        }
+    };
 
     let tx = user_database.new_transaction()?;
     let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
-
-    let user_key = UserKey {
-        key_id: user_public_key_str.clone(), // Use public key as identifier
-        encrypted_private_key: encrypted_key,
-        nonce,
-        display_name: Some("Default Key".to_string()),
-        created_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        last_used: None,
-        database_sigkeys: std::collections::HashMap::new(),
-    };
-
     keys_table.insert(user_key)?;
     tx.commit()?;
 
@@ -262,32 +286,32 @@ pub fn create_user(
     Ok((user_uuid, user_info))
 }
 
-/// Login a user with password
+/// Login a user
 ///
 /// This function:
 /// 1. Searches for user by username in _users database
-/// 2. Verifies password against stored hash
+/// 2. Verifies password (if provided and required)
 /// 3. Opens user's private database
-/// 4. Loads and decrypts all user keys
-/// 5. Creates UserKeyManager with decrypted keys
+/// 4. Loads and decrypts user keys (or loads unencrypted for passwordless users)
+/// 5. Creates UserKeyManager with keys
 /// 6. Returns User session object
 ///
 /// # Arguments
 /// * `users_db` - The _users system database
 /// * `backend` - The database backend
 /// * `username` - Username for login
-/// * `password` - User's password
+/// * `password` - Optional password. None for passwordless users.
 ///
 /// # Returns
-/// A User session object with decrypted keys
+/// A User session object with keys loaded
 pub fn login_user(
     users_db: &Database,
     backend: Arc<dyn BackendDB>,
     username: impl AsRef<str>,
-    password: impl AsRef<str>,
+    password: Option<&str>,
 ) -> Result<super::User> {
     let username = username.as_ref();
-    let password = password.as_ref();
+
     // 1. Search for user by username
     let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users")?;
     let results = users_table.search(|u| u.username == username)?;
@@ -321,36 +345,94 @@ pub fn login_user(
         .into());
     }
 
-    // 2. Verify password
-    super::crypto::verify_password(password, &user_info.password_hash)?;
+    // 2. Verify password compatibility
+    let is_passwordless = user_info.password_hash.is_none();
+    match (password, is_passwordless) {
+        (Some(pwd), false) => {
+            // Password provided for password-protected user: verify it
+            let password_hash = user_info.password_hash.as_ref().unwrap();
+            super::crypto::verify_password(pwd, password_hash)?;
+        }
+        (None, true) => {
+            // No password for passwordless user: OK
+        }
+        (Some(_), true) => {
+            // Password provided for passwordless user: reject
+            return Err(UserError::InvalidPassword.into());
+        }
+        (None, false) => {
+            // No password for password-protected user: reject
+            return Err(UserError::PasswordRequired {
+                operation: "login for password-protected user".to_string(),
+            }
+            .into());
+        }
+    }
 
-    // 3. Open user's private database
-    let user_database = Database::new_from_id(user_info.user_database_id.clone(), backend.clone())?;
+    // 3. Temporarily open user's private database to read keys (unauthenticated read)
+    let temp_user_database =
+        Database::new_from_id(user_info.user_database_id.clone(), backend.clone())?;
 
-    // 4. Load encrypted keys from user database
-    let keys_table = user_database.get_store_viewer::<Table<UserKey>>("keys")?;
-    let encrypted_keys: Vec<UserKey> = keys_table
+    // 4. Load keys from user database
+    let keys_table = temp_user_database.get_store_viewer::<Table<UserKey>>("keys")?;
+    let keys: Vec<UserKey> = keys_table
         .search(|_| true)? // Get all keys
         .into_iter()
         .map(|(_, key)| key)
         .collect();
 
-    // 5. Create UserKeyManager (decrypts keys)
-    let key_manager = UserKeyManager::new(password, &user_info.password_salt, encrypted_keys)?;
+    // 5. Create UserKeyManager
+    let key_manager = if let Some(pwd) = password {
+        // Password-protected: decrypt keys
+        let password_salt =
+            user_info
+                .password_salt
+                .as_ref()
+                .ok_or_else(|| UserError::PasswordRequired {
+                    operation: "decrypt keys for password-protected user".to_string(),
+                })?;
+        UserKeyManager::new(pwd, password_salt, keys)?
+    } else {
+        // Passwordless: load unencrypted keys
+        UserKeyManager::new_passwordless(keys)?
+    };
 
-    // 6. Update last_login in separate table
+    // 6. Re-open user database with the user's key using load_with_key()
+    // This configures the database to use KeySource::Provided with the user's key
+    // so all operations work without needing keys in the backend
+    let first_key_id = key_manager
+        .list_key_ids()
+        .first()
+        .cloned()
+        .ok_or(UserError::NoKeysAvailable)?;
+    let first_signing_key = key_manager
+        .get_signing_key(&first_key_id)
+        .ok_or_else(|| UserError::KeyNotFound {
+            key_id: first_key_id.clone(),
+        })?
+        .clone();
+
+    let user_database = Database::load_with_key(
+        backend.clone(),
+        &user_info.user_database_id,
+        first_signing_key,
+        first_key_id,
+    )?;
+
+    // 7. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
 
-    let tx = users_db.new_transaction()?;
+    // Use _device_key for updating system database
+    let tx = users_db.new_authenticated_operation("_device_key")?;
     let last_login_table = tx.get_store::<Table<u64>>("last_login")?;
     last_login_table.set(&user_uuid, now)?;
     tx.commit()?;
 
-    // 7. Create User session
+    // 8. Create User session
     Ok(User::new(
         user_uuid,
         user_info,
@@ -472,13 +554,15 @@ mod tests {
         let (backend, pubkey_str) = setup_backend();
         let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
 
-        // Create a user
+        // Create a user with password
         let (user_uuid, user_info) =
-            create_user(&users_db, backend.clone(), "alice", "password123").unwrap();
+            create_user(&users_db, backend.clone(), "alice", Some("password123")).unwrap();
 
         // Verify user info
         assert_eq!(user_info.username, "alice");
         assert_eq!(user_info.status, UserStatus::Active);
+        assert!(user_info.password_hash.is_some());
+        assert!(user_info.password_salt.is_some());
         assert!(!user_uuid.is_empty());
 
         // Verify user was stored in _users database
@@ -490,15 +574,38 @@ mod tests {
     }
 
     #[test]
+    fn test_create_user_passwordless() {
+        let (backend, pubkey_str) = setup_backend();
+        let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
+
+        // Create a passwordless user
+        let (user_uuid, user_info) = create_user(&users_db, backend.clone(), "bob", None).unwrap();
+
+        // Verify user info
+        assert_eq!(user_info.username, "bob");
+        assert_eq!(user_info.status, UserStatus::Active);
+        assert!(user_info.password_hash.is_none());
+        assert!(user_info.password_salt.is_none());
+        assert!(!user_uuid.is_empty());
+
+        // Verify user was stored in _users database
+        let users_table = users_db
+            .get_store_viewer::<Table<UserInfo>>("users")
+            .unwrap();
+        let stored_user = users_table.get(&user_uuid).unwrap();
+        assert_eq!(stored_user.username, "bob");
+    }
+
+    #[test]
     fn test_create_duplicate_user() {
         let (backend, pubkey_str) = setup_backend();
         let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
 
         // Create first user
-        create_user(&users_db, backend.clone(), "alice", "password123").unwrap();
+        create_user(&users_db, backend.clone(), "alice", Some("password123")).unwrap();
 
         // Try to create duplicate
-        let result = create_user(&users_db, backend.clone(), "alice", "password456");
+        let result = create_user(&users_db, backend.clone(), "alice", Some("password456"));
         assert!(result.is_err());
     }
 
@@ -507,11 +614,11 @@ mod tests {
         let (backend, pubkey_str) = setup_backend();
         let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
 
-        // Create a user
-        create_user(&users_db, backend.clone(), "bob", "bobpassword").unwrap();
+        // Create a user with password
+        create_user(&users_db, backend.clone(), "bob", Some("bobpassword")).unwrap();
 
         // Login user
-        let user = login_user(&users_db, backend.clone(), "bob", "bobpassword").unwrap();
+        let user = login_user(&users_db, backend.clone(), "bob", Some("bobpassword")).unwrap();
 
         // Verify user session
         assert_eq!(user.username(), "bob");
@@ -525,15 +632,57 @@ mod tests {
     }
 
     #[test]
+    fn test_login_user_passwordless() {
+        let (backend, pubkey_str) = setup_backend();
+        let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
+
+        // Create a passwordless user
+        create_user(&users_db, backend.clone(), "charlie", None).unwrap();
+
+        // Login user without password
+        let user = login_user(&users_db, backend.clone(), "charlie", None).unwrap();
+
+        // Verify user session
+        assert_eq!(user.username(), "charlie");
+
+        // Verify last_login was recorded
+        let last_login_table = users_db
+            .get_store_viewer::<Table<u64>>("last_login")
+            .unwrap();
+        let last_login = last_login_table.get(user.user_uuid()).unwrap();
+        assert!(last_login > 0);
+    }
+
+    #[test]
     fn test_login_wrong_password() {
         let (backend, pubkey_str) = setup_backend();
         let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
 
         // Create a user
-        create_user(&users_db, backend.clone(), "charlie", "correct_password").unwrap();
+        create_user(&users_db, backend.clone(), "dave", Some("correct_password")).unwrap();
 
         // Try to login with wrong password
-        let result = login_user(&users_db, backend.clone(), "charlie", "wrong_password");
+        let result = login_user(&users_db, backend.clone(), "dave", Some("wrong_password"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_login_password_mismatch() {
+        let (backend, pubkey_str) = setup_backend();
+        let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
+
+        // Create a passwordless user
+        create_user(&users_db, backend.clone(), "eve", None).unwrap();
+
+        // Try to login with password (should fail)
+        let result = login_user(&users_db, backend.clone(), "eve", Some("password"));
+        assert!(result.is_err());
+
+        // Create a password-protected user
+        create_user(&users_db, backend.clone(), "frank", Some("password")).unwrap();
+
+        // Try to login without password (should fail)
+        let result = login_user(&users_db, backend.clone(), "frank", None);
         assert!(result.is_err());
     }
 
@@ -543,7 +692,7 @@ mod tests {
         let users_db = create_users_database(backend.clone(), &pubkey_str).unwrap();
 
         // Try to login user that doesn't exist
-        let result = login_user(&users_db, backend.clone(), "nonexistent", "password");
+        let result = login_user(&users_db, backend.clone(), "nonexistent", Some("password"));
         assert!(result.is_err());
     }
 
@@ -556,10 +705,10 @@ mod tests {
         let users = list_users(&users_db).unwrap();
         assert_eq!(users.len(), 0);
 
-        // Create some users
-        create_user(&users_db, backend.clone(), "alice", "pass1").unwrap();
-        create_user(&users_db, backend.clone(), "bob", "pass2").unwrap();
-        create_user(&users_db, backend.clone(), "charlie", "pass3").unwrap();
+        // Create some users (mix of password-protected and passwordless)
+        create_user(&users_db, backend.clone(), "alice", Some("pass1")).unwrap();
+        create_user(&users_db, backend.clone(), "bob", None).unwrap();
+        create_user(&users_db, backend.clone(), "charlie", Some("pass3")).unwrap();
 
         // List users
         let users = list_users(&users_db).unwrap();

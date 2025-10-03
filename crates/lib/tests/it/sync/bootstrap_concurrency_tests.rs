@@ -98,7 +98,6 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
-        .unwrap()
         .unwrap();
 
     // Create database with policy that allows bootstrap auto-approval

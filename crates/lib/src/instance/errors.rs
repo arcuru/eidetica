@@ -76,6 +76,10 @@ pub enum InstanceError {
     #[error("Authentication required but no key configured")]
     AuthenticationRequired,
 
+    /// Device key (_device_key) not found in backend storage.
+    #[error("Device key (_device_key) not found in backend")]
+    DeviceKeyNotFound,
+
     /// No authentication configuration found.
     #[error("No authentication configuration found")]
     NoAuthConfiguration,
@@ -151,6 +155,13 @@ pub enum InstanceError {
     DatabaseStateCorruption {
         /// Description of the corruption detected
         reason: String,
+    },
+
+    /// Operation is not supported in the current mode or not yet implemented.
+    #[error("Operation not supported: {operation}")]
+    OperationNotSupported {
+        /// Description of the unsupported operation
+        operation: String,
     },
 }
 

@@ -13,26 +13,29 @@ use crate::helpers::*;
 fn test_key_management() {
     let db = setup_empty_db();
 
-    // Initially no keys
+    // Initially should have _device_key only (created during Instance init)
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert!(keys.is_empty());
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "_device_key");
 
     // Add a key
     let key_id = "TEST_KEY";
     let public_key = db.add_private_key(key_id).expect("Failed to add key");
 
-    // List keys should now show one key
+    // List keys should now show two keys (_device_key + TEST_KEY)
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], key_id);
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&"_device_key".to_string()));
+    assert!(keys.contains(&key_id.to_string()));
 
     // Add another key
     let key_id2 = "TEST_KEY_2";
     let public_key2 = db.add_private_key(key_id2).expect("Failed to add key");
 
-    // List keys should now show both keys
+    // List keys should now show three keys (_device_key + TEST_KEY + TEST_KEY_2)
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert_eq!(keys.len(), 2);
+    assert_eq!(keys.len(), 3);
+    assert!(keys.contains(&"_device_key".to_string()));
     assert!(keys.contains(&key_id.to_string()));
     assert!(keys.contains(&key_id2.to_string()));
 
@@ -84,10 +87,11 @@ fn test_import_private_key() {
     db.import_private_key(key_id, signing_key.clone())
         .expect("Failed to import key");
 
-    // The key should be in the list
+    // The key should be in the list (plus _device_key)
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], key_id);
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&"_device_key".to_string()));
+    assert!(keys.contains(&key_id.to_string()));
 
     // Test that we can sign with the imported key
     let tree = db
@@ -200,10 +204,11 @@ fn test_overwrite_existing_key() {
     // Should be different keys
     assert_ne!(public_key1, public_key2);
 
-    // Should still only have one key ID
+    // Should still only have two key IDs (_device_key + TEST_KEY)
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], key_id);
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&"_device_key".to_string()));
+    assert!(keys.contains(&key_id.to_string()));
 
     // New key should work for signing
     let tree = db
@@ -232,11 +237,12 @@ fn test_overwrite_existing_key() {
 fn test_remove_nonexistent_key() {
     let db = setup_empty_db();
 
-    // Remove a key that doesn't exist - should succeed silently
+    // Remove a key that doesn't exist - should fail (not yet implemented)
     let result = db.remove_private_key("NONEXISTENT_KEY");
-    assert!(result.is_ok());
+    assert!(result.is_err());
 
-    // List should still be empty
+    // List should still have _device_key only
     let keys = db.list_private_keys().expect("Failed to list keys");
-    assert!(keys.is_empty());
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "_device_key");
 }

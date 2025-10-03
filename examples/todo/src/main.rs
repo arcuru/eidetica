@@ -5,13 +5,11 @@ use eidetica::backend::database::InMemory;
 use eidetica::crdt::Doc;
 use eidetica::store::Table;
 use eidetica::store::YDoc;
+use eidetica::user::User;
 use eidetica::y_crdt::{Map as YMap, Transact};
 use eidetica::{Database, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-// Default authentication key name for the todo app
-const TODO_APP_KEY_NAME: &str = "TODO_APP_USER";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -95,11 +93,14 @@ impl Todo {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load or create the database
-    let db = load_or_create_db(&cli.database_path)?;
+    // Load or create the instance
+    let instance = load_or_create_instance(&cli.database_path)?;
+
+    // Get or create passwordless user
+    let user = get_or_create_user(&instance)?;
 
     // Load or create the todo database
-    let todo_database = load_or_create_todo_database(&db)?;
+    let todo_database = load_or_create_todo_database(&user)?;
 
     // Handle the command with proper error context
     let result = match &cli.command {
@@ -138,48 +139,48 @@ fn main() -> Result<()> {
         return Err(e);
     }
 
-    // Save the database
-    save_db(&db, &cli.database_path)
+    // Save the instance
+    save_instance(&instance, &cli.database_path)
 }
 
-fn load_or_create_db(path: &PathBuf) -> Result<Instance> {
-    let db = if path.exists() {
+fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
+    let instance = if path.exists() {
         let backend = InMemory::load_from_file(path)?;
-        Instance::new(Box::new(backend))
+        Instance::new_unified(Box::new(backend))?
     } else {
         let backend = InMemory::new();
-        Instance::new(Box::new(backend))
+        Instance::new_unified(Box::new(backend))?
     };
 
-    // Ensure the todo app authentication key exists
-    // First check if the key already exists
-    let existing_keys = db.list_private_keys()?;
+    println!("✓ Instance initialized");
 
-    if !existing_keys.contains(&TODO_APP_KEY_NAME.to_string()) {
-        // Add the key if it doesn't exist
-        match db.add_private_key(TODO_APP_KEY_NAME) {
-            Ok(_) => {
-                println!("✓ New authentication key created");
-            }
-            Err(e) if e.is_conflict() => {
-                // Key was created concurrently, this is fine
-                println!("✓ Authentication key already exists");
-            }
-            Err(e) => {
-                // Authentication is required, so we must fail if key creation fails
-                eprintln!("✗ Failed to create authentication key: {e}");
-                return Err(e);
-            }
-        }
-    } else {
-        println!("✓ Authentication key loaded from database");
-    }
-
-    Ok(db)
+    Ok(instance)
 }
 
-fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
-    let database = db.backend();
+fn get_or_create_user(instance: &Instance) -> Result<User> {
+    // Use a fixed username for the single user in this app
+    let username = "todo-user";
+
+    // Try to login first
+    match instance.login_user(username, None) {
+        Ok(user) => {
+            println!("✓ Logged in as passwordless user: {username}");
+            Ok(user)
+        }
+        Err(e) if e.is_not_found() => {
+            // User doesn't exist, create it
+            println!("Creating new passwordless user: {username}");
+            instance.create_user(username, None)?;
+            let user = instance.login_user(username, None)?;
+            println!("✓ Created and logged in as passwordless user: {username}");
+            Ok(user)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
+    let database = instance.backend();
 
     // Cast the database to InMemory to access save_to_file
     let in_memory_database = database
@@ -195,11 +196,11 @@ fn save_db(db: &Instance, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
+fn load_or_create_todo_database(user: &User) -> Result<Database> {
     let database_name = "todo";
 
     // Try to find the database by name
-    let mut database = match db.find_database(database_name) {
+    let database = match user.find_database(database_name) {
         Ok(mut databases) => {
             // If multiple databases with the same name exist, pop will return one arbitrarily.
             // We might want more robust handling later (e.g., error or config option).
@@ -211,7 +212,8 @@ fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
             let mut settings = Doc::new();
             settings.set_string("name", database_name);
 
-            db.new_database(settings, TODO_APP_KEY_NAME)?
+            // User API automatically configures the database with user's keys
+            user.new_database(settings)?
         }
         Err(e) => {
             // Propagate other errors
@@ -219,15 +221,11 @@ fn load_or_create_todo_database(db: &Instance) -> Result<Database> {
         }
     };
 
-    // Set the default authentication key for this database
-    // This means all subsequent new_transaction() calls will automatically use this key
-    database.set_default_auth_key(TODO_APP_KEY_NAME);
-
     Ok(database)
 }
 
 fn add_todo(database: &Database, title: String) -> Result<()> {
-    // Start an atomic transaction (uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
@@ -249,7 +247,7 @@ fn add_todo(database: &Database, title: String) -> Result<()> {
 }
 
 fn complete_todo(database: &Database, id: &str) -> Result<()> {
-    // Start an atomic transaction (uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
@@ -285,7 +283,7 @@ fn complete_todo(database: &Database, id: &str) -> Result<()> {
 }
 
 fn list_todos(database: &Database) -> Result<()> {
-    // Start an atomic transaction (for read-only, uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'todos' Table store
@@ -318,7 +316,7 @@ fn set_user_info(
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
-    // Start an atomic transaction (uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
@@ -349,7 +347,7 @@ fn set_user_info(
 }
 
 fn show_user_info(database: &Database) -> Result<()> {
-    // Start an atomic transaction (for read-only, uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'user_info' YDoc store
@@ -384,7 +382,7 @@ fn show_user_info(database: &Database) -> Result<()> {
 }
 
 fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
-    // Start an atomic transaction (uses default auth key)
+    // Start an atomic transaction
     let op = database.new_transaction()?;
 
     // Get a handle to the 'user_prefs' YDoc store

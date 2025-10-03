@@ -112,36 +112,102 @@ impl User {
         &mut self.key_manager
     }
 
-    // === Database Loading ===
+    // === Database Operations (User Context) ===
 
-    /// Load a database using this user's keys
+    /// Create a new database in this user's context.
     ///
-    /// This is the primary method for users to access databases. It automatically:
+    /// The database will be created and signed using one of this user's keys.
+    /// For now, uses the first available key. Future versions will support key selection.
+    ///
+    /// # Arguments
+    /// * `settings` - Initial database settings (metadata, name, etc.)
+    ///
+    /// # Returns
+    /// The created Database
+    pub fn new_database(&self, settings: crate::crdt::Doc) -> Result<crate::Database> {
+        use crate::store::Table;
+        use crate::user::types::UserKey;
+
+        // Get the first available signing key
+        // TODO: Allow user to specify which key to use
+        let key_ids = self.key_manager.list_key_ids();
+        let key_id = key_ids
+            .first()
+            .ok_or_else(|| {
+                crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
+            })?
+            .clone();
+
+        // Get the signing key from UserKeyManager
+        let signing_key = self
+            .key_manager
+            .get_signing_key(&key_id)
+            .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
+                key_id: key_id.clone(),
+            })?
+            .clone();
+
+        // Create the database with the provided key directly
+        // This avoids temporary backend storage and uses KeySource::Provided throughout
+        let database = crate::Database::new_with_key(
+            settings,
+            self.backend.clone(),
+            signing_key,
+            key_id.clone(),
+        )?;
+
+        // Now store the mapping in UserKey so load_database() can find it later
+        let mut metadata = self
+            .key_manager
+            .get_key_metadata(&key_id)
+            .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
+                key_id: key_id.clone(),
+            })?
+            .clone();
+
+        // Add the database -> sigkey mapping
+        metadata
+            .database_sigkeys
+            .insert(database.root_id().clone(), key_id.clone());
+
+        // Update the key in user database
+        let tx = self.user_database.new_transaction()?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+        keys_table.insert(metadata)?;
+        tx.commit()?;
+
+        Ok(database)
+    }
+
+    /// Load an existing database by its root ID using this user's keys.
+    ///
+    /// This method automatically:
     /// 1. Finds an appropriate key that has access to the database
     /// 2. Retrieves the decrypted SigningKey from the UserKeyManager
     /// 3. Gets the SigKey mapping for this database
     /// 4. Creates a Database instance configured with the user's key
     ///
-    /// The returned Database can be used normally - all transactions will
-    /// automatically use the user's provided key instead of looking up keys
-    /// from backend storage.
+    /// The returned Database will use the user's provided key for all operations,
+    /// without requiring backend key lookups.
     ///
     /// # Arguments
-    /// * `database_id` - The ID of the database to load
+    /// * `root_id` - The root entry ID of the database
     ///
     /// # Returns
-    /// A Database instance configured to use this user's keys
+    /// The loaded Database configured to use this user's keys
     ///
     /// # Errors
     /// - Returns an error if no key is found for the database
     /// - Returns an error if no SigKey mapping exists
     /// - Returns an error if the key is not in the UserKeyManager
-    #[allow(dead_code)]
-    pub fn load_database(&self, database_id: &crate::entry::ID) -> Result<Database> {
+    pub fn load_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
+        // Validate the root exists
+        self.backend.get(root_id)?;
+
         // Find an appropriate key for this database
-        let key_id = self.find_key_for_database(database_id)?.ok_or_else(|| {
+        let key_id = self.find_key_for_database(root_id)?.ok_or_else(|| {
             super::errors::UserError::NoKeyForDatabase {
-                database_id: database_id.clone(),
+                database_id: root_id.clone(),
             }
         })?;
 
@@ -153,20 +219,48 @@ impl User {
         })?;
 
         // Get the SigKey mapping for this database
-        let sigkey = self
-            .get_database_sigkey(&key_id, database_id)?
-            .ok_or_else(|| super::errors::UserError::NoSigKeyMapping {
+        let sigkey = self.get_database_sigkey(&key_id, root_id)?.ok_or_else(|| {
+            super::errors::UserError::NoSigKeyMapping {
                 key_id: key_id.clone(),
-                database_id: database_id.clone(),
-            })?;
+                database_id: root_id.clone(),
+            }
+        })?;
 
         // Create Database with user-provided key
-        Database::new_with_key(
-            self.backend.clone(),
-            database_id,
-            signing_key.clone(),
-            sigkey,
-        )
+        Database::load_with_key(self.backend.clone(), root_id, signing_key.clone(), sigkey)
+    }
+
+    /// Find databases by name.
+    ///
+    /// Searches all databases accessible in the backend for those matching the given name.
+    ///
+    /// # Arguments
+    /// * `name` - Database name to search for
+    ///
+    /// # Returns
+    /// Vector of matching databases
+    pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
+        let name = name.as_ref();
+        let all_roots = self.backend.all_roots()?;
+        let mut matching = Vec::new();
+
+        for root_id in all_roots {
+            if let Ok(db) = crate::Database::new_from_id(root_id, self.backend.clone())
+                && let Ok(db_name) = db.get_name()
+                && db_name == name
+            {
+                matching.push(db);
+            }
+        }
+
+        if matching.is_empty() {
+            Err(crate::instance::InstanceError::DatabaseNotFound {
+                name: name.to_string(),
+            }
+            .into())
+        } else {
+            Ok(matching)
+        }
     }
 
     /// Find the best key for accessing a database
@@ -181,7 +275,6 @@ impl User {
     ///
     /// # Returns
     /// Some(key_id) if a suitable key is found, None if no keys can access this database
-    #[allow(dead_code)]
     pub fn find_key_for_database(&self, database_id: &crate::entry::ID) -> Result<Option<String>> {
         // Iterate through all keys and find ones with SigKey mappings for this database
         for key_id in self.key_manager.list_key_ids() {
@@ -211,7 +304,6 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    #[allow(dead_code)]
     pub fn get_database_sigkey(
         &self,
         key_id: &str,
@@ -224,6 +316,102 @@ impl User {
         })?;
 
         Ok(metadata.database_sigkeys.get(database_id).cloned())
+    }
+
+    // === Key Management (User Context) ===
+
+    /// Add a new private key to this user's keyring.
+    ///
+    /// Generates a new Ed25519 keypair, encrypts it (for password-protected users)
+    /// or stores it unencrypted (for passwordless users), and adds it to the user's
+    /// key database.
+    ///
+    /// # Arguments
+    /// * `display_name` - Optional display name for the key
+    ///
+    /// # Returns
+    /// The key ID (public key string)
+    pub fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
+        use crate::auth::crypto::{format_public_key, generate_keypair};
+        use crate::store::Table;
+        use crate::user::types::{KeyEncryption, UserKey};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Generate new keypair
+        let (private_key, public_key) = generate_keypair();
+        let key_id = format_public_key(&public_key);
+
+        // Prepare UserKey based on encryption type
+        let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
+            // Password-protected user: encrypt the key
+            use crate::user::crypto::encrypt_private_key;
+            let (encrypted_bytes, nonce) = encrypt_private_key(&private_key, encryption_key)?;
+
+            UserKey {
+                key_id: key_id.clone(),
+                private_key_bytes: encrypted_bytes,
+                encryption: KeyEncryption::Encrypted { nonce },
+                display_name: display_name.map(|s| s.to_string()),
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                last_used: None,
+                database_sigkeys: std::collections::HashMap::new(),
+            }
+        } else {
+            // Passwordless user: store unencrypted
+            UserKey {
+                key_id: key_id.clone(),
+                private_key_bytes: private_key.to_bytes().to_vec(),
+                encryption: KeyEncryption::Unencrypted,
+                display_name: display_name.map(|s| s.to_string()),
+                created_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                last_used: None,
+                database_sigkeys: std::collections::HashMap::new(),
+            }
+        };
+
+        // Store in user database
+        let tx = self.user_database.new_transaction()?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+        keys_table.insert(user_key.clone())?;
+        tx.commit()?;
+
+        // Add to in-memory key manager
+        self.key_manager.add_key(user_key)?;
+
+        Ok(key_id)
+    }
+
+    /// List all key IDs owned by this user.
+    ///
+    /// # Returns
+    /// Vector of key IDs (public key strings)
+    pub fn list_keys(&self) -> Result<Vec<String>> {
+        Ok(self.key_manager.list_key_ids())
+    }
+
+    /// Get a signing key by its ID.
+    ///
+    /// # Arguments
+    /// * `key_id` - The key ID (public key string)
+    ///
+    /// # Returns
+    /// The SigningKey if found
+    pub fn get_signing_key(&self, key_id: &str) -> Result<ed25519_dalek::SigningKey> {
+        self.key_manager
+            .get_signing_key(key_id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::user::errors::UserError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                }
+                .into()
+            })
     }
 }
 
@@ -277,8 +465,8 @@ mod tests {
         let user_info = UserInfo {
             username: "test_user".to_string(),
             user_database_id: user_database.root_id().clone(),
-            password_hash,
-            password_salt: password_salt.clone(),
+            password_hash: Some(password_hash),
+            password_salt: Some(password_salt.clone()),
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -292,8 +480,8 @@ mod tests {
 
         let user_key = UserKey {
             key_id: "_device_key".to_string(),
-            encrypted_private_key: encrypted_key,
-            nonce,
+            private_key_bytes: encrypted_key,
+            encryption: crate::user::types::KeyEncryption::Encrypted { nonce },
             display_name: Some("Device Key".to_string()),
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)

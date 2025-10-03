@@ -462,12 +462,9 @@ mod tests {
         let backend = InMemory::new();
         let db = Instance::new(Box::new(backend)).with_sync().unwrap();
 
-        // Add a private key for authentication
-        db.add_private_key("test_key").unwrap();
-
         // Create a user tree for testing tree ID
         let user_tree = db
-            .new_database(crate::crdt::Doc::new(), "test_key")
+            .new_database(crate::crdt::Doc::new(), "_device_key")
             .unwrap();
         let tree_id = user_tree.root_id().clone();
 

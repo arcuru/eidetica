@@ -57,8 +57,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     let _device1_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
-        .expect("Failed to get device1 public key")
-        .expect("Device1 key should exist");
+        .expect("Failed to get device1 public key");
 
     // Create database with simple settings like the chat app
     let mut settings = Doc::new();
@@ -73,8 +72,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Include device1 admin key for initial database creation
     let device1_admin_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
-        .expect("Failed to get device1 public key")
-        .expect("Device1 key should exist");
+        .expect("Failed to get device1 public key");
     auth_doc
         .set_json(
             CHAT_APP_KEY,

@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use eidetica::{Database, Entry, Instance, backend::database::InMemory};
+use eidetica::{Database, Entry, Instance, backend::database::InMemory, user::User};
 use signal_hook::flag as signal_flag;
 use tracing_subscriber::EnvFilter;
 
@@ -35,7 +35,32 @@ fn save_database(db: &Instance) {
     }
 }
 
-fn main() -> io::Result<()> {
+// Helper function to get or create a passwordless user
+fn get_or_create_user(instance: &Instance) -> Result<User, Box<dyn std::error::Error>> {
+    let username = "repl-user";
+
+    // Try to login first
+    match instance.login_user(username, None) {
+        Ok(user) => {
+            tracing::info!("Logged in as passwordless user: {username}");
+            println!("✓ Logged in as passwordless user: {username}");
+            Ok(user)
+        }
+        Err(e) if e.is_not_found() => {
+            // User doesn't exist, create it
+            tracing::info!("Creating new passwordless user: {username}");
+            println!("Creating new passwordless user: {username}");
+            instance.create_user(username, None)?;
+            let user = instance.login_user(username, None)?;
+            tracing::info!("Created and logged in as passwordless user: {username}");
+            println!("✓ Created and logged in as passwordless user: {username}");
+            Ok(user)
+        }
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing subscriber with environment filter
     // Uses RUST_LOG environment variable to control log level
     // Example: RUST_LOG=info cargo run
@@ -74,13 +99,10 @@ fn main() -> io::Result<()> {
     };
 
     // Initialize Instance with the loaded or new backend
-    let db = Instance::new(backend);
+    let db = Instance::new_unified(backend)?;
 
-    // Add a default key for CLI operations (all entries must now be authenticated)
-    const DEFAULT_CLI_KEY: &str = "cli_default_key";
-    if db.add_private_key(DEFAULT_CLI_KEY).is_err() {
-        // Key might already exist, which is fine
-    }
+    // Get or create passwordless user
+    let user = get_or_create_user(&db)?;
 
     // Store trees by name
     let mut trees: HashMap<String, Database> = HashMap::new();
@@ -158,14 +180,18 @@ fn main() -> io::Result<()> {
                 save_database(&db);
             }
             "create-tree" => {
-                if args.len() < 3 {
+                if args.len() < 2 {
                     println!("Usage: create-tree <name>");
                     continue;
                 }
 
                 let name = args[1];
 
-                match db.new_database_default(DEFAULT_CLI_KEY) {
+                // Create database with user's key
+                let mut settings = eidetica::crdt::Doc::new();
+                settings.set_string("name", name);
+
+                match user.new_database(settings) {
                     Ok(tree) => {
                         tracing::info!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());
@@ -252,7 +278,7 @@ fn main() -> io::Result<()> {
 fn print_help() {
     println!("Available commands:");
     println!("  help                  - Show this help message");
-    println!("  create-tree <n> <settings> - Create a new tree with the given name and settings");
+    println!("  create-tree <name>    - Create a new tree with the given name");
     println!("  list-trees            - List all created trees");
     println!("  get-root <tree-name>  - Get the root ID of a tree");
     println!("  get-entry <entry-id>  - Get details of an entry by ID");

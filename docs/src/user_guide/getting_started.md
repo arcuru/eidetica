@@ -19,10 +19,10 @@ eidetica = "0.1.0"  # Update version as appropriate
 
 To start using Eidetica, you need to:
 
-1. Choose and initialize a **Database** (storage mechanism)
-2. Create a **Instance** instance (the main entry point)
-3. **Add authentication keys** (required for all operations)
-4. Create or access a **Database** (logical container for data)
+1. Choose and initialize a **Backend** (storage mechanism)
+2. Create an **Instance** (the infrastructure manager)
+3. **Create and login a User** (authentication and session)
+4. Create or access a **Database** through the User (logical container for data)
 
 Here's a simple example:
 
@@ -31,23 +31,30 @@ Here's a simple example:
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 #
 # fn main() -> eidetica::Result<()> {
-    // Create a new in-memory database
-    let database = InMemory::new();
-    let db = Instance::new(Box::new(database));
+    // Create a new in-memory backend
+    let backend = InMemory::new();
 
-    // Add an authentication key (required for all operations)
-    db.add_private_key("my_private_key")?;
+    // Create the Instance (infrastructure)
+    let instance = Instance::new_unified(Box::new(backend))?;
 
-    // Create a database to store data
+    // Create a passwordless user (perfect for embedded/single-user apps)
+    instance.create_user("alice", None)?;
+
+    // Login to get a User session
+    let user = instance.login_user("alice", None)?;
+
+    // Create a database in the user's context
     let mut settings = Doc::new();
     settings.set_string("name", "my_database");
-    let _database = db.new_database(settings, "my_private_key")?;
+    let _database = user.new_database(settings)?;
 
     Ok(())
 }
 ```
 
-The database determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
+**Note**: This example uses a passwordless user (password is `None`) for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, you can create password-protected users by passing `Some("password")` instead.
+
+The backend determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
 
 ```rust
 # extern crate eidetica;
@@ -55,21 +62,22 @@ The database determines how your data is stored. The example above uses `InMemor
 # use std::path::PathBuf;
 #
 # fn main() -> eidetica::Result<()> {
-# // Create a temporary database for testing
+# // Create instance and user
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
-# db.add_private_key("test_key")?;
+# let instance = Instance::new_unified(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let _database = db.new_database(settings, "test_key")?;
+# let _database = user.new_database(settings)?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
 # let path = temp_dir.join("eidetica_test_save.json");
 #
-// Save the database to a file
-let database_guard = db.backend();
-if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
+// Save the backend to a file
+let backend_guard = instance.backend();
+if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
     in_memory.save_to_file(&path)?;
 }
 #
@@ -81,7 +89,7 @@ if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
 # }
 ```
 
-You can load a previously saved database:
+You can load a previously saved backend:
 
 ```rust
 # extern crate eidetica;
@@ -89,28 +97,33 @@ You can load a previously saved database:
 # use std::path::PathBuf;
 #
 # fn main() -> eidetica::Result<()> {
-# // First create and save a test database
+# // First create and save a test backend
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
-# db.add_private_key("test_key")?;
+# let instance = Instance::load(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let _database = db.new_database(settings, "test_key")?;
+# let _database = user.new_database(settings)?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
 # let path = temp_dir.join("eidetica_test_load.json");
 #
-# // Save the database first
-# let database_guard = db.backend();
-# if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
+# // Save the backend first
+# let backend_guard = instance.backend();
+# if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
 #     in_memory.save_to_file(&path)?;
 # }
 #
-// Load a previously saved database
-let database = InMemory::load_from_file(&path)?;
-// Note: Authentication keys are automatically loaded with the database if they exist
-let _loaded_db = Instance::new(Box::new(database));
+// Load a previously saved backend
+let backend = InMemory::load_from_file(&path)?;
+
+// Load instance (automatically detects existing system state)
+let instance = Instance::load(Box::new(backend))?;
+
+// Login to existing user
+let user = instance.login_user("alice", None)?;
 #
 # // Clean up the temporary file
 # if path.exists() {
@@ -120,9 +133,34 @@ let _loaded_db = Instance::new(Box::new(database));
 # }
 ```
 
-## Authentication Requirements
+## User-Centric Architecture
 
-**Important:** All operations in Eidetica require authentication. Every entry created in the database must be cryptographically signed with a valid Ed25519 private key. This ensures data integrity and provides a consistent security model.
+Eidetica uses a user-centric architecture:
+
+- **Instance**: Manages infrastructure (user accounts, backend, system databases)
+- **User**: Handles all contextual operations (database creation, key management)
+
+All database and key operations happen through a User session after login. This provides:
+
+- **Clear separation**: Infrastructure management vs. contextual operations
+- **Strong isolation**: Each user has separate keys and preferences
+- **Flexible authentication**: Users can have passwords or not (passwordless mode)
+
+**Passwordless Users** (embedded/single-user apps):
+
+```rust,ignore
+instance.create_user("alice", None)?;
+let user = instance.login_user("alice", None)?;
+```
+
+**Password-Protected Users** (multi-user apps):
+
+```rust,ignore
+instance.create_user("bob", Some("password123"))?;
+let user = instance.login_user("bob", Some("password123"))?;
+```
+
+The downside of password protection is a slow login. `instance.login_user` needs to verify the password and decrypt keys, which by design is a relatively slow operation.
 
 ## Working with Data
 
@@ -151,11 +189,12 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
-# db.add_private_key("my_key")?;
+# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let database = user.new_database(settings)?;
 #
 // Start an authenticated transaction
 let op = database.new_transaction()?;
@@ -167,7 +206,7 @@ let people = op.get_store::<Table<Person>>("people")?;
 let person = Person { name: "Alice".to_string(), age: 30 };
 let _id = people.insert(person)?;
 
-// Commit the changes (automatically signed with the database's default key)
+// Commit the changes (automatically signed with the user's key)
 op.commit()?;
 # Ok(())
 # }
@@ -188,11 +227,12 @@ op.commit()?;
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
-# db.add_private_key("my_key")?;
+# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let database = user.new_database(settings)?;
 # // Insert some test data
 # let op = database.new_transaction()?;
 # let people = op.get_store::<Table<Person>>("people")?;
@@ -232,11 +272,12 @@ for (id, person) in all_people {
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
-# db.add_private_key("my_key")?;
+# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let database = user.new_database(settings)?;
 # // Insert some test data
 # let op_setup = database.new_transaction()?;
 # let people_setup = op_setup.get_store::<Table<Person>>("people")?;
@@ -273,11 +314,12 @@ op.commit()?;
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
-# db.add_private_key("my_key")?;
+# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let database = user.new_database(settings)?;
 # let _id = "test_id";
 #
 let op = database.new_transaction()?;
