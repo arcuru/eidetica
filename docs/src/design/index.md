@@ -32,4 +32,6 @@ Each design document typically includes:
 
 ### Proposed
 
+- [Users](users.md) - Multi-user system with password-based authentication, user isolation, and per-user key management
+- [Key Management](key_management.md) - Technical details for key encryption, storage, and discovery in the Users system
 - [Error Handling](error_handling.md) - Modular error architecture for improved debugging and user experience

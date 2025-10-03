@@ -58,4 +58,7 @@
   - [Authentication](design/authentication.md)
   - [Synchronization](design/synchronization.md)
   - [Settings Storage](design/settings_storage.md)
+  - [Users](design/users.md)
+  - [Key Management](design/key_management.md)
+  - [Bootstrap & Access Control](design/bootstrap.md)
   - [Error Handling](design/error_handling.md)
