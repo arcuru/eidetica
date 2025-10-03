@@ -27,6 +27,7 @@ pub mod instance;
 pub mod store;
 pub mod sync;
 pub mod transaction;
+pub mod user;
 
 pub use database::Database;
 pub use entry::Entry;
@@ -91,6 +92,10 @@ pub enum Error {
     /// Structured ID errors from the entry::id module
     #[error(transparent)]
     Id(entry::id::IdError),
+
+    /// Structured user errors from the user module
+    #[error(transparent)]
+    User(user::UserError),
 }
 
 impl From<sync::SyncError> for Error {
@@ -111,6 +116,12 @@ impl From<entry::id::IdError> for Error {
     }
 }
 
+impl From<user::UserError> for Error {
+    fn from(err: user::UserError) -> Self {
+        Error::User(err)
+    }
+}
+
 impl Error {
     /// Get the originating module for this error.
     pub fn module(&self) -> &'static str {
@@ -124,6 +135,7 @@ impl Error {
             Error::Sync(_) => "sync",
             Error::Entry(_) => "entry",
             Error::Id(_) => "id",
+            Error::User(_) => "user",
             Error::Io(_) => "io",
             Error::Serialize(_) => "serialize",
         }

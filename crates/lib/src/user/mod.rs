@@ -1,0 +1,11 @@
+//! User system for Eidetica
+//!
+//! Provides multi-user support with password-based authentication,
+//! encrypted key storage, and per-user database preferences.
+
+pub mod crypto;
+pub mod errors;
+pub mod types;
+
+pub use errors::UserError;
+pub use types::*;

@@ -34,6 +34,9 @@ axum = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
 iroh = { workspace = true }
+argon2 = { workspace = true }
+aes-gcm = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
