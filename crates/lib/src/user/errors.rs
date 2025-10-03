@@ -3,11 +3,16 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum UserError {
-    #[error("User not found: {user_id}")]
-    UserNotFound { user_id: String },
+    #[error("User not found: {username}")]
+    UserNotFound { username: String },
 
-    #[error("User already exists: {user_id}")]
-    UserAlreadyExists { user_id: String },
+    #[error("Username already exists: {username}")]
+    UsernameAlreadyExists { username: String },
+
+    #[error(
+        "Multiple users detected with username '{username}' ({count} found). This indicates a race condition during user creation. Manual intervention required."
+    )]
+    DuplicateUsersDetected { username: String, count: usize },
 
     #[error("Invalid password")]
     InvalidPassword,
@@ -39,8 +44,8 @@ pub enum UserError {
     #[error("Database preference not found: {database_id}")]
     DatabasePreferenceNotFound { database_id: String },
 
-    #[error("User account disabled: {user_id}")]
-    UserDisabled { user_id: String },
+    #[error("User account disabled: {username}")]
+    UserDisabled { username: String },
 
     #[error("Invalid salt length: expected {expected}, got {actual}")]
     InvalidSaltLength { expected: usize, actual: usize },

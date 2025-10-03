@@ -57,8 +57,8 @@ Instance
 ├── System Databases (separate databases, authenticated with _device_key)
 │   ├── _instance
 │   │   └── Instance configuration and metadata
-│   ├── _users
-│   │   └── User directory: Maps user_id → UserInfo
+│   ├── _users (Table with UUID primary keys)
+│   │   └── User directory: Maps UUID → UserInfo (username stored in UserInfo)
 │   ├── _databases
 │   │   └── Database tracking: Maps database_id → DatabaseTracking
 │   └── _sync
@@ -77,22 +77,25 @@ Instance
 
 #### 1. UserInfo (stored in `_users` database)
 
+**Storage**: Users are stored in a Table with auto-generated UUID primary keys. The username field is used for login lookups via search operations.
+
 <!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
 
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserInfo {
-    /// Unique user identifier
-    pub user_id: String,
+    /// Unique username (login identifier)
+    /// Note: Stored with UUID primary key in Table, username used for search
+    pub username: String,
 
     /// ID of the user's private database
     pub user_database_id: ID,
 
-    /// Password hash (using Argon2 or similar)
+    /// Password hash (using Argon2id)
     pub password_hash: String,
 
-    /// Salt for password hashing
-    pub password_salt: Vec<u8>,
+    /// Salt for password hashing (base64 encoded string)
+    pub password_salt: String,
 
     /// User account creation timestamp
     pub created_at: u64,
@@ -119,8 +122,8 @@ pub enum UserStatus {
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserProfile {
-    /// User ID (redundant but useful for validation)
-    pub user_id: String,
+    /// Username
+    pub username: String,
 
     /// Display name
     pub display_name: Option<String>,
@@ -149,7 +152,7 @@ pub struct UserPreferences {
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (public key or special name like "_device_key")
+    /// Key identifier (typically the base64-encoded public key string)
     pub key_id: String,
 
     /// Encrypted private key (encrypted with user's password-derived key)
@@ -253,10 +256,11 @@ The Instance manages four separate system databases, all authenticated with `_de
 
 - **Type**: Separate database
 - **Purpose**: User directory and authentication
-- **Structure**: Table mapping user_id → UserInfo
+- **Structure**: Table with UUID primary keys, stores UserInfo (username field for login lookups)
 - **Authentication**: `_device_key` as Admin
 - **Access**: Admin users can manage users
 - **Created**: On Instance initialization
+- **Note**: Username uniqueness enforced at application layer via search; see Race Conditions section
 
 #### `_databases` System Database
 
@@ -472,25 +476,27 @@ impl Instance {
     // === User Management ===
 
     /// Create a new user account
+    /// Returns (user_uuid, user_info) where user_uuid is the generated primary key
     pub fn create_user(
         &self,
-        user_id: &str,
+        username: &str,
         password: &str,
         display_name: Option<&str>,
-    ) -> Result<UserInfo>;
+    ) -> Result<(String, UserInfo)>;
 
     /// Login a user with password (returns User session object)
+    /// Searches by username; errors if duplicate usernames detected
     pub fn login_user(
         &self,
-        user_id: &str,
+        username: &str,
         password: &str,
     ) -> Result<User>;
 
-    /// List all users (returns user IDs only)
+    /// List all users (returns usernames)
     pub fn list_users(&self) -> Result<Vec<String>>;
 
     /// Disable a user account
-    pub fn disable_user(&self, user_id: &str) -> Result<()>;
+    pub fn disable_user(&self, username: &str) -> Result<()>;
 
     // === Database Tracking ===
 
@@ -529,7 +535,8 @@ pub enum DatabaseTrackingUpdate {
 ```rust,ignore
 /// User session object, returned after successful login
 pub struct User {
-    user_id: String,
+    user_uuid: String,   // Stable internal UUID (Table primary key)
+    username: String,    // Username (login identifier)
     user_database: Database,
     backend: Arc<dyn BackendDB>,
     /// Decrypted user keys (in memory only during session)
@@ -537,6 +544,12 @@ pub struct User {
 }
 
 impl User {
+    /// Get the internal user UUID (stable identifier)
+    pub fn user_uuid(&self) -> &str;
+
+    /// Get the username (login identifier)
+    pub fn username(&self) -> &str;
+
     // === Key Management ===
 
     /// Generate a new private key for this user
@@ -694,24 +707,32 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 ### User Creation Flow
 
-1. Admin calls `instance.create_user()` with user ID, password, and optional display name
-2. System hashes password with Argon2 and random salt
-3. Creates new user database
-4. Initializes empty user profile in user database
-5. Creates UserInfo entry in `_users` database
-6. Returns UserInfo
+1. Admin calls `instance.create_user()` with username and password
+2. System searches `_users` Table for existing username (race condition possible)
+3. System hashes password with Argon2id and random salt
+4. Generates default Ed25519 keypair for the user (kept in memory only)
+5. Retrieves instance `_device_key` public key from backend
+6. Creates user database with authentication for both `_device_key` (Admin) and user's key (Admin)
+7. Encrypts user's private key with password-derived key
+8. Stores encrypted key in user database `keys` Table (using public key as identifier, signed with `_device_key`)
+9. Creates UserInfo and inserts into `_users` Table (auto-generates UUID primary key)
+10. Returns (user_uuid, UserInfo) tuple
+
+**Note**: The user's keypair is never stored unencrypted in the backend. It exists only as encrypted data in the user's private database. The user database is authenticated with both the instance `_device_key` (for admin operations) and the user's default key (for user ownership). Initial entries are signed with `_device_key`.
 
 ### Login Flow
 
-1. User calls `instance.login_user()` with credentials
-2. System looks up UserInfo in `_users` database
-3. Verifies password against stored hash
-4. Loads user's private database
-5. Loads encrypted keys from user database
-6. Derives encryption key from password
-7. Decrypts all private keys
-8. Creates UserKeyManager with decrypted keys
-9. Returns User session object
+1. User calls `instance.login_user()` with username and credentials
+2. System searches `_users` Table by username
+3. If multiple users with same username found, returns `DuplicateUsersDetected` error
+4. Verifies password against stored hash
+5. Loads user's private database
+6. Loads encrypted keys from user database
+7. Derives encryption key from password
+8. Decrypts all private keys
+9. Creates UserKeyManager with decrypted keys
+10. Updates last_login timestamp in `_users` Table (using UUID)
+11. Returns User session object (contains both user_uuid and username)
 
 ### Database Access Flow
 
@@ -797,12 +818,31 @@ The Users system provides the architectural context:
 3. **Audit Logging**: Log Instance-level operations on system databases
 4. **Key Rotation**: Support rotating `_device_key` (requires updating all system databases)
 
+## Known Limitations
+
+### Username Uniqueness Race Condition
+
+**Issue**: Username uniqueness is enforced at the application layer using search-then-insert operations, which creates a race condition in distributed/concurrent scenarios.
+
+**Current Behavior**:
+
+- `create_user()` searches for existing username, then inserts if not found
+- Two concurrent creates with same username can both succeed
+- Results in multiple UserInfo records with same username but different UUIDs
+
+**Detection**:
+
+- `login_user()` searches by username
+- If multiple matches found, returns `UserError::DuplicateUsersDetected`
+- Prevents login until conflict is resolved manually
+
 ## Performance Implications
 
 1. **Login Cost**: Password hashing and key decryption add latency to login (acceptable)
 2. **Memory Usage**: Decrypted keys held in memory during session
-3. **Database Tracking**: O(1) lookup for database metadata and user lists
-4. **Key Discovery**: O(n) where n = number of user's keys (typically small)
+3. **Database Tracking**: O(1) lookup for database metadata and user lists (via UUID primary key)
+4. **Username Lookup**: O(n) search for username validation/login (where n = total users)
+5. **Key Discovery**: O(n) where n = number of user's keys (typically small)
 
 ## Implementation Strategy
 

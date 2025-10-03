@@ -13,8 +13,11 @@ use crate::{Database, Result, backend::BackendDB};
 /// The User struct provides access to key management, database preferences, and
 /// bootstrap approval operations.
 pub struct User {
-    /// User identifier
-    user_id: String,
+    /// Stable internal user UUID (Table primary key)
+    user_uuid: String,
+
+    /// Username (login identifier)
+    username: String,
 
     /// User's private database (contains encrypted keys and preferences)
     user_database: Database,
@@ -36,19 +39,22 @@ impl User {
     /// Use `Instance::login_user()` to create a User session.
     ///
     /// # Arguments
+    /// * `user_uuid` - Internal UUID (Table primary key)
     /// * `user_info` - User information from _users database
     /// * `user_database` - The user's private database
     /// * `backend` - Backend reference
     /// * `key_manager` - Initialized key manager with decrypted keys
     #[allow(dead_code)]
     pub(crate) fn new(
+        user_uuid: String,
         user_info: UserInfo,
         user_database: Database,
         backend: Arc<dyn BackendDB>,
         key_manager: UserKeyManager,
     ) -> Self {
         Self {
-            user_id: user_info.user_id.clone(),
+            user_uuid,
+            username: user_info.username.clone(),
             user_database,
             backend,
             key_manager,
@@ -58,9 +64,14 @@ impl User {
 
     // === Basic Session Methods ===
 
-    /// Get the user ID
-    pub fn user_id(&self) -> &str {
-        &self.user_id
+    /// Get the internal user UUID (stable identifier)
+    pub fn user_uuid(&self) -> &str {
+        &self.user_uuid
+    }
+
+    /// Get the username (login identifier)
+    pub fn username(&self) -> &str {
+        &self.username
     }
 
     /// Get a reference to the user's database
@@ -150,7 +161,7 @@ mod tests {
         let (password_hash, password_salt) = hash_password(password).unwrap();
 
         let user_info = UserInfo {
-            user_id: "test_user".to_string(),
+            username: "test_user".to_string(),
             user_database_id: user_database.root_id().clone(),
             password_hash,
             password_salt: password_salt.clone(),
@@ -158,7 +169,6 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            last_login: None,
             status: UserStatus::Active,
         };
 
@@ -182,34 +192,43 @@ mod tests {
         // Create key manager
         let key_manager = UserKeyManager::new(password, &password_salt, vec![user_key]).unwrap();
 
-        User::new(user_info, user_database, backend, key_manager)
+        // Create user with UUID (using a test UUID)
+        User::new(
+            "test-uuid-1234".to_string(),
+            user_info,
+            user_database,
+            backend,
+            key_manager,
+        )
     }
 
     #[test]
     fn test_user_creation() {
         let user = create_test_user_session();
-        assert_eq!(user.user_id(), "test_user");
+        assert_eq!(user.username(), "test_user");
+        assert_eq!(user.user_uuid(), "test-uuid-1234");
     }
 
     #[test]
     fn test_user_getters() {
         let user = create_test_user_session();
 
-        assert_eq!(user.user_id(), "test_user");
-        assert_eq!(user.user_info().user_id, "test_user");
+        assert_eq!(user.username(), "test_user");
+        assert_eq!(user.user_uuid(), "test-uuid-1234");
+        assert_eq!(user.user_info().username, "test_user");
         assert!(!user.user_database().root_id().to_string().is_empty());
     }
 
     #[test]
     fn test_user_logout() {
         let user = create_test_user_session();
-        let user_id = user.user_id().to_string();
+        let username = user.username().to_string();
 
         // Logout consumes the user
         user.logout().unwrap();
 
         // User is dropped, keys should be cleared
-        assert_eq!(user_id, "test_user");
+        assert_eq!(username, "test_user");
     }
 
     #[test]

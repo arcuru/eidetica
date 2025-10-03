@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 use crate::entry::ID;
 
 /// User information stored in _users database
+///
+/// Users are stored in a Table with auto-generated UUID primary keys.
+/// The username field is used for login and must be unique.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserInfo {
-    /// Unique user identifier
-    pub user_id: String,
+    /// Unique username (login identifier)
+    pub username: String,
 
     /// ID of the user's private database
     pub user_database_id: ID,
@@ -18,14 +21,12 @@ pub struct UserInfo {
     /// Password hash (using Argon2id)
     pub password_hash: String,
 
+    // TODO: The salt is also stored inside password_hash in the PHC format, remove this redundant storage.
     /// Salt for password hashing (base64 encoded string)
     pub password_salt: String,
 
     /// User account creation timestamp
     pub created_at: u64,
-
-    /// Last login timestamp
-    pub last_login: Option<u64>,
 
     /// Account status
     pub status: UserStatus,
@@ -42,8 +43,8 @@ pub enum UserStatus {
 /// User profile stored in user's private database
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserProfile {
-    /// User ID
-    pub user_id: String,
+    /// Username
+    pub username: String,
 
     /// Display name
     pub display_name: Option<String>,
@@ -133,7 +134,8 @@ pub struct DatabaseTracking {
     /// Cached database name (for quick lookup)
     pub name: Option<String>,
 
-    /// Users who have this database in their preferences
+    /// User UUIDs who have this database in their preferences
+    /// (stores internal UUIDs, not usernames)
     pub users: Vec<String>,
 
     /// Database creation time
