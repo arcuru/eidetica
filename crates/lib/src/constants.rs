@@ -8,3 +8,12 @@ pub const SETTINGS: &str = "_settings";
 
 /// Reserved subtree name for marking root entries.
 pub const ROOT: &str = "_root";
+
+/// System database name for Instance configuration and management
+pub const INSTANCE: &str = "_instance";
+
+/// System database name for user directory
+pub const USERS: &str = "_users";
+
+/// System database name for database tracking
+pub const DATABASES: &str = "_databases";
