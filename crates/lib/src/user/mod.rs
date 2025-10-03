@@ -5,8 +5,10 @@
 
 pub mod crypto;
 pub mod errors;
+pub mod key_manager;
 pub mod system_databases;
 pub mod types;
 
 pub use errors::UserError;
+pub use key_manager::UserKeyManager;
 pub use types::*;

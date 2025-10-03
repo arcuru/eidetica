@@ -135,7 +135,7 @@ pub fn encrypt_private_key(
     }
 
     // Serialize private key to bytes
-    let key_bytes = private_key.to_bytes();
+    let mut key_bytes = private_key.to_bytes();
 
     // Create cipher
     let cipher =
@@ -147,12 +147,15 @@ pub fn encrypt_private_key(
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     // Encrypt
-    let ciphertext =
-        cipher
-            .encrypt(&nonce, key_bytes.as_ref())
-            .map_err(|e| UserError::EncryptionFailed {
-                reason: format!("Encryption failed: {}", e),
-            })?;
+    let ciphertext = cipher.encrypt(&nonce, key_bytes.as_ref()).map_err(|e| {
+        key_bytes.zeroize();
+        UserError::EncryptionFailed {
+            reason: format!("Encryption failed: {}", e),
+        }
+    })?;
+
+    // Zeroize the plaintext key bytes
+    key_bytes.zeroize();
 
     Ok((ciphertext, nonce.to_vec()))
 }
@@ -224,13 +227,18 @@ pub fn decrypt_private_key(
         .into());
     }
 
-    let key_bytes: [u8; 32] = plaintext
-        .try_into()
-        .map_err(|_| UserError::DecryptionFailed {
-            reason: "Failed to convert plaintext to key bytes".to_string(),
-        })?;
+    let mut key_bytes: [u8; 32] =
+        plaintext
+            .try_into()
+            .map_err(|_| UserError::DecryptionFailed {
+                reason: "Failed to convert plaintext to key bytes".to_string(),
+            })?;
 
+    // Create SigningKey (copies the bytes internally)
     let signing_key = SigningKey::from_bytes(&key_bytes);
+
+    // Zeroize the temporary key bytes
+    key_bytes.zeroize();
 
     Ok(signing_key)
 }
