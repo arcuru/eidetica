@@ -15,7 +15,7 @@ use crate::{
     auth::{
         crypto::format_public_key,
         settings::AuthSettings,
-        types::{AuthKey, Permission},
+        types::{AuthKey, Permission, SigKey},
     },
     backend::BackendDB,
     constants::{ROOT, SETTINGS},
@@ -238,11 +238,13 @@ impl Database {
     /// Note: To **create** a new database with user-managed keys, use `create()`.
     /// This method is for **opening existing** databases.
     ///
+    /// To discover which SigKey to use for a given public key, use `Database::find_sigkeys()`.
+    ///
     /// # Arguments
     /// * `backend` - Backend storage reference
     /// * `root_id` - The root entry ID of the existing database to open
     /// * `signing_key` - Decrypted signing key from UserKeyManager
-    /// * `sigkey` - SigKey identifier used in database auth settings
+    /// * `sigkey` - SigKey identifier string (use `find_sigkeys()` to discover available options)
     ///
     /// # Returns
     /// A `Result` containing the `Database` instance configured with `KeySource::Provided`
@@ -251,22 +253,30 @@ impl Database {
     /// ```rust,no_run
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::auth::crypto::generate_keypair;
+    /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    /// # use eidetica::auth::types::SigKey;
     /// # use std::sync::Arc;
     /// # fn example() -> Result<()> {
     /// # let backend = Arc::new(InMemory::new());
-    /// # let (signing_key, _) = generate_keypair();
+    /// # let (signing_key, verifying_key) = generate_keypair();
     /// # let root_id = "existing_database_root_id".into();
-    /// // Open existing database with user-managed key
-    /// let database = Database::open(
-    ///     backend,
-    ///     &root_id,
-    ///     signing_key,
-    ///     "my_sigkey".to_string(),
-    /// )?;
+    /// // Find all SigKeys this public key can use
+    /// let pubkey = format_public_key(&verifying_key);
+    /// let sigkeys = Database::find_sigkeys(backend.clone(), &root_id, &pubkey)?;
     ///
-    /// // All transactions automatically use the provided key
-    /// let tx = database.new_transaction()?;
+    /// // Use the first available SigKey
+    /// if let Some((sigkey, _permission)) = sigkeys.first() {
+    ///     let sigkey_str = match sigkey {
+    ///         SigKey::Direct(name) => name.clone(),
+    ///         _ => panic!("Delegation paths not yet supported"),
+    ///     };
+    ///
+    ///     // Open database with the resolved SigKey
+    ///     let database = Database::open(backend, &root_id, signing_key, sigkey_str)?;
+    ///
+    ///     // All transactions automatically use the provided key
+    ///     let tx = database.new_transaction()?;
+    /// }
     /// # Ok(())
     /// # }
     /// ```
@@ -285,6 +295,75 @@ impl Database {
             }),
             sync_hooks: None,
         })
+    }
+
+    /// Find all SigKeys that a public key can use to access a database.
+    ///
+    /// This static helper method loads a database's authentication settings and returns
+    /// all possible SigKeys that can be used with the given public key. This is useful for
+    /// discovering authentication options before opening a database.
+    ///
+    /// Returns all matching SigKeys including:
+    /// - Specific key names where the pubkey matches
+    /// - Global "*" permission if available
+    /// - (Future) Delegation paths
+    ///
+    /// # Arguments
+    /// * `backend` - Backend storage reference to load database from
+    /// * `root_id` - Root entry ID of the database to check
+    /// * `pubkey` - Public key string (e.g., "Ed25519:abc123...") to look up
+    ///
+    /// # Returns
+    /// A vector of (SigKey, Permission) tuples, one for each way the pubkey can access the database.
+    /// Returns empty vector if no valid access methods are found.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Database cannot be loaded
+    /// - Auth settings cannot be parsed
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    /// # use eidetica::auth::types::SigKey;
+    /// # use std::sync::Arc;
+    /// # fn example() -> Result<()> {
+    /// # let backend = Arc::new(InMemory::new());
+    /// # let (signing_key, verifying_key) = generate_keypair();
+    /// # let root_id = "database_root_id".into();
+    /// // Get the public key string
+    /// let pubkey = format_public_key(&verifying_key);
+    ///
+    /// // Find all SigKeys this pubkey can use
+    /// let sigkeys = Database::find_sigkeys(backend.clone(), &root_id, &pubkey)?;
+    ///
+    /// // Use the first available SigKey to open the database
+    /// if let Some((sigkey, _permission)) = sigkeys.first() {
+    ///     let sigkey_str = match sigkey {
+    ///         SigKey::Direct(name) => name.clone(),
+    ///         _ => panic!("Delegation paths not yet supported"),
+    ///     };
+    ///     let database = Database::open(backend, &root_id, signing_key, sigkey_str)?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn find_sigkeys(
+        backend: Arc<dyn BackendDB>,
+        root_id: &ID,
+        pubkey: &str,
+    ) -> Result<Vec<(SigKey, Permission)>> {
+        // Create temporary database to load settings (no key source needed for reading)
+        let temp_db = Self::open_readonly(root_id.clone(), backend)?;
+
+        // Load auth settings
+        let settings_store = temp_db.get_settings()?;
+        let auth_settings = settings_store.get_auth_settings()?;
+
+        // Find all SigKeys for this pubkey
+        Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
     }
 
     /// Get the default authentication key ID for this database.

@@ -80,7 +80,7 @@ transaction.commit()?;
 # }
 ```
 
-### Making Data Public
+### Making Data Public (Read-Only)
 
 Allow anyone to read your database:
 
@@ -111,6 +111,96 @@ transaction.commit()?;
 # Ok(())
 # }
 ```
+
+### Collaborative Databases (Read-Write)
+
+Create a collaborative database where anyone can read and write without individual key management:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::store::SettingsStore;
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::crdt::Doc;
+#
+# fn main() -> eidetica::Result<()> {
+# let db = Instance::open(Box::new(InMemory::new()))?;
+# db.add_private_key("admin")?;
+# let mut settings = Doc::new();
+# settings.set("name", "collaborative_notes");
+let database = db.new_database(settings, "admin")?;
+
+// Set up global write permissions
+let transaction = database.new_transaction()?;
+let settings_store = transaction.get_settings()?;
+
+// Global permission allows any device to read and write
+let collaborative_key = AuthKey::active(
+    "*",
+    Permission::Write(10),
+)?;
+settings_store.set_auth_key("*", collaborative_key)?;
+
+transaction.commit()?;
+# Ok(())
+# }
+```
+
+**How it works**:
+
+1. Any device can bootstrap without approval (global permission grants access)
+2. Devices discover available SigKeys using `Database::find_sigkeys()`
+3. Select a SigKey from the available options (will include `"*"` for global permissions)
+4. Open the database with the selected SigKey
+5. All transactions automatically use the configured permissions
+6. No individual keys are added to the database's auth settings
+
+**Example of opening a collaborative database**:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, Database, backend::database::InMemory};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::types::SigKey;
+# use std::sync::Arc;
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Arc::new(InMemory::new());
+# let (signing_key, verifying_key) = generate_keypair();
+# let database_root_id = "collaborative_db_root".into();
+// Get your public key
+let pubkey = format_public_key(&verifying_key);
+
+// Discover all SigKeys this public key can use
+let sigkeys = Database::find_sigkeys(backend.clone(), &database_root_id, &pubkey)?;
+
+// Use the first available SigKey (will be "*" for global permissions)
+if let Some((sigkey, _permission)) = sigkeys.first() {
+    let sigkey_str = match sigkey {
+        SigKey::Direct(name) => name.clone(),
+        _ => panic!("Delegation paths not yet supported"),
+    };
+
+    // Open the database with the discovered SigKey
+    let database = Database::open(backend, &database_root_id, signing_key, sigkey_str)?;
+
+    // Create transactions as usual
+    let txn = database.new_transaction()?;
+    // ... make changes ...
+    txn.commit()?;
+}
+# Ok(())
+# }
+```
+
+This is ideal for:
+
+- Team collaboration spaces
+- Shared notes and documents
+- Public wikis
+- Development/testing environments
+
+**Security note**: Use appropriate permission levels. `Write(10)` allows Write and Read operations but not Admin operations (managing keys and settings).
 
 ### Revoking Access
 

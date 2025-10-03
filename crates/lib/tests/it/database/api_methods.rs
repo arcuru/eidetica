@@ -292,7 +292,9 @@ fn test_verify_entry_signature_unauthorized_key() {
     assert!(commit_result.is_err());
     let error_msg = commit_result.unwrap_err().to_string();
     assert!(
-        error_msg.contains("authentication validation failed") || error_msg.contains("not found")
+        error_msg.contains("authentication validation failed")
+            || error_msg.contains("not found")
+            || error_msg.contains("No active key found")
     );
 }
 

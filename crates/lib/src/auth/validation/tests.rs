@@ -700,7 +700,11 @@ fn test_delegation_depth_limit() {
     // Should fail due to missing auth configuration, not depth limit
     assert!(result.is_err());
     let error = result.unwrap_err();
-    assert!(error.to_string().contains("Key not found"));
+    assert!(
+        error
+            .to_string()
+            .contains("Key 'base_key' not found and no global permission available")
+    );
 
     // This should fail due to depth limit (at the limit)
     let result =

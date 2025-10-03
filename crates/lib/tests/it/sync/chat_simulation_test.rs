@@ -422,7 +422,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             Ok(_) => println!("✅ Client successfully committed transaction"),
             Err(e) => {
                 println!("❌ Client failed to commit transaction: {:?}", e);
-                panic!("Client should be able to commit transactions after bootstrap");
+                panic!("Client should be able to commit transactions with global permissions");
             }
         }
     }

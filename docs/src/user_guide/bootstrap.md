@@ -16,6 +16,8 @@ Global '\*' permissions provide the simplest and most flexible approach for coll
 
 When a database has global permissions configured (e.g., `{"*": {"pubkey": "*", "permissions": "Write: 10"}}`), bootstrap requests are automatically approved if the requested permission level is satisfied by the global permission. No new keys are added to the database.
 
+Devices use the global permission for both bootstrap approval and subsequent operations (transactions, reads, writes). The system automatically resolves to the global "\*" key when a device's specific key is not present in the database's auth settings.
+
 ### Advantages
 
 - **No key management**: Devices don't need individual keys added to database

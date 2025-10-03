@@ -126,6 +126,16 @@ When a bootstrap request is received, the sync handler first checks if the reque
 3. **No key storage** - Global permission grants don't add keys to auth settings
 4. **Insufficient global permission** - Falls back to normal policy check
 
+### Global Permissions for Ongoing Operations
+
+Once bootstrapped with global permissions, devices use the global "\*" key for all subsequent operations:
+
+- **Transaction commits**: `AuthSettings::resolve_sig_key_for_operation()` resolves to global "\*" when device's specific key is not in auth settings
+- **Entry validation**: `KeyResolver::resolve_direct_key_with_pubkey()` falls back to global "\*" permission during signature verification
+- **Permission checks**: All operations use the same permission hierarchy and validation rules
+
+This unified approach ensures consistent behavior whether a device has a specific key or relies on global permissions.
+
 ### Use Cases
 
 - **Public databases**: Set global `Read` permission for open access

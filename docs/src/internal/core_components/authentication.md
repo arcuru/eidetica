@@ -91,8 +91,16 @@ The authentication system provides three methods for managing keys with differen
 
 - Checks both specific key permissions and global '\*' permissions
 - Returns true if the key has sufficient permission (either specific or global)
-- Used internally by bootstrap approval system to avoid unnecessary key additions
+- Used by bootstrap approval system to avoid unnecessary key additions
 - Supports the flexible access control patterns enabled by wildcard permissions
+
+**`resolve_sig_key_for_operation(device_pubkey)`**: Resolve which SigKey to use for operations
+
+- Searches auth settings for a key matching the device's public key
+- Falls back to global "\*" permission when specific pubkey is not found in auth settings
+- Returns the SigKey name, granted permission level, and whether pubkey must be included in SigInfo
+- Used by transaction commit to build proper SigInfo structures
+- Enables devices to automatically discover their appropriate authentication method
 
 ### Key Conflict Prevention
 

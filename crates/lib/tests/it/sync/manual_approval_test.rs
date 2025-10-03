@@ -1045,3 +1045,208 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         for entry creation. Expected: database.discover_auth_key() returning '*' for global permissions."
     );
 }
+
+#[tokio::test]
+async fn test_global_permission_enables_transactions() {
+    use eidetica::store::Table;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    struct TestData {
+        message: String,
+    }
+
+    println!("\n🧪 TEST: Global permission enables transaction commits");
+
+    // Setup server instance
+    let server_instance = setup_instance_with_initialized();
+    let server_key = "server_admin";
+    server_instance.add_private_key(server_key).unwrap();
+
+    let server_pubkey = server_instance
+        .get_formatted_public_key(server_key)
+        .unwrap();
+
+    // Create database with global Write(10) permission
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Test Global Permission Transactions");
+
+    let mut auth_doc = eidetica::crdt::Doc::new();
+
+    // Add admin key for database creation
+    auth_doc
+        .set_json(
+            server_key,
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    // Add global '*' permission with Write(10) access
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Write": 10},
+                "status": "Active"
+            }),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = server_instance.new_database(settings, server_key).unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Setup sync
+    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Setup client instance
+    let client_instance = setup_instance_with_initialized();
+    let client_key_name = "client_device";
+    client_instance.add_private_key(client_key_name).unwrap();
+
+    let client_pubkey = client_instance
+        .get_formatted_public_key(client_key_name)
+        .unwrap();
+
+    println!("🔍 Testing bootstrap with global permission");
+
+    // Test 1: Bootstrap with global permission
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &client_pubkey,
+        client_key_name,
+        eidetica::auth::Permission::Write(15),
+    );
+
+    let response = sync_handler.handle_request(&sync_request).await;
+    match response {
+        eidetica::sync::protocol::SyncResponse::Bootstrap(bootstrap_response) => {
+            assert_eq!(bootstrap_response.tree_id, tree_id);
+            assert!(bootstrap_response.key_approved);
+            println!("✅ Bootstrap approved via global permission");
+        }
+        other => panic!("Expected Bootstrap, got: {:?}", other),
+    }
+
+    // Verify NO pending requests were created (global permission bypasses storage)
+    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    assert_eq!(
+        pending_requests.len(),
+        0,
+        "Global permission should not create pending requests"
+    );
+
+    // Verify client key was NOT added to auth settings (global permission used instead)
+    let db_settings = database.get_settings().unwrap();
+    match db_settings.get("auth") {
+        Ok(eidetica::crdt::doc::Value::Doc(auth_node)) => {
+            // Client key should NOT be present
+            assert!(
+                auth_node.get(client_key_name).is_none(),
+                "Client key should not be added when global permission grants access"
+            );
+            println!("✅ Client key correctly NOT added to auth settings");
+        }
+        _ => panic!("Auth section should exist"),
+    }
+
+    println!("🔍 Testing transaction commit with global permission");
+
+    // Test 2: Client can commit transactions using global permission
+    // First, copy the root entry from server to client backend so client can load the database
+    let root_entry = server_instance.backend().get(&tree_id).unwrap();
+    client_instance
+        .backend()
+        .put(eidetica::backend::VerificationStatus::Verified, root_entry)
+        .unwrap();
+
+    // Load the database on client side with the client's signing key
+    let client_signing_key = client_instance
+        .backend()
+        .get_private_key(client_key_name)
+        .expect("Failed to get client signing key")
+        .expect("Client key should exist in backend");
+
+    // Discover which SigKeys this public key can use
+    // This will return global "*" since the client is using global permissions
+    let client_pubkey = client_instance
+        .get_formatted_public_key(client_key_name)
+        .unwrap();
+    let sigkeys = eidetica::Database::find_sigkeys(
+        client_instance.backend().clone(),
+        &tree_id,
+        &client_pubkey,
+    )
+    .expect("Should find valid SigKeys");
+
+    // Should have at least one SigKey (global "*")
+    assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
+
+    // Extract the first SigKey (should be global "*")
+    let (sigkey, _permission) = &sigkeys[0];
+    let sigkey_str = match sigkey {
+        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        _ => panic!("Expected Direct SigKey"),
+    };
+    assert_eq!(sigkey_str, "*", "Should resolve to global permission");
+
+    let client_db = eidetica::Database::open(
+        client_instance.backend().clone(),
+        &tree_id,
+        client_signing_key,
+        sigkey_str,
+    )
+    .expect("Client should be able to load database");
+
+    // Create a transaction and commit data
+    let transaction = client_db.new_transaction().unwrap();
+    let store = transaction
+        .get_store::<Table<TestData>>("test_data")
+        .unwrap();
+
+    store
+        .insert(TestData {
+            message: "Test from client with global permission".to_string(),
+        })
+        .unwrap();
+
+    // This should succeed now with global permission fallback
+    match transaction.commit() {
+        Ok(entry_id) => {
+            println!("✅ Transaction committed successfully: {}", entry_id);
+
+            // Verify the entry was created with global "*" key in SigInfo
+            let entry = client_instance.backend().get(&entry_id).unwrap();
+            match &entry.sig.key {
+                eidetica::auth::types::SigKey::Direct(key_name) => {
+                    assert_eq!(
+                        key_name, "*",
+                        "Entry should use global '*' key, got: {}",
+                        key_name
+                    );
+                    println!("✅ Entry correctly uses global '*' key in SigInfo");
+                }
+                other => panic!("Expected Direct SigKey, got: {:?}", other),
+            }
+
+            // Verify pubkey field is present in SigInfo (required for global "*")
+            assert!(
+                entry.sig.pubkey.is_some(),
+                "SigInfo should include pubkey for global '*' permission"
+            );
+            println!("✅ SigInfo correctly includes pubkey field");
+        }
+        Err(e) => {
+            panic!("Transaction should succeed with global permission: {:?}", e);
+        }
+    }
+
+    println!("✅ Global permission transaction test PASSED");
+}

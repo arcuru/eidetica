@@ -273,15 +273,130 @@ impl AuthSettings {
         }
 
         // Check if global '*' permission exists and is sufficient
-        if let Ok(global_key) = self.get_key("*")
-            && global_key.pubkey() == "*"
-            && *global_key.status() == KeyStatus::Active
-            && *global_key.permissions() >= *requested_permission
+        self.global_permission_grants_access(requested_permission)
+    }
+
+    /// Check if global "*" permission exists and is active.
+    ///
+    /// # Returns
+    /// - `true` if global "*" permission exists with pubkey="*" and status=Active
+    /// - `false` otherwise
+    #[cfg(test)]
+    pub(crate) fn has_active_global_permission(&self) -> bool {
+        self.get_global_permission().is_some()
+    }
+
+    /// Get global "*" permission level if it exists and is active.
+    ///
+    /// # Returns
+    /// - `Some(Permission)` if global "*" permission is active
+    /// - `None` otherwise
+    pub(crate) fn get_global_permission(&self) -> Option<Permission> {
+        if let Ok(key) = self.get_key("*")
+            && key.pubkey() == "*"
+            && *key.status() == KeyStatus::Active
         {
-            return true;
+            Some(key.permissions().clone())
+        } else {
+            None
+        }
+    }
+
+    /// Check if global "*" permission grants sufficient access for the requested permission.
+    ///
+    /// # Arguments
+    /// * `requested_permission` - The permission level required
+    ///
+    /// # Returns
+    /// - `true` if global permission exists and is >= requested_permission
+    /// - `false` otherwise
+    pub(crate) fn global_permission_grants_access(
+        &self,
+        requested_permission: &Permission,
+    ) -> bool {
+        if let Some(global_perm) = self.get_global_permission() {
+            global_perm >= *requested_permission
+        } else {
+            false
+        }
+    }
+
+    /// Find all SigKeys that a public key can use to access this database.
+    ///
+    /// Returns all possible SigKey identifiers that match the given public key,
+    /// including specific key names and global "*" permission. Results are sorted
+    /// by permission level with highest permissions first.
+    ///
+    /// # Arguments
+    /// * `device_pubkey` - The public key of the device (e.g., "Ed25519:abc123...")
+    ///
+    /// # Returns
+    /// A vector of tuples containing (SigKey, Permission), sorted by Permission (highest first)
+    /// - Empty vector if no matching keys found
+    /// - Multiple entries if the pubkey matches multiple key names or has global access
+    pub fn find_all_sigkeys_for_pubkey(&self, device_pubkey: &str) -> Vec<(SigKey, Permission)> {
+        let mut results = Vec::new();
+
+        // 1. Search all direct keys for matching pubkey
+        for key_name in self.inner.keys() {
+            if let Ok(auth_key) = self.get_key(key_name)
+                && auth_key.pubkey() == device_pubkey
+            {
+                results.push((
+                    SigKey::Direct(key_name.clone()),
+                    auth_key.permissions().clone(),
+                ));
+            }
         }
 
-        false
+        // 2. Check if global "*" permission exists
+        if let Some(global_perm) = self.get_global_permission() {
+            results.push((SigKey::Direct("*".to_string()), global_perm));
+        }
+
+        // FIXME: 3. Check delegation paths
+        // This would search for delegation paths that could grant access
+        // to device_pubkey. For now, we only support direct keys and global "*".
+
+        // Sort by permission, highest first (reverse sort since Permission Ord has higher > lower)
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+
+        results
+    }
+
+    /// Resolve which SigKey should be used for an operation based on the device's public key.
+    ///
+    /// Given a device's public key, searches auth settings to determine the appropriate SigKey
+    /// to use in entry signatures. When multiple SigKeys are available for the same public key,
+    /// this method returns the one with the highest permission level.
+    ///
+    /// This method does NOT check key status - it only resolves which key reference should be
+    /// used in the SigInfo. Status validation happens later during entry validation.
+    ///
+    /// Resolution order:
+    /// 1. Search all direct keys in auth settings for a matching pubkey
+    /// 2. Check if global "*" permission exists
+    /// 3. FIXME: Check delegation paths (not yet implemented)
+    /// 4. Return the match with highest permission (if multiple matches exist)
+    ///
+    /// # Arguments
+    /// * `device_pubkey` - The public key of the device (e.g., "Ed25519:abc123...")
+    ///
+    /// # Returns
+    /// A tuple of (SigKey to use, granted Permission level) - always returns highest permission when multiple options exist
+    pub fn resolve_sig_key_for_operation(
+        &self,
+        device_pubkey: &str,
+    ) -> Result<(SigKey, Permission)> {
+        // Use find_all_sigkeys_for_pubkey (returns sorted by highest permission first) and return the first match
+        let matches = self.find_all_sigkeys_for_pubkey(device_pubkey);
+
+        matches.into_iter().next().ok_or_else(|| {
+            AuthError::PermissionDenied {
+                reason: format!("No active key found for pubkey: {device_pubkey}"),
+            }
+            .into()
+        })
     }
 }
 
@@ -491,5 +606,304 @@ mod tests {
         assert!(settings.can_access(&any_key, &Permission::Read));
         assert!(settings.can_access(&any_key, &Permission::Write(1)));
         assert!(settings.can_access(&any_key, &Permission::Admin(5)));
+    }
+
+    #[test]
+    fn test_global_permission_helpers() {
+        let mut settings = AuthSettings::new();
+
+        // No global permission initially
+        assert!(!settings.has_active_global_permission());
+        assert_eq!(settings.get_global_permission(), None);
+        assert!(!settings.global_permission_grants_access(&Permission::Read));
+
+        // Add global Write(10) permission
+        let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+        settings.add_key("*", global_key).unwrap();
+
+        // Global permission should now be detected
+        assert!(settings.has_active_global_permission());
+        assert_eq!(
+            settings.get_global_permission(),
+            Some(Permission::Write(10))
+        );
+
+        // Test permission granting
+        assert!(settings.global_permission_grants_access(&Permission::Read));
+        assert!(settings.global_permission_grants_access(&Permission::Write(10)));
+        assert!(settings.global_permission_grants_access(&Permission::Write(15)));
+        assert!(!settings.global_permission_grants_access(&Permission::Write(5)));
+        assert!(!settings.global_permission_grants_access(&Permission::Admin(10)));
+
+        // Revoke global permission
+        let revoked_global = AuthKey::new("*", Permission::Write(10), KeyStatus::Revoked).unwrap();
+        settings.overwrite_key("*", revoked_global).unwrap();
+
+        // Should no longer be detected as active
+        assert!(!settings.has_active_global_permission());
+        assert_eq!(settings.get_global_permission(), None);
+        assert!(!settings.global_permission_grants_access(&Permission::Read));
+    }
+
+    #[test]
+    fn test_resolve_sig_key_for_operation() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        let device_pubkey = generate_public_key();
+        let device_key_name = "my_device";
+
+        // No keys configured - should fail
+        let result = settings.resolve_sig_key_for_operation(&device_pubkey);
+        assert!(result.is_err());
+
+        // Add device key with Write(5) permission
+        let device_key = AuthKey::active(&device_pubkey, Permission::Write(5)).unwrap();
+        settings.add_key(device_key_name, device_key).unwrap();
+
+        // Should resolve to specific device key by searching for matching pubkey
+        let (sig_key, granted_perm) = settings
+            .resolve_sig_key_for_operation(&device_pubkey)
+            .unwrap();
+        assert_eq!(sig_key, SigKey::Direct(device_key_name.to_string()));
+        assert_eq!(granted_perm, Permission::Write(5));
+    }
+
+    #[test]
+    fn test_resolve_sig_key_falls_back_to_global() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        // Add global Write(10) permission
+        let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+        settings.add_key("*", global_key).unwrap();
+
+        // Random device not in auth settings
+        let random_pubkey = generate_public_key();
+
+        // Should fall back to global since pubkey not found in auth settings
+        let (sig_key, granted_perm) = settings
+            .resolve_sig_key_for_operation(&random_pubkey)
+            .unwrap();
+        assert_eq!(sig_key, SigKey::Direct("*".to_string()));
+        assert_eq!(granted_perm, Permission::Write(10));
+    }
+
+    #[test]
+    fn test_resolve_sig_key_revoked_key_is_resolved() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        let device_pubkey = generate_public_key();
+        let device_key_name = "my_device";
+
+        // Add revoked device key
+        let revoked_key =
+            AuthKey::new(&device_pubkey, Permission::Admin(1), KeyStatus::Revoked).unwrap();
+        settings.add_key(device_key_name, revoked_key).unwrap();
+
+        // Revoked key should still be resolved by pubkey (validation will reject it later)
+        let (sig_key, granted_perm) = settings
+            .resolve_sig_key_for_operation(&device_pubkey)
+            .unwrap();
+        assert_eq!(sig_key, SigKey::Direct(device_key_name.to_string()));
+        assert_eq!(granted_perm, Permission::Admin(1));
+    }
+
+    #[test]
+    fn test_resolve_sig_key_with_multiple_keys() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        let pubkey1 = generate_public_key();
+        let pubkey2 = generate_public_key();
+        let pubkey3 = generate_public_key();
+
+        // Add multiple device keys
+        settings
+            .add_key(
+                "device1",
+                AuthKey::active(&pubkey1, Permission::Write(5)).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "device2",
+                AuthKey::active(&pubkey2, Permission::Admin(1)).unwrap(),
+            )
+            .unwrap();
+
+        // Should resolve correct key for each pubkey
+        let (sig_key1, perm1) = settings.resolve_sig_key_for_operation(&pubkey1).unwrap();
+        assert_eq!(sig_key1, SigKey::Direct("device1".to_string()));
+        assert_eq!(perm1, Permission::Write(5));
+
+        let (sig_key2, perm2) = settings.resolve_sig_key_for_operation(&pubkey2).unwrap();
+        assert_eq!(sig_key2, SigKey::Direct("device2".to_string()));
+        assert_eq!(perm2, Permission::Admin(1));
+
+        // Unknown pubkey should fail (no global fallback)
+        let result = settings.resolve_sig_key_for_operation(&pubkey3);
+        assert!(result.is_err());
+
+        // Add global permission
+        let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+        settings.add_key("*", global_key).unwrap();
+
+        // Unknown pubkey should now fall back to global
+        let (sig_key3, perm3) = settings.resolve_sig_key_for_operation(&pubkey3).unwrap();
+        assert_eq!(sig_key3, SigKey::Direct("*".to_string()));
+        assert_eq!(perm3, Permission::Write(10));
+
+        // Known pubkeys should still resolve to their specific keys (not global)
+        let (sig_key1_after, _) = settings.resolve_sig_key_for_operation(&pubkey1).unwrap();
+        assert_eq!(sig_key1_after, SigKey::Direct("device1".to_string()));
+    }
+
+    #[test]
+    fn test_find_all_sigkeys_for_pubkey() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+
+        let pubkey = generate_public_key();
+
+        // No keys - should return empty vec
+        let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
+        assert_eq!(results.len(), 0);
+
+        // Add one specific key
+        settings
+            .add_key(
+                "device1",
+                AuthKey::active(&pubkey, Permission::Write(5)).unwrap(),
+            )
+            .unwrap();
+
+        let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, SigKey::Direct("device1".to_string()));
+        assert_eq!(results[0].1, Permission::Write(5));
+
+        // Add another alias for the same pubkey
+        settings
+            .add_key(
+                "device1_alias",
+                AuthKey::active(&pubkey, Permission::Read).unwrap(),
+            )
+            .unwrap();
+
+        let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
+        assert_eq!(results.len(), 2);
+        // Both keys should be returned
+        let key_names: Vec<String> = results
+            .iter()
+            .map(|(sk, _)| match sk {
+                SigKey::Direct(name) => name.clone(),
+                _ => panic!("Expected Direct SigKey"),
+            })
+            .collect();
+        assert!(key_names.contains(&"device1".to_string()));
+        assert!(key_names.contains(&"device1_alias".to_string()));
+
+        // Add global permission
+        let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+        settings.add_key("*", global_key).unwrap();
+
+        let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
+        assert_eq!(results.len(), 3); // Two specific keys + global
+
+        // Global should be in the results
+        let has_global = results
+            .iter()
+            .any(|(sk, _)| *sk == SigKey::Direct("*".to_string()));
+        assert!(has_global);
+    }
+
+    #[test]
+    fn test_find_all_sigkeys_sorted_by_permission() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+        let pubkey = generate_public_key();
+
+        // Add keys with different permissions (intentionally in non-sorted order)
+        settings
+            .add_key(
+                "key_write",
+                AuthKey::active(&pubkey, Permission::Write(10)).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "key_admin",
+                AuthKey::active(&pubkey, Permission::Admin(5)).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "key_read",
+                AuthKey::active(&pubkey, Permission::Read).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "key_write_high",
+                AuthKey::active(&pubkey, Permission::Write(2)).unwrap(),
+            )
+            .unwrap();
+
+        let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
+        assert_eq!(results.len(), 4);
+
+        // Verify sorted by highest permission first
+        // Admin(5) > Write(2) > Write(10) > Read
+        assert_eq!(results[0].1, Permission::Admin(5));
+        assert_eq!(results[1].1, Permission::Write(2));
+        assert_eq!(results[2].1, Permission::Write(10));
+        assert_eq!(results[3].1, Permission::Read);
+
+        // Verify key names match permissions
+        assert_eq!(results[0].0, SigKey::Direct("key_admin".to_string()));
+        assert_eq!(results[1].0, SigKey::Direct("key_write_high".to_string()));
+        assert_eq!(results[2].0, SigKey::Direct("key_write".to_string()));
+        assert_eq!(results[3].0, SigKey::Direct("key_read".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_sig_key_returns_highest_permission() {
+        use crate::auth::generate_public_key;
+
+        let mut settings = AuthSettings::new();
+        let pubkey = generate_public_key();
+
+        // Add multiple keys with different permissions
+        settings
+            .add_key(
+                "key_write",
+                AuthKey::active(&pubkey, Permission::Write(10)).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "key_admin",
+                AuthKey::active(&pubkey, Permission::Admin(5)).unwrap(),
+            )
+            .unwrap();
+        settings
+            .add_key(
+                "key_read",
+                AuthKey::active(&pubkey, Permission::Read).unwrap(),
+            )
+            .unwrap();
+
+        // resolve_sig_key_for_operation should return the highest permission (Admin)
+        let (sig_key, perm) = settings.resolve_sig_key_for_operation(&pubkey).unwrap();
+        assert_eq!(sig_key, SigKey::Direct("key_admin".to_string()));
+        assert_eq!(perm, Permission::Admin(5));
     }
 }

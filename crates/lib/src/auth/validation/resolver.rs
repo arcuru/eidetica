@@ -145,8 +145,34 @@ impl KeyResolver {
         auth_settings: &AuthSettings,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
-        // Get the auth key using AuthSettings
-        let auth_key = auth_settings.get_key(key_name)?;
+        // Get the auth key using AuthSettings - try specific key first, fallback to global
+        let auth_key = match auth_settings.get_key(key_name) {
+            Ok(key) => key,
+            Err(_) => {
+                // Key not found - check global "*" fallback using helper
+                if let Some(global_perm) = auth_settings.get_global_permission() {
+                    let pubkey_str =
+                        pubkey_override.ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                            reason: format!(
+                                "Key '{key_name}' not found and global '*' requires pubkey in SigInfo"
+                            ),
+                        })?;
+
+                    return Ok(ResolvedAuth {
+                        public_key: parse_public_key(pubkey_str)?,
+                        effective_permission: global_perm,
+                        key_status: crate::auth::types::KeyStatus::Active,
+                    });
+                } else {
+                    return Err(AuthError::InvalidAuthConfiguration {
+                        reason: format!(
+                            "Key '{key_name}' not found and no global permission available"
+                        ),
+                    }
+                    .into());
+                }
+            }
+        };
 
         // Handle global "*" permission case
         let public_key = if key_name == "*" && auth_key.pubkey() == "*" {
