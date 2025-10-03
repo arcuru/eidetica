@@ -457,6 +457,17 @@ pub fn assert_valid_uuids(keys: &[String]) {
     }
 }
 
+/// Verify that a Table record does not exist (has been deleted)
+pub fn assert_table_record_deleted(tree: &eidetica::Database, subtree_name: &str, key: &str) {
+    let viewer = tree
+        .get_store_viewer::<Table<TestRecord>>(subtree_name)
+        .unwrap();
+    assert!(
+        viewer.get(key).is_err(),
+        "Record with key '{key}' should have been deleted"
+    );
+}
+
 // ===== INTEGRATION HELPERS =====
 
 /// Create test data for sample records

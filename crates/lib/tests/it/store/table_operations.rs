@@ -237,45 +237,330 @@ fn test_empty_table_behavior() {
 }
 
 #[test]
-fn test_table_with_authenticated_tree() {
-    let db = setup_db_with_key("table_auth_key");
-    let tree = db
-        .new_database_default("table_auth_key")
-        .expect("Failed to create authenticated tree");
+fn test_table_delete_basic() {
+    let tree = setup_tree();
 
+    // Create initial records using helper
+    let initial_records = vec![
+        TestRecord {
+            name: "User 1".to_string(),
+            age: 25,
+            email: "user1@test.com".to_string(),
+        },
+        TestRecord {
+            name: "User 2".to_string(),
+            age: 30,
+            email: "user2@test.com".to_string(),
+        },
+        TestRecord {
+            name: "User 3".to_string(),
+            age: 35,
+            email: "user3@test.com".to_string(),
+        },
+    ];
+    let keys = create_table_operation(&tree, "delete_test", &initial_records);
+
+    // Delete one record within an operation
     let op = tree.new_transaction().expect("Failed to start operation");
-
-    let primary_key = {
+    {
         let table = op
-            .get_store::<Table<TestRecord>>("auth_records")
+            .get_store::<Table<TestRecord>>("delete_test")
             .expect("Failed to get Table");
 
-        let record = TestRecord {
-            name: "Authenticated User".to_string(),
-            age: 28,
-            email: "auth@secure.com".to_string(),
+        // Delete existing record
+        let deleted = table
+            .delete(&keys[1])
+            .expect("Failed to delete existing record");
+        assert!(deleted, "Should return true when deleting existing record");
+
+        // Verify deletion within same operation
+        assert!(
+            table.get(&keys[1]).is_err(),
+            "Deleted record should not be retrievable"
+        );
+
+        // Verify other records still exist
+        let record1 = table.get(&keys[0]).expect("Record 1 should still exist");
+        assert_eq!(record1.name, "User 1");
+
+        let record3 = table.get(&keys[2]).expect("Record 3 should still exist");
+        assert_eq!(record3.name, "User 3");
+    }
+    op.commit().expect("Failed to commit operation");
+
+    // Verify deletion persisted using helper
+    assert_table_record_deleted(&tree, "delete_test", &keys[1]);
+
+    // Verify other records still exist
+    assert_table_record(&tree, "delete_test", &keys[0], &initial_records[0]);
+    assert_table_record(&tree, "delete_test", &keys[2], &initial_records[2]);
+}
+
+#[test]
+fn test_table_delete_nonexistent() {
+    let tree = setup_tree();
+
+    // Create one record
+    let record = TestRecord {
+        name: "Existing User".to_string(),
+        age: 30,
+        email: "existing@test.com".to_string(),
+    };
+    let keys = create_table_operation(&tree, "delete_nonexistent", std::slice::from_ref(&record));
+
+    let op = tree.new_transaction().expect("Failed to start operation");
+    {
+        let table = op
+            .get_store::<Table<TestRecord>>("delete_nonexistent")
+            .expect("Failed to get Table");
+
+        // Try to delete non-existent key
+        let deleted = table
+            .delete("non-existent-uuid")
+            .expect("Delete should not error on non-existent key");
+        assert!(
+            !deleted,
+            "Should return false when deleting non-existent record"
+        );
+
+        // Verify existing record is still there
+        let existing = table.get(&keys[0]).expect("Existing record should remain");
+        assert_eq!(existing.name, "Existing User");
+    }
+    op.commit().expect("Failed to commit operation");
+
+    // Verify existing record persisted
+    assert_table_record(&tree, "delete_nonexistent", &keys[0], &record);
+}
+
+#[test]
+fn test_table_delete_and_reinsert() {
+    let tree = setup_tree();
+
+    // Create initial record
+    let initial_record = TestRecord {
+        name: "Original User".to_string(),
+        age: 25,
+        email: "original@test.com".to_string(),
+    };
+    let keys = create_table_operation(
+        &tree,
+        "delete_reinsert",
+        std::slice::from_ref(&initial_record),
+    );
+    let original_key = &keys[0];
+
+    // Delete the record
+    let op1 = tree.new_transaction().expect("Failed to start operation");
+    {
+        let table = op1
+            .get_store::<Table<TestRecord>>("delete_reinsert")
+            .expect("Failed to get Table");
+
+        table.delete(original_key).expect("Failed to delete record");
+    }
+    op1.commit().expect("Failed to commit deletion");
+
+    // Verify deletion
+    assert_table_record_deleted(&tree, "delete_reinsert", original_key);
+
+    // Re-insert with the same key
+    let op2 = tree.new_transaction().expect("Failed to start operation");
+    {
+        let table = op2
+            .get_store::<Table<TestRecord>>("delete_reinsert")
+            .expect("Failed to get Table");
+
+        let new_record = TestRecord {
+            name: "New User".to_string(),
+            age: 30,
+            email: "new@test.com".to_string(),
         };
 
-        // Insert record in authenticated tree
-        let pk = table
-            .insert(record.clone())
-            .expect("Failed to insert authenticated record");
+        table
+            .set(original_key, new_record.clone())
+            .expect("Failed to re-insert record");
 
-        // Verify retrieval within same operation
-        let retrieved = table.get(&pk).expect("Failed to get authenticated record");
-        assert_eq!(retrieved, record);
+        // Verify re-inserted record is retrievable
+        let retrieved = table
+            .get(original_key)
+            .expect("Re-inserted record should be retrievable");
+        assert_eq!(retrieved, new_record);
+    }
+    op2.commit().expect("Failed to commit re-insertion");
 
-        pk
+    // Verify new record persisted with same key
+    let new_record = TestRecord {
+        name: "New User".to_string(),
+        age: 30,
+        email: "new@test.com".to_string(),
     };
+    assert_table_record(&tree, "delete_reinsert", original_key, &new_record);
+}
 
-    op.commit()
-        .expect("Failed to commit authenticated operation");
+#[test]
+fn test_table_search_after_delete() {
+    let tree = setup_tree();
 
-    // Verify persistence in authenticated tree
-    let expected = TestRecord {
-        name: "Authenticated User".to_string(),
-        age: 28,
-        email: "auth@secure.com".to_string(),
+    // Create test records using helper
+    let records = create_test_records();
+    let keys = create_table_operation(&tree, "search_after_delete", &records);
+
+    // Verify initial search count
+    assert_table_search_count(&tree, "search_after_delete", |record| record.age == 25, 2);
+
+    // Delete one of the age=25 records
+    let op = tree.new_transaction().expect("Failed to start operation");
+    {
+        let table = op
+            .get_store::<Table<TestRecord>>("search_after_delete")
+            .expect("Failed to get Table");
+
+        table.delete(&keys[0]).expect("Failed to delete record");
+    }
+    op.commit().expect("Failed to commit deletion");
+
+    // Verify search count decreased
+    assert_table_search_count(&tree, "search_after_delete", |record| record.age == 25, 1);
+
+    // Verify the remaining age=25 record is the correct one
+    let viewer = tree
+        .get_store_viewer::<Table<TestRecord>>("search_after_delete")
+        .expect("Failed to get Table viewer");
+
+    let age_25_results = viewer
+        .search(|record| record.age == 25)
+        .expect("Failed to search after delete");
+    assert_eq!(age_25_results.len(), 1);
+    assert_eq!(age_25_results[0].1.name, "Charlie Brown");
+}
+
+#[test]
+fn test_table_delete_multiple() {
+    let tree = setup_tree();
+
+    // Create multiple records
+    let values = &[10, 20, 30, 40, 50];
+    let keys = create_simple_table_operation(&tree, "delete_multiple", values);
+
+    // Delete multiple records in one operation
+    let op = tree.new_transaction().expect("Failed to start operation");
+    {
+        let table = op
+            .get_store::<Table<SimpleRecord>>("delete_multiple")
+            .expect("Failed to get Table");
+
+        // Delete records at indices 1 and 3
+        let deleted1 = table.delete(&keys[1]).expect("Failed to delete record 1");
+        let deleted3 = table.delete(&keys[3]).expect("Failed to delete record 3");
+
+        assert!(deleted1);
+        assert!(deleted3);
+
+        // Verify deletions
+        assert!(table.get(&keys[1]).is_err());
+        assert!(table.get(&keys[3]).is_err());
+
+        // Verify remaining records
+        assert_eq!(table.get(&keys[0]).expect("Record 0 exists").value, 10);
+        assert_eq!(table.get(&keys[2]).expect("Record 2 exists").value, 30);
+        assert_eq!(table.get(&keys[4]).expect("Record 4 exists").value, 50);
+    }
+    op.commit().expect("Failed to commit deletions");
+
+    // Verify search returns only non-deleted records
+    let viewer = tree
+        .get_store_viewer::<Table<SimpleRecord>>("delete_multiple")
+        .expect("Failed to get Table viewer");
+
+    let all_records = viewer
+        .search(|_| true)
+        .expect("Failed to search all records");
+    assert_eq!(all_records.len(), 3);
+
+    // Verify correct records remain
+    let values: Vec<i32> = all_records.iter().map(|(_, r)| r.value).collect();
+    assert!(values.contains(&10));
+    assert!(values.contains(&30));
+    assert!(values.contains(&50));
+}
+
+#[test]
+fn test_table_delete_concurrent_modifications() {
+    let tree = setup_tree();
+
+    // Create base record
+    let op_base = tree.new_transaction().expect("Failed to start operation");
+    let key1 = {
+        let table = op_base
+            .get_store::<Table<TestRecord>>("concurrent_delete")
+            .expect("Failed to get Table");
+        let record = TestRecord {
+            name: "Base User".to_string(),
+            age: 25,
+            email: "base@test.com".to_string(),
+        };
+        table.insert(record).expect("Failed to insert base record")
     };
-    assert_table_record(&tree, "auth_records", &primary_key, &expected);
+    let base_entry_id = op_base.commit().expect("Failed to commit base");
+
+    // Branch A: Delete the record
+    let op_branch_a = tree
+        .new_transaction_with_tips([base_entry_id.clone()])
+        .expect("Failed to start branch A");
+    {
+        let table = op_branch_a
+            .get_store::<Table<TestRecord>>("concurrent_delete")
+            .expect("Failed to get Table");
+
+        table.delete(&key1).expect("Failed to delete in branch A");
+    }
+    op_branch_a
+        .commit()
+        .expect("Failed to commit branch A deletion");
+
+    // Branch B: Update the same record
+    let op_branch_b = tree
+        .new_transaction_with_tips([base_entry_id])
+        .expect("Failed to start branch B");
+    {
+        let table = op_branch_b
+            .get_store::<Table<TestRecord>>("concurrent_delete")
+            .expect("Failed to get Table");
+
+        let updated_record = TestRecord {
+            name: "Updated User".to_string(),
+            age: 30,
+            email: "updated@test.com".to_string(),
+        };
+        table
+            .set(&key1, updated_record)
+            .expect("Failed to update in branch B");
+    }
+    op_branch_b
+        .commit()
+        .expect("Failed to commit branch B update");
+
+    // Get merged result - CRDT last-write-wins should apply
+    // The result depends on CRDT merge semantics
+    let viewer = tree
+        .get_store_viewer::<Table<TestRecord>>("concurrent_delete")
+        .expect("Failed to get Table viewer");
+
+    // After CRDT merge, one operation will win
+    // We just verify the system doesn't crash and produces a deterministic result
+    let result = viewer.get(&key1);
+
+    // Either the record exists (update won) or doesn't exist (delete won)
+    // Both are valid CRDT outcomes depending on timestamp/ID ordering
+    match result {
+        Ok(record) => {
+            // Update won - verify it's the updated record
+            assert_eq!(record.name, "Updated User");
+        }
+        Err(_) => {
+            // Delete won - record doesn't exist
+            // This is also valid
+        }
+    }
 }

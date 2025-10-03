@@ -75,11 +75,23 @@ where
     /// * There's a serialization/deserialization error
     pub fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
-        // First check if there's any data in the atomic op itself
+
+        // Get local data from the atomic op if it exists
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
 
-        // If there's data in the operation and it contains the key, return that
-        if let Ok(data) = local_data
+        // If there's a tombstone in local data, the record is deleted
+        if let Ok(ref data) = local_data
+            && data.is_tombstone(key)
+        {
+            return Err(StoreError::KeyNotFound {
+                store: self.name.clone(),
+                key: key.to_string(),
+            }
+            .into());
+        }
+
+        // If there's a value in local data, return that
+        if let Ok(ref data) = local_data
             && let Some(map_value) = data.get(key)
             && let Some(value) = map_value.as_text()
         {
@@ -199,6 +211,53 @@ where
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)
+    }
+
+    /// Deletes a row from the Table by its primary key.
+    ///
+    /// This method marks the record as deleted using CRDT tombstone semantics,
+    /// ensuring the deletion is properly synchronized across distributed nodes.
+    ///
+    /// # Arguments
+    /// * `key` - The primary key of the record to delete
+    ///
+    /// # Returns
+    /// * `Ok(true)` - If a record existed and was deleted
+    /// * `Ok(false)` - If no record existed with the given key
+    ///
+    /// # Errors
+    /// Returns an error if there's a serialization error or the operation fails
+    pub fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
+        let key_str = key.as_ref();
+
+        // Check if the record exists (checks both local and full state)
+        let exists = self.get(key_str).is_ok();
+
+        // If the record doesn't exist, return false early
+        if !exists {
+            return Ok(false);
+        }
+
+        // Get current data from the atomic op, or create new if not existing
+        let mut data = self
+            .atomic_op
+            .get_local_data::<Doc>(&self.name)
+            .unwrap_or_default();
+
+        // Remove the key (creates tombstone for CRDT semantics)
+        data.remove(key_str);
+
+        // Serialize and update the atomic op
+        let serialized_data =
+            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
+                store: self.name.clone(),
+                reason: format!("Failed to serialize subtree data: {e}"),
+            })?;
+        self.atomic_op
+            .update_subtree(&self.name, &serialized_data)?;
+
+        // Return true since we confirmed the record existed
+        Ok(true)
     }
 
     /// Searches for rows matching a predicate function.
