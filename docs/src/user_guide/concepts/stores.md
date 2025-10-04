@@ -164,6 +164,12 @@ if let Ok(mut user) = users.get(&id) {
     users.set(&id, user)?;
 }
 
+// Delete an item
+let was_deleted = users.delete(&id)?;
+if was_deleted {
+    println!("User deleted successfully");
+}
+
 // Search for items matching a condition
 let active_users = users.search(|user| user.active)?;
 for (id, user) in active_users {

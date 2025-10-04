@@ -174,11 +174,11 @@ let inserted_id;
         eprintln!("Task {} not found for update?", inserted_id);
     }
 
-    // Remove a task (if you knew its ID)
-    // tasks_store.remove(&some_other_id)?;
+    // Delete a task (if you knew its ID)
+    // tasks_store.delete(&some_other_id)?;
 }
 
-// Commit all inserts/updates/removes
+// Commit all inserts/updates/deletes
 let entry_id = op.commit()?;
 println!("Table changes committed in entry: {}", entry_id);
 # Ok(())

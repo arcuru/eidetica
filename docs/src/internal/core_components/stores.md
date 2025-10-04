@@ -20,7 +20,7 @@ Record-oriented store for managing collections with unique identifiers.
 
 - Stores user-defined types (T: Serialize + Deserialize)
 - Automatic UUID generation for records
-- CRUD operations: insert, get, set, search
+- CRUD operations: insert, get, set, delete, search
 - Type-safe access via Operation::get_subtree
 
 **Use Cases**: User lists, task management, any collection requiring persistent IDs.
