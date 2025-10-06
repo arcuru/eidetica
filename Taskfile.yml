@@ -20,10 +20,10 @@ tasks:
   ci:local:
     desc: Run CI locally
     aliases: [ci]
-    deps: [audit, doc, fmt, test, clippy, build]
+    deps: [audit, doc, fmt, test:full, clippy, build]
   ci:nix:
     desc: Run Nix CI checks
-    deps: [nix:check]
+    deps: [nix:build, nix:check]
   nix:check:
     desc: Run Nix CI checks
     cmds:
@@ -47,29 +47,26 @@ tasks:
       - alejandra . &> /dev/null
       - prettier --write . &> /dev/null
   test:
-    desc: Run all tests
+    desc: Run tests
     aliases: [t]
     cmds:
       - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
+  test:doc:
+    desc: Run doc tests
+    cmds:
       - cargo test --doc --workspace --all-features --quiet
-      - task: book:test
   test:full:
-    desc: Run all tests including ignored ones
+    desc: Run all tests
     aliases: [tf]
     cmds:
-      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
-      - cargo test --doc --workspace --all-features --quiet
-      - task: book:test
+      - task: test
+      - task: test:doc
+      - task: test:book
   test:ignored:
-    desc: Run only ignored tests
+    desc: Run tests including ignored ones
     aliases: [ti]
     cmds:
-      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored ignored-only
-  test:ignored:quiet:
-    desc: Run only ignored tests with quiet output (no test stdout/stderr)
-    aliases: [tiq]
-    cmds:
-      - cargo nextest run --workspace --all-features --no-fail-fast --run-ignored ignored-only --failure-output never --success-output never
+      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --quiet
@@ -94,7 +91,7 @@ tasks:
     desc: Generate coverage data including ignored tests
     aliases: [cov:i]
     cmd: cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm --ignored --no-fail-fast
-  todo-test:
+  test:todo:
     desc: Run the todo example integration test
     dir: examples/todo
     cmd: ./test.sh
@@ -108,6 +105,7 @@ tasks:
       - mdbook serve docs --open
   book:test:
     desc: Test code examples in the mdbook
+    aliases: [test:book]
     cmds:
       # The book tests require a single copy of libeidetica target/debug/deps
       # This is a workaround to remove and rebuild only 1
