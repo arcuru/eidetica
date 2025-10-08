@@ -13,6 +13,11 @@ tasks:
       - task: build
       - task: test
       - task: clippy
+  fix:
+    desc: Run automatic fixes
+    cmds:
+      - task: clippy:fix
+      - task: fmt
   ci:full:
     desc: Run CI locally in containers
     cmds:
@@ -20,7 +25,13 @@ tasks:
   ci:local:
     desc: Run CI locally
     aliases: [ci]
-    deps: [audit, doc, fmt, test:full, clippy, build]
+    deps: [fix]
+    cmds:
+      - task: audit
+      - task: doc
+      - task: clippy
+      - task: build
+      - task: test:full
   ci:nix:
     desc: Run Nix CI checks
     deps: [nix:build, nix:check]
@@ -71,9 +82,8 @@ tasks:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --quiet
   audit:
-    desc: Run cargo security/license audit
+    desc: Run security and license checks (advisories, licenses, bans, sources)
     cmds:
-      - cargo audit
       - cargo deny check
   build:debug:
     desc: Build the project
