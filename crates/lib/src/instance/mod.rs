@@ -822,7 +822,7 @@ mod tests {
         let backend1 = InMemory::new();
         let instance1 = Instance::load(Box::new(backend1))?;
         instance1.create_user("bob", None)?;
-        let user1 = instance1.login_user("bob", None)?;
+        let mut user1 = instance1.login_user("bob", None)?;
 
         // Create a user database to verify it persists
         let mut settings = Doc::new();
@@ -1007,7 +1007,7 @@ mod tests {
         let backend1 = InMemory::new();
         let instance1 = Instance::load(Box::new(backend1))?;
         instance1.create_user("eve", None)?;
-        let user1 = instance1.login_user("eve", None)?;
+        let mut user1 = instance1.login_user("eve", None)?;
 
         // Create multiple databases
         let mut settings1 = Doc::new();

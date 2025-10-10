@@ -114,6 +114,16 @@ pub enum SyncError {
     /// Invalid data format in stored bootstrap request.
     #[error("Invalid data: {0}")]
     InvalidData(String),
+
+    /// Insufficient permission for the requested operation.
+    #[error(
+        "Insufficient permission for request '{request_id}': required {required_permission}, but key has {actual_permission:?}"
+    )]
+    InsufficientPermission {
+        request_id: String,
+        required_permission: String,
+        actual_permission: crate::auth::Permission,
+    },
 }
 
 impl SyncError {

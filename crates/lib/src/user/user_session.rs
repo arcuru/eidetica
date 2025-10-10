@@ -124,7 +124,7 @@ impl User {
     ///
     /// # Returns
     /// The created Database
-    pub fn new_database(&self, settings: crate::crdt::Doc) -> Result<crate::Database> {
+    pub fn new_database(&mut self, settings: crate::crdt::Doc) -> Result<crate::Database> {
         use crate::store::Table;
         use crate::user::types::UserKey;
 
@@ -157,24 +157,32 @@ impl User {
         )?;
 
         // Now store the mapping in UserKey so load_database() can find it later
-        let mut metadata = self
-            .key_manager
-            .get_key_metadata(&key_id)
+        // Read from user database (source of truth)
+        let tx = self.user_database.new_transaction()?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+
+        // Find the key metadata in the database
+        let mut metadata = keys_table
+            .search(|uk| uk.key_id == key_id)?
+            .into_iter()
+            .next()
             .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
                 key_id: key_id.clone(),
             })?
-            .clone();
+            .1;
 
-        // Add the database -> sigkey mapping
+        // Add the database sigkey mapping
         metadata
             .database_sigkeys
             .insert(database.root_id().clone(), key_id.clone());
 
         // Update the key in user database
-        let tx = self.user_database.new_transaction()?;
-        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
-        keys_table.insert(metadata)?;
+        keys_table.set(&metadata.key_id, metadata.clone())?;
         tx.commit()?;
+
+        // Update the in-memory key manager with the updated metadata
+        // This ensures the sigkey mapping is available immediately
+        self.key_manager.add_key(metadata)?;
 
         Ok(database)
     }
@@ -318,6 +326,57 @@ impl User {
         Ok(metadata.database_sigkeys.get(database_id).cloned())
     }
 
+    /// Add a SigKey mapping for a key in a specific database
+    ///
+    /// Registers that a user's key should be used with a specific SigKey identifier
+    /// when interacting with a database. This is typically used when a user has been
+    /// granted access to a database and needs to configure their local key to work with it.
+    ///
+    /// # Arguments
+    /// * `key_id` - The user's key identifier (public key string)
+    /// * `database_id` - The database ID
+    /// * `sigkey` - The SigKey identifier to use for this database
+    ///
+    /// # Errors
+    /// Returns an error if the key_id doesn't exist in the user database
+    pub fn add_database_key_mapping(
+        &mut self,
+        key_id: &str,
+        database_id: &crate::entry::ID,
+        sigkey: &str,
+    ) -> Result<()> {
+        use crate::store::Table;
+        use crate::user::types::UserKey;
+
+        // Read from user database (source of truth)
+        let tx = self.user_database.new_transaction()?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+
+        // Find the key metadata in the database
+        let mut metadata = keys_table
+            .search(|uk| uk.key_id == key_id)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })?
+            .1;
+
+        // Add the database sigkey mapping
+        metadata
+            .database_sigkeys
+            .insert(database_id.clone(), sigkey.to_string());
+
+        // Update the key in user database
+        keys_table.set(&metadata.key_id, metadata.clone())?;
+        tx.commit()?;
+
+        // Update the in-memory key manager with the updated metadata
+        self.key_manager.add_key(metadata)?;
+
+        Ok(())
+    }
+
     // === Key Management (User Context) ===
 
     /// Add a new private key to this user's keyring.
@@ -412,6 +471,101 @@ impl User {
                 }
                 .into()
             })
+    }
+
+    // === Bootstrap Request Management (User Context) ===
+
+    /// Get all pending bootstrap requests from the sync system.
+    ///
+    /// This is a convenience method that requires the Instance's Sync to be initialized.
+    ///
+    /// # Arguments
+    /// * `sync` - Reference to the Instance's Sync object
+    ///
+    /// # Returns
+    /// A vector of (request_id, bootstrap_request) pairs for pending requests
+    pub fn pending_bootstrap_requests(
+        &self,
+        sync: &crate::sync::Sync,
+    ) -> Result<Vec<(String, crate::sync::BootstrapRequest)>> {
+        sync.pending_bootstrap_requests()
+    }
+
+    /// Approve a bootstrap request and add the requesting key to the target database.
+    ///
+    /// The approving key must have Admin permission on the target database.
+    ///
+    /// # Arguments
+    /// * `sync` - Mutable reference to the Instance's Sync object
+    /// * `request_id` - The unique identifier of the request to approve
+    /// * `approving_key_id` - The ID of this user's key to use for approval (must have Admin permission)
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the approval operation
+    ///
+    /// # Errors
+    /// - Returns an error if the user doesn't own the specified approving key
+    /// - Returns an error if the approving key doesn't have Admin permission on the target database
+    /// - Returns an error if the request doesn't exist or isn't pending
+    /// - Returns an error if the key addition to the database fails
+    pub fn approve_bootstrap_request(
+        &self,
+        sync: &mut crate::sync::Sync,
+        request_id: &str,
+        approving_key_id: &str,
+    ) -> Result<()> {
+        // Get the signing key from the key manager
+        let signing_key = self
+            .key_manager
+            .get_signing_key(approving_key_id)
+            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                key_id: approving_key_id.to_string(),
+            })?;
+
+        // Delegate to Sync layer with the user-provided key
+        // The Sync layer will validate permissions when committing the transaction
+        sync.approve_bootstrap_request_with_key(request_id, signing_key, approving_key_id)?;
+
+        Ok(())
+    }
+
+    /// Reject a bootstrap request.
+    ///
+    /// This method marks the request as rejected. The requesting device will not
+    /// be granted access to the target database. Requires Admin permission on the
+    /// target database to prevent unauthorized users from disrupting the bootstrap protocol.
+    ///
+    /// # Arguments
+    /// * `sync` - Mutable reference to the Instance's Sync object
+    /// * `request_id` - The unique identifier of the request to reject
+    /// * `rejecting_key_id` - The ID of this user's key (for permission validation and audit trail)
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the rejection operation
+    ///
+    /// # Errors
+    /// - Returns an error if the user doesn't own the specified rejecting key
+    /// - Returns an error if the request doesn't exist or isn't pending
+    /// - Returns an error if the rejecting key lacks Admin permission on the target database
+    pub fn reject_bootstrap_request(
+        &self,
+        sync: &mut crate::sync::Sync,
+        request_id: &str,
+        rejecting_key_id: &str,
+    ) -> Result<()> {
+        // Get the signing key from the key manager
+        let signing_key = self
+            .key_manager
+            .get_signing_key(rejecting_key_id)
+            .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                key_id: rejecting_key_id.to_string(),
+            })?;
+
+        // Delegate to Sync layer with the user-provided key
+        // The Sync layer will validate Admin permission on the target database
+        sync.reject_bootstrap_request_with_key(request_id, signing_key, rejecting_key_id)?;
+
+        Ok(())
     }
 }
 

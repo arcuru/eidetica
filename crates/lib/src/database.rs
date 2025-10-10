@@ -501,6 +501,7 @@ impl Database {
     /// Get a settings store for the database.
     ///
     /// Returns a DocStore for managing the database's settings.
+    /// TODO: Update this to use the new SettingsStore
     ///
     /// # Returns
     /// A `Result` containing the `DocStore` for settings or an error.
@@ -758,6 +759,67 @@ impl Database {
         // Use the authentication validator with historical settings
         let mut validator = crate::auth::validation::AuthValidator::new();
         validator.validate_entry(&entry, &historical_settings, Some(&self.backend))
+    }
+
+    /// Get the effective permission level for a given SigKey in this database.
+    ///
+    /// This method checks the database's authentication settings to determine what permission
+    /// level (if any) the specified SigKey has. This is useful for validating that a user
+    /// has the required permission before performing sensitive operations.
+    ///
+    /// # Arguments
+    /// * `sigkey` - The SigKey identifier to check permissions for
+    ///
+    /// # Returns
+    /// The effective Permission for the SigKey if found
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The database settings cannot be retrieved
+    /// - The authentication settings cannot be parsed
+    /// - The SigKey is not found in the authentication settings
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    /// # use std::sync::Arc;
+    /// # fn example() -> Result<()> {
+    /// # let backend = Arc::new(InMemory::new());
+    /// # let (signing_key, _) = generate_keypair();
+    /// # let database = Database::new_with_key(
+    /// #     eidetica::crdt::Doc::new(),
+    /// #     backend,
+    /// #     signing_key,
+    /// #     "my_key".to_string(),
+    /// # )?;
+    /// // Check if a key has Admin permission
+    /// let permission = database.get_sigkey_permission("my_key")?;
+    /// if permission.can_admin() {
+    ///     println!("Key has Admin permission!");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_sigkey_permission(&self, sigkey: &str) -> Result<Permission> {
+        // Get database settings
+        let settings_store = self.get_settings()?;
+
+        // Get auth settings from the settings store
+        let auth_settings = match settings_store.get_node("auth") {
+            Ok(auth_doc) => AuthSettings::from_doc(auth_doc),
+            Err(_) => {
+                // No auth settings means no permissions
+                return Err(crate::instance::errors::InstanceError::AuthenticationRequired.into());
+            }
+        };
+
+        // Create SigKey and validate entry auth to get effective permission
+        let sig_key = crate::auth::types::SigKey::Direct(sigkey.to_string());
+        let resolved_auth = auth_settings.validate_entry_auth(&sig_key, Some(&self.backend))?;
+
+        Ok(resolved_auth.effective_permission)
     }
 
     /// Get the authentication settings that were valid when a specific entry was created.

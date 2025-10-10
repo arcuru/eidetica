@@ -102,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Instance::new_unified(backend)?;
 
     // Get or create passwordless user
-    let user = get_or_create_user(&db)?;
+    let mut user = get_or_create_user(&db)?;
 
     // Store trees by name
     let mut trees: HashMap<String, Database> = HashMap::new();

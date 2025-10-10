@@ -38,3 +38,4 @@ mod instance;
 mod store;
 mod sync;
 mod transaction;
+mod user;

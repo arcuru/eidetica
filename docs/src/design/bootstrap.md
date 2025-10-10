@@ -152,12 +152,30 @@ pub enum RequestStatus {
 Any logged-in user who has a key with Admin permission for the database can approve the request:
 
 1. User logs in with `instance.login_user()`
-2. Lists pending requests with `sync.pending_bootstrap_requests()`
-3. Calls `user.approve_bootstrap_request()` with request ID and tree ID
-4. System finds user's key with Admin permission for the database
-5. Creates transaction using that key's SigKey
-6. Adds requesting key to database's auth settings
-7. Updates request status to Approved
+2. Lists pending requests with `user.pending_bootstrap_requests(&sync)`
+3. User selects a key they own that has Admin permission on the target database
+4. Calls `user.approve_bootstrap_request(&mut sync, request_id, approving_key_id)`
+5. System validates the user owns the specified key
+6. System retrieves the signing key from the user's key manager
+7. System **explicitly validates** the key has Admin permission on the target database
+8. Creates transaction using the user's signing key
+9. Adds requesting key to database's auth settings
+10. Updates request status to Approved in the sync database
+
+### Permission Validation Strategy
+
+Bootstrap approval and rejection use **explicit permission validation**:
+
+- **Approval**: The system explicitly checks that the approving user has Admin permission on the target database before adding the requesting key. This provides clear error messages (`InsufficientPermission`) and fails fast if the user lacks the required permission.
+
+- **Rejection**: The system explicitly checks that the rejecting user has Admin permission on the target database before allowing rejection. Since rejection only modifies the sync database (not the target database), explicit validation is necessary to enforce the Admin permission requirement.
+
+**Rationale**: Explicit validation provides:
+
+- Clear, informative error messages for users
+- Fast failure before attempting database modifications
+- Consistent permission checking across both operations
+- Better debugging experience when permission issues occur
 
 ### Client Retry After Approval
 
@@ -178,7 +196,10 @@ Once approved, the client retries with normal sync after waiting or polling peri
 
 **For Rejection:**
 
-- User must be logged in (no specific permissions required for rejection)
+- User must be logged in
+- User must have a key with Admin permission for the target database
+- That key must be in the database's auth settings
+- System explicitly validates Admin permission before allowing rejection
 
 ## Design Decisions
 
@@ -231,15 +252,29 @@ impl Sync {
 }
 
 impl User {
+    /// Get all pending bootstrap requests from the sync system
+    pub fn pending_bootstrap_requests(
+        &self,
+        sync: &Sync,
+    ) -> Result<Vec<(String, BootstrapRequest)>>;
+
     /// Approve a bootstrap request (requires Admin permission)
+    /// The approving_key_id must be owned by this user and have Admin permission on the target database
     pub fn approve_bootstrap_request(
         &self,
+        sync: &mut Sync,
         request_id: &str,
-        tree_id: &ID,
+        approving_key_id: &str,
     ) -> Result<()>;
 
-    /// Reject a bootstrap request
-    pub fn reject_bootstrap_request(&self, request_id: &str) -> Result<()>;
+    /// Reject a bootstrap request (requires Admin permission)
+    /// The rejecting_key_id must be owned by this user and have Admin permission on the target database
+    pub fn reject_bootstrap_request(
+        &self,
+        sync: &mut Sync,
+        request_id: &str,
+        rejecting_key_id: &str,
+    ) -> Result<()>;
 }
 
 // Client-side bootstrap request

@@ -41,7 +41,7 @@ Here's a simple example:
     instance.create_user("alice", None)?;
 
     // Login to get a User session
-    let user = instance.login_user("alice", None)?;
+    let mut user = instance.login_user("alice", None)?;
 
     // Create a database in the user's context
     let mut settings = Doc::new();
@@ -66,7 +66,7 @@ The backend determines how your data is stored. The example above uses `InMemory
 # let backend = InMemory::new();
 # let instance = Instance::new_unified(Box::new(backend))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let _database = user.new_database(settings)?;
@@ -101,7 +101,7 @@ You can load a previously saved backend:
 # let backend = InMemory::new();
 # let instance = Instance::load(Box::new(backend))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let _database = user.new_database(settings)?;
@@ -191,7 +191,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::new_unified(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let database = user.new_database(settings)?;
@@ -229,7 +229,7 @@ op.commit()?;
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::new_unified(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let database = user.new_database(settings)?;
@@ -274,7 +274,7 @@ for (id, person) in all_people {
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::new_unified(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let database = user.new_database(settings)?;
@@ -316,7 +316,7 @@ op.commit()?;
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::new_unified(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
-# let user = instance.login_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
 # let database = user.new_database(settings)?;

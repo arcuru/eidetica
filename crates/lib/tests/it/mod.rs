@@ -8,3 +8,4 @@ pub mod instance;
 pub mod store;
 pub mod sync;
 pub mod transaction;
+pub mod user;

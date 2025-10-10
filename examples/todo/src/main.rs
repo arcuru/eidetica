@@ -97,10 +97,10 @@ fn main() -> Result<()> {
     let instance = load_or_create_instance(&cli.database_path)?;
 
     // Get or create passwordless user
-    let user = get_or_create_user(&instance)?;
+    let mut user = get_or_create_user(&instance)?;
 
     // Load or create the todo database
-    let todo_database = load_or_create_todo_database(&user)?;
+    let todo_database = load_or_create_todo_database(&mut user)?;
 
     // Handle the command with proper error context
     let result = match &cli.command {
@@ -196,7 +196,7 @@ fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn load_or_create_todo_database(user: &User) -> Result<Database> {
+fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
     let database_name = "todo";
 
     // Try to find the database by name

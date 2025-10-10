@@ -11,7 +11,7 @@ use crate::{
     auth::{crypto::format_public_key, settings::AuthSettings, types::AuthKey},
     constants::SETTINGS,
     crdt::Doc,
-    store::DocStore,
+    store::{DocStore, SettingsStore},
 };
 
 pub mod background;
@@ -1420,6 +1420,107 @@ impl Sync {
         Ok(())
     }
 
+    /// Approve a bootstrap request using a user-provided signing key.
+    ///
+    /// This variant allows approval using keys that are not stored in the backend,
+    /// such as user keys managed in memory.
+    ///
+    /// # Arguments
+    /// * `request_id` - The unique identifier of the request to approve
+    /// * `approving_signing_key` - The signing key to use for the transaction
+    /// * `approving_sigkey` - The sigkey identifier for audit trail
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the approval operation.
+    ///
+    /// # Errors
+    /// Returns `SyncError::InsufficientPermission` if the approving key does not have
+    /// Admin permission on the target database.
+    pub fn approve_bootstrap_request_with_key(
+        &mut self,
+        request_id: &str,
+        approving_signing_key: &ed25519_dalek::SigningKey,
+        approving_sigkey: &str,
+    ) -> Result<()> {
+        // Load the request from sync database
+        let sync_op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&sync_op);
+
+        let request = manager
+            .get_request(request_id)?
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
+
+        // Validate request is still pending
+        if !matches!(request.status, RequestStatus::Pending) {
+            return Err(SyncError::InvalidRequestState {
+                request_id: request_id.to_string(),
+                current_status: format!("{:?}", request.status),
+                expected_status: "Pending".to_string(),
+            }
+            .into());
+        }
+
+        // Load the existing database with the user's signing key
+        let database = Database::load_with_key(
+            self.backend.clone(),
+            &request.tree_id,
+            approving_signing_key.clone(),
+            approving_sigkey.to_string(),
+        )?;
+
+        // Explicitly check that the approving user has Admin permission
+        // This provides clear error messages and fails fast before modifying the database
+        let permission = database.get_sigkey_permission(approving_sigkey)?;
+        if !permission.can_admin() {
+            return Err(SyncError::InsufficientPermission {
+                request_id: request_id.to_string(),
+                required_permission: "Admin".to_string(),
+                actual_permission: permission,
+            }
+            .into());
+        }
+
+        // Create transaction - this will use the provided signing key
+        let tx = database.new_transaction()?;
+
+        // Get settings store and update auth configuration
+        let settings_store = SettingsStore::new(&tx)?;
+
+        // Create the auth key for the requesting device
+        let auth_key = AuthKey::active(
+            request.requesting_pubkey.clone(),
+            request.requested_permission.clone(),
+        )?;
+
+        // Add the new key to auth settings using SettingsStore API
+        // This provides proper upsert behavior and validation
+        settings_store.set_auth_key(&request.requesting_key_name, auth_key)?;
+
+        // Commit will validate that the user's key has Admin permission
+        // If this fails, it means the user lacks the necessary permission
+        tx.commit()?;
+
+        // Update request status to approved
+        let approval_time = bootstrap_request_manager::current_timestamp();
+        manager.update_status(
+            request_id,
+            RequestStatus::Approved {
+                approved_by: approving_sigkey.to_string(),
+                approval_time,
+            },
+        )?;
+        sync_op.commit()?;
+
+        info!(
+            request_id = %request_id,
+            tree_id = %request.tree_id,
+            approved_by = %approving_sigkey,
+            "Bootstrap request approved and key added to database using user-provided key"
+        );
+
+        Ok(())
+    }
+
     /// Reject a bootstrap request.
     ///
     /// This method marks the request as rejected without adding any keys
@@ -1472,6 +1573,87 @@ impl Sync {
         );
 
         // TODO: Implement notification to requesting peer (future enhancement)
+
+        Ok(())
+    }
+
+    /// Reject a bootstrap request using a user-provided signing key with Admin permission validation.
+    ///
+    /// This variant allows rejection using keys that are not stored in the backend,
+    /// such as user keys managed in memory. It validates that the rejecting user has
+    /// Admin permission on the target database before allowing the rejection.
+    ///
+    /// # Arguments
+    /// * `request_id` - The unique identifier of the request to reject
+    /// * `rejecting_signing_key` - The signing key to use for permission validation
+    /// * `rejecting_sigkey` - The sigkey identifier for audit trail
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the rejection operation.
+    ///
+    /// # Errors
+    /// Returns `SyncError::InsufficientPermission` if the rejecting key does not have
+    /// Admin permission on the target database.
+    pub fn reject_bootstrap_request_with_key(
+        &mut self,
+        request_id: &str,
+        rejecting_signing_key: &ed25519_dalek::SigningKey,
+        rejecting_sigkey: &str,
+    ) -> Result<()> {
+        // Load the request from sync database
+        let sync_op = self.sync_tree.new_transaction()?;
+        let manager = BootstrapRequestManager::new(&sync_op);
+
+        let request = manager
+            .get_request(request_id)?
+            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
+
+        // Validate request is still pending
+        if !matches!(request.status, RequestStatus::Pending) {
+            return Err(SyncError::InvalidRequestState {
+                request_id: request_id.to_string(),
+                current_status: format!("{:?}", request.status),
+                expected_status: "Pending".to_string(),
+            }
+            .into());
+        }
+
+        // Load the existing database with the user's signing key to validate permissions
+        let database = Database::load_with_key(
+            self.backend.clone(),
+            &request.tree_id,
+            rejecting_signing_key.clone(),
+            rejecting_sigkey.to_string(),
+        )?;
+
+        // Check that the rejecting user has Admin permission
+        let permission = database.get_sigkey_permission(rejecting_sigkey)?;
+        if !permission.can_admin() {
+            return Err(SyncError::InsufficientPermission {
+                request_id: request_id.to_string(),
+                required_permission: "Admin".to_string(),
+                actual_permission: permission,
+            }
+            .into());
+        }
+
+        // User has Admin permission, proceed with rejection
+        let rejection_time = bootstrap_request_manager::current_timestamp();
+        manager.update_status(
+            request_id,
+            RequestStatus::Rejected {
+                rejected_by: rejecting_sigkey.to_string(),
+                rejection_time,
+            },
+        )?;
+        sync_op.commit()?;
+
+        info!(
+            request_id = %request_id,
+            tree_id = %request.tree_id,
+            rejected_by = %rejecting_sigkey,
+            "Bootstrap request rejected by user with Admin permission"
+        );
 
         Ok(())
     }
