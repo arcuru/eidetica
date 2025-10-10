@@ -14,7 +14,9 @@ name = "eidetica"
 path = "src/main.rs"
 
 [dependencies]
-eidetica = { path = "../lib" }
+eidetica = { path = "../lib", features = ["full"] }
 signal-hook = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tokio = { workspace = true }
+axum = { workspace = true }
