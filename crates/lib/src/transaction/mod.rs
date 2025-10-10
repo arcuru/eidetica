@@ -68,8 +68,11 @@ pub struct Transaction {
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
     /// The database this transaction belongs to
     db: Database,
-    /// Optional authentication key ID for signing entries
+    /// Optional authentication key name for backend lookup (traditional mode)
     auth_key_name: Option<String>,
+    /// Optional provided signing key for user context (user mode)
+    /// Tuple contains (SigningKey, SigKey identifier)
+    provided_signing_key: Option<(ed25519_dalek::SigningKey, String)>,
     /// Optional sync hooks to execute after successful commit
     sync_hooks: Option<Arc<SyncHookCollection>>,
 }
@@ -126,6 +129,7 @@ impl Transaction {
             entry_builder: Rc::new(RefCell::new(Some(builder))),
             db: database.clone(),
             auth_key_name: None,
+            provided_signing_key: None,
             sync_hooks: None,
         })
     }
@@ -175,6 +179,23 @@ impl Transaction {
     /// * `key_name` - The identifier of the private key to use for signing
     pub fn set_auth_key(&mut self, key_name: impl Into<String>) {
         self.auth_key_name = Some(key_name.into());
+    }
+
+    /// Set signing key directly for user context (internal API).
+    ///
+    /// This method is used when a Database is created with a user-provided key
+    /// (via `Database::new_with_key()`). The provided SigningKey is already
+    /// decrypted and ready to use, eliminating the need for backend key lookup.
+    ///
+    /// # Arguments
+    /// * `signing_key` - The decrypted signing key from UserKeyManager
+    /// * `sigkey` - The SigKey identifier used in database auth settings
+    pub(crate) fn set_provided_key(
+        &mut self,
+        signing_key: ed25519_dalek::SigningKey,
+        sigkey: String,
+    ) {
+        self.provided_signing_key = Some((signing_key, sigkey));
     }
 
     /// Get the current authentication key ID for this transaction.
@@ -753,8 +774,30 @@ impl Transaction {
 
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
-        let signing_key = if let Some(key_name) = &self.auth_key_name {
-            // Get the private key from backend for signing
+
+        // Priority: check provided_signing_key first (user mode), then fall back to auth_key_name (traditional mode)
+        let (signing_key, _sigkey_identifier) = if let Some((ref provided_key, ref sigkey)) =
+            self.provided_signing_key
+        {
+            // User mode: use provided signing key directly
+            let key_clone = provided_key.clone();
+
+            // Build SigInfo using the provided sigkey identifier
+            let mut sig_builder = SigInfo::builder().key(SigKey::Direct(sigkey.clone()));
+
+            // For global permissions '*', include the public key directly
+            if sigkey == "*" {
+                let public_key = provided_key.verifying_key();
+                let pubkey_string = format_public_key(&public_key);
+                sig_builder = sig_builder.pubkey(pubkey_string);
+            }
+
+            // Set auth ID on the entry builder (without signature initially)
+            builder.set_sig_mut(sig_builder.build());
+
+            (Some(key_clone), sigkey.clone())
+        } else if let Some(key_name) = &self.auth_key_name {
+            // Traditional mode: look up private key from backend
             let signing_key = self.db.backend().get_private_key(key_name)?;
 
             if signing_key.is_none() {
@@ -820,7 +863,7 @@ impl Transaction {
             // If auth is already configured, the validation will check if the key exists
             // and fail appropriately if it doesn't
 
-            signing_key
+            (signing_key, key_name.clone())
         } else {
             // No authentication key configured
             return Err(TransactionError::AuthenticationRequired.into());

@@ -52,4 +52,13 @@ pub enum UserError {
 
     #[error("Invalid nonce length: expected {expected}, got {actual}")]
     InvalidNonceLength { expected: usize, actual: usize },
+
+    #[error("No key found for database: {database_id}")]
+    NoKeyForDatabase { database_id: crate::entry::ID },
+
+    #[error("No SigKey mapping found for key {key_id} in database {database_id}")]
+    NoSigKeyMapping {
+        key_id: String,
+        database_id: crate::entry::ID,
+    },
 }

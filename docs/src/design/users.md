@@ -532,7 +532,7 @@ pub enum DatabaseTrackingUpdate {
 
 <!-- Code block ignored: API interface showing struct and impl with function signatures without bodies -->
 
-```rust,ignore
+````rust,ignore
 /// User session object, returned after successful login
 pub struct User {
     user_uuid: String,   // Stable internal UUID (Table primary key)
@@ -549,6 +549,79 @@ impl User {
 
     /// Get the username (login identifier)
     pub fn username(&self) -> &str;
+
+    // === Database Loading ===
+
+    /// Load a database using this user's keys
+    ///
+    /// This is the primary method for users to access databases. It automatically:
+    /// 1. Finds an appropriate key that has access to the database
+    /// 2. Retrieves the decrypted SigningKey from the UserKeyManager
+    /// 3. Gets the SigKey mapping for this database
+    /// 4. Creates a Database instance configured with the user's key
+    ///
+    /// The returned Database can be used normally - all transactions will
+    /// automatically use the user's provided key instead of looking up keys
+    /// from backend storage.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database to load
+    ///
+    /// # Returns
+    /// A Database instance configured to use this user's keys
+    ///
+    /// # Errors
+    /// - `NoKeyForDatabase`: User has no keys with access to this database
+    /// - `NoSigKeyMapping`: User's key has no SigKey mapping for this database
+    /// - `KeyNotFound`: Key exists in preferences but not in UserKeyManager
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let user = instance.login_user("alice", "password")?;
+    /// let database = user.load_database(&database_id)?;
+    ///
+    /// // Use database normally - transactions automatically use user's key
+    /// let tx = database.new_transaction()?;
+    /// tx.get_store::<DocStore>("data")?.set("key", "value")?;
+    /// tx.commit()?;
+    /// ```
+    pub fn load_database(&self, database_id: &ID) -> Result<Database>;
+
+    /// Find the best key for accessing a database
+    ///
+    /// Searches the user's keys to find one that can access the specified database.
+    /// Considers both the SigKey mappings stored in user preferences and the
+    /// database's authentication settings to find a valid key.
+    ///
+    /// Returns the key_id of a suitable key, preferring keys with higher permissions.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database
+    ///
+    /// # Returns
+    /// Some(key_id) if a suitable key is found, None if no keys can access this database
+    pub fn find_key_for_database(&self, database_id: &ID) -> Result<Option<String>>;
+
+    /// Get the SigKey mapping for a key in a specific database
+    ///
+    /// Users map their private keys to SigKey identifiers on a per-database basis.
+    /// This method retrieves the SigKey identifier that a specific key uses in
+    /// a specific database's authentication settings.
+    ///
+    /// # Arguments
+    /// * `key_id` - The user's key identifier
+    /// * `database_id` - The database ID
+    ///
+    /// # Returns
+    /// Some(sigkey) if a mapping exists, None if no mapping is configured
+    ///
+    /// # Errors
+    /// Returns an error if the key_id doesn't exist in the UserKeyManager
+    pub fn get_database_sigkey(
+        &self,
+        key_id: &str,
+        database_id: &ID,
+    ) -> Result<Option<String>>;
 
     // === Key Management ===
 
@@ -681,7 +754,7 @@ pub enum DatabasePreferenceUpdate {
     SetPreferredSigKey(String),
     UpdateNotes(String),
 }
-```
+````
 
 ### UserKeyManager (Internal)
 
@@ -736,12 +809,24 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 ### Database Access Flow
 
-1. User identifies target database
-2. Calls `user.find_key_for_database()` to get appropriate key
-3. Retrieves SigKey mapping for that key in target database
-4. Loads database and creates transaction with SigKey
-5. Performs operations
-6. Commits transaction
+The user accesses databases through the `User.load_database()` method, which handles all key management automatically:
+
+1. User calls `user.load_database(&database_id)`
+2. System finds appropriate key via `find_key_for_database()`
+   - Checks user's key metadata for SigKey mappings to this database
+   - Verifies keys are authorized in database's auth settings
+   - Selects key with highest permission level
+3. System retrieves decrypted SigningKey from UserKeyManager
+4. System gets SigKey mapping via `get_database_sigkey()`
+5. System creates Database with `Database::new_with_key()`
+   - Database stores KeySource::Provided with signing key and sigkey
+6. User creates transactions normally: `database.new_transaction()`
+   - Transaction automatically receives provided key from Database
+   - No backend key lookup required
+7. User performs operations and commits
+   - Transaction uses provided SigningKey directly during commit()
+
+**Key Insight**: Once a Database is loaded via `User.load_database()`, all subsequent operations transparently use the user's keys. The user doesn't need to think about key management - it's handled at database load time.
 
 ### Key Addition Flow
 

@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use ed25519_dalek::SigningKey;
 use rand::{Rng, distributions::Alphanumeric};
 use serde_json;
 
@@ -25,6 +26,22 @@ use crate::{
     sync::hooks::SyncHookCollection,
 };
 
+/// Specifies where a Database gets its signing keys
+#[derive(Clone)]
+pub enum KeySource {
+    /// Look up private key from backend storage using this key name
+    /// The key name is also used as the SigKey identifier in auth settings
+    BackendLookup(String),
+
+    /// Use the provided signing key with specified SigKey identifier
+    /// The signing key is already decrypted and ready to use (from UserKeyManager)
+    /// The sigkey is the identifier used in the database's auth settings
+    Provided {
+        signing_key: Box<SigningKey>,
+        sigkey: String,
+    },
+}
+
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
 ///
 /// Each `Database` is identified by the ID of its root `Entry` and manages the history of data
@@ -33,8 +50,8 @@ use crate::{
 pub struct Database {
     root: ID,
     backend: Arc<dyn BackendDB>,
-    /// Default authentication key name for operations on this database
-    default_auth_key: Option<String>,
+    /// Key source for operations on this database
+    key_source: Option<KeySource>,
     /// Optional sync hooks to execute after successful commits
     sync_hooks: Option<Arc<SyncHookCollection>>,
 }
@@ -107,7 +124,7 @@ impl Database {
         let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             backend: backend.clone(),
-            default_auth_key: Some(super_user_key_name.clone()),
+            key_source: Some(KeySource::BackendLookup(super_user_key_name.clone())),
             sync_hooks: None,
         };
 
@@ -129,7 +146,7 @@ impl Database {
         Ok(Self {
             root: new_root_id,
             backend,
-            default_auth_key: Some(super_user_key_name),
+            key_source: Some(KeySource::BackendLookup(super_user_key_name)),
             sync_hooks: None,
         })
     }
@@ -149,7 +166,64 @@ impl Database {
         Ok(Self {
             root: id,
             backend,
-            default_auth_key: None,
+            key_source: None,
+            sync_hooks: None,
+        })
+    }
+
+    /// Creates a new `Database` instance with a user-provided signing key.
+    ///
+    /// This constructor is used in the User context where keys are managed by UserKeyManager
+    /// and already decrypted in memory. The Database stores the signing key directly rather
+    /// than looking it up from backend storage.
+    ///
+    /// All transactions created from this Database will automatically use the provided key
+    /// for signing operations without requiring backend key lookups.
+    ///
+    /// # Arguments
+    /// * `backend` - Backend storage reference
+    /// * `root_id` - Database root entry ID
+    /// * `signing_key` - Decrypted signing key from UserKeyManager
+    /// * `sigkey` - SigKey identifier used in database auth settings
+    ///
+    /// # Returns
+    /// A `Result` containing the new `Database` instance
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use eidetica::auth::crypto::generate_keypair;
+    /// # use std::sync::Arc;
+    /// # fn example() -> Result<()> {
+    /// # let backend = Arc::new(InMemory::new());
+    /// # let (signing_key, _) = generate_keypair();
+    /// # let root_id = "database_root_id".into();
+    /// let database = Database::new_with_key(
+    ///     backend,
+    ///     &root_id,
+    ///     signing_key,
+    ///     "my_sigkey".to_string(),
+    /// )?;
+    ///
+    /// // All transactions automatically use the provided key
+    /// let tx = database.new_transaction()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new_with_key(
+        backend: Arc<dyn BackendDB>,
+        root_id: &ID,
+        signing_key: SigningKey,
+        sigkey: String,
+    ) -> Result<Self> {
+        Ok(Self {
+            root: root_id.clone(),
+            backend,
+            key_source: Some(KeySource::Provided {
+                signing_key: Box::new(signing_key),
+                sigkey,
+            }),
             sync_hooks: None,
         })
     }
@@ -181,17 +255,20 @@ impl Database {
     /// # }
     /// ```
     pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
-        self.default_auth_key = Some(key_name.into());
+        self.key_source = Some(KeySource::BackendLookup(key_name.into()));
     }
 
     /// Clear the default authentication key for this database.
     pub fn clear_default_auth_key(&mut self) {
-        self.default_auth_key = None;
+        self.key_source = None;
     }
 
     /// Get the default authentication key ID for this database.
     pub fn default_auth_key(&self) -> Option<&str> {
-        self.default_auth_key.as_deref()
+        match &self.key_source {
+            Some(KeySource::BackendLookup(key_name)) => Some(key_name.as_str()),
+            _ => None,
+        }
     }
 
     /// Set sync hooks for this database.
@@ -292,9 +369,19 @@ impl Database {
     pub fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
 
-        // Set default authentication if configured
-        if let Some(ref key_name) = self.default_auth_key {
-            op.set_auth_key(key_name);
+        // Set authentication based on key source
+        if let Some(ref key_source) = self.key_source {
+            match key_source {
+                KeySource::BackendLookup(key_name) => {
+                    op.set_auth_key(key_name);
+                }
+                KeySource::Provided {
+                    signing_key,
+                    sigkey,
+                } => {
+                    op.set_provided_key(*signing_key.clone(), sigkey.clone());
+                }
+            }
         }
 
         // Set sync hooks if configured

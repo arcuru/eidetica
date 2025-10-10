@@ -111,6 +111,120 @@ impl User {
     pub(crate) fn key_manager_mut(&mut self) -> &mut UserKeyManager {
         &mut self.key_manager
     }
+
+    // === Database Loading ===
+
+    /// Load a database using this user's keys
+    ///
+    /// This is the primary method for users to access databases. It automatically:
+    /// 1. Finds an appropriate key that has access to the database
+    /// 2. Retrieves the decrypted SigningKey from the UserKeyManager
+    /// 3. Gets the SigKey mapping for this database
+    /// 4. Creates a Database instance configured with the user's key
+    ///
+    /// The returned Database can be used normally - all transactions will
+    /// automatically use the user's provided key instead of looking up keys
+    /// from backend storage.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database to load
+    ///
+    /// # Returns
+    /// A Database instance configured to use this user's keys
+    ///
+    /// # Errors
+    /// - Returns an error if no key is found for the database
+    /// - Returns an error if no SigKey mapping exists
+    /// - Returns an error if the key is not in the UserKeyManager
+    #[allow(dead_code)]
+    pub fn load_database(&self, database_id: &crate::entry::ID) -> Result<Database> {
+        // Find an appropriate key for this database
+        let key_id = self.find_key_for_database(database_id)?.ok_or_else(|| {
+            super::errors::UserError::NoKeyForDatabase {
+                database_id: database_id.clone(),
+            }
+        })?;
+
+        // Get the SigningKey from UserKeyManager
+        let signing_key = self.key_manager.get_signing_key(&key_id).ok_or_else(|| {
+            super::errors::UserError::KeyNotFound {
+                key_id: key_id.clone(),
+            }
+        })?;
+
+        // Get the SigKey mapping for this database
+        let sigkey = self
+            .get_database_sigkey(&key_id, database_id)?
+            .ok_or_else(|| super::errors::UserError::NoSigKeyMapping {
+                key_id: key_id.clone(),
+                database_id: database_id.clone(),
+            })?;
+
+        // Create Database with user-provided key
+        Database::new_with_key(
+            self.backend.clone(),
+            database_id,
+            signing_key.clone(),
+            sigkey,
+        )
+    }
+
+    /// Find the best key for accessing a database
+    ///
+    /// Searches the user's keys to find one that can access the specified database.
+    /// Considers the SigKey mappings stored in user key metadata.
+    ///
+    /// Returns the key_id of a suitable key, preferring keys with mappings for this database.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database
+    ///
+    /// # Returns
+    /// Some(key_id) if a suitable key is found, None if no keys can access this database
+    #[allow(dead_code)]
+    pub fn find_key_for_database(&self, database_id: &crate::entry::ID) -> Result<Option<String>> {
+        // Iterate through all keys and find ones with SigKey mappings for this database
+        for key_id in self.key_manager.list_key_ids() {
+            if let Some(metadata) = self.key_manager.get_key_metadata(&key_id)
+                && metadata.database_sigkeys.contains_key(database_id)
+            {
+                return Ok(Some(key_id));
+            }
+        }
+
+        // No key found with mapping for this database
+        Ok(None)
+    }
+
+    /// Get the SigKey mapping for a key in a specific database
+    ///
+    /// Users map their private keys to SigKey identifiers on a per-database basis.
+    /// This method retrieves the SigKey identifier that a specific key uses in
+    /// a specific database's authentication settings.
+    ///
+    /// # Arguments
+    /// * `key_id` - The user's key identifier
+    /// * `database_id` - The database ID
+    ///
+    /// # Returns
+    /// Some(sigkey) if a mapping exists, None if no mapping is configured
+    ///
+    /// # Errors
+    /// Returns an error if the key_id doesn't exist in the UserKeyManager
+    #[allow(dead_code)]
+    pub fn get_database_sigkey(
+        &self,
+        key_id: &str,
+        database_id: &crate::entry::ID,
+    ) -> Result<Option<String>> {
+        let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
+            super::errors::UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            }
+        })?;
+
+        Ok(metadata.database_sigkeys.get(database_id).cloned())
+    }
 }
 
 #[cfg(test)]
