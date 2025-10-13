@@ -1,3 +1,5 @@
 //! User module integration tests
 
-pub mod user_bootstrap_tests;
+mod helpers;
+mod user_bootstrap_tests;
+mod user_lifecycle_tests;
