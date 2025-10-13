@@ -1222,28 +1222,76 @@ impl Sync {
         Ok(())
     }
 
-    /// Sync with a peer, requesting access with authentication for bootstrap scenarios.
+    // === Bootstrap Sync Methods ===
+    //
+    // Eidetica provides two bootstrap sync methods for different key management scenarios:
+    //
+    // 1. `sync_with_peer_for_bootstrap_with_key()` - **Preferred** for user-managed keys
+    //    - Signing key provided directly as parameter
+    //    - Keys remain in memory (not stored in backend)
+    //    - Required for User API which manages its own key lifecycle
+    //    - **Use this method for new code** - it provides better key isolation and security
+    //
+    // 2. `sync_with_peer_for_bootstrap()` - For legacy backend-managed keys
+    //    - Keys are stored in backend storage
+    //    - Method looks up the signing key automatically
+    //    - Suitable for simple applications and direct sync API usage
+    //    - Consider migrating to the `_with_key()` variant for better security
+    //
+    // Both methods delegate to `sync_with_peer_for_bootstrap_internal()` which contains
+    // the common bootstrap logic. Prefer `_with_key()` for new implementations.
+
+    /// Internal helper for bootstrap sync operations.
     ///
-    /// This method is specifically designed for bootstrap scenarios where the local
+    /// This method contains the common logic for bootstrap scenarios where the local
     /// device doesn't have access to the target tree yet and needs to request
     /// permission during the initial sync.
     ///
     /// # Arguments
     /// * `peer_address` - The address of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
-    /// * `requesting_key_name` - The name/ID of the local authentication key
+    /// * `requesting_public_key` - The formatted public key string for authentication
+    /// * `requesting_key_name` - The name/ID of the requesting key
     /// * `requested_permission` - The permission level being requested
     ///
     /// # Returns
     /// A Result indicating success or failure.
-    pub async fn sync_with_peer_for_bootstrap(
+    ///
+    /// # Errors
+    /// * `SyncError::InvalidPublicKey` if the public key is empty or malformed
+    /// * `SyncError::InvalidKeyName` if the key name is empty
+    async fn sync_with_peer_for_bootstrap_internal(
         &mut self,
         peer_address: &str,
         tree_id: &crate::entry::ID,
+        requesting_public_key: String,
         requesting_key_name: &str,
         requested_permission: crate::auth::Permission,
     ) -> Result<()> {
         use peer_types::Address;
+
+        // Validate public key is not empty
+        if requesting_public_key.is_empty() {
+            return Err(SyncError::InvalidPublicKey {
+                reason: "Public key cannot be empty".to_string(),
+            }
+            .into());
+        }
+
+        // Validate public key format by attempting to parse it
+        crate::auth::crypto::parse_public_key(&requesting_public_key).map_err(|e| {
+            SyncError::InvalidPublicKey {
+                reason: format!("Invalid public key format: {}", e),
+            }
+        })?;
+
+        // Validate key name is not empty
+        if requesting_key_name.is_empty() {
+            return Err(SyncError::InvalidKeyName {
+                reason: "Key name cannot be empty".to_string(),
+            }
+            .into());
+        }
 
         let address = Address {
             transport_type: "http".to_string(),
@@ -1256,30 +1304,113 @@ impl Sync {
         // Store the address for this peer
         self.add_peer_address(&peer_pubkey, address.clone())?;
 
-        // Get our public key for the requesting key
-        let requesting_key =
-            if let Some(signing_key) = self.backend.get_private_key(requesting_key_name)? {
-                let verifying_key = signing_key.verifying_key();
-                Some(crate::auth::crypto::format_public_key(&verifying_key))
-            } else {
-                return Err(SyncError::BackendError(format!(
-                    "Private key not found for key name: {}",
-                    requesting_key_name
-                ))
-                .into());
-            };
-
         // Sync tree with authentication
         self.sync_tree_with_peer_auth(
             &peer_pubkey,
             tree_id,
-            requesting_key.as_deref(),
+            Some(&requesting_public_key),
             Some(requesting_key_name),
             Some(requested_permission),
         )
         .await?;
 
         Ok(())
+    }
+
+    /// Sync with a peer, requesting access with authentication for bootstrap scenarios.
+    ///
+    /// This method is specifically designed for bootstrap scenarios where the local
+    /// device doesn't have access to the target tree yet and needs to request
+    /// permission during the initial sync. The signing key is looked up from backend
+    /// storage using the provided key name.
+    ///
+    /// # Arguments
+    /// * `peer_address` - The address of the peer to sync with
+    /// * `tree_id` - The ID of the tree to sync
+    /// * `requesting_key_name` - The name/ID of the local authentication key in backend storage
+    /// * `requested_permission` - The permission level being requested
+    ///
+    /// # Returns
+    /// A Result indicating success or failure.
+    pub async fn sync_with_peer_for_bootstrap(
+        &mut self,
+        peer_address: &str,
+        tree_id: &crate::entry::ID,
+        requesting_key_name: &str,
+        requested_permission: crate::auth::Permission,
+    ) -> Result<()> {
+        // Get our public key for the requesting key from backend
+        let signing_key = self
+            .backend
+            .get_private_key(requesting_key_name)?
+            .ok_or_else(|| {
+                SyncError::BackendError(format!(
+                    "Private key not found for key name: {}",
+                    requesting_key_name
+                ))
+            })?;
+
+        let verifying_key = signing_key.verifying_key();
+        let requesting_public_key = crate::auth::crypto::format_public_key(&verifying_key);
+
+        // Delegate to internal method
+        self.sync_with_peer_for_bootstrap_internal(
+            peer_address,
+            tree_id,
+            requesting_public_key,
+            requesting_key_name,
+            requested_permission,
+        )
+        .await
+    }
+
+    /// Sync with a peer for bootstrap using a user-provided public key.
+    ///
+    /// This method is specifically designed for bootstrap scenarios where the local
+    /// device doesn't have access to the target tree yet and needs to request
+    /// permission during the initial sync. Unlike `sync_with_peer_for_bootstrap`,
+    /// this variant accepts a public key directly instead of looking it up from
+    /// backend storage, making it compatible with User API managed keys.
+    ///
+    /// # Arguments
+    /// * `peer_address` - The address of the peer to sync with
+    /// * `tree_id` - The ID of the tree to sync
+    /// * `requesting_public_key` - The formatted public key string (e.g., "ed25519:base64...")
+    /// * `requesting_key_name` - The name/ID of the requesting key for audit trail
+    /// * `requested_permission` - The permission level being requested
+    ///
+    /// # Returns
+    /// A Result indicating success or failure.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // With User API managed keys:
+    /// let public_key = user.get_public_key(user_key_id)?;
+    /// sync.sync_with_peer_for_bootstrap_with_key(
+    ///     "127.0.0.1:8080",
+    ///     &tree_id,
+    ///     &public_key,
+    ///     user_key_id,
+    ///     Permission::Write(5),
+    /// ).await?;
+    /// ```
+    pub async fn sync_with_peer_for_bootstrap_with_key(
+        &mut self,
+        peer_address: &str,
+        tree_id: &crate::entry::ID,
+        requesting_public_key: &str,
+        requesting_key_name: &str,
+        requested_permission: crate::auth::Permission,
+    ) -> Result<()> {
+        // Delegate to internal method
+        self.sync_with_peer_for_bootstrap_internal(
+            peer_address,
+            tree_id,
+            requesting_public_key.to_string(),
+            requesting_key_name,
+            requested_permission,
+        )
+        .await
     }
 
     // === Bootstrap Request Management Methods ===

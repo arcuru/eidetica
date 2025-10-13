@@ -617,6 +617,78 @@ impl User {
 
         Ok(())
     }
+
+    /// Request access to a database from a peer (bootstrap sync).
+    ///
+    /// This convenience method initiates a bootstrap sync request to access a database
+    /// that this user doesn't have locally yet. The user's key will be sent to the peer
+    /// to request the specified permission level.
+    ///
+    /// This is useful for multi-device scenarios where a user wants to access their
+    /// existing database from a new device, or when requesting access to a database
+    /// shared by another user.
+    ///
+    /// # Arguments
+    /// * `sync` - Mutable reference to the Instance's Sync object
+    /// * `peer_address` - The address of the peer to sync with (format: "host:port")
+    /// * `database_id` - The ID of the database to request access to
+    /// * `key_id` - The ID of this user's key to use for the request
+    /// * `requested_permission` - The permission level being requested
+    ///
+    /// # Returns
+    /// Result indicating success or failure of the bootstrap request
+    ///
+    /// # Errors
+    /// - Returns an error if the user doesn't own the specified key
+    /// - Returns an error if the peer is unreachable
+    /// - Returns an error if the bootstrap sync fails
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Request write access to a shared database
+    /// let user_key_id = user.get_default_key()?;
+    /// user.request_database_access(
+    ///     &mut sync,
+    ///     "192.168.1.100:8080",
+    ///     &shared_database_id,
+    ///     &user_key_id,
+    ///     Permission::Write(5),
+    /// ).await?;
+    ///
+    /// // After approval, the database can be loaded
+    /// let database = user.load_database(&shared_database_id)?;
+    /// ```
+    pub async fn request_database_access(
+        &self,
+        sync: &mut crate::sync::Sync,
+        peer_address: &str,
+        database_id: &crate::entry::ID,
+        key_id: &str,
+        requested_permission: crate::auth::Permission,
+    ) -> Result<()> {
+        // Get the signing key from the key manager
+        let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
+            super::errors::UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            }
+        })?;
+
+        // Derive the public key from the signing key
+        let verifying_key = signing_key.verifying_key();
+        let public_key = crate::auth::crypto::format_public_key(&verifying_key);
+
+        // Delegate to Sync layer with the public key
+        sync.sync_with_peer_for_bootstrap_with_key(
+            peer_address,
+            database_id,
+            &public_key,
+            key_id,
+            requested_permission,
+        )
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

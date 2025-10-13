@@ -124,6 +124,14 @@ pub enum SyncError {
         required_permission: String,
         actual_permission: crate::auth::Permission,
     },
+
+    /// Invalid public key provided.
+    #[error("Invalid public key: {reason}")]
+    InvalidPublicKey { reason: String },
+
+    /// Invalid key name provided.
+    #[error("Invalid key name: {reason}")]
+    InvalidKeyName { reason: String },
 }
 
 impl SyncError {
@@ -165,7 +173,12 @@ impl SyncError {
 
     /// Check if this is a validation error.
     pub fn is_validation_error(&self) -> bool {
-        matches!(self, SyncError::InvalidEntry(_))
+        matches!(
+            self,
+            SyncError::InvalidEntry(_)
+                | SyncError::InvalidPublicKey { .. }
+                | SyncError::InvalidKeyName { .. }
+        )
     }
 
     /// Check if this is a backend error.
