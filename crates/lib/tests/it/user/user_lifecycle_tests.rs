@@ -227,7 +227,6 @@ fn test_logout_multiple_sessions() {
 // ===== COMPLETE LIFECYCLE TESTS =====
 
 #[test]
-#[ignore = "FIXME: Test isolation issue - passes individually but fails when run with other tests"]
 fn test_complete_lifecycle_passwordless() {
     let username = "jack";
     let db_name = "test_database";
@@ -242,7 +241,6 @@ fn test_complete_lifecycle_passwordless() {
 }
 
 #[test]
-#[ignore = "FIXME: Test isolation issue - passes individually but fails when run with other tests"]
 fn test_complete_lifecycle_password_protected() {
     let username = "kate";
     let password = "secure_password";
@@ -280,7 +278,6 @@ fn test_user_persistence_across_sessions() {
 }
 
 #[test]
-#[ignore = "FIXME: Test isolation issue - passes individually but fails when run with other tests"]
 fn test_database_persistence_across_sessions() {
     let username = "mia";
     let instance = setup_instance();

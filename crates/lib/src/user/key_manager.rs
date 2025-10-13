@@ -214,8 +214,12 @@ impl UserKeyManager {
     }
 
     /// List all key IDs managed by this manager
+    ///
+    /// Returns key IDs in sorted order for deterministic behavior.
     pub fn list_key_ids(&self) -> Vec<String> {
-        self.decrypted_keys.keys().cloned().collect()
+        let mut keys: Vec<String> = self.decrypted_keys.keys().cloned().collect();
+        keys.sort();
+        keys
     }
 
     /// Get metadata for a key

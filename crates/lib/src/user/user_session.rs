@@ -162,22 +162,21 @@ impl User {
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
         // Find the key metadata in the database
-        let mut metadata = keys_table
+        let (uuid_primary_key, mut metadata) = keys_table
             .search(|uk| uk.key_id == key_id)?
             .into_iter()
             .next()
             .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
                 key_id: key_id.clone(),
-            })?
-            .1;
+            })?;
 
         // Add the database sigkey mapping
         metadata
             .database_sigkeys
             .insert(database.root_id().clone(), key_id.clone());
 
-        // Update the key in user database
-        keys_table.set(&metadata.key_id, metadata.clone())?;
+        // Update the key in user database using the UUID primary key
+        keys_table.set(&uuid_primary_key, metadata.clone())?;
         tx.commit()?;
 
         // Update the in-memory key manager with the updated metadata
@@ -353,22 +352,21 @@ impl User {
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
         // Find the key metadata in the database
-        let mut metadata = keys_table
+        let (uuid_primary_key, mut metadata) = keys_table
             .search(|uk| uk.key_id == key_id)?
             .into_iter()
             .next()
             .ok_or_else(|| super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
-            })?
-            .1;
+            })?;
 
         // Add the database sigkey mapping
         metadata
             .database_sigkeys
             .insert(database_id.clone(), sigkey.to_string());
 
-        // Update the key in user database
-        keys_table.set(&metadata.key_id, metadata.clone())?;
+        // Update the key in user database using the UUID primary key
+        keys_table.set(&uuid_primary_key, metadata.clone())?;
         tx.commit()?;
 
         // Update the in-memory key manager with the updated metadata
