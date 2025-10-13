@@ -4,22 +4,21 @@
 //!
 //! # Key Management Design Notes
 //!
-//! ## Automatic vs Manual Database-Key Mapping
+//! ## Database-Key Mapping
 //!
-//! The User API has a design tension between automatic and manual key management:
+//! The User API provides explicit control over which keys are used for database operations:
 //!
-//! - **Automatic**: `new_database()` automatically selects a key (the earliest created key)
-//!   and creates a database-key mapping. This is convenient but lacks explicit control.
+//! - **Explicit Creation**: `new_database()` requires you to specify which key
+//!   should be used when creating a database, establishing a clear key-database relationship.
 //!
-//! - **Manual**: `add_database_key_mapping()` allows explicit mapping of keys to databases.
-//!   This is flexible but requires more management.
+//! - **Manual Mapping**: `add_database_key_mapping()` allows you to grant additional keys
+//!   access to existing databases, supporting multi-key and multi-device workflows.
 //!
-//! **The Problem**: These two approaches can conflict. When `new_database()` creates automatic
-//! mappings, subsequent manual mapping operations may produce unexpected results because
-//! multiple keys might end up mapped to the same database.
+//! - **Key Discovery**: `find_key_for_database()` helps locate appropriate keys when loading
+//!   databases, using the mappings you've configured.
 //!
-//! **Recommendation**: Use `new_database_with_key()` for explicit key selection when you need
-//! fine-grained control over which keys access which databases.
+//! This explicit approach ensures predictable behavior and avoids ambiguity about which
+//! keys have access to which databases.
 
 use std::sync::Arc;
 
@@ -133,62 +132,10 @@ impl User {
 
     // === Database Operations (User Context) ===
 
-    /// Create a new database in this user's context using the default key.
-    ///
-    /// **Automatic Key Selection Design Issue:**
-    ///
-    /// This method automatically selects a key to use for database creation. The key
-    /// selection uses the earliest `created_at` timestamp (i.e., the first key created
-    /// when the user was set up). While this provides deterministic behavior, it has
-    /// limitations:
-    ///
-    /// 1. No explicit control over which key is used
-    /// 2. Automatic mapping creation can conflict with manual key management
-    /// 3. The "default" key concept is implicit rather than explicit
-    ///
-    /// For explicit key selection, use [`new_database_with_key()`](Self::new_database_with_key).
-    ///
-    /// # Arguments
-    /// * `settings` - Initial database settings (metadata, name, etc.)
-    ///
-    /// # Returns
-    /// The created Database
-    ///
-    /// # Implementation Note
-    /// This method:
-    /// 1. Finds the key with the earliest `created_at` timestamp (the "default" key)
-    /// 2. Delegates to `new_database_with_key()` with that key
-    pub fn new_database(&mut self, settings: crate::crdt::Doc) -> Result<crate::Database> {
-        // Find the default key (earliest created key)
-        let key_ids = self.key_manager.list_key_ids();
-        if key_ids.is_empty() {
-            return Err(crate::Error::from(
-                crate::instance::InstanceError::AuthenticationRequired,
-            ));
-        }
-
-        // Find the key with the earliest created_at timestamp (the default/original key)
-        let key_id = key_ids
-            .iter()
-            .filter_map(|kid| {
-                self.key_manager
-                    .get_key_metadata(kid)
-                    .map(|meta| (kid, meta.created_at))
-            })
-            .min_by_key(|(_, created_at)| *created_at)
-            .map(|(kid, _)| kid.clone())
-            .ok_or_else(|| {
-                crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
-            })?;
-
-        // Delegate to new_database_with_key() with the default key
-        self.new_database_with_key(settings, &key_id)
-    }
-
     /// Create a new database with explicit key selection.
     ///
-    /// This method allows you to specify which key should be used to create and manage
-    /// the database, avoiding the automatic key selection issues in [`new_database()`](Self::new_database).
+    /// This method requires you to specify which key should be used to create and manage
+    /// the database, providing explicit control over key-database relationships.
     ///
     /// # Arguments
     /// * `settings` - Initial database settings (metadata, name, etc.)
@@ -210,9 +157,9 @@ impl User {
     /// // Create database with explicit key selection
     /// let mut settings = Doc::new();
     /// settings.set_string("name", "My Database");
-    /// let database = user.new_database_with_key(settings, key_id)?;
+    /// let database = user.new_database(settings, key_id)?;
     /// ```
-    pub fn new_database_with_key(
+    pub fn new_database(
         &mut self,
         settings: crate::crdt::Doc,
         key_id: &str,
@@ -410,13 +357,11 @@ impl User {
     /// when interacting with a database. This is typically used when a user has been
     /// granted access to a database and needs to configure their local key to work with it.
     ///
-    /// # Interaction with Automatic Mappings
+    /// # Multi-Key Support
     ///
-    /// **Note**: This method creates manual mappings, which can coexist with automatic
-    /// mappings created by [`new_database()`](Self::new_database). Be aware that a
-    /// database may end up with mappings to multiple keys. For cleaner key management,
-    /// consider using [`new_database_with_key()`](Self::new_database_with_key) instead
-    /// of relying on automatic selection.
+    /// **Note**: A database may have mappings to multiple keys. This is useful for
+    /// multi-device scenarios where the same user wants to access a database from
+    /// different devices, each with their own key.
     ///
     /// # Arguments
     /// * `key_id` - The user's key identifier (public key string)
@@ -533,10 +478,30 @@ impl User {
 
     /// List all key IDs owned by this user.
     ///
+    /// Keys are returned sorted by creation timestamp (oldest first), making the
+    /// first key in the list the "default" key created when the user was set up.
+    ///
     /// # Returns
-    /// Vector of key IDs (public key strings)
+    /// Vector of key IDs (public key strings) sorted by creation time
     pub fn list_keys(&self) -> Result<Vec<String>> {
         Ok(self.key_manager.list_key_ids())
+    }
+
+    /// Get the default key (earliest created key).
+    ///
+    /// Returns the first key from `list_keys()`, which is the key with the earliest
+    /// `created_at` timestamp (typically the first key created when the user was set up).
+    ///
+    /// # Returns
+    /// The key ID of the default key
+    ///
+    /// # Errors
+    /// Returns an error if no keys exist
+    pub fn get_default_key(&self) -> Result<String> {
+        // list_keys() returns keys sorted by created_at (oldest first)
+        self.list_keys()?.into_iter().next().ok_or_else(|| {
+            crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
+        })
     }
 
     /// Get a signing key by its ID.

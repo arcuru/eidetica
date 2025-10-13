@@ -44,7 +44,8 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// // Use User API for operations
 /// let mut settings = Doc::new();
 /// settings.set_string("name", "my_database");
-/// let db = user.new_database(settings)?;
+/// let default_key = user.get_default_key()?;
+/// let db = user.new_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
 ///
@@ -115,7 +116,8 @@ impl Instance {
     /// // Use User API for operations
     /// let mut settings = Doc::new();
     /// settings.set_string("name", "my_database");
-    /// let db = user.new_database(settings)?;
+    /// let default_key = user.get_default_key()?;
+    /// let db = user.new_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     pub fn load(backend: Box<dyn BackendDB>) -> Result<Self> {
@@ -198,7 +200,8 @@ impl Instance {
     /// // Use User API for operations
     /// let mut settings = Doc::new();
     /// settings.set_string("name", "my_database");
-    /// let db = user.new_database(settings)?;
+    /// let default_key = user.get_default_key()?;
+    /// let db = user.new_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     pub fn new_unified(backend: Box<dyn BackendDB>) -> Result<Self> {
@@ -824,10 +827,13 @@ mod tests {
         instance1.create_user("bob", None)?;
         let mut user1 = instance1.login_user("bob", None)?;
 
+        // Get the default key (earliest created key)
+        let default_key = user1.get_default_key()?;
+
         // Create a user database to verify it persists
         let mut settings = Doc::new();
         settings.set_string("name", "bob_database");
-        user1.new_database(settings)?;
+        user1.new_database(settings, &default_key)?;
 
         // Save the backend to file
         let backend_guard = instance1.backend();
@@ -1009,17 +1015,20 @@ mod tests {
         instance1.create_user("eve", None)?;
         let mut user1 = instance1.login_user("eve", None)?;
 
+        // Get the default key (earliest created key)
+        let default_key = user1.get_default_key()?;
+
         // Create multiple databases
         let mut settings1 = Doc::new();
         settings1.set_string("name", "database_one");
         settings1.set_string("purpose", "testing");
-        let db1 = user1.new_database(settings1)?;
+        let db1 = user1.new_database(settings1, &default_key)?;
         let db1_root = db1.root_id().clone();
 
         let mut settings2 = Doc::new();
         settings2.set_string("name", "database_two");
         settings2.set_string("purpose", "production");
-        let db2 = user1.new_database(settings2)?;
+        let db2 = user1.new_database(settings2, &default_key)?;
         let db2_root = db2.root_id().clone();
 
         drop(db1);

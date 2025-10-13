@@ -393,7 +393,7 @@ fn test_add_database_key_mapping() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_db");
     let database = user
-        .new_database_with_key(settings, &default_key)
+        .new_database(settings, &default_key)
         .expect("Should create database");
     let db_id = database.root_id();
 
@@ -534,19 +534,19 @@ fn test_complex_key_database_mappings() {
     let mut settings1 = eidetica::crdt::Doc::new();
     settings1.set_string("name", "work_db");
     let db1 = user
-        .new_database_with_key(settings1, &key1)
+        .new_database(settings1, &key1)
         .expect("Should create work_db");
 
     let mut settings2 = eidetica::crdt::Doc::new();
     settings2.set_string("name", "home_db");
     let db2 = user
-        .new_database_with_key(settings2, &key1)
+        .new_database(settings2, &key1)
         .expect("Should create home_db");
 
     let mut settings3 = eidetica::crdt::Doc::new();
     settings3.set_string("name", "shared_db");
     let db3 = user
-        .new_database_with_key(settings3, &key1)
+        .new_database(settings3, &key1)
         .expect("Should create shared_db");
 
     // Add specific manual mappings:
@@ -692,19 +692,19 @@ fn test_multiple_manual_mappings_persist() {
     let mut settings1 = eidetica::crdt::Doc::new();
     settings1.set_string("name", "db1");
     let db1 = user1
-        .new_database_with_key(settings1, &key1)
+        .new_database(settings1, &key1)
         .expect("Should create db1");
 
     let mut settings2 = eidetica::crdt::Doc::new();
     settings2.set_string("name", "db2");
     let db2 = user1
-        .new_database_with_key(settings2, &key1)
+        .new_database(settings2, &key1)
         .expect("Should create db2");
 
     let mut settings3 = eidetica::crdt::Doc::new();
     settings3.set_string("name", "db3");
     let db3 = user1
-        .new_database_with_key(settings3, &key1)
+        .new_database(settings3, &key1)
         .expect("Should create db3");
 
     // Add multiple manual mappings

@@ -191,7 +191,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut settings = eidetica::crdt::Doc::new();
                 settings.set_string("name", name);
 
-                match user.new_database(settings) {
+                // Get the default key (earliest created key)
+                let default_key = match user.get_default_key() {
+                    Ok(key) => key,
+                    Err(e) => {
+                        tracing::error!("Error getting default key: {e:?}");
+                        println!("Error getting default key: {e:?}");
+                        continue;
+                    }
+                };
+
+                match user.new_database(settings, &default_key) {
                     Ok(tree) => {
                         tracing::info!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());

@@ -45,20 +45,15 @@ fn setup_user_with_database() -> eidetica::Result<(
         .login_user("alice", None)
         .expect("Failed to login user");
 
-    // Get the first key (the one used to create the database)
-    let user_key_id = user
-        .list_keys()
-        .expect("Failed to list keys")
-        .first()
-        .expect("User should have at least one key")
-        .clone();
+    // Get the default key (earliest created key)
+    let user_key_id = user.get_default_key().expect("Failed to get default key");
 
-    // Create a database owned by this user (will use the first key)
+    // Create a database owned by this user with explicit key
     let mut settings = Doc::new();
     settings.set_string("name", "Alice's Database");
 
     let database = user
-        .new_database(settings)
+        .new_database(settings, &user_key_id)
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
@@ -421,11 +416,8 @@ async fn test_multiple_users() {
         .login_user("alice", None)
         .expect("Failed to login alice");
     let alice_key = alice
-        .list_keys()
-        .expect("Failed to list alice keys")
-        .first()
-        .expect("Alice should have at least one key")
-        .clone();
+        .get_default_key()
+        .expect("Failed to get alice's default key");
 
     instance
         .create_user("bob", None)
@@ -434,25 +426,22 @@ async fn test_multiple_users() {
         .login_user("bob", None)
         .expect("Failed to login bob");
     let bob_key = bob
-        .list_keys()
-        .expect("Failed to list bob keys")
-        .first()
-        .expect("Bob should have at least one key")
-        .clone();
+        .get_default_key()
+        .expect("Failed to get bob's default key");
 
-    // Alice creates a database
+    // Alice creates a database with her key
     let mut alice_db_settings = Doc::new();
     alice_db_settings.set_string("name", "Alice's Database");
     let alice_db = alice
-        .new_database(alice_db_settings)
+        .new_database(alice_db_settings, &alice_key)
         .expect("Failed to create Alice's database");
     let alice_tree_id = alice_db.root_id().clone();
 
-    // Bob creates a database
+    // Bob creates a database with his key
     let mut bob_db_settings = Doc::new();
     bob_db_settings.set_string("name", "Bob's Database");
     let bob_db = bob
-        .new_database(bob_db_settings)
+        .new_database(bob_db_settings, &bob_key)
         .expect("Failed to create Bob's database");
     let bob_tree_id = bob_db.root_id().clone();
 
@@ -569,11 +558,14 @@ async fn test_user_without_admin_cannot_modify() {
     let mut alice = instance
         .login_user("alice", None)
         .expect("Failed to login alice");
+    let alice_key = alice
+        .get_default_key()
+        .expect("Failed to get Alice's default key");
 
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "Alice's Database");
     let alice_db = alice
-        .new_database(db_settings)
+        .new_database(db_settings, &alice_key)
         .expect("Failed to create Alice's database");
     let tree_id = alice_db.root_id().clone();
 

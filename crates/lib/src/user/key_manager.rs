@@ -215,11 +215,23 @@ impl UserKeyManager {
 
     /// List all key IDs managed by this manager
     ///
-    /// Returns key IDs in sorted order for deterministic behavior.
+    /// Returns key IDs sorted by creation timestamp (oldest first) for deterministic behavior.
     pub fn list_key_ids(&self) -> Vec<String> {
-        let mut keys: Vec<String> = self.decrypted_keys.keys().cloned().collect();
-        keys.sort();
-        keys
+        let mut keys: Vec<(String, u64)> = self
+            .decrypted_keys
+            .keys()
+            .filter_map(|key_id| {
+                self.key_metadata
+                    .get(key_id)
+                    .map(|meta| (key_id.clone(), meta.created_at))
+            })
+            .collect();
+
+        // Sort by created_at timestamp (oldest first)
+        keys.sort_by_key(|(_, created_at)| *created_at);
+
+        // Return just the key IDs
+        keys.into_iter().map(|(key_id, _)| key_id).collect()
     }
 
     /// Get metadata for a key
@@ -456,6 +468,68 @@ mod tests {
         assert_eq!(key_ids.len(), 2);
         assert!(key_ids.contains(&"key1".to_string()));
         assert!(key_ids.contains(&"key2".to_string()));
+    }
+
+    #[test]
+    fn test_key_manager_list_key_ids_sorted_by_timestamp() {
+        let password = "test_password";
+        let (_, salt) = hash_password(password).unwrap();
+        let encryption_key = derive_encryption_key(password, &salt).unwrap();
+
+        // Create keys with specific timestamps
+        let (key_new, _) = generate_keypair();
+        let (key_old, _) = generate_keypair();
+        let (key_mid, _) = generate_keypair();
+
+        let (encrypted_new, nonce_new) = encrypt_private_key(&key_new, &encryption_key).unwrap();
+        let (encrypted_old, nonce_old) = encrypt_private_key(&key_old, &encryption_key).unwrap();
+        let (encrypted_mid, nonce_mid) = encrypt_private_key(&key_mid, &encryption_key).unwrap();
+
+        // Create keys with explicit timestamps (old, middle, new)
+        let user_key_old = UserKey {
+            key_id: "key_old".to_string(),
+            private_key_bytes: encrypted_old,
+            encryption: KeyEncryption::Encrypted { nonce: nonce_old },
+            display_name: Some("Old Key".to_string()),
+            created_at: 1000, // Oldest
+            last_used: None,
+            database_sigkeys: HashMap::new(),
+        };
+
+        let user_key_mid = UserKey {
+            key_id: "key_mid".to_string(),
+            private_key_bytes: encrypted_mid,
+            encryption: KeyEncryption::Encrypted { nonce: nonce_mid },
+            display_name: Some("Mid Key".to_string()),
+            created_at: 2000, // Middle
+            last_used: None,
+            database_sigkeys: HashMap::new(),
+        };
+
+        let user_key_new = UserKey {
+            key_id: "key_new".to_string(),
+            private_key_bytes: encrypted_new,
+            encryption: KeyEncryption::Encrypted { nonce: nonce_new },
+            display_name: Some("New Key".to_string()),
+            created_at: 3000, // Newest
+            last_used: None,
+            database_sigkeys: HashMap::new(),
+        };
+
+        // Add keys in non-chronological order
+        let manager = UserKeyManager::new(
+            password,
+            &salt,
+            vec![user_key_new, user_key_old, user_key_mid],
+        )
+        .unwrap();
+
+        // list_key_ids() should return keys sorted by created_at (oldest first)
+        let key_ids = manager.list_key_ids();
+        assert_eq!(key_ids.len(), 3);
+        assert_eq!(key_ids[0], "key_old"); // created_at: 1000
+        assert_eq!(key_ids[1], "key_mid"); // created_at: 2000
+        assert_eq!(key_ids[2], "key_new"); // created_at: 3000
     }
 
     #[test]

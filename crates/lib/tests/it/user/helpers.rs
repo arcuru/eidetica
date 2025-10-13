@@ -78,7 +78,11 @@ pub fn add_multiple_keys(user: &mut User, count: usize) -> Vec<String> {
 pub fn create_user_database(user: &mut User) -> Database {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "Test Database");
-    user.new_database(settings)
+
+    // Get the default key (earliest created key)
+    let default_key = user.get_default_key().expect("Failed to get default key");
+
+    user.new_database(settings, &default_key)
         .expect("Failed to create database")
 }
 
@@ -86,7 +90,11 @@ pub fn create_user_database(user: &mut User) -> Database {
 pub fn create_named_database(user: &mut User, name: &str) -> Database {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", name);
-    user.new_database(settings)
+
+    // Get the default key (earliest created key)
+    let default_key = user.get_default_key().expect("Failed to get default key");
+
+    user.new_database(settings, &default_key)
         .expect("Failed to create database")
 }
 

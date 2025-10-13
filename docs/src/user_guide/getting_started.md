@@ -46,7 +46,10 @@ Here's a simple example:
     // Create a database in the user's context
     let mut settings = Doc::new();
     settings.set_string("name", "my_database");
-    let _database = user.new_database(settings)?;
+
+    // Get the default key (earliest created key)
+    let default_key = user.get_default_key()?;
+    let _database = user.new_database(settings, &default_key)?;
 
     Ok(())
 }
@@ -69,7 +72,8 @@ The backend determines how your data is stored. The example above uses `InMemory
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let _database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let _database = user.new_database(settings, &default_key)?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
@@ -104,7 +108,8 @@ You can load a previously saved backend:
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let _database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let _database = user.new_database(settings, &default_key)?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
@@ -194,7 +199,8 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let database = user.new_database(settings, &default_key)?;
 #
 // Start an authenticated transaction
 let op = database.new_transaction()?;
@@ -232,7 +238,8 @@ op.commit()?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let database = user.new_database(settings, &default_key)?;
 # // Insert some test data
 # let op = database.new_transaction()?;
 # let people = op.get_store::<Table<Person>>("people")?;
@@ -277,7 +284,8 @@ for (id, person) in all_people {
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let database = user.new_database(settings, &default_key)?;
 # // Insert some test data
 # let op_setup = database.new_transaction()?;
 # let people_setup = op_setup.get_store::<Table<Person>>("people")?;
@@ -319,7 +327,8 @@ op.commit()?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test_db");
-# let database = user.new_database(settings)?;
+# let default_key = user.get_default_key()?;
+# let database = user.new_database(settings, &default_key)?;
 # let _id = "test_id";
 #
 let op = database.new_transaction()?;

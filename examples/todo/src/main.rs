@@ -212,8 +212,11 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
             let mut settings = Doc::new();
             settings.set_string("name", database_name);
 
+            // Get the default key (earliest created key)
+            let default_key = user.get_default_key()?;
+
             // User API automatically configures the database with user's keys
-            user.new_database(settings)?
+            user.new_database(settings, &default_key)?
         }
         Err(e) => {
             // Propagate other errors
