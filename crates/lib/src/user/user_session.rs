@@ -1,6 +1,25 @@
 //! User session management
 //!
 //! Represents an authenticated user session with decrypted keys.
+//!
+//! # Key Management Design Notes
+//!
+//! ## Automatic vs Manual Database-Key Mapping
+//!
+//! The User API has a design tension between automatic and manual key management:
+//!
+//! - **Automatic**: `new_database()` automatically selects a key (the earliest created key)
+//!   and creates a database-key mapping. This is convenient but lacks explicit control.
+//!
+//! - **Manual**: `add_database_key_mapping()` allows explicit mapping of keys to databases.
+//!   This is flexible but requires more management.
+//!
+//! **The Problem**: These two approaches can conflict. When `new_database()` creates automatic
+//! mappings, subsequent manual mapping operations may produce unexpected results because
+//! multiple keys might end up mapped to the same database.
+//!
+//! **Recommendation**: Use `new_database_with_key()` for explicit key selection when you need
+//! fine-grained control over which keys access which databases.
 
 use std::sync::Arc;
 
@@ -114,50 +133,111 @@ impl User {
 
     // === Database Operations (User Context) ===
 
-    /// Create a new database in this user's context.
+    /// Create a new database in this user's context using the default key.
     ///
-    /// The database will be created and signed using one of this user's keys.
-    /// For now, uses the first available key. Future versions will support key selection.
+    /// **Automatic Key Selection Design Issue:**
+    ///
+    /// This method automatically selects a key to use for database creation. The key
+    /// selection uses the earliest `created_at` timestamp (i.e., the first key created
+    /// when the user was set up). While this provides deterministic behavior, it has
+    /// limitations:
+    ///
+    /// 1. No explicit control over which key is used
+    /// 2. Automatic mapping creation can conflict with manual key management
+    /// 3. The "default" key concept is implicit rather than explicit
+    ///
+    /// For explicit key selection, use [`new_database_with_key()`](Self::new_database_with_key).
     ///
     /// # Arguments
     /// * `settings` - Initial database settings (metadata, name, etc.)
     ///
     /// # Returns
     /// The created Database
+    ///
+    /// # Implementation Note
+    /// This method:
+    /// 1. Finds the key with the earliest `created_at` timestamp (the "default" key)
+    /// 2. Delegates to `new_database_with_key()` with that key
     pub fn new_database(&mut self, settings: crate::crdt::Doc) -> Result<crate::Database> {
-        use crate::store::Table;
-        use crate::user::types::UserKey;
-
-        // Get the first available signing key
-        // TODO: Allow user to specify which key to use
+        // Find the default key (earliest created key)
         let key_ids = self.key_manager.list_key_ids();
+        if key_ids.is_empty() {
+            return Err(crate::Error::from(
+                crate::instance::InstanceError::AuthenticationRequired,
+            ));
+        }
+
+        // Find the key with the earliest created_at timestamp (the default/original key)
         let key_id = key_ids
-            .first()
+            .iter()
+            .filter_map(|kid| {
+                self.key_manager
+                    .get_key_metadata(kid)
+                    .map(|meta| (kid, meta.created_at))
+            })
+            .min_by_key(|(_, created_at)| *created_at)
+            .map(|(kid, _)| kid.clone())
             .ok_or_else(|| {
                 crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
-            })?
-            .clone();
+            })?;
+
+        // Delegate to new_database_with_key() with the default key
+        self.new_database_with_key(settings, &key_id)
+    }
+
+    /// Create a new database with explicit key selection.
+    ///
+    /// This method allows you to specify which key should be used to create and manage
+    /// the database, avoiding the automatic key selection issues in [`new_database()`](Self::new_database).
+    ///
+    /// # Arguments
+    /// * `settings` - Initial database settings (metadata, name, etc.)
+    /// * `key_id` - The ID of the key to use for this database (public key string)
+    ///
+    /// # Returns
+    /// The created Database
+    ///
+    /// # Errors
+    /// - Returns an error if the specified key_id doesn't exist
+    /// - Returns an error if the key cannot be retrieved
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Get available keys
+    /// let keys = user.list_keys()?;
+    /// let key_id = &keys[1]; // Use the second key
+    ///
+    /// // Create database with explicit key selection
+    /// let mut settings = Doc::new();
+    /// settings.set_string("name", "My Database");
+    /// let database = user.new_database_with_key(settings, key_id)?;
+    /// ```
+    pub fn new_database_with_key(
+        &mut self,
+        settings: crate::crdt::Doc,
+        key_id: &str,
+    ) -> Result<crate::Database> {
+        use crate::store::Table;
+        use crate::user::types::UserKey;
 
         // Get the signing key from UserKeyManager
         let signing_key = self
             .key_manager
-            .get_signing_key(&key_id)
+            .get_signing_key(key_id)
             .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
-                key_id: key_id.clone(),
+                key_id: key_id.to_string(),
             })?
             .clone();
 
         // Create the database with the provided key directly
-        // This avoids temporary backend storage and uses KeySource::Provided throughout
         let database = crate::Database::new_with_key(
             settings,
             self.backend.clone(),
             signing_key,
-            key_id.clone(),
+            key_id.to_string(),
         )?;
 
-        // Now store the mapping in UserKey so load_database() can find it later
-        // Read from user database (source of truth)
+        // Store the mapping in UserKey so load_database() can find it later
         let tx = self.user_database.new_transaction()?;
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
@@ -167,20 +247,19 @@ impl User {
             .into_iter()
             .next()
             .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
-                key_id: key_id.clone(),
+                key_id: key_id.to_string(),
             })?;
 
         // Add the database sigkey mapping
         metadata
             .database_sigkeys
-            .insert(database.root_id().clone(), key_id.clone());
+            .insert(database.root_id().clone(), key_id.to_string());
 
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone())?;
         tx.commit()?;
 
         // Update the in-memory key manager with the updated metadata
-        // This ensures the sigkey mapping is available immediately
         self.key_manager.add_key(metadata)?;
 
         Ok(database)
@@ -330,6 +409,14 @@ impl User {
     /// Registers that a user's key should be used with a specific SigKey identifier
     /// when interacting with a database. This is typically used when a user has been
     /// granted access to a database and needs to configure their local key to work with it.
+    ///
+    /// # Interaction with Automatic Mappings
+    ///
+    /// **Note**: This method creates manual mappings, which can coexist with automatic
+    /// mappings created by [`new_database()`](Self::new_database). Be aware that a
+    /// database may end up with mappings to multiple keys. For cleaner key management,
+    /// consider using [`new_database_with_key()`](Self::new_database_with_key) instead
+    /// of relying on automatic selection.
     ///
     /// # Arguments
     /// * `key_id` - The user's key identifier (public key string)

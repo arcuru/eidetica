@@ -5,6 +5,8 @@
 //! - Listing available keys
 //! - Getting specific keys
 //! - Key persistence across sessions
+//! - Database-key mappings and sigkey retrieval
+//! - Multi-key and multi-database scenarios
 
 use super::helpers::*;
 
@@ -306,5 +308,467 @@ fn test_find_key_for_nonexistent_database() {
     assert!(
         key.is_none(),
         "Should not find key for nonexistent database"
+    );
+}
+
+// ===== GET DATABASE SIGKEY TESTS =====
+
+#[test]
+fn test_get_database_sigkey() {
+    let (instance, username) = setup_instance_with_user("rachel", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Create a database (uses first available key)
+    let database = create_named_database(&mut user, "test_db");
+    let db_id = database.root_id();
+
+    // Get the first key
+    let keys = user.list_keys().expect("Should list keys");
+    let key_id = &keys[0];
+
+    // Get database sigkey for this key and database
+    let sigkey = user
+        .get_database_sigkey(key_id, db_id)
+        .expect("Should get database sigkey");
+
+    assert!(sigkey.is_some(), "Should have sigkey mapping for database");
+}
+
+#[test]
+fn test_get_database_sigkey_for_unmapped_database() {
+    let (instance, username) = setup_instance_with_user("sam", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Add a new key (won't be mapped to any database)
+    let key_id = add_user_key(&mut user, Some("Unmapped Key"));
+
+    // Create a fake database ID
+    use eidetica::entry::ID;
+    let fake_db_id = ID::from("fake_database_id");
+
+    // Try to get sigkey for database this key isn't mapped to
+    let sigkey = user
+        .get_database_sigkey(&key_id, &fake_db_id)
+        .expect("Should not error on unmapped database");
+
+    assert!(
+        sigkey.is_none(),
+        "Should not have sigkey for unmapped database"
+    );
+}
+
+#[test]
+fn test_get_database_sigkey_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("tina", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Create a database
+    let database = create_named_database(&mut user, "test_db");
+    let db_id = database.root_id();
+
+    // Try to get sigkey with nonexistent key
+    let result = user.get_database_sigkey("nonexistent_key", db_id);
+
+    assert!(
+        result.is_err(),
+        "Getting sigkey for nonexistent key should fail"
+    );
+}
+
+// ===== ADD DATABASE KEY MAPPING TESTS =====
+
+#[test]
+fn test_add_database_key_mapping() {
+    let (instance, username) = setup_instance_with_user("uma", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Get the default key
+    let keys = user.list_keys().expect("Should list keys");
+    let default_key = keys[0].clone();
+
+    // Add a new key
+    let extra_key = add_user_key(&mut user, Some("Extra Key"));
+
+    // Create a database explicitly with the default key
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "test_db");
+    let database = user
+        .new_database_with_key(settings, &default_key)
+        .expect("Should create database");
+    let db_id = database.root_id();
+
+    // Initially, the extra key shouldn't have a mapping to the database
+    let sigkey_before = user
+        .get_database_sigkey(&extra_key, db_id)
+        .expect("Should get database sigkey");
+    assert!(
+        sigkey_before.is_none(),
+        "Extra key should not have mapping yet"
+    );
+
+    // Add mapping manually for the extra key
+    user.add_database_key_mapping(&extra_key, db_id, &extra_key)
+        .expect("Should add database key mapping");
+
+    // Now the extra key should have a mapping
+    let sigkey_after = user
+        .get_database_sigkey(&extra_key, db_id)
+        .expect("Should get database sigkey");
+    assert!(
+        sigkey_after.is_some(),
+        "Extra key should have mapping after add_database_key_mapping"
+    );
+
+    // Default key should still have its mapping
+    let default_sigkey = user
+        .get_database_sigkey(&default_key, db_id)
+        .expect("Should get default key sigkey");
+    assert!(
+        default_sigkey.is_some(),
+        "Default key should still have mapping"
+    );
+}
+
+#[test]
+fn test_add_database_key_mapping_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("victor", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Create a database
+    let database = create_named_database(&mut user, "test_db");
+    let db_id = database.root_id();
+
+    // Try to add mapping for nonexistent key
+    let result = user.add_database_key_mapping("nonexistent_key", db_id, "fake_sigkey");
+
+    assert!(
+        result.is_err(),
+        "Adding mapping for nonexistent key should fail"
+    );
+}
+
+// ===== MULTI-KEY MULTI-DATABASE SCENARIOS =====
+
+#[test]
+fn test_one_key_multiple_databases() {
+    let (instance, username) = setup_instance_with_user("wendy", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Create 3 databases
+    let db1 = create_named_database(&mut user, "database_1");
+    let db2 = create_named_database(&mut user, "database_2");
+    let db3 = create_named_database(&mut user, "database_3");
+
+    // Get the first key (used for all databases)
+    let keys = user.list_keys().expect("Should list keys");
+    let key_id = &keys[0];
+
+    // Verify this key has mappings to all 3 databases
+    let sigkey1 = user
+        .get_database_sigkey(key_id, db1.root_id())
+        .expect("Should get sigkey for db1");
+    let sigkey2 = user
+        .get_database_sigkey(key_id, db2.root_id())
+        .expect("Should get sigkey for db2");
+    let sigkey3 = user
+        .get_database_sigkey(key_id, db3.root_id())
+        .expect("Should get sigkey for db3");
+
+    assert!(sigkey1.is_some(), "Should have mapping to db1");
+    assert!(sigkey2.is_some(), "Should have mapping to db2");
+    assert!(sigkey3.is_some(), "Should have mapping to db3");
+}
+
+#[test]
+fn test_multiple_keys_one_database() {
+    let (instance, username) = setup_instance_with_user("xander", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Create a database (uses first key)
+    let database = create_named_database(&mut user, "shared_db");
+    let db_id = database.root_id();
+
+    // Add 2 more keys
+    let key2 = add_user_key(&mut user, Some("Key 2"));
+    let key3 = add_user_key(&mut user, Some("Key 3"));
+
+    // Add mappings for the new keys to the same database
+    user.add_database_key_mapping(&key2, db_id, &key2)
+        .expect("Should add mapping for key2");
+    user.add_database_key_mapping(&key3, db_id, &key3)
+        .expect("Should add mapping for key3");
+
+    // Verify all keys have mappings to the database
+    let keys = user.list_keys().expect("Should list keys");
+    let key1 = &keys[0]; // First key
+
+    let sigkey1 = user
+        .get_database_sigkey(key1, db_id)
+        .expect("Should get sigkey for key1");
+    let sigkey2 = user
+        .get_database_sigkey(&key2, db_id)
+        .expect("Should get sigkey for key2");
+    let sigkey3 = user
+        .get_database_sigkey(&key3, db_id)
+        .expect("Should get sigkey for key3");
+
+    assert!(sigkey1.is_some(), "Key1 should have mapping");
+    assert!(sigkey2.is_some(), "Key2 should have mapping");
+    assert!(sigkey3.is_some(), "Key3 should have mapping");
+}
+
+#[test]
+fn test_complex_key_database_mappings() {
+    let (instance, username) = setup_instance_with_user("yara", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Get the default key
+    let keys = user.list_keys().expect("Should list keys");
+    let key1 = keys[0].clone();
+
+    // Create 2 additional keys (3 total with default)
+    let key2 = add_user_key(&mut user, Some("Work Key"));
+    let key3 = add_user_key(&mut user, Some("Home Key"));
+
+    // Create 3 databases explicitly with the default key
+    let mut settings1 = eidetica::crdt::Doc::new();
+    settings1.set_string("name", "work_db");
+    let db1 = user
+        .new_database_with_key(settings1, &key1)
+        .expect("Should create work_db");
+
+    let mut settings2 = eidetica::crdt::Doc::new();
+    settings2.set_string("name", "home_db");
+    let db2 = user
+        .new_database_with_key(settings2, &key1)
+        .expect("Should create home_db");
+
+    let mut settings3 = eidetica::crdt::Doc::new();
+    settings3.set_string("name", "shared_db");
+    let db3 = user
+        .new_database_with_key(settings3, &key1)
+        .expect("Should create shared_db");
+
+    // Add specific manual mappings:
+    // - key2 -> work_db and shared_db
+    // - key3 -> home_db and shared_db
+    user.add_database_key_mapping(&key2, db1.root_id(), &key2)
+        .expect("Map key2 to work_db");
+    user.add_database_key_mapping(&key2, db3.root_id(), &key2)
+        .expect("Map key2 to shared_db");
+    user.add_database_key_mapping(&key3, db2.root_id(), &key3)
+        .expect("Map key3 to home_db");
+    user.add_database_key_mapping(&key3, db3.root_id(), &key3)
+        .expect("Map key3 to shared_db");
+
+    // Verify key1 has all databases (created them)
+    assert!(
+        user.get_database_sigkey(&key1, db1.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key1 should have work_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key1, db2.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key1 should have home_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key1, db3.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key1 should have shared_db"
+    );
+
+    // Verify key2 has work_db and shared_db
+    assert!(
+        user.get_database_sigkey(&key2, db1.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key2 should have work_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key2, db2.root_id())
+            .expect("Should get sigkey")
+            .is_none(),
+        "key2 should NOT have home_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key2, db3.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key2 should have shared_db"
+    );
+
+    // Verify key3 has home_db and shared_db
+    assert!(
+        user.get_database_sigkey(&key3, db1.root_id())
+            .expect("Should get sigkey")
+            .is_none(),
+        "key3 should NOT have work_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key3, db2.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key3 should have home_db"
+    );
+    assert!(
+        user.get_database_sigkey(&key3, db3.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key3 should have shared_db"
+    );
+}
+
+// ===== MANUAL MAPPING PERSISTENCE TESTS =====
+
+#[test]
+fn test_manual_mappings_persist_across_sessions() {
+    let username = "zara";
+    let instance = setup_instance();
+
+    // First session: create user, add key, create database, add mapping
+    instance
+        .create_user(username, None)
+        .expect("Failed to create user");
+    let mut user1 = login_user(&instance, username, None);
+
+    let extra_key = add_user_key(&mut user1, Some("Extra Key"));
+    let database = create_named_database(&mut user1, "persistent_db");
+    let db_id = database.root_id().clone();
+
+    // Add manual mapping
+    user1
+        .add_database_key_mapping(&extra_key, &db_id, &extra_key)
+        .expect("Should add mapping");
+
+    // Verify mapping exists
+    let sigkey_before = user1
+        .get_database_sigkey(&extra_key, &db_id)
+        .expect("Should get sigkey");
+    assert!(sigkey_before.is_some(), "Mapping should exist");
+
+    user1.logout().expect("Logout should succeed");
+
+    // Second session: verify mapping persisted
+    let user2 = login_user(&instance, username, None);
+
+    let sigkey_after = user2
+        .get_database_sigkey(&extra_key, &db_id)
+        .expect("Should get sigkey");
+    assert!(
+        sigkey_after.is_some(),
+        "Manual mapping should persist across sessions"
+    );
+    assert_eq!(
+        sigkey_before, sigkey_after,
+        "Sigkey should be the same after re-login"
+    );
+}
+
+#[test]
+fn test_multiple_manual_mappings_persist() {
+    let username = "aaron";
+    let password = "password123";
+    let instance = setup_instance();
+
+    // First session: create complex mapping scenario
+    instance
+        .create_user(username, Some(password))
+        .expect("Create user");
+    let mut user1 = login_user(&instance, username, Some(password));
+
+    // Get the default key
+    let keys = user1.list_keys().expect("Should list keys");
+    let key1 = keys[0].clone();
+
+    // Create 2 extra keys
+    let key2 = add_user_key(&mut user1, Some("Key 2"));
+    let key3 = add_user_key(&mut user1, Some("Key 3"));
+
+    // Create 3 databases explicitly with the default key
+    let mut settings1 = eidetica::crdt::Doc::new();
+    settings1.set_string("name", "db1");
+    let db1 = user1
+        .new_database_with_key(settings1, &key1)
+        .expect("Should create db1");
+
+    let mut settings2 = eidetica::crdt::Doc::new();
+    settings2.set_string("name", "db2");
+    let db2 = user1
+        .new_database_with_key(settings2, &key1)
+        .expect("Should create db2");
+
+    let mut settings3 = eidetica::crdt::Doc::new();
+    settings3.set_string("name", "db3");
+    let db3 = user1
+        .new_database_with_key(settings3, &key1)
+        .expect("Should create db3");
+
+    // Add multiple manual mappings
+    user1
+        .add_database_key_mapping(&key2, db1.root_id(), &key2)
+        .expect("Map key2 to db1");
+    user1
+        .add_database_key_mapping(&key2, db2.root_id(), &key2)
+        .expect("Map key2 to db2");
+    user1
+        .add_database_key_mapping(&key3, db2.root_id(), &key3)
+        .expect("Map key3 to db2");
+    user1
+        .add_database_key_mapping(&key3, db3.root_id(), &key3)
+        .expect("Map key3 to db3");
+
+    user1.logout().expect("Logout should succeed");
+
+    // Second session: verify all mappings persisted
+    let user2 = login_user(&instance, username, Some(password));
+
+    // Verify key2 mappings
+    assert!(
+        user2
+            .get_database_sigkey(&key2, db1.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key2->db1 mapping should persist"
+    );
+    assert!(
+        user2
+            .get_database_sigkey(&key2, db2.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key2->db2 mapping should persist"
+    );
+    assert!(
+        user2
+            .get_database_sigkey(&key2, db3.root_id())
+            .expect("Should get sigkey")
+            .is_none(),
+        "key2 should NOT have db3 mapping"
+    );
+
+    // Verify key3 mappings
+    assert!(
+        user2
+            .get_database_sigkey(&key3, db1.root_id())
+            .expect("Should get sigkey")
+            .is_none(),
+        "key3 should NOT have db1 mapping"
+    );
+    assert!(
+        user2
+            .get_database_sigkey(&key3, db2.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key3->db2 mapping should persist"
+    );
+    assert!(
+        user2
+            .get_database_sigkey(&key3, db3.root_id())
+            .expect("Should get sigkey")
+            .is_some(),
+        "key3->db3 mapping should persist"
     );
 }
