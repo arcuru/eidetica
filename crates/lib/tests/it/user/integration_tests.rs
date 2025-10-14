@@ -72,7 +72,6 @@ fn test_independent_users_coexist() {
 // ===== REALISTIC MULTI-DEVICE SCENARIOS =====
 
 #[test]
-#[ignore = "Flakey due to problems with finding default key"]
 fn test_multi_device_key_management_and_database_access() {
     let (instance, username) = setup_instance_with_user("alice", None);
 

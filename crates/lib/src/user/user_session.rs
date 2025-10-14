@@ -446,6 +446,7 @@ impl User {
                     .unwrap()
                     .as_secs(),
                 last_used: None,
+                is_default: false, // New keys are not default
                 database_sigkeys: std::collections::HashMap::new(),
             }
         } else {
@@ -460,6 +461,7 @@ impl User {
                     .unwrap()
                     .as_secs(),
                 last_used: None,
+                is_default: false, // New keys are not default
                 database_sigkeys: std::collections::HashMap::new(),
             }
         };
@@ -487,10 +489,10 @@ impl User {
         Ok(self.key_manager.list_key_ids())
     }
 
-    /// Get the default key (earliest created key).
+    /// Get the default key.
     ///
-    /// Returns the first key from `list_keys()`, which is the key with the earliest
-    /// `created_at` timestamp (typically the first key created when the user was set up).
+    /// Returns the key marked as is_default=true, or falls back to the oldest key
+    /// by creation timestamp if no default is explicitly set.
     ///
     /// # Returns
     /// The key ID of the default key
@@ -498,8 +500,7 @@ impl User {
     /// # Errors
     /// Returns an error if no keys exist
     pub fn get_default_key(&self) -> Result<String> {
-        // list_keys() returns keys sorted by created_at (oldest first)
-        self.list_keys()?.into_iter().next().ok_or_else(|| {
+        self.key_manager.get_default_key_id().ok_or_else(|| {
             crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
         })
     }
@@ -764,6 +765,7 @@ mod tests {
                 .unwrap()
                 .as_secs(),
             last_used: None,
+            is_default: true,
             database_sigkeys: HashMap::new(),
         };
 

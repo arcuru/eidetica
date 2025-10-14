@@ -106,6 +106,10 @@ pub struct UserKey {
     /// Last time this key was used
     pub last_used: Option<u64>,
 
+    /// Whether this is the user's default key, which has admin access on the user's DB
+    /// Only one key should be marked as default at a time
+    pub is_default: bool,
+
     /// Database-specific SigKey mappings
     /// Maps: Database ID → SigKey used in that database's auth settings
     pub database_sigkeys: HashMap<ID, String>,

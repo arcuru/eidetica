@@ -237,6 +237,7 @@ pub fn create_user(
                     .unwrap()
                     .as_secs(),
                 last_used: None,
+                is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
             }
         }
@@ -252,6 +253,7 @@ pub fn create_user(
                     .unwrap()
                     .as_secs(),
                 last_used: None,
+                is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
             }
         }
@@ -397,26 +399,24 @@ pub fn login_user(
         UserKeyManager::new_passwordless(keys)?
     };
 
-    // 6. Re-open user database with the user's key using load_with_key()
+    // 6. Re-open user database with the user's default key using load_with_key()
     // This configures the database to use KeySource::Provided with the user's key
     // so all operations work without needing keys in the backend
-    let first_key_id = key_manager
-        .list_key_ids()
-        .first()
-        .cloned()
+    let default_key_id = key_manager
+        .get_default_key_id()
         .ok_or(UserError::NoKeysAvailable)?;
-    let first_signing_key = key_manager
-        .get_signing_key(&first_key_id)
+    let default_signing_key = key_manager
+        .get_signing_key(&default_key_id)
         .ok_or_else(|| UserError::KeyNotFound {
-            key_id: first_key_id.clone(),
+            key_id: default_key_id.clone(),
         })?
         .clone();
 
     let user_database = Database::load_with_key(
         backend.clone(),
         &user_info.user_database_id,
-        first_signing_key,
-        first_key_id,
+        default_signing_key,
+        default_key_id,
     )?;
 
     // 7. Update last_login in separate table

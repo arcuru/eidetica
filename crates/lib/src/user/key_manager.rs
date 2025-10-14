@@ -193,6 +193,7 @@ impl UserKeyManager {
                 display_name: metadata.display_name.clone(),
                 created_at: metadata.created_at,
                 last_used: metadata.last_used,
+                is_default: metadata.is_default,
                 database_sigkeys: metadata.database_sigkeys.clone(),
             };
 
@@ -237,6 +238,25 @@ impl UserKeyManager {
     /// Get metadata for a key
     pub fn get_key_metadata(&self, key_id: &str) -> Option<&UserKey> {
         self.key_metadata.get(key_id)
+    }
+
+    /// Get the default key ID
+    ///
+    /// Returns the key marked as is_default=true, or falls back to the
+    /// oldest key by creation timestamp if no default is explicitly set.
+    ///
+    /// # Returns
+    /// The key ID of the default key, or None if there are no keys
+    pub fn get_default_key_id(&self) -> Option<String> {
+        // First try to find a key explicitly marked as default
+        for (key_id, metadata) in &self.key_metadata {
+            if metadata.is_default {
+                return Some(key_id.clone());
+            }
+        }
+
+        // Fall back to oldest key by creation timestamp
+        self.list_key_ids().first().cloned()
     }
 
     /// Get the encryption key for encrypting new keys
@@ -306,6 +326,7 @@ mod tests {
                 .unwrap()
                 .as_secs(),
             last_used: None,
+            is_default: false,
             database_sigkeys: HashMap::new(),
         }
     }
@@ -493,6 +514,7 @@ mod tests {
             display_name: Some("Old Key".to_string()),
             created_at: 1000, // Oldest
             last_used: None,
+            is_default: true, // Mark oldest as default
             database_sigkeys: HashMap::new(),
         };
 
@@ -503,6 +525,7 @@ mod tests {
             display_name: Some("Mid Key".to_string()),
             created_at: 2000, // Middle
             last_used: None,
+            is_default: false,
             database_sigkeys: HashMap::new(),
         };
 
@@ -513,6 +536,7 @@ mod tests {
             display_name: Some("New Key".to_string()),
             created_at: 3000, // Newest
             last_used: None,
+            is_default: false,
             database_sigkeys: HashMap::new(),
         };
 
