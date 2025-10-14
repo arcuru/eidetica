@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
 use crate::{
@@ -169,6 +169,9 @@ impl Database {
         op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)?;
         op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
 
+        // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
+        op.set_metadata_entropy(rand::thread_rng().next_u64())?;
+
         // Commit the initial entry
         let new_root_id = op.commit()?;
 
@@ -302,6 +305,9 @@ impl Database {
         // Populate the SETTINGS and ROOT subtrees for the very first entry
         op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)?;
         op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
+
+        // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
+        op.set_metadata_entropy(rand::thread_rng().next_u64())?;
 
         // Commit the initial entry
         let new_root_id = op.commit()?;

@@ -261,6 +261,38 @@ impl Transaction {
         Ok(())
     }
 
+    /// Set entropy in the entry metadata.
+    ///
+    /// This is used during database creation to ensure unique IDs for databases
+    /// even when they have identical settings.
+    ///
+    /// # Arguments
+    /// * `entropy` - Random entropy value
+    pub(crate) fn set_metadata_entropy(&self, entropy: u64) -> Result<()> {
+        let mut builder_ref = self.entry_builder.borrow_mut();
+        let builder = builder_ref
+            .as_mut()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+        // Parse existing metadata if present, or create new
+        let mut metadata = builder
+            .metadata()
+            .and_then(|m| serde_json::from_str::<EntryMetadata>(m).ok())
+            .unwrap_or_else(|| EntryMetadata {
+                settings_tips: Vec::new(),
+                entropy: None,
+            });
+
+        // Set entropy
+        metadata.entropy = Some(entropy);
+
+        // Serialize and set metadata
+        let metadata_json = serde_json::to_string(&metadata)?;
+        builder.set_metadata_mut(metadata_json);
+
+        Ok(())
+    }
+
     /// Stages an update for a specific subtree within this atomic transaction.
     ///
     /// This method is primarily intended for internal use by `Store` implementations
