@@ -46,11 +46,11 @@ tasks:
   clippy:
     desc: Run clippy
     cmds:
-      - cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
+      - RUSTFLAGS="-A deprecated" cargo clippy --workspace --all-targets --all-features -- -D warnings -A deprecated
   clippy:fix:
     desc: Run clippy fixes
     cmds:
-      - cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings -A deprecated
+      - RUSTFLAGS="-A deprecated" cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings -A deprecated
   fmt:
     desc: Run all formatters
     cmds:
@@ -61,7 +61,7 @@ tasks:
     desc: Run tests
     aliases: [t]
     cmds:
-      - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
+      - RUSTFLAGS="-A deprecated" cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
   test:doc:
     desc: Run doc tests
     cmds:
@@ -88,7 +88,7 @@ tasks:
   build:debug:
     desc: Build the project
     aliases: [b, build]
-    cmd: cargo build --workspace --all-targets --all-features --quiet
+    cmd: RUSTFLAGS="-A deprecated" cargo build --workspace --all-targets --all-features --quiet
   build:release:
     desc: Build the project release
     aliases: [br, release]
