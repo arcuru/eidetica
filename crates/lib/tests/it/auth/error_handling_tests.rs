@@ -45,27 +45,30 @@ fn test_delegation_without_backend() {
 /// Test delegation with non-existent delegated tree
 #[test]
 fn test_delegation_nonexistent_tree() -> Result<()> {
-    let (db, tree, _) =
-        setup_complete_auth_environment(&[("admin", Permission::Admin(0), KeyStatus::Active)]);
+    let (db, mut _user, tree, _) = setup_complete_auth_environment_with_user(
+        "admin_user",
+        &[("admin", Permission::Admin(0), KeyStatus::Active)],
+    );
 
-    // Add delegation to non-existent tree using operations
-    let op = tree.new_authenticated_operation("admin")?;
-    let settings_store = op.get_store::<eidetica::store::DocStore>("_settings")?;
-
-    let nonexistent_delegation = DelegatedTreeRef {
-        permission_bounds: PermissionBounds {
-            min: None,
-            max: Permission::Write(10),
-        },
-        tree: TreeReference {
-            root: ID::from("nonexistent_root"),
-            tips: vec![ID::from("nonexistent_tip")],
-        },
-    };
-
-    let mut new_auth_settings = tree.get_settings()?.get_all()?;
-    new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
+    // Add delegation to non-existent tree using SettingsStore API
+    let op = tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let nonexistent_delegation = DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                min: None,
+                max: Permission::Write(10),
+            },
+            tree: TreeReference {
+                root: ID::from("nonexistent_root"),
+                tips: vec![ID::from("nonexistent_tip")],
+            },
+        };
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("nonexistent_delegate", nonexistent_delegation)?;
+            Ok(())
+        })?;
+    }
     op.commit()?;
 
     // Try to resolve delegation to non-existent tree

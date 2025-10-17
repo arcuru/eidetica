@@ -5,9 +5,8 @@
 //! clamping, and various authorization scenarios.
 
 use eidetica::{
-    Instance, Result,
+    Result,
     auth::{
-        AuthSettings,
         crypto::format_public_key,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
@@ -15,10 +14,8 @@ use eidetica::{
         },
         validation::AuthValidator,
     },
-    backend::database::InMemory,
-    crdt::{Doc, doc::Value},
+    crdt::Doc,
     entry::ID,
-    store::DocStore,
 };
 
 use super::helpers::*;
@@ -26,8 +23,10 @@ use super::helpers::*;
 /// Test simple tree creation with auth
 #[test]
 fn test_simple_tree_creation_with_auth() -> Result<()> {
-    let (_db, tree, _) =
-        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
+    let (_db, mut _user, tree, _) = setup_complete_auth_environment_with_user(
+        "main_admin_user",
+        &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
+    );
 
     assert!(!tree.root_id().to_string().is_empty());
     Ok(())
@@ -36,31 +35,34 @@ fn test_simple_tree_creation_with_auth() -> Result<()> {
 /// Test basic delegated tree validation
 #[test]
 fn test_delegated_tree_basic_validation() -> Result<()> {
-    let db = setup_db();
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
     // Create delegated tree
-    let delegated_tree = create_delegated_tree(
-        &db,
+    let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
+        &mut user,
         &[("delegated_user", Permission::Admin(5), KeyStatus::Active)],
-        "delegated_user",
     )?;
 
     // Create main tree with delegation
-    let (_, main_tree, _) =
-        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
+    let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
+        "main_admin_user",
+        &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
+    );
 
-    // Add delegation to main tree auth settings
-    let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_store::<DocStore>("_settings")?;
-
-    let delegation_ref = create_delegation_ref(
-        &delegated_tree,
-        Permission::Write(10),
-        Some(Permission::Read),
-    )?;
-    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
-    new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
+    // Add delegation to main tree auth settings using SettingsStore API
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(
+            &delegated_tree,
+            Permission::Write(10),
+            Some(Permission::Read),
+        )?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+            Ok(())
+        })?;
+    }
     op.commit()?;
 
     // Test delegated tree validation
@@ -88,27 +90,30 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
 /// Test permission clamping in delegated trees
 #[test]
 fn test_delegated_tree_permission_clamping() -> Result<()> {
-    let db = setup_db();
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
     // Create delegated tree with Admin permissions
-    let delegated_tree = create_delegated_tree(
-        &db,
+    let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
+        &mut user,
         &[("delegated_user", Permission::Admin(0), KeyStatus::Active)],
-        "delegated_user",
     )?;
 
     // Create main tree with Read-only delegation
-    let (_, main_tree, _) =
-        setup_complete_auth_environment(&[("main_admin", Permission::Admin(0), KeyStatus::Active)]);
+    let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
+        "main_admin_user",
+        &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
+    );
 
-    // Add read-only delegation
-    let op = main_tree.new_authenticated_operation("main_admin")?;
-    let settings_store = op.get_store::<DocStore>("_settings")?;
-
-    let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
-    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
-    new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
+    // Add read-only delegation using SettingsStore API
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_readonly", delegation_ref)?;
+            Ok(())
+        })?;
+    }
     op.commit()?;
 
     // Test permission clamping
@@ -139,90 +144,76 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
 fn test_nested_delegation() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let org_admin_key = db.add_private_key("org_admin")?;
-    let user_key = db.add_private_key("user")?;
+    let main_admin_key = user.add_private_key(Some("main_admin"))?;
+    let org_admin_key = user.add_private_key(Some("org_admin"))?;
+    let user_key = user.add_private_key(Some("user"))?;
 
-    // Create user tree (bottom level)
-    let mut user_settings = Doc::new();
-    let mut user_auth = Doc::new();
-    user_auth
-        .set_json(
-            "user", // Key name must match the private key ID
-            AuthKey::active(format_public_key(&user_key), Permission::Admin(10)).unwrap(),
-        )
-        .unwrap();
-    user_settings.set_doc("auth", user_auth);
-    let user_tree = db.new_database(user_settings, "user")?;
+    // Create user tree (bottom level) using SettingsStore API
+    let user_tree = user.new_database(Doc::new(), &user_key)?;
+    configure_database_auth(
+        &user_tree,
+        &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
+    )?;
 
-    // Create org tree (middle level) that delegates to user tree
-    let mut org_settings = Doc::new();
-    let mut org_auth = Doc::new();
-    org_auth
-        .set_json(
-            "org_admin", // Key name matches private key ID
-            AuthKey::active(format_public_key(&org_admin_key), Permission::Admin(5)).unwrap(),
-        )
-        .unwrap();
+    // Create org tree (middle level) that delegates to user tree using SettingsStore API
+    let org_tree = user.new_database(Doc::new(), &org_admin_key)?;
+    configure_database_auth(
+        &org_tree,
+        &[(
+            "org_admin",
+            &org_admin_key,
+            Permission::Admin(5),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    // Delegate to user tree
+    // Add delegation to user tree
     let user_tips = user_tree.get_tips()?;
-    org_auth
-        .set_json(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(20),
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: user_tree.root_id().clone(),
-                    tips: user_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    org_settings.set_doc("auth", org_auth);
-    let org_tree = db.new_database(org_settings, "org_admin")?;
+    let op = org_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(&user_tree, Permission::Write(20), None)?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
-    // Create main tree (top level) that delegates to org tree
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
+    // Create main tree (top level) that delegates to org tree using SettingsStore API
+    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[(
             "main_admin",
-            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+            &main_admin_key,
+            Permission::Admin(0),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    // Delegate to org tree
+    // Add delegation to org tree
     let org_tips = org_tree.get_tips()?;
-    main_auth
-        .set_json(
-            "delegate_to_org",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(15),
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: org_tree.root_id().clone(),
-                    tips: org_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "main_admin")?;
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref =
+            create_delegation_ref(&org_tree, Permission::Write(15), Some(Permission::Read))?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_to_org", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Test nested delegation: main -> org -> user
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     // Create a nested delegation chain: main -> org -> user
+    // Use display names from each tree's auth settings
     let nested_auth_id = SigKey::DelegationPath(vec![
         DelegationStep {
             key: "delegate_to_org".to_string(),
@@ -255,58 +246,47 @@ fn test_nested_delegation() -> Result<()> {
 fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
+    let main_admin_key = user.add_private_key(Some("main_admin"))?;
+    let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
-    // Create delegated tree with user key (initially active)
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_user", // Key name must match the private key ID
-            AuthKey::active(
-                format_public_key(&delegated_user_key),
-                Permission::Admin(10), // Admin needed to create tree
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
+    // Create delegated tree with user key (initially active) using SettingsStore API
+    let delegated_tree = user.new_database(Doc::new(), &delegated_user_key)?;
+    configure_database_auth(
+        &delegated_tree,
+        &[(
+            "delegated_user",
+            &delegated_user_key,
+            Permission::Admin(10),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    let delegated_tree = db.new_database(delegated_settings, "delegated_user")?;
+    // Create main tree with delegation using SettingsStore API
+    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[(
+            "main_admin",
+            &main_admin_key,
+            Permission::Admin(0),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    // Create main tree with delegation
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
-            "main_admin", // Key name must match the private key ID
-            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-
+    // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips()?;
-    main_auth
-        .set_json(
-            "delegate_to_tree",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
-
-    let main_tree = db.new_database(main_settings, "main_admin")?;
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(10), None)?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_to_tree", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Test with active key - should work
     let mut validator = AuthValidator::new();
@@ -318,7 +298,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             tips: Some(delegated_tips.clone()),
         },
         DelegationStep {
-            key: "delegated_user".to_string(),
+            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
             tips: None,
         },
     ]);
@@ -329,31 +309,26 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
-    // Create a new delegated tree with the same key but revoked
-    let mut revoked_settings = Doc::new();
-    let mut revoked_auth = Doc::new();
-    revoked_auth
-        .set_json(
-            "delegated_user", // Key name must match the private key ID
-            AuthKey::new(
-                format_public_key(&delegated_user_key),
+    // Now revoke the key in the delegated tree using SettingsStore API
+    let op = delegated_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        settings.update_auth_settings(|auth| {
+            // Update the existing key to be revoked (use overwrite_key since it already exists)
+            let public_key = eidetica::auth::crypto::parse_public_key(&delegated_user_key)?;
+            let revoked_key = AuthKey::new(
+                format_public_key(&public_key),
                 Permission::Write(10),
-                KeyStatus::Revoked, // Now revoked
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    revoked_settings.set_doc("auth", revoked_auth);
-
-    // We can't easily update the delegated tree state in this test, so we'll validate against
-    // the revoked settings directly to test the revocation logic
-    let delegated_settings_data = revoked_settings;
-    let revoked_auth_settings = match delegated_settings_data.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
-        _ => AuthSettings::new(),
-    };
+                KeyStatus::Revoked,
+            )?;
+            auth.overwrite_key("delegated_user", revoked_key)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Test validation against revoked key
+    let revoked_auth_settings = delegated_tree.get_settings()?.get_auth_settings()?;
     let resolved_auth_revoked = validator.resolve_sig_key(
         &SigKey::Direct("delegated_user".to_string()),
         &revoked_auth_settings,
@@ -370,57 +345,38 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 fn test_delegation_depth_limits() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
     // Create a deeply nested delegation chain that exceeds the limit
-    let admin_key = db.add_private_key("admin")?;
-    let user_key = db.add_private_key("user")?;
+    let admin_key = user.add_private_key(Some("admin"))?;
+    let user_key = user.add_private_key(Some("user"))?;
 
-    // Create a simple delegated tree
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "user", // Key name must match the private key ID
-            AuthKey::active(
-                format_public_key(&user_key),
-                Permission::Admin(10), // Admin needed to create tree
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "user")?;
+    // Create a simple delegated tree using SettingsStore API
+    let delegated_tree = user.new_database(Doc::new(), &user_key)?;
+    configure_database_auth(
+        &delegated_tree,
+        &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
+    )?;
 
-    // Create main tree settings
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
-            "admin", // Key name must match the private key ID
-            AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+    // Create main tree using SettingsStore API
+    let main_tree = user.new_database(Doc::new(), &admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
+    )?;
 
+    // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips()?;
-    main_auth
-        .set_json(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "admin")?;
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(10), None)?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Create a deeply nested delegation that should exceed the limit
     // We'll create a chain with 12 levels (exceeds MAX_DELEGATION_DEPTH of 10)
@@ -436,7 +392,7 @@ fn test_delegation_depth_limits() -> Result<()> {
 
     // Add final step
     delegation_steps.push(DelegationStep {
-        key: "user".to_string(),
+        key: "user".to_string(), // Use display name from delegated tree auth settings
         tips: None,
     });
 
@@ -460,71 +416,61 @@ fn test_delegation_depth_limits() -> Result<()> {
 fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
     // Keys
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_admin_key = db.add_private_key("delegated_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
+    let main_admin_key = user.add_private_key(Some("main_admin"))?;
+    let delegated_admin_key = user.add_private_key(Some("delegated_admin"))?;
+    let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
-    // ---------------- Delegated tree ----------------
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_admin",
-            AuthKey::active(
-                format_public_key(&delegated_admin_key),
+    // ---------------- Delegated tree using SettingsStore API ----------------
+    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    configure_database_auth(
+        &delegated_tree,
+        &[
+            (
+                "delegated_admin",
+                &delegated_admin_key,
                 Permission::Admin(0),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "delegated_user",
-            AuthKey::active(
-                format_public_key(&delegated_user_key),
-                Permission::Write(15), // Low-privilege write
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
-
-    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
+                KeyStatus::Active,
+            ),
+            (
+                "delegated_user",
+                &delegated_user_key,
+                Permission::Write(15),
+                KeyStatus::Active,
+            ),
+        ],
+    )?;
     let delegated_tips = delegated_tree.get_tips()?;
 
-    // ---------------- Main tree with delegation ----------------
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
+    // ---------------- Main tree with delegation using SettingsStore API ----------------
+    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[(
             "main_admin",
-            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+            &main_admin_key,
+            Permission::Admin(0),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    // Bounds: raise anything below Write(7) up to Write(7), cap at Write(0)
-    main_auth
-        .set_json(
-            "delegate_user_min_upgrade",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(0),       // Highest possible Write permission
-                    min: Some(Permission::Write(7)), // Minimum permission level
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
-
-    let main_tree = db.new_database(main_settings, "main_admin")?;
+    // Add delegation with bounds using SettingsStore API
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(
+            &delegated_tree,
+            Permission::Write(0),       // max: Highest possible Write permission
+            Some(Permission::Write(7)), // min: Minimum permission level
+        )?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_user_min_upgrade", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -536,7 +482,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             tips: Some(delegated_tips.clone()),
         },
         DelegationStep {
-            key: "delegated_user".to_string(),
+            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
             tips: None,
         },
     ]);
@@ -555,68 +501,57 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 fn test_delegated_tree_priority_preservation() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
     // Keys
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_admin_key = db.add_private_key("delegated_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
+    let main_admin_key = user.add_private_key(Some("main_admin"))?;
+    let delegated_admin_key = user.add_private_key(Some("delegated_admin"))?;
+    let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
-    // Delegated tree with user key Write(12)
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_admin",
-            AuthKey::active(
-                format_public_key(&delegated_admin_key),
+    // Delegated tree with user key Write(12) using SettingsStore API
+    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    configure_database_auth(
+        &delegated_tree,
+        &[
+            (
+                "delegated_admin",
+                &delegated_admin_key,
                 Permission::Admin(0),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "delegated_user",
-            AuthKey::active(
-                format_public_key(&delegated_user_key),
-                Permission::Write(12), // priority 12
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
+                KeyStatus::Active,
+            ),
+            (
+                "delegated_user",
+                &delegated_user_key,
+                Permission::Write(12),
+                KeyStatus::Active,
+            ),
+        ],
+    )?;
     let delegated_tips = delegated_tree.get_tips()?;
 
-    // Main tree delegates with max Write(8) (more privileged) and no min
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
+    // Main tree delegates with max Write(8) (more privileged) and no min using SettingsStore API
+    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[(
             "main_admin",
-            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-    main_auth
-        .set_json(
-            "delegate_user_priority",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(8),
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
-            },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
+            &main_admin_key,
+            Permission::Admin(0),
+            KeyStatus::Active,
+        )],
+    )?;
 
-    let main_tree = db.new_database(main_settings, "main_admin")?;
+    // Add delegation using SettingsStore API
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(8), None)?;
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_user_priority", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -628,7 +563,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
             tips: Some(delegated_tips.clone()),
         },
         DelegationStep {
-            key: "delegated_user".to_string(),
+            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
             tips: None,
         },
     ]);
@@ -646,20 +581,15 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
 fn test_delegation_depth_limit_exact() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
-    // Setup simple tree with direct key
-    let admin_key = db.add_private_key("admin")?;
-    let mut settings = Doc::new();
-    let mut auth = Doc::new();
-    auth.set_json(
-        "admin",
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
-    settings.set_doc("auth", auth);
-    let tree = db.new_database(settings, "admin")?;
+    // Setup simple tree with direct key using SettingsStore API
+    let admin_key = user.add_private_key(Some("admin"))?;
+    let tree = user.new_database(Doc::new(), &admin_key)?;
+    configure_database_auth(
+        &tree,
+        &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
+    )?;
     let tips = tree.get_tips()?;
 
     // Build a chain exactly 10 levels deep
@@ -697,64 +627,68 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
 fn test_delegated_tree_invalid_tips() -> Result<()> {
     use eidetica::auth::validation::AuthValidator;
 
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let (db, mut user) = crate::helpers::test_instance_with_user("test_user");
 
-    // Keys and delegated tree setup
-    let main_admin_key = db.add_private_key("main_admin")?;
-    let delegated_admin_key = db.add_private_key("delegated_admin")?;
-    let delegated_user_key = db.add_private_key("delegated_user")?;
+    // Keys and delegated tree setup using SettingsStore API
+    let main_admin_key = user.add_private_key(Some("main_admin"))?;
+    let delegated_admin_key = user.add_private_key(Some("delegated_admin"))?;
+    let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_admin",
-            AuthKey::active(
-                format_public_key(&delegated_admin_key),
+    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    configure_database_auth(
+        &delegated_tree,
+        &[
+            (
+                "delegated_admin",
+                &delegated_admin_key,
                 Permission::Admin(0),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "delegated_user",
-            AuthKey::active(format_public_key(&delegated_user_key), Permission::Write(5)).unwrap(),
-        )
-        .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "delegated_admin")?;
+                KeyStatus::Active,
+            ),
+            (
+                "delegated_user",
+                &delegated_user_key,
+                Permission::Write(5),
+                KeyStatus::Active,
+            ),
+        ],
+    )?;
 
     // Fake tip that does not exist
     let bogus_tip = ID::new("nonexistent_tip_hash");
 
-    // Main tree with delegation using bogus tip
-    let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
+    // Main tree with delegation using bogus tip using SettingsStore API
+    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    configure_database_auth(
+        &main_tree,
+        &[(
             "main_admin",
-            AuthKey::active(format_public_key(&main_admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-    main_auth
-        .set_json(
-            "delegate_with_bad_tip",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(5),
-                    min: None,
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: vec![bogus_tip.clone()],
-                },
+            &main_admin_key,
+            Permission::Admin(0),
+            KeyStatus::Active,
+        )],
+    )?;
+
+    // Add delegation with bogus tips using SettingsStore API
+    let op = main_tree.new_transaction()?;
+    {
+        let settings = op.get_settings()?;
+        // Manually create delegation ref with bogus tips
+        let delegation_ref = DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(5),
+                min: None,
             },
-        )
-        .unwrap();
-    main_settings.set_doc("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "main_admin")?;
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: vec![bogus_tip.clone()],
+            },
+        };
+        settings.update_auth_settings(|auth| {
+            auth.add_delegated_tree("delegate_with_bad_tip", delegation_ref)?;
+            Ok(())
+        })?;
+    }
+    op.commit()?;
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
@@ -765,7 +699,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
             tips: Some(vec![bogus_tip]),
         },
         DelegationStep {
-            key: "delegated_user".to_string(),
+            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
             tips: None,
         },
     ]);
@@ -780,7 +714,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
 #[test]
 fn test_complex_nested_delegation_chain() -> Result<()> {
     // Create a 3-level delegation chain
-    let chain = DelegationChain::new(3)?;
+    let chain = DelegationChain::new_with_user("test_user", 3)?;
 
     // Verify the chain was created correctly
     assert_eq!(chain.trees.len(), 3);
@@ -794,9 +728,13 @@ fn test_complex_nested_delegation_chain() -> Result<()> {
         );
     }
 
-    // Verify each tree has its expected key
+    // Verify each tree has a display name (keys now store display names, not key_ids)
     for (i, key) in chain.keys.iter().enumerate() {
-        assert_eq!(key, &format!("level_{i}_admin"));
+        assert_eq!(
+            key,
+            &format!("level_{i}_admin"),
+            "Key should match expected display name"
+        );
     }
 
     // Create a delegation chain to a final user
