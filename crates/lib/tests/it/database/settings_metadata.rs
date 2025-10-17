@@ -13,7 +13,7 @@ use eidetica::{
 fn test_settings_tips_in_metadata() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Add a test key
     let key_id = "test_key";
@@ -99,7 +99,7 @@ fn test_settings_tips_in_metadata() {
 fn test_entry_get_settings_from_subtree() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Add a test key
     let key_id = "test_key";
@@ -142,7 +142,7 @@ fn test_entry_get_settings_from_subtree() {
 fn test_settings_tips_propagation() {
     // Create a backend and database
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Add a test key
     let key_id = "test_key";
@@ -220,7 +220,7 @@ fn test_settings_tips_propagation() {
 fn test_settings_metadata_with_complex_operations() {
     // Test settings metadata handling with complex operations
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
     let key_id = "complex_key";
     db.add_private_key(key_id).unwrap();
 
@@ -316,7 +316,7 @@ fn test_settings_metadata_with_complex_operations() {
 fn test_settings_metadata_with_branching() {
     // Test settings metadata with branching scenarios
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
     let key_id = "branch_key";
     db.add_private_key(key_id).unwrap();
 
@@ -395,7 +395,7 @@ fn test_settings_metadata_with_branching() {
 fn test_metadata_consistency_across_operations() {
     // Test that metadata is consistently tracked across different operation types
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
     let key_id = "consistency_key";
     db.add_private_key(key_id).unwrap();
 

@@ -56,7 +56,7 @@ You interact with Databases through Transactions:
 #
 # fn main() -> Result<()> {
 #     let backend = InMemory::new();
-#     let db = Instance::new(Box::new(backend));
+#     let db = Instance::open(Box::new(backend))?;
 #     db.add_private_key("key")?;
 #     let mut settings = Doc::new();
 #     settings.set_string("name", "test");
@@ -83,7 +83,7 @@ Each Database maintains its settings as a key-value store in a special "settings
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("test_key")?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");

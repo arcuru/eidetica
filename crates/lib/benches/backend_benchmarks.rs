@@ -9,7 +9,7 @@ use eidetica::{
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Benchmark setup failed");
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
     db.new_database_default("BENCH_KEY")

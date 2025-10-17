@@ -13,7 +13,7 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 #
 # fn main() -> eidetica::Result<()> {
 # let database = InMemory::new();
-# let db = Instance::new(Box::new(database));
+# let db = Instance::open(Box::new(database))?;
 #
 // Add an authentication key (generates Ed25519 keypair)
 db.add_private_key("my_key")?;
@@ -57,7 +57,7 @@ Give other users access to your database:
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "auth_example");
@@ -92,7 +92,7 @@ Allow anyone to read your database:
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -124,7 +124,7 @@ Remove a user's access:
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -158,7 +158,7 @@ Note: Historical entries created by revoked keys remain valid.
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "multi_user_example");

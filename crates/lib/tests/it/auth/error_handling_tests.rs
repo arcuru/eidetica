@@ -93,7 +93,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
 /// Test delegation with corrupted tree references
 #[test]
 fn test_delegation_corrupted_tree_references() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;
@@ -141,7 +141,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
 /// Test privilege escalation attempt through delegation
 #[test]
 fn test_privilege_escalation_through_delegation() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private keys to storage
     let admin_key = db.add_private_key("admin_in_delegated_tree")?;
@@ -226,7 +226,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
 /// Test delegation with tampered tips
 #[test]
 fn test_delegation_with_tampered_tips() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private keys to storage
     let user_key = db.add_private_key("user")?;
@@ -313,7 +313,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
 /// Test delegation chain with mixed key statuses
 #[test]
 fn test_delegation_mixed_key_statuses() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private keys to storage
     let active_user_key = db.add_private_key("active_user")?;
@@ -433,7 +433,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
 /// Test validation cache behavior under error conditions
 #[test]
 fn test_validation_cache_error_conditions() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;
@@ -493,7 +493,7 @@ fn test_error_message_consistency() {
 
     let mut validator = AuthValidator::new();
     let settings = Doc::new();
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     for (sig_key, expected_error_type) in test_cases {
         let result = validator.resolve_sig_key(&sig_key, &settings, Some(db.backend()));
@@ -520,7 +520,9 @@ fn test_error_message_consistency() {
 fn test_concurrent_validation_basic() -> Result<()> {
     use std::{sync::Arc, thread};
 
-    let db = Arc::new(Instance::new(Box::new(InMemory::new())));
+    let db = Arc::new(
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance"),
+    );
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;

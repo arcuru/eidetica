@@ -20,7 +20,8 @@ use iroh::RelayMode;
 
 /// Create a Instance Arc with authentication key
 pub fn setup_db() -> Arc<Instance> {
-    Arc::new(crate::helpers::setup_db())
+    let (instance, _user) = crate::helpers::setup_db();
+    Arc::new(instance)
 }
 
 /// Create a new Sync instance with standard setup
@@ -32,8 +33,8 @@ pub fn setup() -> (Arc<Instance>, Sync) {
 
 /// Create Instance with initialized sync module
 pub fn setup_instance_with_initialized() -> Instance {
-    let base_db = crate::helpers::setup_db();
-    base_db.with_sync().expect("Failed to initialize sync")
+    let (instance, _user) = crate::helpers::setup_db();
+    instance.with_sync().expect("Failed to initialize sync")
 }
 
 /// Create a test SyncHandler for transport-specific tests
@@ -195,7 +196,6 @@ impl TransportFactory for IrohTransportFactory {
 use eidetica::{
     Database, Entry,
     auth::Permission as AuthPermission,
-    backend::database::InMemory,
     crdt::Doc,
     sync::protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
 };
@@ -207,11 +207,11 @@ use eidetica::{
 ///
 /// # Returns
 /// (Instance, Database, Sync, tree_id)
+#[allow(deprecated)]
 pub fn setup_bootstrap_server(
     auto_approve: bool,
 ) -> (Instance, Database, Sync, eidetica::entry::ID) {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::new(backend);
+    let instance = crate::helpers::test_instance();
 
     // Add server admin key
     instance
@@ -305,9 +305,9 @@ pub async fn start_sync_server(sync: &mut Sync) -> String {
 ///
 /// # Returns
 /// (Instance, Sync)
+#[allow(deprecated)]
 pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Sync) {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::new(backend);
+    let instance = crate::helpers::test_instance();
 
     instance
         .add_private_key(key_name)

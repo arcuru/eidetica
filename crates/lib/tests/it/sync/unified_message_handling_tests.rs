@@ -29,7 +29,7 @@ async fn test_unified_message_handling() {
         .expect("Entry should build successfully");
 
     // Create a Sync instance for testing
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
     let sync = Sync::new(db.backend().clone()).unwrap();
 
     // Test single entry request directly through shared handler

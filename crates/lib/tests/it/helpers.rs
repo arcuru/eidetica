@@ -1,47 +1,118 @@
-use eidetica::{backend::database::InMemory, crdt::doc::Value, store::DocStore};
+use std::sync::Arc;
 
-const DEFAULT_TEST_KEY_NAME: &str = "test_key";
+use eidetica::{
+    Instance, backend::BackendDB, backend::database::InMemory, crdt::doc::Value, store::DocStore,
+    user::User,
+};
 
-/// Creates a basic authenticated database with the default test key
-pub fn setup_db() -> eidetica::Instance {
-    let backend = Box::new(InMemory::new());
-    let db = eidetica::Instance::new(backend);
-    db.add_private_key(DEFAULT_TEST_KEY_NAME)
-        .expect("Failed to add default test key");
-    db
+// ==========================
+// CORE TEST FACTORIES
+// ==========================
+// These are the foundation for all test setup. They provide a single point of change
+// for future backend matrix testing (e.g., TEST_BACKEND=sled).
+
+/// Creates a test backend (InMemory by default, future-proof for matrix testing)
+pub fn test_backend() -> Box<dyn BackendDB> {
+    Box::new(InMemory::new())
 }
 
-/// Creates a database without any default keys (for tests that manage keys manually)
-pub fn setup_empty_db() -> eidetica::Instance {
-    let backend = Box::new(InMemory::new());
-    eidetica::Instance::new(backend)
+/// Creates a basic Instance with no users or keys
+pub fn test_instance() -> Instance {
+    Instance::open(test_backend()).expect("Failed to create test instance")
 }
 
-/// Creates an authenticated database with a specific key
-pub fn setup_db_with_key(key_name: &str) -> eidetica::Instance {
-    let backend = Box::new(InMemory::new());
-    let db = eidetica::Instance::new(backend);
-    db.add_private_key(key_name)
-        .expect("Failed to add test key");
-    db
+/// Creates an Instance wrapped in Arc (common for sync tests)
+#[allow(dead_code)]
+pub fn test_instance_arc() -> Arc<Instance> {
+    Arc::new(test_instance())
 }
 
-/// Creates a basic tree using an InMemory database with authentication
+/// Creates an Instance with a passwordless user (most common test pattern)
+///
+/// Returns (Instance, User) for immediate use with User API
+pub fn test_instance_with_user(username: &str) -> (Instance, User) {
+    let instance = test_instance();
+    instance
+        .create_user(username, None)
+        .expect("Failed to create user");
+    let user = instance
+        .login_user(username, None)
+        .expect("Failed to login user");
+    (instance, user)
+}
+
+/// Creates an Instance with deprecated key management (MIGRATION ONLY)
+///
+/// **DEPRECATED**: This helper exists only for migrating old tests. New tests should
+/// use `test_instance_with_user()` and the User API for key management.
+#[deprecated(note = "Use test_instance_with_user() and User API instead")]
+#[allow(deprecated)]
+pub fn test_instance_with_legacy_key(key_name: &str) -> Instance {
+    let instance = test_instance();
+    instance
+        .add_private_key(key_name)
+        .expect("Failed to add legacy key");
+    instance
+}
+
+// ==========================
+// COMPATIBILITY HELPERS
+// ==========================
+// These maintain compatibility with existing tests while using the new User API
+
+const DEFAULT_TEST_USER: &str = "test_user";
+
+/// Creates a basic authenticated database with User API and default key
+///
+/// This replaces the old `setup_db()` pattern. Uses a default test user.
+pub fn setup_db() -> (Instance, User) {
+    test_instance_with_user(DEFAULT_TEST_USER)
+}
+
+/// Creates an instance without any users (for tests that manage users manually)
+pub fn setup_empty_db() -> Instance {
+    test_instance()
+}
+
+/// Creates an authenticated database with a specific key name (DEPRECATED PATTERN)
+///
+/// **DEPRECATED**: New tests should use `test_instance_with_user()` and User API.
+/// This helper maintains compatibility with tests not yet migrated to User API.
+#[deprecated(note = "Use test_instance_with_user() and User API instead")]
+#[allow(deprecated)]
+pub fn setup_db_with_key(key_name: &str) -> Instance {
+    test_instance_with_legacy_key(key_name)
+}
+
+/// Creates a basic tree using User API with default key
 pub fn setup_tree() -> eidetica::Database {
-    let db = setup_db();
-    db.new_database_default(DEFAULT_TEST_KEY_NAME)
+    let (_instance, mut user) = setup_db();
+    let default_key = user.get_default_key().expect("Failed to get default key");
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "test_tree");
+
+    user.new_database(settings, &default_key)
         .expect("Failed to create tree for testing")
 }
 
-/// Creates a tree with a specific key
+/// Creates a tree with a specific key (DEPRECATED PATTERN)
+///
+/// **DEPRECATED**: New tests should use User API for key management.
+#[deprecated(note = "Use test_instance_with_user() and User API instead")]
+#[allow(deprecated)]
 pub fn setup_tree_with_key(key_name: &str) -> eidetica::Database {
     let db = setup_db_with_key(key_name);
     db.new_database_default(key_name)
         .expect("Failed to create tree for testing")
 }
 
-/// Creates a tree and database with a specific key
-pub fn setup_db_and_tree_with_key(key_name: &str) -> (eidetica::Instance, eidetica::Database) {
+/// Creates a tree and database with a specific key (DEPRECATED PATTERN)
+///
+/// **DEPRECATED**: New tests should use User API for key management.
+#[deprecated(note = "Use test_instance_with_user() and User API instead")]
+#[allow(deprecated)]
+pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
         .new_database_default(key_name)
@@ -49,11 +120,16 @@ pub fn setup_db_and_tree_with_key(key_name: &str) -> (eidetica::Instance, eideti
     (db, tree)
 }
 
-/// Creates a tree with initial settings using Map with authentication
+/// Creates a tree with initial settings using User API
 pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database {
-    let db = setup_db();
-    let tree = db
-        .new_database_default(DEFAULT_TEST_KEY_NAME)
+    let (_instance, mut user) = setup_db();
+    let default_key = user.get_default_key().expect("Failed to get default key");
+
+    let mut db_settings = eidetica::crdt::Doc::new();
+    db_settings.set_string("name", "test_tree_with_settings");
+
+    let tree = user
+        .new_database(db_settings, &default_key)
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
@@ -73,6 +149,10 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database
 
     tree
 }
+
+// ==========================
+// ASSERTION HELPERS
+// ==========================
 
 /// Helper for common assertions around DocStore value retrieval
 pub fn assert_dict_value(store: &DocStore, key: &str, expected: &str) {

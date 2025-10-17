@@ -32,7 +32,7 @@ Example usage:
 // Create a new in-memory database
 use eidetica::backend::database::InMemory;
 let database = InMemory::new();
-let db = Instance::new(Box::new(database));
+let db = Instance::open(Box::new(database))?;
 
 // ... use the database ...
 
@@ -45,7 +45,7 @@ if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
 
 // Load from a file
 let database = InMemory::load_from_file(&path)?;
-let db = Instance::new(Box::new(database));
+let db = Instance::open(Box::new(database))?;
 ```
 
 **Note:** The `InMemory` database is the only storage implementation currently provided with Eidetica.

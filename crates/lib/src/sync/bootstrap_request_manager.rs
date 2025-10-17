@@ -191,7 +191,7 @@ mod tests {
 
     fn create_test_sync_tree() -> Database {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::new(backend);
+        let instance = Instance::open(backend).expect("Failed to create test instance");
 
         // Create sync tree similar to how Sync::new does it
         let mut sync_settings = crate::crdt::Doc::new();

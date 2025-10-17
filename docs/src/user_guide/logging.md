@@ -81,7 +81,7 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 #
 # fn main() -> eidetica::Result<()> {
 let backend = Box::new(InMemory::new());
-let db = Instance::new(backend);
+let db = Instance::open(backend)?;
 
 // Add private key first
 db.add_private_key("my_key")?;

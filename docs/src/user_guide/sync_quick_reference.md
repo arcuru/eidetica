@@ -13,7 +13,7 @@ use eidetica::{Instance, backend::InMemory};
 
 // Create database with sync enabled
 let backend = Box::new(InMemory::new());
-let db = Instance::new(backend).with_sync()?;
+let db = Instance::open(backend)?.with_sync()?;
 
 // Add authentication key
 db.add_private_key("device_key")?;
@@ -33,7 +33,7 @@ sync.start_server_async("127.0.0.1:8080").await?;
 # fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(InMemory::new());
-# let mut db = Instance::new(backend).with_sync()?;
+# let mut db = Instance::open(backend)?.with_sync()?;
 #
 // The BackgroundSync engine starts automatically with transport
 let sync = db.sync_mut().unwrap();
@@ -161,7 +161,7 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::new(backend).with_sync()?;
+# let db = Instance::open(backend)?.with_sync()?;
 # db.add_private_key("device_key")?;
 // Create a database to share
 let mut settings = Doc::new();
@@ -455,11 +455,11 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ```rust,ignore
 // Run multiple sync-enabled databases
-let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
 db1.sync_mut()?.enable_http_transport()?;
 db1.sync_mut()?.start_server("127.0.0.1:8080")?;
 
-let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
 db2.sync_mut()?.enable_http_transport()?;
 db2.sync_mut()?.start_server("127.0.0.1:8081")?;
 
@@ -489,11 +489,11 @@ async fn test_iroh_sync_local() -> Result<()> {
         .build()?;
 
     // Setup databases with local Iroh transport
-    let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+    let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
     db1.sync_mut()?.enable_iroh_transport_with_config(transport1)?;
     db1.sync_mut()?.start_server("ignored")?; // Iroh manages its own addresses
 
-    let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+    let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
     db2.sync_mut()?.enable_iroh_transport_with_config(transport2)?;
     db2.sync_mut()?.start_server("ignored")?;
 
@@ -518,7 +518,7 @@ async fn test_iroh_sync_local() -> Result<()> {
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
-    let db1 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+    let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
     db1.add_private_key("peer1")?;
     db1.sync_mut()?.enable_http_transport()?;
     db1.sync_mut()?.start_server("127.0.0.1:0")?; // Random port
@@ -526,7 +526,7 @@ async fn test_sync_between_peers() -> Result<()> {
     let addr1 = db1.sync()?.get_server_address()?;
 
     // Setup second peer
-    let db2 = Instance::new(Box::new(InMemory::new())).with_sync()?;
+    let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
     db2.add_private_key("peer2")?;
     db2.sync_mut()?.enable_http_transport()?;
 

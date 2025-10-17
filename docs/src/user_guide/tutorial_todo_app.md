@@ -16,10 +16,10 @@ The Todo example implements `load_or_create_db()` to handle loading existing dat
 fn load_or_create_db(path: &PathBuf) -> Result<Instance> {
     let db = if path.exists() {
         let backend = InMemory::load_from_file(path)?;
-        Instance::new(Box::new(backend))
+        Instance::open(Box::new(backend))?
     } else {
         let backend = InMemory::new();
-        Instance::new(Box::new(backend))
+        Instance::open(Box::new(backend))?
     };
 
     // Ensure the todo app authentication key exists

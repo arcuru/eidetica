@@ -37,7 +37,8 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n🧪 TEST: Starting chat app authenticated bootstrap test");
 
     // Setup server instance (like Device 1 creating a room)
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance with sync");
 
@@ -131,7 +132,8 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Setup client instance (like Device 2 joining the room)
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance with sync");
 
@@ -461,7 +463,8 @@ async fn test_global_key_bootstrap() {
     println!("\n🧪 TEST: Starting global key bootstrap test");
 
     // Setup similar to above but use '*' key
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -530,7 +533,8 @@ async fn test_global_key_bootstrap() {
     };
 
     // Setup client
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 
@@ -602,7 +606,8 @@ async fn test_multiple_databases_sync() {
     println!("\n🧪 TEST: Starting multiple databases sync test");
 
     // Setup server with multiple databases
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -667,7 +672,8 @@ async fn test_multiple_databases_sync() {
     };
 
     // Setup client
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 

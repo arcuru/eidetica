@@ -35,7 +35,7 @@ fn setup_user_with_database() -> eidetica::Result<(
     String,
 )> {
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new_unified(backend)?;
+    let instance = Instance::open(backend)?;
 
     // Create and login user
     instance
@@ -408,7 +408,7 @@ async fn test_user_cannot_reject_after_approval() {
 async fn test_multiple_users() {
     // Create instances with 2 users
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new_unified(backend).expect("Failed to create instance1");
+    let instance = Instance::open(backend).expect("Failed to create instance1");
     instance
         .create_user("alice", None)
         .expect("Failed to create alice");
@@ -551,7 +551,7 @@ async fn test_user_list_pending_bootstrap_requests() {
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new_unified(backend).expect("Failed to create instance");
+    let instance = Instance::open(backend).expect("Failed to create instance");
     instance
         .create_user("alice", None)
         .expect("Failed to create alice");

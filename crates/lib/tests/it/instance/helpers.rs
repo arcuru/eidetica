@@ -3,10 +3,7 @@
 //! This module provides utilities for testing Instance functionality including
 //! database operations, tree management, settings configuration, and basic operations.
 
-use eidetica::{
-    Database, Instance, backend::database::InMemory, constants::SETTINGS, entry::ID,
-    store::DocStore,
-};
+use eidetica::{Database, Instance, constants::SETTINGS, entry::ID, store::DocStore};
 
 use crate::helpers::setup_db_with_key;
 
@@ -14,13 +11,13 @@ use crate::helpers::setup_db_with_key;
 
 /// Create a simple Instance without authentication
 pub fn setup_simple_db() -> Instance {
-    let backend = Box::new(InMemory::new());
-    Instance::new(backend)
+    crate::helpers::test_instance()
 }
 
 // ===== TREE CREATION HELPERS =====
 
-/// Create tree with initial settings
+/// Create tree with initial settings (uses deprecated API for instance testing)
+#[allow(deprecated)]
 pub fn create_database_with_settings(
     db: &Instance,
     key_name: &str,
@@ -49,7 +46,8 @@ pub fn create_database_with_settings(
     tree
 }
 
-/// Create multiple trees with different names for testing
+/// Create multiple trees with different names for testing (uses deprecated API for instance testing)
+#[allow(deprecated)]
 pub fn create_multiple_named_trees(db: &Instance, key_name: &str, names: &[&str]) -> Vec<Database> {
     let mut trees = Vec::new();
 
@@ -61,7 +59,8 @@ pub fn create_multiple_named_trees(db: &Instance, key_name: &str, names: &[&str]
     trees
 }
 
-/// Create tree with basic data in a custom subtree
+/// Create tree with basic data in a custom subtree (uses deprecated API for instance testing)
+#[allow(deprecated)]
 pub fn create_tree_with_data(
     db: &Instance,
     key_name: &str,
@@ -89,7 +88,8 @@ pub fn create_tree_with_data(
 
 // ===== TREE MANAGEMENT HELPERS =====
 
-/// Test tree loading workflow
+/// Test tree loading workflow (uses deprecated API for instance testing)
+#[allow(deprecated)]
 pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) {
     // Create initial tree
     let tree = db
@@ -106,7 +106,8 @@ pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) 
     (root_id, loaded_tree)
 }
 
-/// Create trees for find testing (with various naming scenarios)
+/// Create trees for find testing (with various naming scenarios) (uses deprecated API for instance testing)
+#[allow(deprecated)]
 pub fn setup_trees_for_find_testing(db: &Instance, key_name: &str) -> Vec<Database> {
     let mut trees = Vec::new();
 

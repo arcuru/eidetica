@@ -146,10 +146,10 @@ fn main() -> Result<()> {
 fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
     let instance = if path.exists() {
         let backend = InMemory::load_from_file(path)?;
-        Instance::new_unified(Box::new(backend))?
+        Instance::open(Box::new(backend))?
     } else {
         let backend = InMemory::new();
-        Instance::new_unified(Box::new(backend))?
+        Instance::open(Box::new(backend))?
     };
 
     println!("✓ Instance initialized");

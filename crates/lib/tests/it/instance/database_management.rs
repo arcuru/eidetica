@@ -57,7 +57,7 @@ fn test_find_tree() {
 fn test_find_tree_edge_cases() {
     // Test: Find when no trees exist
     let empty_backend = Box::new(InMemory::new());
-    let empty_db = Instance::new(empty_backend);
+    let empty_db = Instance::open(empty_backend).expect("Failed to create test instance");
     test_tree_not_found_error(&empty_db, "AnyName");
 
     // Test: Database with trees but none matching

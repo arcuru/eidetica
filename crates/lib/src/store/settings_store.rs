@@ -242,7 +242,7 @@ mod tests {
 
     fn create_test_database() -> Database {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::new(backend);
+        let instance = Instance::open(backend).expect("Failed to create test instance");
 
         let database = instance.new_database_default("_device_key").unwrap();
 

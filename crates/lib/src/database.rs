@@ -426,7 +426,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # fn example() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::new(backend);
+    /// # let db = Instance::open(backend)?;
     /// # db.add_private_key("test_key")?;
     /// # let mut database = db.new_database(Doc::new(), "test_key")?;
     /// database.set_default_auth_key("my_key");                    // &str
@@ -641,7 +641,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::new(backend);
+    /// # let db = Instance::open(backend)?;
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
     /// # let op = tree.new_transaction()?;
@@ -692,7 +692,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::new(backend);
+    /// # let db = Instance::open(backend)?;
     /// # db.add_private_key("TEST_KEY")?;
     /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
     /// let entry_ids = vec!["id1", "id2", "id3"];

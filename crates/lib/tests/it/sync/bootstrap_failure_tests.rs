@@ -23,7 +23,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
     // Setup server with restricted auth policy - only specific admin keys allowed
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -71,7 +72,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     let server_addr = start_sync_server(server_sync).await;
 
     // Setup client with its own key
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 
@@ -165,7 +167,8 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Setup server with a database that has NO authentication configuration
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -193,7 +196,8 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     let server_addr = start_sync_server(server_sync).await;
 
     // Setup client
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 
@@ -278,7 +282,8 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
     // Setup server
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -301,7 +306,8 @@ async fn test_bootstrap_invalid_public_key_format() {
     let server_addr = start_sync_server(server_sync).await;
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 
@@ -356,7 +362,8 @@ async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
     // Setup server with auth configuration including a revoked key
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -416,7 +423,8 @@ async fn test_bootstrap_with_revoked_key() {
     let server_addr = start_sync_server(server_sync).await;
 
     // Setup different client instance (to simulate external client using revoked key)
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 
@@ -472,7 +480,8 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
     // Setup server with policy allowing only Read permissions for new clients
-    let mut server_instance = Instance::new(Box::new(InMemory::new()))
+    let mut server_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create server instance");
 
@@ -514,7 +523,8 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let server_addr = start_sync_server(server_sync).await;
 
     // Setup client requesting Admin permissions (should be excessive)
-    let mut client_instance = Instance::new(Box::new(InMemory::new()))
+    let mut client_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create client instance");
 

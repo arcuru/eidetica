@@ -22,7 +22,7 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
     // Test scenario: bootstrap policy is added in a subsequent change after initial setup
 
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new(backend);
+    let instance = Instance::open(backend).expect("Failed to create test instance");
     instance.add_private_key("admin_key").unwrap();
 
     let database = instance.new_database_default("admin_key").unwrap();
@@ -129,7 +129,7 @@ async fn test_bootstrap_policy_multiple_concurrent_updates() {
     // Test scenario: multiple concurrent transactions modify different policy fields
 
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new(backend);
+    let instance = Instance::open(backend).expect("Failed to create test instance");
     instance.add_private_key("admin_key").unwrap();
 
     let database = instance.new_database_default("admin_key").unwrap();
@@ -265,7 +265,7 @@ async fn test_bootstrap_policy_root_entry_vs_concurrent_tips() {
     // Test scenario: root has one policy value but concurrent tip has another
 
     let backend = Box::new(InMemory::new());
-    let instance = Instance::new(backend);
+    let instance = Instance::open(backend).expect("Failed to create test instance");
     instance.add_private_key("admin_key").unwrap();
 
     let database = instance.new_database_default("admin_key").unwrap();

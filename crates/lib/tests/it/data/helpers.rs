@@ -15,12 +15,18 @@ type Node = Doc;
 
 // ===== BASIC SETUP HELPERS =====
 
-/// Create a database with a test key and return both DB and tree
+/// Create a database with a test key and return both Instance and tree
 pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
-    let db = Instance::new(Box::new(InMemory::new()));
-    db.add_private_key("test_key")?;
-    let tree = db.new_database_default("test_key")?;
-    Ok((db, tree))
+    let instance = Instance::open(Box::new(InMemory::new()))?;
+    instance.create_user("test_user", None)?;
+    let mut user = instance.login_user("test_user", None)?;
+    let default_key = user.get_default_key()?;
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "test_tree");
+
+    let tree = user.new_database(settings, &default_key)?;
+    Ok((instance, tree))
 }
 
 /// Setup a Doc subtree for testing

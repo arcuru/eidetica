@@ -9,7 +9,6 @@ use eidetica::{
         },
         validation::AuthValidator,
     },
-    backend::database::InMemory,
     crdt::Doc,
     entry::ID,
     store::DocStore,
@@ -24,17 +23,19 @@ use eidetica::{
 
 /// Create a database with a single test key
 pub fn setup_db() -> Instance {
-    Instance::new(Box::new(InMemory::new()))
+    crate::helpers::test_instance()
 }
 
-/// Create a database with a pre-added test key
+/// Create a database with a pre-added test key (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn setup_db_with_key(key_name: &str) -> Instance {
     let db = setup_db();
     let _ = db.add_private_key(key_name).expect("Failed to add key");
     db
 }
 
-/// Create a database and tree with a test key
+/// Create a database and tree with a test key (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
@@ -56,12 +57,12 @@ pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> Aut
     AuthKey::new(chosen, permission, status).unwrap()
 }
 
-/// Create a DB with keys pre-configured for testing
+/// Create a DB with keys pre-configured for testing (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn setup_test_db_with_keys(
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (Instance, Vec<VerifyingKey>) {
-    let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = crate::helpers::test_instance();
 
     let mut public_keys = Vec::new();
     for (key_name, _permission, _status) in keys {
@@ -72,7 +73,8 @@ pub fn setup_test_db_with_keys(
     (db, public_keys)
 }
 
-/// Create a tree with auth settings pre-configured
+/// Create a tree with auth settings pre-configured (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn setup_authenticated_tree(
     db: &Instance,
     keys: &[(&str, Permission, KeyStatus)],
@@ -111,7 +113,8 @@ pub fn setup_authenticated_tree(
 
 // ===== DELEGATION HELPERS =====
 
-/// Create a complete authentication environment with multiple keys and permission levels
+/// Create a complete authentication environment with multiple keys and permission levels (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn setup_complete_auth_environment(
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (Instance, Database, Vec<VerifyingKey>) {
@@ -160,7 +163,8 @@ pub fn setup_complete_auth_environment(
     (db, tree, public_keys)
 }
 
-/// Create a delegated tree with specified keys and permissions
+/// Create a delegated tree with specified keys and permissions (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub fn create_delegated_tree(
     db: &Instance,
     keys: &[(&str, Permission, KeyStatus)],
@@ -229,6 +233,7 @@ pub struct DelegationChain {
 }
 
 impl DelegationChain {
+    #[allow(deprecated)]
     pub fn new(levels: usize) -> eidetica::Result<Self> {
         let db = setup_db();
         let mut trees = Vec::new();

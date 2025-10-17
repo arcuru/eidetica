@@ -18,7 +18,7 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 #
 # // First create and save a test database to demonstrate loading
 # let backend = InMemory::new();
-# let test_db = Instance::new(Box::new(backend));
+# let test_db = Instance::open(Box::new(backend))?;
 # test_db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "example_db");
@@ -30,13 +30,13 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 #
 // Option A: Create a new, empty in-memory database
 let database_new = InMemory::new();
-let _db_new = Instance::new(Box::new(database_new));
+let _db_new = Instance::open(Box::new(database_new))?;
 
 // Option B: Load from a previously saved file
 if db_path.exists() {
     match InMemory::load_from_file(&db_path) {
         Ok(database_loaded) => {
-            let _db_loaded = Instance::new(Box::new(database_loaded));
+            let _db_loaded = Instance::open(Box::new(database_loaded))?;
             println!("Database loaded successfully.");
             // Use db_loaded
         }
@@ -65,7 +65,7 @@ if db_path.exists() {
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("my_key")?;
 let tree_name = "my_app_data";
 let auth_key = "my_key"; // Must match a key added to the database
@@ -96,7 +96,7 @@ println!("Using Database with root ID: {}", database.root_id());
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("my_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -142,7 +142,7 @@ struct Task {
 }
 
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("my_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -192,7 +192,7 @@ println!("Table changes committed in entry: {}", entry_id);
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("my_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -237,7 +237,7 @@ match config_viewer.get("retry_count") {
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("my_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -279,7 +279,7 @@ match tasks_viewer.search(|_| true) {
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -345,7 +345,7 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
+# let db = Instance::open(Box::new(backend))?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "y_crdt_example");
@@ -464,7 +464,7 @@ prefs_read_store.with_doc(|doc| {
 # fn main() -> eidetica::Result<()> {
 # // Create a test database
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
+# let db = Instance::open(Box::new(backend))?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "save_example");

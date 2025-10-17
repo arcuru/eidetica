@@ -314,7 +314,7 @@ fn test_complete_delegation_workflow() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
@@ -427,7 +427,7 @@ fn test_delegated_tree_requires_tips() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
@@ -510,7 +510,7 @@ fn test_nested_delegation_with_permission_clamping() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Failed to create test instance");
 
     // Use the default user's device key for all operations
     let main_key = db

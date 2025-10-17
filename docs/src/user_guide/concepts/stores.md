@@ -46,7 +46,7 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::new(backend);
+# let db = Instance::open(backend)?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -83,7 +83,7 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::new(backend);
+# let db = Instance::open(backend)?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -128,7 +128,7 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::new(backend);
+# let db = Instance::open(backend)?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -199,7 +199,7 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::new(backend);
+# let db = Instance::open(backend)?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -232,7 +232,7 @@ transaction.commit()?;
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "stores_auth_example");
@@ -274,7 +274,7 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "complex_auth_example");
@@ -353,7 +353,7 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
+# let db = Instance::open(Box::new(backend))?;
 # db.add_private_key("test_key")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "y_crdt_stores");

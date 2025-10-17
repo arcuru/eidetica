@@ -32,6 +32,10 @@ pub enum InstanceError {
         name: String,
     },
 
+    /// Instance already exists on this backend.
+    #[error("Instance already exists on backend (found device key and system databases)")]
+    InstanceAlreadyExists,
+
     /// Entry does not belong to the specified database.
     #[error("Entry '{entry_id}' does not belong to database '{database_id}'")]
     EntryNotInDatabase {
@@ -178,7 +182,10 @@ impl InstanceError {
 
     /// Check if this error indicates a resource already exists.
     pub fn is_already_exists(&self) -> bool {
-        matches!(self, InstanceError::DatabaseAlreadyExists { .. })
+        matches!(
+            self,
+            InstanceError::DatabaseAlreadyExists { .. } | InstanceError::InstanceAlreadyExists
+        )
     }
 
     /// Check if this error is authentication-related.
@@ -278,6 +285,9 @@ mod tests {
         };
         assert!(err.is_already_exists());
         assert_eq!(err.database_name(), Some("existing-database"));
+
+        let err = InstanceError::InstanceAlreadyExists;
+        assert!(err.is_already_exists());
 
         let err = InstanceError::EntryNotFound {
             entry_id: ID::from("test-entry"),

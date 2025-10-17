@@ -29,8 +29,10 @@ async fn setup_iroh_sync_pair() -> (
     use eidetica::{Instance, backend::database::InMemory, sync::Sync};
 
     // Create databases
-    let base_db1 = Arc::new(Instance::new(Box::new(InMemory::new())));
-    let base_db2 = Arc::new(Instance::new(Box::new(InMemory::new())));
+    let base_db1 =
+        Arc::new(Instance::open(Box::new(InMemory::new())).expect("Benchmark setup failed"));
+    let base_db2 =
+        Arc::new(Instance::open(Box::new(InMemory::new())).expect("Benchmark setup failed"));
 
     // Create sync engines
     let mut sync1 = Sync::new(base_db1.backend().clone()).unwrap();

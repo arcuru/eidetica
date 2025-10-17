@@ -14,8 +14,6 @@ use eidetica::{
     store::DocStore,
 };
 
-use crate::helpers::*;
-
 // ===== OPERATION HELPERS =====
 
 /// Create operation and add data to specific subtree
@@ -193,9 +191,10 @@ pub fn create_linear_chain(tree: &Database, subtree_name: &str, chain_length: us
     entry_ids
 }
 
-/// Create tree with authentication setup for testing
+/// Create tree with authentication setup for testing (uses deprecated API for testing)
+#[allow(deprecated)]
 pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
-    let db = setup_db();
+    let db = crate::helpers::test_instance();
     let public_key = db.add_private_key(key_name).expect("Failed to add key");
 
     // Create auth settings

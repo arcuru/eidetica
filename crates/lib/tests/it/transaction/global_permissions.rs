@@ -15,9 +15,10 @@ use eidetica::{
 };
 
 /// Helper to create a database with global "*" permission configured
+#[allow(deprecated)]
 fn setup_database_with_global_permission() -> (Instance, eidetica::Database, String) {
     // Create instance with backend
-    let instance = Instance::new(Box::new(InMemory::new()));
+    let instance = Instance::open(Box::new(InMemory::new())).expect("Failed to create instance");
 
     // Generate a keypair for the client using global permission
     let (signing_key, verifying_key) = generate_keypair();

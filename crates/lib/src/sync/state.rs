@@ -458,9 +458,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_sync_state_manager() {
         let backend = InMemory::new();
-        let db = Instance::new(Box::new(backend)).with_sync().unwrap();
+        let db = Instance::open(Box::new(backend))
+            .expect("Failed to create test instance")
+            .with_sync()
+            .unwrap();
 
         // Create a user tree for testing tree ID
         let user_tree = db

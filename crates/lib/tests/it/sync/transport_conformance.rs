@@ -13,12 +13,12 @@ use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactor
 /// Set up two Instance instances with private keys
 async fn setup_databases() -> Result<(Instance, Instance)> {
     let db1 = {
-        let db = Instance::new(Box::new(InMemory::new()));
+        let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
         db.add_private_key("device_key")?;
         db
     };
     let db2 = {
-        let db = Instance::new(Box::new(InMemory::new()));
+        let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
         db.add_private_key("device_key")?;
         db
     };

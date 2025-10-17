@@ -54,7 +54,7 @@ Here's a quick examplee showing loading a database and writing new data.
 #
 # fn main() -> eidetica::Result<()> {
 let backend = InMemory::new();
-let db = Instance::new(Box::new(backend));
+let db = Instance::open(Box::new(backend))?;
 db.add_private_key("my_private_key")?;
 
 // Create/Load Database

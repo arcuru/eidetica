@@ -34,8 +34,8 @@ Here's a simple example:
     // Create a new in-memory backend
     let backend = InMemory::new();
 
-    // Create the Instance (infrastructure)
-    let instance = Instance::new_unified(Box::new(backend))?;
+    // Create the Instance
+    let instance = Instance::open(Box::new(backend))?;
 
     // Create a passwordless user (perfect for embedded/single-user apps)
     instance.create_user("alice", None)?;
@@ -67,7 +67,7 @@ The backend determines how your data is stored. The example above uses `InMemory
 # fn main() -> eidetica::Result<()> {
 # // Create instance and user
 # let backend = InMemory::new();
-# let instance = Instance::new_unified(Box::new(backend))?;
+# let instance = Instance::open(Box::new(backend))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
@@ -103,7 +103,7 @@ You can load a previously saved backend:
 # fn main() -> eidetica::Result<()> {
 # // First create and save a test backend
 # let backend = InMemory::new();
-# let instance = Instance::load(Box::new(backend))?;
+# let instance = Instance::open(Box::new(backend))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
@@ -125,7 +125,7 @@ You can load a previously saved backend:
 let backend = InMemory::load_from_file(&path)?;
 
 // Load instance (automatically detects existing system state)
-let instance = Instance::load(Box::new(backend))?;
+let instance = Instance::open(Box::new(backend))?;
 
 // Login to existing user
 let user = instance.login_user("alice", None)?;
@@ -194,7 +194,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
@@ -233,7 +233,7 @@ op.commit()?;
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
@@ -279,7 +279,7 @@ for (id, person) in all_people {
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
@@ -322,7 +322,7 @@ op.commit()?;
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();

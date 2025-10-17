@@ -47,7 +47,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
 
-    let mut device1_instance = Instance::new(Box::new(InMemory::new()))
+    let mut device1_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create device1 instance");
 
@@ -126,7 +127,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let mut device2_instance = Instance::new(Box::new(InMemory::new()))
+    let mut device2_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create test instance")
         .with_sync()
         .expect("Failed to create device2 instance");
 

@@ -17,8 +17,11 @@ fn test_device_id_functionality() {
 #[test]
 fn test_device_id_unique_across_databases() {
     // Create two separate databases
-    let base_db1 = std::sync::Arc::new(crate::helpers::setup_db());
-    let base_db2 = std::sync::Arc::new(crate::helpers::setup_db());
+    let (instance1, _user1) = crate::helpers::setup_db();
+    let (instance2, _user2) = crate::helpers::setup_db();
+
+    let base_db1 = std::sync::Arc::new(instance1);
+    let base_db2 = std::sync::Arc::new(instance2);
 
     // Device IDs should be different (each Instance generates its own unique device key)
     let device_id_1 = base_db1.device_id_string().unwrap();

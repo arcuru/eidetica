@@ -4,7 +4,7 @@ use eidetica::{Instance, backend::database::InMemory, store::DocStore};
 /// Creates a fresh empty tree with in-memory backend for benchmarking
 fn setup_tree() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = Instance::new(backend);
+    let db = Instance::open(backend).expect("Benchmark setup failed");
     db.add_private_key("BENCH_KEY")
         .expect("Failed to add benchmark key");
     db.new_database_default("BENCH_KEY")
@@ -182,7 +182,7 @@ fn bench_tree_operations(c: &mut Criterion) {
     group.bench_function("create_tree", |b| {
         b.iter(|| {
             let backend = Box::new(InMemory::new());
-            let db = Instance::new(backend);
+            let db = Instance::open(backend).expect("Benchmark setup failed");
             db.add_private_key("BENCH_KEY")
                 .expect("Failed to add benchmark key");
             black_box(

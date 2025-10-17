@@ -23,7 +23,7 @@ fn test_empty_delegation_path() -> Result<()> {
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
     let settings = Doc::new();
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     let result = validator.resolve_sig_key(&empty_delegation, &settings, Some(db.backend()));
     assert!(result.is_err());
@@ -34,7 +34,7 @@ fn test_empty_delegation_path() -> Result<()> {
 /// Test SigKey::Direct with empty key ID
 #[test]
 fn test_direct_key_empty_id() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private key with empty ID to storage
     let admin_key = db.add_private_key("")?;
@@ -80,7 +80,7 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let settings = Doc::new();
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     let result = validator.resolve_sig_key(&delegation_path, &settings, Some(db.backend()));
     // Should error because intermediate steps need tips
@@ -249,7 +249,7 @@ fn test_delegation_path_invalid_json() {
 /// Test circular delegation detection (simplified version)
 #[test]
 fn test_circular_delegation_simple() -> Result<()> {
-    let db = Instance::new(Box::new(InMemory::new()));
+    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     // Add private key to storage
     let admin_key = db.add_private_key("admin")?;

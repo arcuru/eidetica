@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Initialize Instance with the loaded or new backend
-    let db = Instance::new_unified(backend)?;
+    let db = Instance::open(backend)?;
 
     // Get or create passwordless user
     let mut user = get_or_create_user(&db)?;

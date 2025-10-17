@@ -35,7 +35,7 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 ///
 /// ```
 /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-/// let instance = Instance::new_unified(Box::new(InMemory::new()))?;
+/// let instance = Instance::open(Box::new(InMemory::new()))?;
 ///
 /// // Create passwordless user
 /// instance.create_user("alice", None)?;
@@ -48,10 +48,6 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// let db = user.new_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
-///
-/// # Legacy API (deprecated)
-///
-/// Use `Instance::new_unified()` instead of `Instance::new()`.
 pub struct Instance {
     /// The database storage used by the database.
     backend: Arc<dyn BackendDB>,
@@ -67,23 +63,6 @@ pub struct Instance {
 }
 
 impl Instance {
-    /// Create a new Instance (legacy constructor).
-    ///
-    /// **DEPRECATED**: Use `Instance::new_unified()` for explicit user management.
-    ///
-    /// # Panics
-    /// Panics if instance initialization fails. Use [`Instance::new_unified`] for error handling.
-    ///
-    /// # Arguments
-    /// * `backend` - The storage backend to use
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use Instance::new_unified() for explicit user management. Migration: instance.create_user(\"user\", None)?; let user = instance.login_user(\"user\", None)?;"
-    )]
-    pub fn new(backend: Box<dyn BackendDB>) -> Self {
-        Self::new_unified(backend).expect("Failed to initialize Instance")
-    }
-
     /// Load an existing Instance or create a new one (recommended).
     ///
     /// This is the recommended method for initializing an Instance. It automatically detects
@@ -107,7 +86,7 @@ impl Instance {
     /// ```
     /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
     /// let backend = InMemory::new();
-    /// let instance = Instance::load(Box::new(backend))?;
+    /// let instance = Instance::open(Box::new(backend))?;
     ///
     /// // Create and login user explicitly
     /// instance.create_user("alice", None)?;
@@ -120,78 +99,104 @@ impl Instance {
     /// let db = user.new_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn load(backend: Box<dyn BackendDB>) -> Result<Self> {
+    pub fn open(backend: Box<dyn BackendDB>) -> Result<Self> {
         use crate::constants::{DATABASES, USERS};
 
         let backend: Arc<dyn BackendDB> = Arc::from(backend);
 
-        // Check if this is an existing backend (has _device_key)
-        let has_device_key = backend.get_private_key(DEVICE_KEY_NAME)?.is_some();
+        if backend.get_private_key(DEVICE_KEY_NAME)?.is_none() {
+            // New backend: initialize like create()
+            return Self::create_internal(backend);
+        }
 
-        if has_device_key {
-            // Existing backend: load system databases
-            let all_roots = backend.all_roots()?;
+        // Existing backend: load system databases
+        let all_roots = backend.all_roots()?;
 
-            // Find system databases by name
-            let mut users_db = None;
-            let mut databases_db = None;
+        // Find system databases by name
+        let mut users_db = None;
+        let mut databases_db = None;
 
-            for root_id in all_roots {
-                let db = Database::new_from_id(root_id, Arc::clone(&backend))?;
-                if let Ok(name) = db.get_name() {
-                    match name.as_str() {
-                        USERS => users_db = Some(db),
-                        DATABASES => databases_db = Some(db),
-                        _ => {} // Ignore other databases
+        for root_id in all_roots {
+            // FIXME(security): handle the security and loading of these databases in a better way
+            let db = Database::new_from_id(root_id, Arc::clone(&backend))?;
+            if let Ok(name) = db.get_name() {
+                match name.as_str() {
+                    USERS => {
+                        if users_db.is_some() {
+                            panic!(
+                                "CRITICAL SECURITY ERROR: Multiple {} databases found in backend. \
+                                     This indicates database corruption or a potential security breach. \
+                                     Backend integrity compromised.",
+                                USERS
+                            );
+                        }
+                        users_db = Some(db);
                     }
-                }
-
-                // Stop searching if we found both
-                if users_db.is_some() && databases_db.is_some() {
-                    break;
+                    DATABASES => {
+                        if databases_db.is_some() {
+                            panic!(
+                                "CRITICAL SECURITY ERROR: Multiple {} databases found in backend. \
+                                     This indicates database corruption or a potential security breach. \
+                                     Backend integrity compromised.",
+                                DATABASES
+                            );
+                        }
+                        databases_db = Some(db);
+                    }
+                    _ => {} // Ignore other databases
                 }
             }
 
-            // Verify we found both system databases
-            let users_db = users_db.ok_or(
-                InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
-            )?;
-            let databases_db = databases_db.ok_or(
-                InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
-            )?;
-
-            Ok(Self {
-                backend,
-                sync: None,
-                users_db,
-                databases_db,
-            })
-        } else {
-            // New backend: initialize like new_unified()
-            Self::new_unified_internal(backend)
+            // Stop searching if we found both
+            if users_db.is_some() && databases_db.is_some() {
+                break;
+            }
         }
+
+        // Verify we found both system databases
+        let users_db = users_db.ok_or(
+            InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
+        )?;
+        let databases_db = databases_db.ok_or(
+            InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
+        )?;
+
+        Ok(Self {
+            backend,
+            sync: None,
+            users_db,
+            databases_db,
+        })
     }
 
-    /// Create a new Instance with explicit user management (recommended).
+    /// Create a new Instance on a fresh backend (strict creation).
     ///
-    /// This is the recommended constructor for all new code. Instance manages infrastructure only:
+    /// This method creates a new Instance and fails if the backend is already initialized
+    /// (contains a device key and system databases). Use this when you want to ensure
+    /// you're creating a fresh instance.
+    ///
+    /// Instance manages infrastructure only:
     /// - Backend storage and device identity (_device_key)
     /// - System databases (_users, _databases, _sync)
     /// - User account management (create, login, list)
     ///
     /// All database creation and key operations require explicit User login.
     ///
+    /// For most use cases, prefer `Instance::open()` which automatically handles both
+    /// new and existing backends.
+    ///
     /// # Arguments
-    /// * `backend` - The storage backend to use
+    /// * `backend` - The storage backend to use (must be uninitialized)
     ///
     /// # Returns
-    /// A Result containing the configured Instance
+    /// A Result containing the configured Instance, or InstanceAlreadyExists error
+    /// if the backend is already initialized.
     ///
     /// # Example
     /// ```
     /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
     /// let backend = InMemory::new();
-    /// let instance = Instance::new_unified(Box::new(backend))?;
+    /// let instance = Instance::create(Box::new(backend))?;
     ///
     /// // Create and login user explicitly
     /// instance.create_user("alice", None)?;
@@ -204,12 +209,20 @@ impl Instance {
     /// let db = user.new_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn new_unified(backend: Box<dyn BackendDB>) -> Result<Self> {
-        Self::new_unified_internal(Arc::from(backend))
+    pub fn create(backend: Box<dyn BackendDB>) -> Result<Self> {
+        let backend: Arc<dyn BackendDB> = Arc::from(backend);
+
+        // Check if already initialized
+        if backend.get_private_key(DEVICE_KEY_NAME)?.is_some() {
+            return Err(InstanceError::InstanceAlreadyExists.into());
+        }
+
+        // Create new instance
+        Self::create_internal(backend)
     }
 
-    /// Internal implementation of new_unified that works with Arc<dyn BackendDB>
-    fn new_unified_internal(backend: Arc<dyn BackendDB>) -> Result<Self> {
+    /// Internal implementation of new that works with Arc<dyn BackendDB>
+    fn create_internal(backend: Arc<dyn BackendDB>) -> Result<Self> {
         use crate::{
             auth::crypto::{format_public_key, generate_keypair},
             user::system_databases::{create_databases_tracking, create_users_database},
@@ -663,7 +676,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_create_user() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::new_unified(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend))?;
 
         // Create user with password
         let user_uuid = instance.create_user("alice", Some("password123")).unwrap();
@@ -681,7 +694,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_login_user() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::new_unified(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend))?;
 
         // Create user
         instance.create_user("alice", Some("password123")).unwrap();
@@ -700,7 +713,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_new_database() {
         let backend = InMemory::new();
-        let instance = Instance::new(Box::new(backend));
+        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
 
         // Create database with deprecated API
         let mut settings = Doc::new();
@@ -714,7 +727,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_new_database_default() {
         let backend = InMemory::new();
-        let instance = Instance::new(Box::new(backend));
+        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
 
         // Create database with default settings
         let database = instance.new_database_default("_device_key").unwrap();
@@ -728,7 +741,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_new_database_without_key_fails() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::new_unified(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend))?;
 
         // Create database requires a signing key
         let mut settings = Doc::new();
@@ -744,7 +757,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_load_database() {
         let backend = InMemory::new();
-        let instance = Instance::new(Box::new(backend));
+        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
 
         // Create a database
         let mut settings = Doc::new();
@@ -761,7 +774,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_all_databases() {
         let backend = InMemory::new();
-        let instance = Instance::new(Box::new(backend));
+        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
 
         // Create multiple databases
         let mut settings1 = Doc::new();
@@ -781,7 +794,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_find_database() {
         let backend = InMemory::new();
-        let instance = Instance::new(Box::new(backend));
+        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
 
         // Create database with name
         let mut settings = Doc::new();
@@ -802,7 +815,7 @@ mod tests {
     fn test_instance_load_new_backend() -> Result<(), Error> {
         // Test that Instance::load() creates new system state for empty backend
         let backend = InMemory::new();
-        let instance = Instance::load(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend))?;
 
         // Verify device key was created
         assert!(instance.device_id().is_ok());
@@ -823,7 +836,7 @@ mod tests {
 
         // Create an instance and user, then save the backend
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         instance1.create_user("bob", None)?;
         let mut user1 = instance1.login_user("bob", None)?;
 
@@ -847,7 +860,7 @@ mod tests {
 
         // Load a new backend from the saved file
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
 
         // Verify the user still exists
         let users = instance2.list_users()?;
@@ -874,7 +887,7 @@ mod tests {
 
         // Create instance and get device_id
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         let device_id1 = instance1.device_id_string()?;
 
         // Save backend
@@ -886,7 +899,7 @@ mod tests {
 
         // Load backend and verify device_id is the same
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
         let device_id2 = instance2.device_id_string()?;
 
         assert_eq!(
@@ -910,7 +923,7 @@ mod tests {
 
         // Create instance with password-protected user
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         instance1.create_user("secure_alice", Some("secret123"))?;
         let user1 = instance1.login_user("secure_alice", Some("secret123"))?;
         assert_eq!(user1.username(), "secure_alice");
@@ -925,7 +938,7 @@ mod tests {
 
         // Reload and verify password still works
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
 
         // Correct password should work
         let user2 = instance2.login_user("secure_alice", Some("secret123"))?;
@@ -958,7 +971,7 @@ mod tests {
 
         // Create instance with multiple users (mix of passwordless and password-protected)
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
 
         instance1.create_user("alice", None)?;
         instance1.create_user("bob", Some("bobpass"))?;
@@ -980,7 +993,7 @@ mod tests {
 
         // Reload and verify all users still exist and can login
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
 
         let users = instance2.list_users()?;
         assert_eq!(users.len(), 4, "All 4 users should be present after reload");
@@ -1011,7 +1024,7 @@ mod tests {
 
         // Create instance, user, and multiple databases
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         instance1.create_user("eve", None)?;
         let mut user1 = instance1.login_user("eve", None)?;
 
@@ -1044,7 +1057,7 @@ mod tests {
 
         // Reload and verify databases still exist
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
         let _user2 = instance2.login_user("eve", None)?;
 
         // Load databases by root_id and verify their settings
@@ -1074,7 +1087,7 @@ mod tests {
 
         // Create and save initial state
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         instance1.create_user("frank", None)?;
         let device_id1 = instance1.device_id_string()?;
 
@@ -1087,7 +1100,7 @@ mod tests {
         // Load the same backend multiple times and verify consistency
         for i in 0..3 {
             let backend = InMemory::load_from_file(&path)?;
-            let instance = Instance::load(Box::new(backend))?;
+            let instance = Instance::open(Box::new(backend))?;
 
             // Device ID should be the same every time
             let device_id = instance.device_id_string()?;
@@ -1126,7 +1139,7 @@ mod tests {
 
         // Create first instance (new backend)
         let backend1 = InMemory::new();
-        let instance1 = Instance::load(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1))?;
         let device_id1 = instance1.device_id_string()?;
         instance1.create_user("grace", None)?;
 
@@ -1138,7 +1151,7 @@ mod tests {
 
         // Load existing backend
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::load(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2))?;
         let device_id2 = instance2.device_id_string()?;
 
         // Device ID should match (existing backend)
@@ -1152,7 +1165,7 @@ mod tests {
 
         // Create completely new instance (different backend)
         let backend3 = InMemory::new();
-        let instance3 = Instance::load(Box::new(backend3))?;
+        let instance3 = Instance::open(Box::new(backend3))?;
         let device_id3 = instance3.device_id_string()?;
 
         // Device ID should be different (new backend)
@@ -1166,6 +1179,73 @@ mod tests {
         if path.exists() {
             std::fs::remove_file(&path).ok();
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
+        // Test that Instance::create() fails on already-initialized backend
+        let temp_dir = std::env::temp_dir();
+        let path = temp_dir.join("eidetica_test_create_strict.json");
+
+        // Create first instance
+        let backend1 = InMemory::new();
+        let instance1 = Instance::create(Box::new(backend1))?;
+        instance1.create_user("alice", None)?;
+
+        // Save backend
+        let backend_guard = instance1.backend();
+        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
+            in_memory.save_to_file(&path)?;
+        }
+        drop(instance1);
+
+        // Try to create() on the existing backend - should fail
+        let backend2 = InMemory::load_from_file(&path)?;
+        let result = Instance::create(Box::new(backend2));
+        assert!(result.is_err(), "create() should fail on existing backend");
+
+        // Verify error type
+        if let Err(err) = result {
+            if let crate::Error::Instance(instance_err) = err {
+                assert!(
+                    instance_err.is_already_exists(),
+                    "Error should be InstanceAlreadyExists"
+                );
+            } else {
+                panic!("Expected Instance error");
+            }
+        }
+
+        // Verify open() still works
+        let backend3 = InMemory::load_from_file(&path)?;
+        let instance3 = Instance::open(Box::new(backend3))?;
+        let users = instance3.list_users()?;
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0], "alice");
+
+        // Clean up
+        if path.exists() {
+            std::fs::remove_file(&path).ok();
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
+        // Test that Instance::create() succeeds on fresh backend
+        let backend = InMemory::new();
+        let instance = Instance::create(Box::new(backend))?;
+
+        // Verify instance is properly initialized
+        assert!(instance.device_id().is_ok());
+
+        // Verify we can create users
+        instance.create_user("bob", None)?;
+        let user = instance.login_user("bob", None)?;
+        assert_eq!(user.username(), "bob");
 
         Ok(())
     }

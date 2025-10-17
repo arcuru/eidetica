@@ -29,7 +29,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let db = Instance::new(Box::new(backend));
+    # let db = Instance::open(Box::new(backend))?;
     # db.add_private_key("key")?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
@@ -56,7 +56,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let db = Instance::new(Box::new(backend));
+    # let db = Instance::open(Box::new(backend))?;
     # db.add_private_key("key")?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
@@ -89,7 +89,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let db = Instance::new(Box::new(backend));
+    # let db = Instance::open(Box::new(backend))?;
     # db.add_private_key("key")?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
@@ -121,7 +121,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let db = Instance::new(Box::new(backend));
+    # let db = Instance::open(Box::new(backend))?;
     # db.add_private_key("key")?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
@@ -149,7 +149,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::new(Box::new(InMemory::new()));
+# let db = Instance::open(Box::new(InMemory::new()))?;
 # db.add_private_key("admin")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "settings_example");
@@ -214,7 +214,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # fn main() -> eidetica::Result<()> {
 # // Setup database with some data
 # let backend = InMemory::new();
-# let db = Instance::new(Box::new(backend));
+# let db = Instance::open(Box::new(backend))?;
 # db.add_private_key("key")?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test");

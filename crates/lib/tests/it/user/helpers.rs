@@ -17,7 +17,7 @@ use eidetica::{Database, Instance, backend::database::InMemory, user::User};
 /// Uses InMemory backend and the new unified API (no implicit user).
 pub fn setup_instance() -> Instance {
     let backend = Box::new(InMemory::new());
-    Instance::new_unified(backend).expect("Failed to create instance")
+    Instance::open(backend).expect("Failed to create instance")
 }
 
 /// Create an Instance with a single user already created
