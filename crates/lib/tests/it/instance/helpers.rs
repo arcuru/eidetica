@@ -3,9 +3,9 @@
 //! This module provides utilities for testing Instance functionality including
 //! database operations, tree management, settings configuration, and basic operations.
 
-use eidetica::{Database, Instance, constants::SETTINGS, entry::ID, store::DocStore};
+use eidetica::{Database, Instance, constants::SETTINGS, entry::ID, store::DocStore, user::User};
 
-use crate::helpers::setup_db_with_key;
+use crate::helpers::test_instance_with_user;
 
 // ===== DATABASE SETUP HELPERS =====
 
@@ -16,17 +16,20 @@ pub fn setup_simple_db() -> Instance {
 
 // ===== TREE CREATION HELPERS =====
 
-/// Create tree with initial settings (uses deprecated API for instance testing)
-#[allow(deprecated)]
-pub fn create_database_with_settings(
-    db: &Instance,
-    key_name: &str,
-    tree_name: &str,
-    version: &str,
-) -> Database {
-    let tree = db
-        .new_database_default(key_name)
-        .expect("Failed to create tree");
+/// Create a database using the user's default key
+///
+/// This is the most common database creation pattern in tests.
+pub fn create_database_with_default_key(user: &mut User) -> Database {
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
+    user.new_database(eidetica::crdt::Doc::new(), &key_id)
+        .expect("Failed to create database")
+}
+
+/// Create tree with initial settings using User API
+pub fn create_database_with_settings(user: &mut User, tree_name: &str, version: &str) -> Database {
+    let tree = create_database_with_default_key(user);
 
     let op = tree.new_transaction().expect("Failed to start operation");
     {
@@ -46,30 +49,25 @@ pub fn create_database_with_settings(
     tree
 }
 
-/// Create multiple trees with different names for testing (uses deprecated API for instance testing)
-#[allow(deprecated)]
-pub fn create_multiple_named_trees(db: &Instance, key_name: &str, names: &[&str]) -> Vec<Database> {
+/// Create multiple trees with different names for testing using User API
+pub fn create_multiple_named_trees(user: &mut User, names: &[&str]) -> Vec<Database> {
     let mut trees = Vec::new();
 
     for name in names {
-        let tree = create_database_with_settings(db, key_name, name, "1.0");
+        let tree = create_database_with_settings(user, name, "1.0");
         trees.push(tree);
     }
 
     trees
 }
 
-/// Create tree with basic data in a custom subtree (uses deprecated API for instance testing)
-#[allow(deprecated)]
+/// Create tree with basic data in a custom subtree using User API
 pub fn create_tree_with_data(
-    db: &Instance,
-    key_name: &str,
+    user: &mut User,
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> Database {
-    let tree = db
-        .new_database_default(key_name)
-        .expect("Failed to create tree");
+    let tree = create_database_with_default_key(user);
 
     let op = tree.new_transaction().expect("Failed to start operation");
     {
@@ -88,45 +86,39 @@ pub fn create_tree_with_data(
 
 // ===== TREE MANAGEMENT HELPERS =====
 
-/// Test tree loading workflow (uses deprecated API for instance testing)
-#[allow(deprecated)]
-pub fn test_tree_load_workflow(db: &Instance, key_name: &str) -> (ID, Database) {
+/// Test tree loading workflow using User API
+pub fn test_tree_load_workflow(user: &mut User) -> (ID, Database) {
     // Create initial tree
-    let tree = db
-        .new_database_default(key_name)
-        .expect("Failed to create tree");
+    let tree = create_database_with_default_key(user);
     let root_id = tree.root_id().clone();
 
     // Drop original tree
     drop(tree);
 
     // Load tree from ID
-    let loaded_tree = db.load_database(&root_id).expect("Failed to load tree");
+    let loaded_tree = user.load_database(&root_id).expect("Failed to load tree");
 
     (root_id, loaded_tree)
 }
 
-/// Create trees for find testing (with various naming scenarios) (uses deprecated API for instance testing)
-#[allow(deprecated)]
-pub fn setup_trees_for_find_testing(db: &Instance, key_name: &str) -> Vec<Database> {
+/// Create trees for find testing (with various naming scenarios) using User API
+pub fn setup_trees_for_find_testing(user: &mut User) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Tree 1: No name
-    let tree1 = db
-        .new_database_default(key_name)
-        .expect("Failed to create tree 1");
+    let tree1 = create_database_with_default_key(user);
     trees.push(tree1);
 
     // Tree 2: Unique name
-    let tree2 = create_database_with_settings(db, key_name, "UniqueTree", "1.0");
+    let tree2 = create_database_with_settings(user, "UniqueTree", "1.0");
     trees.push(tree2);
 
     // Tree 3: First instance of duplicate name
-    let tree3 = create_database_with_settings(db, key_name, "DuplicateName", "1.0");
+    let tree3 = create_database_with_settings(user, "DuplicateName", "1.0");
     trees.push(tree3);
 
     // Tree 4: Second instance of duplicate name
-    let tree4 = create_database_with_settings(db, key_name, "DuplicateName", "2.0");
+    let tree4 = create_database_with_settings(user, "DuplicateName", "2.0");
     trees.push(tree4);
 
     trees
@@ -289,15 +281,14 @@ pub fn test_database_error_conditions(db: &Instance) {
 
 // ===== INTEGRATION HELPERS =====
 
-/// Complete workflow: create DB, add trees, perform operations, verify results
-pub fn test_complete_instance_workflow(key_name: &str) -> (Instance, Vec<Database>) {
-    let db = setup_db_with_key(key_name);
+/// Complete workflow: create DB with user, add trees, perform operations, verify results
+pub fn test_complete_instance_workflow(username: &str) -> (Instance, User, Vec<Database>) {
+    let (instance, mut user) = test_instance_with_user(username);
 
     // Create trees with different configurations
-    let tree1 = create_database_with_settings(&db, key_name, "MainTree", "1.0");
+    let tree1 = create_database_with_settings(&mut user, "MainTree", "1.0");
     let tree2 = create_tree_with_data(
-        &db,
-        key_name,
+        &mut user,
         "user_profiles",
         &[("user1", "alice"), ("user2", "bob")],
     );
@@ -306,17 +297,17 @@ pub fn test_complete_instance_workflow(key_name: &str) -> (Instance, Vec<Databas
     set_tree_settings(&tree2, &[("name", "DataTree"), ("purpose", "user_storage")]);
 
     let trees = vec![tree1, tree2];
-    (db, trees)
+    (instance, user, trees)
 }
 
 /// Test concurrent tree operations
-pub fn test_concurrent_tree_operations(db: &Instance, key_name: &str) -> Vec<Database> {
+pub fn test_concurrent_tree_operations(user: &mut User) -> Vec<Database> {
     let mut trees = Vec::new();
 
     // Create multiple trees rapidly
     for i in 0..5 {
         let tree_name = format!("ConcurrentTree{i}");
-        let tree = create_database_with_settings(db, key_name, &tree_name, "1.0");
+        let tree = create_database_with_settings(user, &tree_name, "1.0");
 
         // Add some data to each tree
         create_user_profile(

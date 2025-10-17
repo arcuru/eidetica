@@ -4,14 +4,13 @@
 //! database creation, tree creation, tree loading, and backend management.
 
 use super::helpers::*;
-use crate::helpers::setup_db_with_key;
-
-const TEST_KEY: &str = "test_key";
+use crate::helpers::test_instance_with_user;
+use eidetica::crdt::Doc;
 
 #[test]
 fn test_load_tree() {
-    let db = setup_db_with_key(TEST_KEY);
-    let (root_id, loaded_tree) = test_tree_load_workflow(&db, TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("test_user");
+    let (root_id, loaded_tree) = test_tree_load_workflow(&mut user);
 
     assert_eq!(loaded_tree.root_id(), &root_id);
 }
@@ -19,14 +18,17 @@ fn test_load_tree() {
 #[test]
 fn test_database_authentication_scenarios() {
     // Test authenticated database operations
-    let auth_db = setup_db_with_key(TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("auth_user");
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
 
     // Test tree creation with authentication
-    let tree1 = auth_db
-        .new_database_default(TEST_KEY)
+    let tree1 = user
+        .new_database(Doc::new(), &key_id)
         .expect("Failed to create tree with auth key");
-    let tree2 = auth_db
-        .new_database_default(TEST_KEY)
+    let tree2 = user
+        .new_database(Doc::new(), &key_id)
         .expect("Failed to create second tree with auth key");
 
     // Verify both trees are different
@@ -45,18 +47,25 @@ fn test_database_authentication_scenarios() {
 
 #[test]
 fn test_multiple_database_creation() {
-    // Create multiple independent databases
-    let db1 = setup_db_with_key("key1");
-    let db2 = setup_db_with_key("key2");
+    // Create multiple independent instance+user combinations
+    let (_instance1, mut user1) = test_instance_with_user("user1");
+    let (_instance2, mut user2) = test_instance_with_user("user2");
     let db3 = setup_simple_db();
 
-    // Create trees in each database
-    let tree1 = db1
-        .new_database_default("key1")
-        .expect("Failed to create tree in db1");
-    let tree2 = db2
-        .new_database_default("key2")
-        .expect("Failed to create tree in db2");
+    // Create trees in each user's context
+    let key_id1 = user1
+        .get_default_key()
+        .expect("User1 should have default key");
+    let tree1 = user1
+        .new_database(Doc::new(), &key_id1)
+        .expect("Failed to create tree for user1");
+
+    let key_id2 = user2
+        .get_default_key()
+        .expect("User2 should have default key");
+    let tree2 = user2
+        .new_database(Doc::new(), &key_id2)
+        .expect("Failed to create tree for user2");
 
     // Verify they have different root IDs
     assert_ne!(tree1.root_id(), tree2.root_id());
@@ -68,10 +77,10 @@ fn test_multiple_database_creation() {
 
 #[test]
 fn test_tree_creation_workflow_with_helpers() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("helper_user");
 
     // Use helper to create tree with settings
-    let tree = create_database_with_settings(&db, TEST_KEY, "TestTree", "1.0");
+    let tree = create_database_with_settings(&mut user, "TestTree", "1.0");
 
     // Verify the tree was created correctly
     assert_tree_name(&tree, "TestTree");
@@ -80,11 +89,11 @@ fn test_tree_creation_workflow_with_helpers() {
 
 #[test]
 fn test_tree_creation_with_data() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("data_user");
 
     // Use helper to create tree with initial data
     let user_data = &[("user_id", "alice"), ("email", "alice@example.com")];
-    let tree = create_tree_with_data(&db, TEST_KEY, "user_data", user_data);
+    let tree = create_tree_with_data(&mut user, "user_data", user_data);
 
     // Verify the data was set correctly
     assert_tree_data(&tree, "user_data", user_data);
@@ -92,7 +101,7 @@ fn test_tree_creation_with_data() {
 
 #[test]
 fn test_database_operations_using_helpers() {
-    let (_db, trees) = test_complete_instance_workflow(TEST_KEY);
+    let (_instance, _user, trees) = test_complete_instance_workflow("workflow_user");
 
     // Verify we created the expected trees
     assert_databases_count(&trees, 2);

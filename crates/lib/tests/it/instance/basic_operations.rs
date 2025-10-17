@@ -4,13 +4,12 @@
 //! subtree modifications, data operations, and integration with tree functionality.
 
 use super::helpers::*;
-use crate::helpers::{setup_db_with_key, *};
-
-const TEST_KEY: &str = "test_key";
+use crate::helpers::test_instance_with_user;
 
 #[test]
 fn test_basic_subtree_modification() {
-    let (_db, tree) = setup_db_and_tree_with_key(TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("test_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Use helper to perform basic subtree operations
     let user_data = &[("user_id", "alice"), ("email", "alice@example.com")];
@@ -22,10 +21,8 @@ fn test_basic_subtree_modification() {
 
 #[test]
 fn test_subtree_operations_using_helpers() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("helper_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Use helper to perform basic operations
     let user_operations = &[
@@ -43,10 +40,8 @@ fn test_subtree_operations_using_helpers() {
 
 #[test]
 fn test_user_profile_creation() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("profile_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Use helper to create user profile
     create_user_profile(&tree, "john123", "John Smith", "john@company.com");
@@ -65,10 +60,8 @@ fn test_user_profile_creation() {
 
 #[test]
 fn test_application_configuration() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("config_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Use helper to create app config
     let config_data = &[
@@ -88,10 +81,8 @@ fn test_application_configuration() {
 
 #[test]
 fn test_multiple_subtree_operations() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("multi_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Perform operations on multiple subtrees
     create_user_profile(&tree, "multi_user", "Multi User", "multi@test.com");
@@ -134,10 +125,8 @@ fn test_multiple_subtree_operations() {
 
 #[test]
 fn test_data_persistence_across_operations() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("persist_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // First operation: create user
     create_user_profile(
@@ -179,10 +168,8 @@ fn test_data_persistence_across_operations() {
 
 #[test]
 fn test_data_operations_with_special_characters() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("special_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Test data with special characters
     let special_data = &[
@@ -208,10 +195,8 @@ fn test_data_operations_with_special_characters() {
 
 #[test]
 fn test_data_overwrite_operations() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("overwrite_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Initial data
     perform_basic_subtree_operations(
@@ -261,10 +246,8 @@ fn test_data_overwrite_operations() {
 
 #[test]
 fn test_large_data_operations() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("large_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Create large dataset
     let mut large_data = Vec::new();
@@ -294,10 +277,8 @@ fn test_large_data_operations() {
 
 #[test]
 fn test_empty_and_edge_case_operations() {
-    let db = setup_db_with_key(TEST_KEY);
-    let tree = db
-        .new_database_default(TEST_KEY)
-        .expect("Failed to create tree");
+    let (_instance, mut user) = test_instance_with_user("edge_user");
+    let tree = create_database_with_default_key(&mut user);
 
     // Test with edge case values
     let edge_cases = &[
@@ -319,10 +300,10 @@ fn test_empty_and_edge_case_operations() {
 
 #[test]
 fn test_basic_operations_integration() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (_instance, mut user) = test_instance_with_user("integration_user");
 
     // Create tree with initial settings
-    let tree = create_database_with_settings(&db, TEST_KEY, "IntegrationTree", "1.0");
+    let tree = create_database_with_settings(&mut user, "IntegrationTree", "1.0");
 
     // Add user profile
     create_user_profile(

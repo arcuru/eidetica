@@ -6,20 +6,21 @@
 use eidetica::{Instance, backend::database::InMemory};
 
 use super::helpers::*;
-use crate::helpers::setup_db_with_key;
-
-const TEST_KEY: &str = "test_key";
+use crate::helpers::test_instance_with_user;
 
 #[test]
 fn test_all_trees() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, mut user) = test_instance_with_user("test_user");
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
 
-    let database1 = db
-        .new_database_default(TEST_KEY)
+    let database1 = user
+        .new_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create database 1");
     let root_id1 = database1.root_id().clone();
 
-    let database2 = create_database_with_settings(&db, TEST_KEY, "Database2", "1.0");
+    let database2 = create_database_with_settings(&mut user, "Database2", "1.0");
     let root_id2 = database2.root_id().clone();
 
     let databases: Vec<eidetica::Database> =
@@ -32,10 +33,10 @@ fn test_all_trees() {
 
 #[test]
 fn test_find_tree() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, mut user) = test_instance_with_user("find_user");
 
     // Use helper to set up trees for find testing
-    setup_trees_for_find_testing(&db, TEST_KEY);
+    setup_trees_for_find_testing(&mut user);
 
     // Test: Find non-existent name
     test_tree_not_found_error(&db, "NonExistent");
@@ -61,18 +62,18 @@ fn test_find_tree_edge_cases() {
     test_tree_not_found_error(&empty_db, "AnyName");
 
     // Test: Database with trees but none matching
-    let db = setup_db_with_key(TEST_KEY);
-    create_database_with_settings(&db, TEST_KEY, "ExistingTree", "1.0");
+    let (db, mut user) = test_instance_with_user("edge_user");
+    create_database_with_settings(&mut user, "ExistingTree", "1.0");
     test_tree_not_found_error(&db, "NonMatchingName");
 }
 
 #[test]
 fn test_multiple_named_trees() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, mut user) = test_instance_with_user("multi_user");
 
     // Use helper to create multiple trees with specific names
     let names = &["Alpha", "Beta", "Gamma", "Delta"];
-    let trees = create_multiple_named_trees(&db, TEST_KEY, names);
+    let trees = create_multiple_named_trees(&mut user, names);
 
     assert_databases_count(&trees, 4);
     assert_tree_names_in_collection(&trees, names);
@@ -87,13 +88,13 @@ fn test_multiple_named_trees() {
 
 #[test]
 fn test_tree_management_with_complex_scenarios() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, mut user) = test_instance_with_user("complex_user");
 
     // Create trees with overlapping names and different versions
-    let tree1 = create_database_with_settings(&db, TEST_KEY, "MyApp", "1.0");
-    let tree2 = create_database_with_settings(&db, TEST_KEY, "MyApp", "2.0");
-    let tree3 = create_database_with_settings(&db, TEST_KEY, "MyApp", "2.1");
-    let tree4 = create_database_with_settings(&db, TEST_KEY, "OtherApp", "1.0");
+    let tree1 = create_database_with_settings(&mut user, "MyApp", "1.0");
+    let tree2 = create_database_with_settings(&mut user, "MyApp", "2.0");
+    let tree3 = create_database_with_settings(&mut user, "MyApp", "2.1");
+    let tree4 = create_database_with_settings(&mut user, "OtherApp", "1.0");
 
     // Test finding by name (should return multiple versions)
     let myapp_trees = db
@@ -119,10 +120,10 @@ fn test_tree_management_with_complex_scenarios() {
 
 #[test]
 fn test_concurrent_tree_creation() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (_db, mut user) = test_instance_with_user("concurrent_user");
 
     // Use helper to test concurrent operations
-    let concurrent_trees = test_concurrent_tree_operations(&db, TEST_KEY);
+    let concurrent_trees = test_concurrent_tree_operations(&mut user);
 
     assert_databases_count(&concurrent_trees, 5);
 
@@ -155,11 +156,14 @@ fn test_concurrent_tree_creation() {
 
 #[test]
 fn test_tree_metadata_management() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (_db, mut user) = test_instance_with_user("metadata_user");
 
     // Create tree and update metadata
-    let tree = db
-        .new_database_default(TEST_KEY)
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
+    let tree = user
+        .new_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     update_tree_metadata(
@@ -184,7 +188,7 @@ fn test_tree_metadata_management() {
 
 #[test]
 fn test_tree_management_error_handling() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, _user) = test_instance_with_user("error_user");
 
     // Test various error scenarios
     test_database_error_conditions(&db);
@@ -198,14 +202,18 @@ fn test_tree_management_error_handling() {
 
 #[test]
 fn test_tree_listing_and_searching() {
-    let db = setup_db_with_key(TEST_KEY);
+    let (db, mut user) = test_instance_with_user("listing_user");
 
     // Create diverse set of trees
-    let _tree1 = create_database_with_settings(&db, TEST_KEY, "ProductionApp", "3.0");
-    let _tree2 = create_database_with_settings(&db, TEST_KEY, "StagingApp", "3.0-beta");
-    let _tree3 = create_database_with_settings(&db, TEST_KEY, "DevelopmentApp", "3.1-alpha");
-    let _tree4 = db
-        .new_database_default(TEST_KEY)
+    let _tree1 = create_database_with_settings(&mut user, "ProductionApp", "3.0");
+    let _tree2 = create_database_with_settings(&mut user, "StagingApp", "3.0-beta");
+    let _tree3 = create_database_with_settings(&mut user, "DevelopmentApp", "3.1-alpha");
+
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
+    let _tree4 = user
+        .new_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create unnamed tree");
 
     // Test all_trees functionality
