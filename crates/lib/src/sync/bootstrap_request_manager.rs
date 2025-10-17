@@ -187,7 +187,10 @@ pub(super) fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Database, Instance, auth::types::Permission, backend::database::InMemory};
+    use crate::{
+        Database, Instance, auth::types::Permission, backend::database::InMemory,
+        sync::DEVICE_KEY_NAME,
+    };
 
     fn create_test_sync_tree() -> Database {
         let backend = Box::new(InMemory::new());
@@ -198,9 +201,9 @@ mod tests {
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
-        let mut sync_tree = instance.new_database(sync_settings, "_device_key").unwrap();
-        sync_tree.set_default_auth_key("_device_key");
-        sync_tree
+        instance
+            .new_database(sync_settings, DEVICE_KEY_NAME)
+            .unwrap()
     }
 
     fn create_test_request() -> BootstrapRequest {

@@ -169,11 +169,8 @@ async fn test_reject_bootstrap_request() {
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler =
+        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
 
     // Create a bootstrap request that will be stored as pending
     let test_key = generate_public_key();
@@ -255,11 +252,8 @@ async fn test_list_bootstrap_requests_by_status() {
     // Server already has admin key "server_admin" from setup_manual_approval_server
 
     // Create sync handler
-    let sync_handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler =
+        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
 
     // Create and store a bootstrap request
     let test_key = generate_public_key();
@@ -310,11 +304,8 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler =
+        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
 
     // Create first bootstrap request
     let test_key = generate_public_key();
@@ -423,11 +414,8 @@ async fn test_malformed_permission_requests() {
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler =
+        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
 
     // Generate a test key to use for all permission tests
     let test_key = generate_public_key();

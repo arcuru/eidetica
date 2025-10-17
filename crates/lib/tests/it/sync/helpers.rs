@@ -43,7 +43,6 @@ pub fn setup_test_handler() -> Arc<dyn SyncHandler> {
     let sync = Sync::new(base_db.backend().clone()).expect("Failed to create Sync");
     Arc::new(SyncHandlerImpl::new(
         base_db.backend().clone(),
-        "_device_key",
         sync.sync_tree_root_id().clone(),
     ))
 }
@@ -54,11 +53,7 @@ pub async fn handle_request(
     sync: &Sync,
     request: &eidetica::sync::protocol::SyncRequest,
 ) -> eidetica::sync::protocol::SyncResponse {
-    let handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let handler = SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
     handler.handle_request(request).await
 }
 
@@ -396,9 +391,153 @@ pub fn assert_request_stored(sync: &Sync, expected_count: usize) {
 
 /// Create a sync handler for testing
 pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
-    SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
+    SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone())
+}
+
+// ===== USER API HELPERS =====
+
+use eidetica::user::User;
+
+/// Creates a server instance with a user, key, and bootstrap-enabled database
+///
+/// Returns (Instance, User, key_id: String, Database, TreeId)
+pub fn setup_server_with_bootstrap_database(
+    username: &str,
+    key_name: &str,
+    db_name: &str,
+) -> (Instance, User, String, Database, eidetica::entry::ID) {
+    let server_instance = setup_instance_with_initialized();
+    server_instance.create_user(username, None).unwrap();
+    let mut server_user = server_instance.login_user(username, None).unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+
+    let mut settings = Doc::new();
+    settings.set_string("name", db_name);
+
+    let server_database = server_user.new_database(settings, &server_key_id).unwrap();
+    let tree_id = server_database.root_id().clone();
+
+    // Add bootstrap auto-approval policy
+    set_bootstrap_auto_approve(&server_database, true).unwrap();
+
+    (
+        server_instance,
+        server_user,
+        server_key_id,
+        server_database,
+        tree_id,
     )
+}
+
+/// Creates a client instance with an indexed user and key (for concurrent test scenarios)
+///
+/// Creates a user with name format "client_user_{index}" and key "client_key_{index}"
+/// Returns (Instance, User, key_id: String)
+pub fn setup_indexed_client(index: usize) -> (Instance, User, String) {
+    let client_instance = setup_instance_with_initialized();
+    let client_username = format!("client_user_{}", index);
+    client_instance.create_user(&client_username, None).unwrap();
+    let mut client_user = client_instance.login_user(&client_username, None).unwrap();
+
+    let client_key_display_name = format!("client_key_{}", index);
+    let client_key_id = client_user
+        .add_private_key(Some(&client_key_display_name))
+        .unwrap();
+
+    (client_instance, client_user, client_key_id)
+}
+
+/// Requests database access and establishes the database-key mapping
+///
+/// This helper combines the common pattern of:
+/// 1. Enabling HTTP transport
+/// 2. Requesting database access
+/// 3. Waiting for sync completion
+/// 4. Adding the database-key mapping
+pub async fn request_and_map_database_access(
+    instance: &mut Instance,
+    user: &mut User,
+    server_addr: &str,
+    tree_id: &eidetica::entry::ID,
+    key_id: &str,
+    permission: AuthPermission,
+    sync_delay_ms: u64,
+) -> Result<()> {
+    let client_sync = instance.sync_mut().expect("Sync not initialized");
+    client_sync.enable_http_transport()?;
+
+    user.request_database_access(client_sync, server_addr, tree_id, key_id, permission)
+        .await?;
+
+    // Wait for sync to complete
+    tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
+
+    // Establish database-key mapping
+    // Use the same key_id as the SigKey identifier (common pattern)
+    user.add_database_key_mapping(key_id, tree_id, key_id)?;
+
+    Ok(())
+}
+
+/// Simplified version with default sync delay (100ms) and Write(5) permission
+pub async fn request_database_access_default(
+    instance: &mut Instance,
+    user: &mut User,
+    server_addr: &str,
+    tree_id: &eidetica::entry::ID,
+    key_id: &str,
+) -> Result<()> {
+    request_and_map_database_access(
+        instance,
+        user,
+        server_addr,
+        tree_id,
+        key_id,
+        AuthPermission::Write(5),
+        100,
+    )
+    .await
+}
+
+/// Creates a user with a key and an empty database
+///
+/// Returns (User, key_id: String, Database, TreeId)
+pub fn setup_user_with_database(
+    instance: &Instance,
+    username: &str,
+    key_name: &str,
+) -> (User, String, Database, eidetica::entry::ID) {
+    instance.create_user(username, None).unwrap();
+    let mut user = instance.login_user(username, None).unwrap();
+    let key_id = user.add_private_key(Some(key_name)).unwrap();
+
+    let database = user.new_database(Doc::new(), &key_id).unwrap();
+    let tree_id = database.root_id().clone();
+
+    (user, key_id, database, tree_id)
+}
+
+/// Creates a sync handler for testing bootstrap policy resolution
+///
+/// Uses a temporary sync instance to get the sync tree root ID.
+pub fn create_database_sync_handler(database: &Database) -> SyncHandlerImpl {
+    let temp_sync = Sync::new(database.backend().clone()).unwrap();
+    SyncHandlerImpl::new(
+        database.backend().clone(),
+        temp_sync.sync_tree_root_id().clone(),
+    )
+}
+
+/// Sets the bootstrap auto-approval policy on a database
+pub fn set_bootstrap_auto_approve(database: &Database, enabled: bool) -> Result<()> {
+    let tx = database.new_transaction()?;
+    let db_settings = tx.get_settings()?;
+    db_settings.update_auth_settings(|auth| {
+        let mut policy_doc = Doc::new();
+        policy_doc.set_json("bootstrap_auto_approve", enabled)?;
+        auth.as_doc_mut().set_doc("policy", policy_doc);
+        Ok(())
+    })?;
+    tx.commit()?;
+    Ok(())
 }

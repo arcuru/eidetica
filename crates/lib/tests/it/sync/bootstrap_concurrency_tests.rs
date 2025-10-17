@@ -82,48 +82,23 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     Ok(())
 }
 
-/// Test concurrent key approval requests from multiple clients.
+/// Test concurrent key approval requests from multiple clients using User API.
 /// This test ensures that when multiple clients request key approval simultaneously,
 /// all requests are processed correctly without race conditions.
+///
+/// This version uses the User API to demonstrate proper user-level key management
+/// and bootstrap request workflows.
 #[tokio::test]
 async fn test_concurrent_key_approval_requests() -> Result<()> {
-    info!("Running test: test_concurrent_key_approval_requests");
+    info!("Running test: test_concurrent_key_approval_requests (User API version)");
 
     // 1. Setup the server instance with an existing database that has bootstrap auto-approval enabled
-    let mut server_instance = setup_instance_with_initialized();
-
-    // Create a database with bootstrap auto-approval policy
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .unwrap();
-
-    // Create database with policy that allows bootstrap auto-approval
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test Concurrent Approval");
-
-    let mut auth_doc = eidetica::crdt::Doc::new();
-    let mut policy_doc = eidetica::crdt::Doc::new();
-    policy_doc.set_json("bootstrap_auto_approve", true).unwrap();
-    auth_doc.set_doc("policy", policy_doc);
-
-    // Add admin key
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
-        )
-        .unwrap();
-
-    settings.set_doc("auth", auth_doc);
-    let server_database = server_instance.new_database(settings, server_key).unwrap();
-    let test_tree_id = server_database.root_id().clone();
+    let (mut server_instance, _server_user, _server_key_id, _server_database, test_tree_id) =
+        setup_server_with_bootstrap_database(
+            "server_user",
+            "server_admin",
+            "Test Concurrent Approval",
+        );
 
     // Start server
     let server_sync = server_instance.sync_mut().unwrap();
@@ -140,44 +115,36 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
         let handle = tokio::spawn(async move {
             info!("Starting client {} key approval request", i);
 
-            // Create client instance with its own key
-            let mut client_instance = setup_instance_with_initialized();
-            let client_key = format!("client_key_{}", i);
-            client_instance.add_private_key(&client_key).unwrap();
+            // Create client instance with user and key
+            let (mut client_instance, mut client_user, client_key_id) = setup_indexed_client(i);
 
             // Verify client doesn't have the database initially
             assert!(
-                client_instance.load_database(&tree_id).is_err(),
+                client_user.load_database(&tree_id).is_err(),
                 "Client {} should not have the database initially",
                 i
             );
 
-            // Request bootstrap with key approval
-            let client_sync = client_instance.sync_mut().unwrap();
-            client_sync.enable_http_transport().unwrap();
+            // Request database access with automatic key mapping
+            request_database_access_default(
+                &mut client_instance,
+                &mut client_user,
+                &addr,
+                &tree_id,
+                &client_key_id,
+            )
+            .await
+            .unwrap();
 
-            client_sync
-                .sync_with_peer_for_bootstrap(
-                    &addr,
-                    &tree_id,
-                    &client_key,
-                    eidetica::auth::Permission::Write(5),
-                )
-                .await
-                .unwrap();
-
-            // Wait a moment for sync to complete
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            // Verify client can now load the database
-            let client_db = client_instance.load_database(&tree_id).unwrap();
+            // Verify client can now load the database using User API
+            let client_db = client_user.load_database(&tree_id).unwrap();
 
             // Verify client's key was added to auth settings
             let settings = client_db.get_settings().unwrap();
             let _auth_value = settings.get("auth").unwrap();
 
             info!("Client {} successfully got key approval", i);
-            Ok::<_, eidetica::Error>((i, client_instance))
+            Ok::<_, eidetica::Error>((i, client_instance, client_user))
         });
 
         client_handles.push(handle);
@@ -185,7 +152,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
     // 3. Wait for all clients to complete key approval and verify their state
     for handle in client_handles {
-        let (client_id, _client_instance) = handle.await.unwrap().unwrap();
+        let (client_id, _client_instance, _client_user) = handle.await.unwrap().unwrap();
         info!("Client {} key approval completed successfully", client_id);
     }
 

@@ -77,11 +77,7 @@ async fn create_pending_request(
     client_pubkey: &str,
     permission: Permission,
 ) -> String {
-    let handler = SyncHandlerImpl::new(
-        sync.backend().clone(),
-        "_device_key",
-        sync.sync_tree_root_id().clone(),
-    );
+    let handler = SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
 
     let request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),

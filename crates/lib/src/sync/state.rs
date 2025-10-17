@@ -409,7 +409,7 @@ impl<'a> SyncStateManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Entry, Instance, backend::database::InMemory};
+    use crate::{Entry, Instance, backend::database::InMemory, sync::DEVICE_KEY_NAME};
 
     #[test]
     fn test_sync_cursor() {
@@ -468,7 +468,7 @@ mod tests {
 
         // Create a user tree for testing tree ID
         let user_tree = db
-            .new_database(crate::crdt::Doc::new(), "_device_key")
+            .new_database(crate::crdt::Doc::new(), DEVICE_KEY_NAME)
             .unwrap();
         let tree_id = user_tree.root_id().clone();
 

@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::{
+    DEVICE_KEY_NAME,
     bootstrap_request_manager::{
         BootstrapRequest, BootstrapRequestManager, RequestStatus, current_timestamp,
     },
@@ -53,7 +54,6 @@ pub trait SyncHandler: Send + std::marker::Sync {
 /// Default implementation of SyncHandler with database backend access.
 pub struct SyncHandlerImpl {
     backend: Arc<dyn BackendDB>,
-    device_key_name: String,
     sync_tree_id: ID,
 }
 
@@ -62,16 +62,10 @@ impl SyncHandlerImpl {
     ///
     /// # Arguments
     /// * `backend` - Database backend for storing and retrieving entries
-    /// * `device_key_name` - Name of the device signing key
     /// * `sync_tree_id` - Root ID of the sync database for storing bootstrap requests
-    pub fn new(
-        backend: Arc<dyn BackendDB>,
-        device_key_name: impl Into<String>,
-        sync_tree_id: ID,
-    ) -> Self {
+    pub fn new(backend: Arc<dyn BackendDB>, sync_tree_id: ID) -> Self {
         Self {
             backend,
-            device_key_name: device_key_name.into(),
             sync_tree_id,
         }
     }
@@ -82,7 +76,7 @@ impl SyncHandlerImpl {
     /// A Database instance for the sync tree with device key authentication.
     fn get_sync_tree(&self) -> crate::Result<Database> {
         let mut sync_tree = Database::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
-        sync_tree.set_default_auth_key(&self.device_key_name);
+        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
         Ok(sync_tree)
     }
 
@@ -207,7 +201,7 @@ impl SyncHandlerImpl {
         // Create database instance to access settings through proper Transaction
         let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
         let mut transaction = database.new_transaction()?;
-        transaction.set_auth_key(&self.device_key_name);
+        transaction.set_auth_key(DEVICE_KEY_NAME);
         let settings_store = SettingsStore::new(&transaction)?;
 
         let auth_settings = settings_store.get_auth_settings()?;
@@ -246,17 +240,17 @@ impl SyncHandlerImpl {
             }
 
             // Get device signing key from backend
-            let signing_key = match self.backend.get_private_key(&self.device_key_name) {
+            let signing_key = match self.backend.get_private_key(DEVICE_KEY_NAME) {
                 Ok(Some(key)) => {
-                    debug!(device_key_name = %self.device_key_name, "Retrieved device signing key");
+                    debug!(device_key_name = %DEVICE_KEY_NAME, "Retrieved device signing key");
                     key
                 }
                 Ok(None) => {
-                    error!(device_key_name = %self.device_key_name, "Device key not found");
+                    error!(device_key_name = %DEVICE_KEY_NAME, "Device key not found");
                     return SyncResponse::Error("Device key not found".to_string());
                 }
                 Err(e) => {
-                    error!(device_key_name = %self.device_key_name, error = %e, "Failed to get signing key");
+                    error!(device_key_name = %DEVICE_KEY_NAME, error = %e, "Failed to get signing key");
                     return SyncResponse::Error(format!("Failed to get signing key: {e}"));
                 }
             };
@@ -765,7 +759,7 @@ impl SyncHandlerImpl {
         // Create database instance to access settings through proper Transaction
         let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
         let mut transaction = database.new_transaction()?;
-        transaction.set_auth_key(&self.device_key_name);
+        transaction.set_auth_key(DEVICE_KEY_NAME);
         let settings_store = SettingsStore::new(&transaction)?;
 
         // Create the new auth key with validation

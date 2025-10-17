@@ -613,7 +613,6 @@ impl BackgroundSync {
         // Create a sync handler with backend access and sync tree ID
         let handler = Arc::new(SyncHandlerImpl::new(
             self.backend.clone(),
-            DEVICE_KEY_NAME,
             self.sync_tree_id.clone(),
         ));
 

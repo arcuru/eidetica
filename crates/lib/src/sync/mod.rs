@@ -40,9 +40,9 @@ use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 /// Private constant for the sync settings subtree name
 const SETTINGS_SUBTREE: &str = "settings_map";
 
-/// Private constant for the device identity key name
+/// Constant for the device identity key name
 /// This is the name of the Device Key used as the shared identifier for this Device.
-const DEVICE_KEY_NAME: &str = "_device_key";
+pub(crate) const DEVICE_KEY_NAME: &str = "_device_key";
 
 /// Synchronization manager for the database.
 ///

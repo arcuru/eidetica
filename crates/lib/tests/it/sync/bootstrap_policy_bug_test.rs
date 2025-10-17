@@ -10,8 +10,9 @@ use eidetica::{
         types::{AuthKey, Permission},
     },
     backend::database::InMemory,
-    sync::handler::SyncHandlerImpl,
 };
+
+use super::helpers::*;
 
 /// Test bootstrap policy resolution
 ///
@@ -23,17 +24,13 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
 
     let backend = Box::new(InMemory::new());
     let instance = Instance::open(backend).expect("Failed to create test instance");
-    instance.add_private_key("admin_key").unwrap();
 
-    let database = instance.new_database_default("admin_key").unwrap();
-    let tree_id = database.root_id().clone();
+    // Create user with database
+    let (user, admin_key_id, database, tree_id) =
+        setup_user_with_database(&instance, "admin_user", "admin_key");
 
     // Get the actual public key for admin
-    let admin_signing_key = instance
-        .backend()
-        .get_private_key("admin_key")
-        .unwrap()
-        .unwrap();
+    let admin_signing_key = user.get_signing_key(&admin_key_id).unwrap();
     let admin_pubkey = format_public_key(&admin_signing_key.verifying_key());
 
     // Set up initial database with admin auth (this goes to root entry)
@@ -49,17 +46,7 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
     initial_transaction.commit().unwrap();
 
     // Add bootstrap policy in a subsequent transaction
-    let policy_transaction = database.new_transaction().unwrap();
-    let policy_settings = policy_transaction.get_settings().unwrap();
-    policy_settings
-        .update_auth_settings(|auth| {
-            let mut policy_doc = eidetica::crdt::Doc::new();
-            policy_doc.set_json("bootstrap_auto_approve", true)?;
-            auth.as_doc_mut().set_doc("policy", policy_doc);
-            Ok(())
-        })
-        .unwrap();
-    policy_transaction.commit().unwrap();
+    set_bootstrap_auto_approve(&database, true).unwrap();
 
     // Now we expect an updated policy setting
     // - Root entry has initial auth config but NO bootstrap policy
@@ -67,12 +54,7 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
     // - Implementation must merge state, not just read root entry
 
     // Create sync handler to test policy resolution
-    let temp_sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
-    let sync_handler = SyncHandlerImpl::new(
-        database.backend().clone(),
-        "test_device",
-        temp_sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler = create_database_sync_handler(&database);
 
     // Test that policy is resolved from merged state
     let is_auto_approve_allowed = sync_handler
@@ -130,17 +112,13 @@ async fn test_bootstrap_policy_multiple_concurrent_updates() {
 
     let backend = Box::new(InMemory::new());
     let instance = Instance::open(backend).expect("Failed to create test instance");
-    instance.add_private_key("admin_key").unwrap();
 
-    let database = instance.new_database_default("admin_key").unwrap();
-    let tree_id = database.root_id().clone();
+    // Create user with database
+    let (user, admin_key_id, database, tree_id) =
+        setup_user_with_database(&instance, "admin_user", "admin_key");
 
     // Get the actual public key for admin
-    let admin_signing_key = instance
-        .backend()
-        .get_private_key("admin_key")
-        .unwrap()
-        .unwrap();
+    let admin_signing_key = user.get_signing_key(&admin_key_id).unwrap();
     let admin_pubkey = format_public_key(&admin_signing_key.verifying_key());
 
     // Create initial admin configuration
@@ -204,12 +182,7 @@ async fn test_bootstrap_policy_multiple_concurrent_updates() {
     }
 
     // Create sync handler and test merged policy resolution
-    let temp_sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
-    let sync_handler = SyncHandlerImpl::new(
-        database.backend().clone(),
-        "test_device",
-        temp_sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler = create_database_sync_handler(&database);
 
     // Test that bootstrap auto-approve is found from merged state
     let is_auto_approve_allowed = sync_handler
@@ -266,17 +239,13 @@ async fn test_bootstrap_policy_root_entry_vs_concurrent_tips() {
 
     let backend = Box::new(InMemory::new());
     let instance = Instance::open(backend).expect("Failed to create test instance");
-    instance.add_private_key("admin_key").unwrap();
 
-    let database = instance.new_database_default("admin_key").unwrap();
-    let tree_id = database.root_id().clone();
+    // Create user with database
+    let (user, admin_key_id, database, tree_id) =
+        setup_user_with_database(&instance, "admin_user", "admin_key");
 
     // Get the actual public key for admin
-    let admin_signing_key = instance
-        .backend()
-        .get_private_key("admin_key")
-        .unwrap()
-        .unwrap();
+    let admin_signing_key = user.get_signing_key(&admin_key_id).unwrap();
     let admin_pubkey = format_public_key(&admin_signing_key.verifying_key());
 
     // Set initial policy in root entry (bootstrap_auto_approve = false)
@@ -290,36 +259,14 @@ async fn test_bootstrap_policy_root_entry_vs_concurrent_tips() {
         .unwrap();
 
     // Set bootstrap policy to FALSE in root
-    initial_settings
-        .update_auth_settings(|auth| {
-            let mut policy_doc = eidetica::crdt::Doc::new();
-            policy_doc.set_json("bootstrap_auto_approve", false)?;
-            auth.as_doc_mut().set_doc("policy", policy_doc);
-            Ok(())
-        })
-        .unwrap();
+    set_bootstrap_auto_approve(&database, false).unwrap();
     initial_transaction.commit().unwrap();
 
     // Now create concurrent transaction that changes policy to TRUE
-    let update_transaction = database.new_transaction().unwrap();
-    let update_settings = update_transaction.get_settings().unwrap();
-    update_settings
-        .update_auth_settings(|auth| {
-            let mut policy_doc = eidetica::crdt::Doc::new();
-            policy_doc.set_json("bootstrap_auto_approve", true)?;
-            auth.as_doc_mut().set_doc("policy", policy_doc);
-            Ok(())
-        })
-        .unwrap();
-    update_transaction.commit().unwrap();
+    set_bootstrap_auto_approve(&database, true).unwrap();
 
     // Test policy resolution from merged state
-    let temp_sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
-    let sync_handler = SyncHandlerImpl::new(
-        database.backend().clone(),
-        "test_device",
-        temp_sync.sync_tree_root_id().clone(),
-    );
+    let sync_handler = create_database_sync_handler(&database);
     let merged_policy_result = sync_handler
         .is_bootstrap_auto_approve_allowed(&tree_id)
         .await
