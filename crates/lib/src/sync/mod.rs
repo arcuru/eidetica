@@ -10,7 +10,7 @@ use crate::{
     Database, Entry, Result,
     auth::{crypto::format_public_key, types::AuthKey},
     crdt::Doc,
-    store::DocStore,
+    store::{DocStore, SettingsStore},
 };
 
 pub mod background;
@@ -70,19 +70,25 @@ impl Sync {
     pub fn new(backend: Arc<dyn crate::backend::BackendDB>) -> Result<Self> {
         // Ensure device key exists in the backend
         // If no device key exists, generate one automatically
-        if backend.get_private_key(DEVICE_KEY_NAME)?.is_none() {
-            let (signing_key, _) = crate::auth::crypto::generate_keypair();
-            backend.store_private_key(DEVICE_KEY_NAME, signing_key)?;
-        }
+        let signing_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
+            Some(key) => key,
+            None => {
+                let (signing_key, _) = crate::auth::crypto::generate_keypair();
+                backend.store_private_key(DEVICE_KEY_NAME, signing_key.clone())?;
+                signing_key
+            }
+        };
 
         let mut sync_settings = Doc::new();
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
-        let mut sync_tree = Database::new(sync_settings, Arc::clone(&backend), DEVICE_KEY_NAME)?;
-
-        // Set the default authentication key so all operations use the device key
-        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
+        let sync_tree = Database::create(
+            sync_settings,
+            Arc::clone(&backend),
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )?;
 
         // For now, create a placeholder command channel
         // This will be properly initialized when a transport is enabled
@@ -108,10 +114,18 @@ impl Sync {
         backend: Arc<dyn crate::backend::BackendDB>,
         sync_tree_root_id: &crate::entry::ID,
     ) -> Result<Self> {
-        let mut sync_tree = Database::new_from_id(sync_tree_root_id.clone(), Arc::clone(&backend))?;
+        let device_key = backend.get_private_key(DEVICE_KEY_NAME)?.ok_or_else(|| {
+            SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            }
+        })?;
 
-        // Set the default authentication key so all operations use the device key
-        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
+        let sync_tree = Database::open(
+            Arc::clone(&backend),
+            sync_tree_root_id,
+            device_key,
+            DEVICE_KEY_NAME.to_string(),
+        )?;
 
         // For now, create a placeholder command channel
         // This will be properly initialized when a transport is enabled
@@ -1498,13 +1512,24 @@ impl Sync {
             .into());
         }
 
-        // Load target database and add the key
-        let database = Database::new_from_id(request.tree_id.clone(), self.backend.clone())?;
-        let mut tx = database.new_transaction()?;
-        tx.set_auth_key(approving_key_name);
+        // Load target database with the approving key
+        let approving_signing_key = self
+            .backend
+            .get_private_key(approving_key_name)?
+            .ok_or_else(|| {
+                SyncError::BackendError(format!("Approving key not found: {approving_key_name}"))
+            })?;
 
-        // Get settings store and update auth configuration
-        let settings_store = tx.get_settings()?;
+        let database = Database::open(
+            self.backend.clone(),
+            &request.tree_id,
+            approving_signing_key,
+            approving_key_name.to_string(),
+        )?;
+        let tx = database.new_transaction()?;
+
+        // Get settings store and update auth configuration using SettingsStore API
+        let settings_store = SettingsStore::new(&tx)?;
 
         // Create the auth key for the requesting device
         let auth_key = AuthKey::active(
@@ -1582,7 +1607,7 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key
-        let database = Database::load_with_key(
+        let database = Database::open(
             self.backend.clone(),
             &request.tree_id,
             approving_signing_key.clone(),
@@ -1740,7 +1765,7 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key to validate permissions
-        let database = Database::load_with_key(
+        let database = Database::open(
             self.backend.clone(),
             &request.tree_id,
             rejecting_signing_key.clone(),

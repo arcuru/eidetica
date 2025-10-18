@@ -179,7 +179,7 @@ When rejecting a request:
 
 **Key Addition Flow** (`handler.rs:add_key_to_database`):
 
-1. Load target database via `Database::new_from_id()`
+1. Load target database via `Database::open_readonly()`
 2. Create transaction with device key auth
 3. Get `SettingsStore` and `AuthSettings`
 4. Create `AuthKey::active()` with requested permission

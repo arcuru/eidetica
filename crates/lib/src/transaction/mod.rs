@@ -27,7 +27,7 @@ use crate::{
     auth::{
         AuthSettings,
         crypto::{format_public_key, sign_entry},
-        types::{AuthKey, Operation, Permission, SigInfo, SigKey},
+        types::{Operation, SigInfo, SigKey},
         validation::AuthValidator,
     },
     constants::SETTINGS,
@@ -185,7 +185,7 @@ impl Transaction {
     /// Set signing key directly for user context (internal API).
     ///
     /// This method is used when a Database is created with a user-provided key
-    /// (via `Database::load_with_key()`). The provided SigningKey is already
+    /// (via `Database::open()`). The provided SigningKey is already
     /// decrypted and ready to use, eliminating the need for backend key lookup.
     ///
     /// # Arguments
@@ -196,6 +196,7 @@ impl Transaction {
         signing_key: ed25519_dalek::SigningKey,
         sigkey: String,
     ) {
+        self.auth_key_name = Some(sigkey.clone());
         self.provided_signing_key = Some((signing_key, sigkey));
     }
 
@@ -829,99 +830,30 @@ impl Transaction {
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
 
-        // Priority: check provided_signing_key first, then fall back to auth_key_name
-        let (signing_key, _sigkey_identifier) = if let Some((ref provided_key, ref sigkey)) =
-            self.provided_signing_key
-        {
-            // Use provided signing key directly (already decrypted from UserKeyManager)
-            let key_clone = provided_key.clone();
+        // Use provided signing key (all databases use KeySource::Provided now)
+        let (signing_key, _sigkey_identifier) =
+            if let Some((ref provided_key, ref sigkey)) = self.provided_signing_key {
+                // Use provided signing key directly (already decrypted from UserKeyManager or device key)
+                let key_clone = provided_key.clone();
 
-            // Build SigInfo using the provided sigkey identifier
-            let mut sig_builder = SigInfo::builder().key(SigKey::Direct(sigkey.clone()));
+                // Build SigInfo using the provided sigkey identifier
+                let mut sig_builder = SigInfo::builder().key(SigKey::Direct(sigkey.clone()));
 
-            // For global permissions '*', include the public key directly
-            if sigkey == "*" {
-                let public_key = provided_key.verifying_key();
-                let pubkey_string = format_public_key(&public_key);
-                sig_builder = sig_builder.pubkey(pubkey_string);
-            }
-
-            // Set auth ID on the entry builder (without signature initially)
-            builder.set_sig_mut(sig_builder.build());
-
-            (Some(key_clone), sigkey.clone())
-        } else if let Some(key_name) = &self.auth_key_name {
-            // Look up private key from backend storage
-            let signing_key = self.db.backend().get_private_key(key_name)?;
-
-            if signing_key.is_none() {
-                return Err(TransactionError::SigningKeyNotFound {
-                    key_name: key_name.clone(),
+                // For global permissions '*', include the public key directly
+                if sigkey == "*" {
+                    let public_key = provided_key.verifying_key();
+                    let pubkey_string = format_public_key(&public_key);
+                    sig_builder = sig_builder.pubkey(pubkey_string);
                 }
-                .into());
-            }
 
-            // Build SigInfo using the builder pattern
-            let mut sig_builder = SigInfo::builder().key(SigKey::Direct(key_name.clone()));
+                // Set auth ID on the entry builder (without signature initially)
+                builder.set_sig_mut(sig_builder.build());
 
-            // For global permissions '*', include the public key directly
-            if key_name == "*"
-                && let Some(ref private_key) = signing_key
-            {
-                let public_key = private_key.verifying_key();
-                let pubkey_string = format_public_key(&public_key);
-                sig_builder = sig_builder.pubkey(pubkey_string);
-            }
-
-            // Set auth ID on the entry builder (without signature initially)
-            builder.set_sig_mut(sig_builder.build());
-
-            // Check if we need to bootstrap auth configuration
-            // First check if auth is configured in the historical settings
-            let auth_configured_historical = matches!(effective_settings_for_validation.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
-
-            // If not configured historically, check if this entry is setting up auth for the first time
-            let auth_configured = if !auth_configured_historical && has_settings_update {
-                // Check if the staged settings contain auth configuration
-                let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
-                matches!(staged_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty())
+                (Some(key_clone), sigkey.clone())
             } else {
-                auth_configured_historical
+                // No authentication key configured - all databases should provide keys via KeySource::Provided
+                return Err(TransactionError::AuthenticationRequired.into());
             };
-
-            if !auth_configured {
-                // Bootstrap auth configuration by adding this key as admin:0
-                let public_key = signing_key.as_ref().unwrap().verifying_key();
-
-                let mut auth_settings = AuthSettings::new();
-                let super_user_auth_key = AuthKey::active(
-                    format_public_key(&public_key),
-                    Permission::Admin(0), // Highest priority
-                )
-                .unwrap();
-                auth_settings.add_key(key_name, super_user_auth_key)?;
-
-                // Update the settings subtree to include auth configuration
-                // We need to merge with existing settings and add the auth section
-                let mut updated_settings = effective_settings_for_validation.clone();
-                updated_settings.set_doc("auth", auth_settings.as_doc().clone());
-
-                // Update the SETTINGS subtree data in the entry builder
-                let settings_json = serde_json::to_string(&updated_settings)?;
-                builder.set_subtree_data_mut(SETTINGS, settings_json);
-
-                // Make sure we track that this is now a settings update
-                // Note: we don't change has_settings_update here since it was calculated earlier
-                // and is used for metadata logic
-            }
-            // If auth is already configured, the validation will check if the key exists
-            // and fail appropriately if it doesn't
-
-            (signing_key, key_name.clone())
-        } else {
-            // No authentication key configured
-            return Err(TransactionError::AuthenticationRequired.into());
-        };
 
         // Remove empty subtrees and build the final immutable Entry
         let mut entry = builder.remove_empty_subtrees().build()?;
@@ -1081,10 +1013,7 @@ impl Transaction {
 mod tests {
     use super::*;
     use crate::{
-        auth::crypto::generate_keypair,
-        backend::{BackendDB, database::InMemory},
-        crdt::Doc,
-        store::DocStore,
+        auth::crypto::generate_keypair, backend::database::InMemory, crdt::Doc, store::DocStore,
     };
 
     /// Test that corrupted auth configuration prevents commit
@@ -1095,10 +1024,10 @@ mod tests {
     fn test_prevent_auth_corruption() {
         let backend = Arc::new(InMemory::new());
         let (private_key, _) = generate_keypair();
-        backend.store_private_key("test_key", private_key).unwrap();
 
-        // Create database with auth bootstrapped
-        let database = Database::new(Doc::new(), backend, "test_key").unwrap();
+        // Create database with the test key
+        let database =
+            Database::create(Doc::new(), backend, private_key, "test_key".to_string()).unwrap();
 
         // Initial operation should work
         let tx = database.new_transaction().unwrap();

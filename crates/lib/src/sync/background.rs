@@ -137,9 +137,20 @@ impl BackgroundSync {
 
     /// Get the sync tree for accessing peer data
     fn get_sync_tree(&self) -> Result<Database> {
-        let mut sync_tree = Database::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
-        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
-        Ok(sync_tree)
+        // Load sync tree with the device key
+        let signing_key = self
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            })?;
+
+        Database::open(
+            self.backend.clone(),
+            &self.sync_tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )
     }
 
     /// Main event loop that handles all sync operations

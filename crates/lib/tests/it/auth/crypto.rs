@@ -1,12 +1,11 @@
 use eidetica::{
     auth::{
         crypto::format_public_key,
-        types::{KeyStatus, Permission, SigKey},
+        types::{Permission, SigKey},
     },
     crdt::Doc,
 };
 
-use super::helpers::{setup_authenticated_tree, setup_db as auth_setup_db};
 use crate::helpers::*;
 
 #[test]
@@ -49,9 +48,7 @@ fn test_key_management() {
     let tree = db
         .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
@@ -97,9 +94,7 @@ fn test_import_private_key() {
     let tree = db
         .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
@@ -118,35 +113,49 @@ fn test_import_private_key() {
 
 #[test]
 fn test_backend_serialization() {
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use eidetica::auth::crypto::format_public_key;
+    use eidetica::auth::types::AuthKey;
 
-    let db = auth_setup_db();
+    let (instance, mut user) = test_instance_with_user("test_user");
 
-    // Add initial key
-    let key_id = "TEST_KEY";
-    let public_key = db.add_private_key(key_id).expect("Failed to add key");
+    // Add two keys using User API
+    let key_id1 = user
+        .add_private_key(Some("TEST_KEY"))
+        .expect("Failed to add key");
+    let public_key1 =
+        eidetica::auth::crypto::parse_public_key(&key_id1).expect("Failed to parse key");
 
-    // Add another key with import
-    let signing_key2 = SigningKey::generate(&mut OsRng);
-    let key_id2 = "IMPORTED_KEY";
-    db.import_private_key(key_id2, signing_key2.clone())
-        .expect("Failed to import key");
-    let public_key2 = signing_key2.verifying_key();
+    let key_id2 = user
+        .add_private_key(Some("SECOND_KEY"))
+        .expect("Failed to add second key");
+    let public_key2 =
+        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
 
     // Set up authentication settings with both keys
     // Note: First key needs admin permission to create tree with auth settings
-    let keys = [
-        (key_id, Permission::Admin(0), KeyStatus::Active),
-        (key_id2, Permission::Write(20), KeyStatus::Active),
-    ];
-    let public_keys = vec![public_key, public_key2];
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+    let mut settings = Doc::new();
+    let mut auth_settings = Doc::new();
+    auth_settings
+        .set_json(
+            &key_id1,
+            AuthKey::active(format_public_key(&public_key1), Permission::Admin(0)).unwrap(),
+        )
+        .unwrap();
+    auth_settings
+        .set_json(
+            &key_id2,
+            AuthKey::active(format_public_key(&public_key2), Permission::Write(20)).unwrap(),
+        )
+        .unwrap();
+    settings.set_doc("auth", auth_settings);
 
-    // Create an entry with first key
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
+    // Create database with first key (admin key)
+    let tree = user
+        .new_database(settings, &key_id1)
+        .expect("Failed to create tree");
+
+    // Create an entry with first key (tree is already loaded with key_id1)
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");
@@ -156,16 +165,28 @@ fn test_backend_serialization() {
 
     // Verify entry can be retrieved and is properly signed
     let entry = tree.get_entry(&entry_id).expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
+    assert_eq!(entry.sig.key, SigKey::Direct(key_id1.to_string()));
     assert!(entry.sig.sig.is_some());
     assert!(
         tree.verify_entry_signature(&entry_id)
             .expect("Failed to verify")
     );
 
-    // Create another entry with the imported key
-    let op2 = tree
-        .new_authenticated_operation(key_id2)
+    // Create another entry with the imported key - need to reload database with that key
+    let signing_key2_for_load = user
+        .get_signing_key(&key_id2)
+        .expect("Failed to get signing key")
+        .clone();
+    let tree_with_key2 = eidetica::Database::open(
+        instance.backend().clone(),
+        tree.root_id(),
+        signing_key2_for_load,
+        key_id2.clone(),
+    )
+    .expect("Failed to load database with key2");
+
+    let op2 = tree_with_key2
+        .new_transaction()
         .expect("Failed to create operation");
     let store2 = op2
         .get_store::<eidetica::store::DocStore>("data")
@@ -174,7 +195,7 @@ fn test_backend_serialization() {
 
     let entry_id2 = op2.commit().expect("Failed to commit");
 
-    // Verify second entry
+    // Verify second entry (can verify from either tree instance)
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
     assert_eq!(entry2.sig.key, SigKey::Direct(key_id2.to_string()));
     assert!(
@@ -214,9 +235,7 @@ fn test_overwrite_existing_key() {
     let tree = db
         .new_database(Doc::new(), key_id)
         .expect("Failed to create tree");
-    let op = tree
-        .new_authenticated_operation(key_id)
-        .expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Failed to get subtree");

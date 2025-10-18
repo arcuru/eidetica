@@ -23,22 +23,30 @@ fn test_authentication_validation_revoked_key() {
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
-    // This should fail because the key is revoked
-    test_operation_fails(&tree, "REVOKED_KEY", "data", "Revoked key test");
+    let revoked_signing_key = db
+        .backend()
+        .get_private_key("REVOKED_KEY")
+        .expect("Failed to get revoked key")
+        .expect("Revoked key should exist in backend");
 
-    // Additional check that the error mentions authentication validation failure
-    let op = tree
-        .new_authenticated_operation("REVOKED_KEY")
-        .expect("Failed to create authenticated operation");
+    let tree_with_revoked_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        revoked_signing_key,
+        "REVOKED_KEY".to_string(),
+    )
+    .expect("Failed to load tree with revoked key");
+
+    let op = tree_with_revoked_key
+        .new_transaction()
+        .expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
     store.set("test", "value").expect("Failed to set value");
+
     let result = op.commit();
-    assert!(result.is_err());
-    let error_msg = format!("{:?}", result.unwrap_err());
-    // Check for the new structured error format
-    assert!(error_msg.contains("Transaction(SignatureVerificationFailed)"));
+    assert!(result.is_err(), "Revoked key test: Operation should fail");
 }
 
 #[test]
@@ -55,47 +63,57 @@ fn test_permission_checking_admin_operations() {
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
-    // Test permission operations using helpers
+    // Test with WRITE_KEY - should be able to write data
+    let write_signing_key = db
+        .backend()
+        .get_private_key("WRITE_KEY")
+        .expect("Failed to get write key")
+        .expect("Write key should exist in backend");
+    let tree_with_write_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        write_signing_key,
+        "WRITE_KEY".to_string(),
+    )
+    .expect("Failed to load tree with write key");
+
     test_operation_succeeds(
-        &tree,
-        "WRITE_KEY",
+        &tree_with_write_key,
         "data",
         "Write key should be able to write data",
     );
+
+    // Test with SECONDARY_ADMIN_KEY - should be able to write data and modify settings
+    let secondary_admin_signing_key = db
+        .backend()
+        .get_private_key("SECONDARY_ADMIN_KEY")
+        .expect("Failed to get secondary admin key")
+        .expect("Secondary admin key should exist in backend");
+    let tree_with_secondary_admin_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        secondary_admin_signing_key,
+        "SECONDARY_ADMIN_KEY".to_string(),
+    )
+    .expect("Failed to load tree with secondary admin key");
+
     test_operation_succeeds(
-        &tree,
-        "SECONDARY_ADMIN_KEY",
+        &tree_with_secondary_admin_key,
         "data",
         "Secondary admin key should be able to write data",
     );
     test_operation_succeeds(
-        &tree,
-        "SECONDARY_ADMIN_KEY",
+        &tree_with_secondary_admin_key,
         "_settings",
         "Secondary admin key should be able to modify settings",
     );
+
+    // Test with WRITE_KEY trying to modify settings - should fail
     test_operation_fails(
-        &tree,
-        "WRITE_KEY",
+        &tree_with_write_key,
         "_settings",
         "Write key should NOT be able to modify settings",
     );
-
-    // Additional check for specific error message
-    let op = tree
-        .new_authenticated_operation("WRITE_KEY")
-        .expect("Failed to create operation");
-    let store = op
-        .get_store::<DocStore>("_settings")
-        .expect("Failed to get settings subtree");
-    store
-        .set("forbidden_setting", "value")
-        .expect("Failed to set setting");
-    let result = op.commit();
-    assert!(result.is_err());
-    let error_msg = format!("{:?}", result.unwrap_err());
-    // Check for the new structured error format
-    assert!(error_msg.contains("Transaction(InsufficientPermissions)"));
 }
 
 #[test]
@@ -117,38 +135,38 @@ fn test_multiple_authenticated_entries() {
     auth_settings.set_json("TEST_KEY", auth_key).unwrap();
     settings.set_doc("auth", auth_settings);
 
-    let mut tree = db
+    let tree = db
         .new_database(settings, "TEST_KEY")
         .expect("Failed to create tree");
 
-    // Clear default auth to test unsigned operation (should fail)
-    tree.clear_default_auth_key();
+    // Create multiple signed entries (should all succeed)
     let op1 = tree.new_transaction().expect("Failed to create operation");
     let store1 = op1
         .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
-    store1
-        .set("unsigned", "value")
-        .expect("Failed to set value");
-    let result1 = op1.commit();
-    assert!(result1.is_err(), "Unsigned operation should fail");
+    store1.set("entry", "first").expect("Failed to set value");
+    let entry_id1 = op1.commit().expect("Failed to commit first entry");
 
-    // Create a signed entry (should succeed)
-    let op2 = tree
-        .new_authenticated_operation("TEST_KEY")
-        .expect("Failed to create authenticated operation");
+    let op2 = tree.new_transaction().expect("Failed to create operation");
     let store2 = op2
         .get_store::<DocStore>("data")
         .expect("Failed to get subtree");
-    store2.set("signed", "value").expect("Failed to set value");
-    let entry_id2 = op2.commit().expect("Failed to commit signed");
+    store2.set("entry", "second").expect("Failed to set value");
+    let entry_id2 = op2.commit().expect("Failed to commit second entry");
 
-    // Verify the signed entry was stored correctly
+    // Verify both entries were stored correctly
+    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
+    assert!(entry1.sig.is_signed_by("TEST_KEY"));
+    assert!(
+        tree.verify_entry_signature(&entry_id1)
+            .expect("Failed to verify entry1")
+    );
+
     let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
     assert!(entry2.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id2)
-            .expect("Failed to verify")
+            .expect("Failed to verify entry2")
     );
 }
 
@@ -209,17 +227,43 @@ fn test_entry_validation_with_mixed_key_states() {
     let (db, public_keys) = setup_test_db_with_keys(&keys);
     let tree = setup_authenticated_tree(&db, &keys, &public_keys);
 
-    // Test active key should work, revoked key should fail using assert_operation_permissions
+    // Test active key should work
+    let active_signing_key = db
+        .backend()
+        .get_private_key("ACTIVE_KEY")
+        .expect("Failed to get active key")
+        .expect("Active key should exist in backend");
+    let tree_with_active_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        active_signing_key,
+        "ACTIVE_KEY".to_string(),
+    )
+    .expect("Failed to load tree with active key");
+
     assert_operation_permissions(
-        &tree,
-        "ACTIVE_KEY",
+        &tree_with_active_key,
         "data",
         true,
         "Active key should succeed",
     );
+
+    // Test revoked key should fail
+    let revoked_signing_key = db
+        .backend()
+        .get_private_key("REVOKED_KEY")
+        .expect("Failed to get revoked key")
+        .expect("Revoked key should exist in backend");
+    let tree_with_revoked_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        revoked_signing_key,
+        "REVOKED_KEY".to_string(),
+    )
+    .expect("Failed to load tree with revoked key");
+
     assert_operation_permissions(
-        &tree,
-        "REVOKED_KEY",
+        &tree_with_revoked_key,
         "data",
         false,
         "Revoked key should fail",

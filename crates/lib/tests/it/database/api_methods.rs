@@ -195,7 +195,7 @@ fn test_auth_helpers_signed_entries() {
     let (_db, tree) = setup_tree_with_auth_config("TEST_KEY");
 
     // Create signed entry using helper
-    let entry_id = add_authenticated_data(&tree, "TEST_KEY", "data", &[("key", "value")]);
+    let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]);
 
     // Test entry auth access using helper
     assert_entry_authentication(&tree, &entry_id, "TEST_KEY");
@@ -234,7 +234,7 @@ fn test_verify_entry_signature_auth_scenarios() {
     let (_db, tree) = setup_tree_with_auth_config("TEST_KEY");
 
     // Test 1: Create entry signed with valid key using helper
-    let signed_entry_id = add_authenticated_data(&tree, "TEST_KEY", "data", &[("key", "value1")]);
+    let signed_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]);
 
     // Should verify successfully using helper
     assert_entry_authentication(&tree, &signed_entry_id, "TEST_KEY");
@@ -260,14 +260,27 @@ fn test_verify_entry_signature_unauthorized_key() {
         .expect("Failed to add unauthorized key");
 
     // Test with authorized key (should succeed) using helper
-    let authorized_entry_id =
-        add_authenticated_data(&tree, "AUTHORIZED_KEY", "data", &[("key", "value1")]);
+    let authorized_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]);
 
     assert_entry_authentication(&tree, &authorized_entry_id, "AUTHORIZED_KEY");
 
     // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
-    let op2 = tree
-        .new_authenticated_operation("UNAUTHORIZED_KEY")
+    let unauthorized_signing_key = db
+        .backend()
+        .get_private_key("UNAUTHORIZED_KEY")
+        .expect("Failed to get unauthorized signing key")
+        .expect("Unauthorized key should exist in backend");
+
+    let tree_with_unauthorized_key = eidetica::Database::open(
+        db.backend().clone(),
+        tree.root_id(),
+        unauthorized_signing_key,
+        "UNAUTHORIZED_KEY".to_string(),
+    )
+    .expect("Failed to load tree with unauthorized key");
+
+    let op2 = tree_with_unauthorized_key
+        .new_transaction()
         .expect("Failed to create operation");
     let store2 = op2
         .get_store::<DocStore>("data")
@@ -289,7 +302,7 @@ fn test_verify_entry_signature_validates_tree_auth() {
     let (_db, tree) = setup_tree_with_auth_config("VALID_KEY");
 
     // Create a signed entry using helper
-    let entry_id = add_authenticated_data(&tree, "VALID_KEY", "data", &[("key", "value")]);
+    let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]);
 
     // Verify the entry using helper - should validate against tree's auth settings
     assert_entry_authentication(&tree, &entry_id, "VALID_KEY");

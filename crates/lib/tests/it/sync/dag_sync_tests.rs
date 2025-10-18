@@ -497,10 +497,22 @@ async fn test_sync_protocol_implementation() {
     let server_addr = sync1.get_server_address_async().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
+    let device_key = base_db1
+        .backend()
+        .get_private_key("_device_key")
+        .unwrap()
+        .unwrap();
+
     // Create a tree with data in database 1
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
-    let tree1 = Database::new(settings, base_db1.backend().clone(), "_device_key").unwrap();
+    let tree1 = Database::create(
+        settings,
+        base_db1.backend().clone(),
+        device_key,
+        "_device_key".to_string(),
+    )
+    .unwrap();
     let tree_root_id = tree1.root_id().clone();
 
     // Get the root entry to verify it exists

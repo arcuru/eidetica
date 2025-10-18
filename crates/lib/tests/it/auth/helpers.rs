@@ -432,15 +432,8 @@ impl DelegationChain {
 // ===== ASSERTION HELPERS =====
 
 /// Test that an operation succeeds
-pub fn test_operation_succeeds(
-    tree: &Database,
-    key_name: &str,
-    subtree_name: &str,
-    test_name: &str,
-) {
-    let op = tree
-        .new_authenticated_operation(key_name)
-        .expect("Failed to create operation");
+pub fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_name: &str) {
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
@@ -451,10 +444,8 @@ pub fn test_operation_succeeds(
 }
 
 /// Test that an operation fails
-pub fn test_operation_fails(tree: &Database, key_name: &str, subtree_name: &str, test_name: &str) {
-    let op = tree
-        .new_authenticated_operation(key_name)
-        .expect("Failed to create operation");
+pub fn test_operation_fails(tree: &Database, subtree_name: &str, test_name: &str) {
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");
@@ -508,17 +499,15 @@ pub fn assert_permission_resolution_fails(
     );
 }
 
-/// Test operation permissions for a specific key and subtree
+/// Test operation permissions for a specific subtree
 pub fn assert_operation_permissions(
     tree: &Database,
-    key_name: &str,
+
     subtree_name: &str,
     should_succeed: bool,
     test_description: &str,
 ) {
-    let op = tree
-        .new_authenticated_operation(key_name)
-        .expect("Failed to create operation");
+    let op = tree.new_transaction().expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .expect("Failed to get subtree");

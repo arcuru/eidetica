@@ -28,6 +28,7 @@ use crate::{
     },
     backend::BackendDB,
     entry::ID,
+    store::SettingsStore,
 };
 
 /// Trait for handling sync requests with database access.
@@ -74,9 +75,20 @@ impl SyncHandlerImpl {
     /// # Returns
     /// A Database instance for the sync tree with device key authentication.
     fn get_sync_tree(&self) -> crate::Result<Database> {
-        let mut sync_tree = Database::new_from_id(self.sync_tree_id.clone(), self.backend.clone())?;
-        sync_tree.set_default_auth_key(DEVICE_KEY_NAME);
-        Ok(sync_tree)
+        // Load sync tree with the device key
+        let signing_key = self
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            })?;
+
+        Database::open(
+            self.backend.clone(),
+            &self.sync_tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )
     }
 
     /// Store a bootstrap request in the sync database for manual approval.
@@ -197,11 +209,22 @@ impl SyncHandlerImpl {
         &self,
         tree_id: &crate::entry::ID,
     ) -> crate::Result<bool> {
-        // Create database instance to access settings through proper Transaction
-        let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
-        let mut transaction = database.new_transaction()?;
-        transaction.set_auth_key(DEVICE_KEY_NAME);
-        let settings_store = transaction.get_settings()?;
+        // Load database with device key for accessing settings
+        let signing_key = self
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            })?;
+
+        let database = Database::open(
+            self.backend.clone(),
+            tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )?;
+        let transaction = database.new_transaction()?;
+        let settings_store = SettingsStore::new(&transaction)?;
 
         let auth_settings = settings_store.get_auth_settings()?;
 
@@ -755,11 +778,22 @@ impl SyncHandlerImpl {
             "Adding key to database authentication settings"
         );
 
-        // Create database instance to access settings through proper Transaction
-        let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
-        let mut transaction = database.new_transaction()?;
-        transaction.set_auth_key(DEVICE_KEY_NAME);
-        let settings_store = transaction.get_settings()?;
+        // Load database with device key to access settings through proper Transaction
+        let signing_key = self
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            })?;
+
+        let database = Database::open(
+            self.backend.clone(),
+            tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        )?;
+        let transaction = database.new_transaction()?;
+        let settings_store = SettingsStore::new(&transaction)?;
 
         // Create the new auth key with validation
         let auth_key = AuthKey::active(public_key.to_string(), permission).unwrap();

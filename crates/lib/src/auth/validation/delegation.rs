@@ -87,12 +87,11 @@ impl DelegationResolver {
                 // Load the delegated tree
                 let root_id = delegated_tree_ref.tree.root.clone();
                 let delegated_tree =
-                    Database::new_from_id(root_id.clone(), Arc::clone(&current_backend)).map_err(
-                        |e| AuthError::DelegatedTreeLoadFailed {
+                    Database::open_readonly(root_id.clone(), Arc::clone(&current_backend))
+                        .map_err(|e| AuthError::DelegatedTreeLoadFailed {
                             tree_id: root_id.to_string(),
                             source: Box::new(e),
-                        },
-                    )?;
+                        })?;
 
                 // Validate tips
                 let current_tips = current_backend.get_tips(&root_id).map_err(|e| {

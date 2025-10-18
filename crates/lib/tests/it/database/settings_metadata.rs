@@ -403,8 +403,8 @@ fn test_metadata_consistency_across_operations() {
     settings.set("initial", "true".to_string());
     let tree = db.new_database(settings, key_id).unwrap();
 
-    // Create authenticated operation
-    let auth_op = tree.new_authenticated_operation(key_id).unwrap();
+    // Create authenticated operation (tree already configured with key_id)
+    let auth_op = tree.new_transaction().unwrap();
     let auth_store = auth_op
         .get_store::<eidetica::store::DocStore>("auth_data")
         .unwrap();

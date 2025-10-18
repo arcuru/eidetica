@@ -177,7 +177,7 @@ impl User {
             .clone();
 
         // Create the database with the provided key directly
-        let database = crate::Database::new_with_key(
+        let database = Database::create(
             settings,
             self.backend.clone(),
             signing_key,
@@ -260,7 +260,7 @@ impl User {
         })?;
 
         // Create Database with user-provided key
-        Database::load_with_key(self.backend.clone(), root_id, signing_key.clone(), sigkey)
+        Database::open(self.backend.clone(), root_id, signing_key.clone(), sigkey)
     }
 
     /// Find databases by name.
@@ -278,7 +278,7 @@ impl User {
         let mut matching = Vec::new();
 
         for root_id in all_roots {
-            if let Ok(db) = crate::Database::new_from_id(root_id, self.backend.clone())
+            if let Ok(db) = Database::open_readonly(root_id, self.backend.clone())
                 && let Ok(db_name) = db.get_name()
                 && db_name == name
             {
@@ -733,7 +733,13 @@ mod tests {
             .unwrap();
         db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-        let user_database = Database::new(db_settings, backend.clone(), "_device_key").unwrap();
+        let user_database = Database::create(
+            db_settings,
+            backend.clone(),
+            device_key.clone(),
+            "_device_key".to_string(),
+        )
+        .unwrap();
 
         // Create user info
         let password = "test_password";

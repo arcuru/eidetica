@@ -57,133 +57,6 @@ pub struct Database {
 }
 
 impl Database {
-    // === Database Creation Constructors ===
-    //
-    // There are three ways to create/open a Database, depending on your key management model:
-    //
-    // 1. `new()` - Creates new database with backend-managed keys (LEGACY)
-    //    - Key must already exist in backend storage
-    //    - Uses KeySource::BackendLookup for all operations
-    //    - Suitable for simple use cases and backward compatibility
-    //
-    // 2. `new_with_key()` - Creates new database with user-managed keys (RECOMMENDED)
-    //    - Key provided directly (e.g., from UserKeyManager)
-    //    - Uses KeySource::Provided for all operations
-    //    - No backend key storage needed
-    //    - Preferred for User context and modern applications
-    //
-    // 3. `load_with_key()` - Opens existing database with user-managed keys
-    //    - Opens existing database by root_id
-    //    - Key provided directly for subsequent operations
-    //    - Uses KeySource::Provided for all operations
-
-    /// Creates a new `Database` instance with backend-managed keys (legacy).
-    ///
-    /// Initializes the database by creating a root `Entry` containing the provided settings
-    /// and storing it in the backend. The signing key must already exist in the backend.
-    /// This is the legacy constructor - prefer `new_with_key()` for new code.
-    ///
-    /// # Key Management
-    ///
-    /// This constructor uses **backend-managed keys**:
-    /// - The key must be stored in the backend before calling this method
-    /// - Uses `KeySource::BackendLookup` for all subsequent operations
-    /// - Suitable for simple use cases and backward compatibility
-    ///
-    /// For user-managed keys (recommended), use `new_with_key()` instead.
-    ///
-    /// # Arguments
-    /// * `settings` - A `Doc` CRDT containing the initial settings for the database.
-    /// * `backend` - An `Arc<Mutex<>>` protected reference to the backend where the database's entries will be stored.
-    /// * `signing_key_name` - Authentication key name to use for the initial commit. Key must exist in backend.
-    ///
-    /// # Returns
-    /// A `Result` containing the new `Database` instance or an error.
-    pub fn new(
-        initial_settings: Doc,
-        backend: Arc<dyn BackendDB>,
-        signing_key_name: impl AsRef<str>,
-    ) -> Result<Self> {
-        let signing_key_name = signing_key_name.as_ref();
-        // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
-
-        let (super_user_key_name, final_database_settings) = if auth_configured {
-            // Auth settings are already provided - use them as-is with the provided signing key
-            (signing_key_name.to_string(), initial_settings)
-        } else {
-            // No auth config provided - bootstrap auth configuration with the provided key
-            // Verify the key exists first
-            let _private_key = backend.get_private_key(signing_key_name)?.ok_or_else(|| {
-                InstanceError::SigningKeyNotFound {
-                    key_name: signing_key_name.to_string(),
-                }
-            })?;
-
-            // Bootstrap auth configuration with the provided key
-            let private_key = backend.get_private_key(signing_key_name)?.unwrap();
-            let public_key = private_key.verifying_key();
-
-            // Create auth settings with the provided key
-            let mut auth_settings_handler = AuthSettings::new();
-            let super_user_auth_key = AuthKey::active(
-                format_public_key(&public_key),
-                Permission::Admin(0), // Highest priority
-            )
-            .unwrap();
-            auth_settings_handler.add_key(signing_key_name, super_user_auth_key)?;
-
-            // Prepare final database settings for the initial commit
-            let mut final_database_settings = initial_settings.clone();
-            final_database_settings.set_doc("auth", auth_settings_handler.as_doc().clone());
-
-            (signing_key_name.to_string(), final_database_settings)
-        };
-
-        // Create the initial root entry using a temporary Database and Transaction
-        // This placeholder ID should not exist in the backend, so get_tips will be empty.
-        let bootstrap_placeholder_id = format!(
-            "bootstrap_root_{}",
-            rand::thread_rng()
-                .sample_iter(&Alphanumeric)
-                .take(10)
-                .map(char::from)
-                .collect::<String>()
-        );
-
-        let temp_database_for_bootstrap = Database {
-            root: bootstrap_placeholder_id.clone().into(),
-            backend: backend.clone(),
-            key_source: Some(KeySource::BackendLookup(super_user_key_name.clone())),
-            sync_hooks: None,
-        };
-
-        // Create the transaction. If we have an auth key, it will be used automatically
-        let op = temp_database_for_bootstrap.new_transaction()?;
-
-        // IMPORTANT: For the root entry, we need to set the database root to empty string
-        // so that is_root() returns true and all_roots() can find it
-        op.set_entry_root("")?;
-
-        // Populate the SETTINGS and ROOT subtrees for the very first entry
-        op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)?;
-        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
-
-        // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
-        op.set_metadata_entropy(rand::thread_rng().next_u64())?;
-
-        // Commit the initial entry
-        let new_root_id = op.commit()?;
-
-        // Now create the real database with the new_root_id
-        Ok(Self {
-            root: new_root_id,
-            backend,
-            key_source: Some(KeySource::BackendLookup(super_user_key_name)),
-            sync_hooks: None,
-        })
-    }
-
     /// Creates a new `Database` instance with a user-provided signing key.
     ///
     /// This constructor creates a new database using a signing key that's already in memory
@@ -228,7 +101,7 @@ impl Database {
     /// settings.set_string("name", "my_database");
     ///
     /// // Create database with user-managed key (no backend storage needed)
-    /// let database = Database::new_with_key(
+    /// let database = Database::create(
     ///     settings,
     ///     backend,
     ///     signing_key,
@@ -240,7 +113,7 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn new_with_key(
+    pub fn create(
         initial_settings: Doc,
         backend: Arc<dyn BackendDB>,
         signing_key: SigningKey,
@@ -324,10 +197,15 @@ impl Database {
         })
     }
 
-    /// Creates a new `Database` instance from an existing ID.
+    /// Creates a new `Database` instance from an existing ID without authentication.
     ///
     /// This constructor takes an existing `ID` and an `Arc<dyn Backend>`
     /// and constructs a `Database` instance with the specified root ID.
+    /// The resulting database has no key source set, so operations will fail
+    /// at commit time without authentication.
+    ///
+    /// This is useful for read-only access or testing scenarios.
+    /// For normal use with the User API, use `Database::open()` instead.
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
@@ -335,7 +213,7 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
-    pub(crate) fn new_from_id(id: ID, backend: Arc<dyn BackendDB>) -> Result<Self> {
+    pub fn open_readonly(id: ID, backend: Arc<dyn BackendDB>) -> Result<Self> {
         Ok(Self {
             root: id,
             backend,
@@ -357,7 +235,7 @@ impl Database {
     /// - Uses `KeySource::Provided` for all subsequent operations
     /// - No backend key storage needed
     ///
-    /// Note: To **create** a new database with user-managed keys, use `new_with_key()`.
+    /// Note: To **create** a new database with user-managed keys, use `create()`.
     /// This method is for **opening existing** databases.
     ///
     /// # Arguments
@@ -380,7 +258,7 @@ impl Database {
     /// # let (signing_key, _) = generate_keypair();
     /// # let root_id = "existing_database_root_id".into();
     /// // Open existing database with user-managed key
-    /// let database = Database::load_with_key(
+    /// let database = Database::open(
     ///     backend,
     ///     &root_id,
     ///     signing_key,
@@ -392,7 +270,7 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn load_with_key(
+    pub fn open(
         backend: Arc<dyn BackendDB>,
         root_id: &ID,
         signing_key: SigningKey,
@@ -409,46 +287,12 @@ impl Database {
         })
     }
 
-    /// Set the default authentication key ID for operations on this database.
-    ///
-    /// When set, all operations created via `new_transaction()` will automatically
-    /// use this key for signing unless explicitly overridden.
-    ///
-    /// # Parameters
-    /// * `key_name` - Authentication key identifier that will be stored.
-    ///   Accepts any string type (`&str`, `String`, `&String`) for maximum ergonomics.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use eidetica::*;
-    /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::Instance;
-    /// # use eidetica::crdt::Doc;
-    /// # fn example() -> Result<()> {
-    /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::open(backend)?;
-    /// # db.add_private_key("test_key")?;
-    /// # let mut database = db.new_database(Doc::new(), "test_key")?;
-    /// database.set_default_auth_key("my_key");                    // &str
-    /// database.set_default_auth_key(String::from("my_key"));      // String
-    /// database.set_default_auth_key(&String::from("my_key"));     // &String
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn set_default_auth_key(&mut self, key_name: impl Into<String>) {
-        self.key_source = Some(KeySource::BackendLookup(key_name.into()));
-    }
-
-    /// Clear the default authentication key for this database.
-    pub fn clear_default_auth_key(&mut self) {
-        self.key_source = None;
-    }
-
     /// Get the default authentication key ID for this database.
     pub fn default_auth_key(&self) -> Option<&str> {
         match &self.key_source {
             Some(KeySource::BackendLookup(key_name)) => Some(key_name.as_str()),
-            _ => None,
+            Some(KeySource::Provided { sigkey, .. }) => Some(sigkey.as_str()),
+            None => None,
         }
     }
 
@@ -472,21 +316,6 @@ impl Database {
     /// Get the sync hooks for this database.
     pub fn sync_hooks(&self) -> Option<&Arc<SyncHookCollection>> {
         self.sync_hooks.as_ref()
-    }
-
-    /// Create a new atomic transaction on this database with authentication.
-    ///
-    /// This is a convenience method that creates a transaction and sets the authentication
-    /// key in one call.
-    ///
-    /// # Arguments
-    /// * `key_name` - The identifier of the private key to use for signing
-    ///
-    /// # Returns
-    /// A `Result<Transaction>` containing the new authenticated transaction
-    pub fn new_authenticated_operation(&self, key_name: impl AsRef<str>) -> Result<Transaction> {
-        let op = self.new_transaction()?;
-        Ok(op.with_auth(key_name.as_ref()))
     }
 
     /// Get the ID of the root entry
@@ -569,19 +398,13 @@ impl Database {
     pub fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
 
-        // Set authentication based on key source
-        if let Some(ref key_source) = self.key_source {
-            match key_source {
-                KeySource::BackendLookup(key_name) => {
-                    op.set_auth_key(key_name);
-                }
-                KeySource::Provided {
-                    signing_key,
-                    sigkey,
-                } => {
-                    op.set_provided_key(*signing_key.clone(), sigkey.clone());
-                }
-            }
+        // Set provided signing key (all databases use KeySource::Provided now)
+        if let Some(KeySource::Provided {
+            signing_key,
+            sigkey,
+        }) = &self.key_source
+        {
+            op.set_provided_key(*signing_key.clone(), sigkey.clone());
         }
 
         // Set sync hooks if configured
@@ -813,7 +636,7 @@ impl Database {
     /// # fn example() -> Result<()> {
     /// # let backend = Arc::new(InMemory::new());
     /// # let (signing_key, _) = generate_keypair();
-    /// # let database = Database::new_with_key(
+    /// # let database = Database::create(
     /// #     eidetica::crdt::Doc::new(),
     /// #     backend,
     /// #     signing_key,

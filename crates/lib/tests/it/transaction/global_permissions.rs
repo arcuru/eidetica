@@ -76,13 +76,25 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
 fn test_level_1_transaction_builds_entry_with_pubkey() {
     println!("🧪 LEVEL 1: Testing transaction builds entry with pubkey for global permission");
 
-    let (_instance, mut database, expected_pubkey) = setup_database_with_global_permission();
+    let (instance, database, expected_pubkey) = setup_database_with_global_permission();
 
-    // Configure database to use global permission for transactions
-    database.set_default_auth_key("*");
+    // Load database with the global permission key
+    let signing_key = instance
+        .backend()
+        .get_private_key("*")
+        .expect("Failed to get global key")
+        .expect("Global key should exist in backend");
+
+    let database_with_global_key = eidetica::Database::open(
+        instance.backend().clone(),
+        database.root_id(),
+        signing_key,
+        "*".to_string(),
+    )
+    .expect("Failed to load database with global key");
 
     // Create a transaction
-    let transaction = database
+    let transaction = database_with_global_key
         .new_transaction()
         .expect("Should create transaction with global permission");
 

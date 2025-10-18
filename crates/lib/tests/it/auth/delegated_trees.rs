@@ -14,8 +14,9 @@ use eidetica::{
         },
         validation::AuthValidator,
     },
-    crdt::Doc,
+    crdt::{Doc, doc::Value},
     entry::ID,
+    store::DocStore,
 };
 
 use super::helpers::*;
@@ -49,20 +50,18 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
         &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
     );
 
-    // Add delegation to main tree auth settings using SettingsStore API
+    // Add delegation to main tree auth settings
     let op = main_tree.new_transaction()?;
-    {
-        let settings = op.get_settings()?;
-        let delegation_ref = create_delegation_ref(
-            &delegated_tree,
-            Permission::Write(10),
-            Some(Permission::Read),
-        )?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
-            Ok(())
-        })?;
-    }
+    let settings_store = op.get_store::<DocStore>("_settings")?;
+
+    let delegation_ref = create_delegation_ref(
+        &delegated_tree,
+        Permission::Write(10),
+        Some(Permission::Read),
+    )?;
+    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
+    new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
     op.commit()?;
 
     // Test delegated tree validation
@@ -104,16 +103,14 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
         &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
     );
 
-    // Add read-only delegation using SettingsStore API
+    // Add read-only delegation
     let op = main_tree.new_transaction()?;
-    {
-        let settings = op.get_settings()?;
-        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_readonly", delegation_ref)?;
-            Ok(())
-        })?;
-    }
+    let settings_store = op.get_store::<DocStore>("_settings")?;
+
+    let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None)?;
+    let mut new_auth_settings = main_tree.get_settings()?.get_all()?;
+    new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
+    settings_store.set_value("auth", Value::Doc(new_auth_settings))?;
     op.commit()?;
 
     // Test permission clamping

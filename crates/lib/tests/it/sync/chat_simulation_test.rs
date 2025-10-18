@@ -85,12 +85,9 @@ async fn test_chat_app_authenticated_bootstrap() {
         )
         .expect("Failed to set global auth");
     settings.set_doc("auth", auth_doc);
-    let mut server_database = server_instance
+    let server_database = server_instance
         .new_database(settings, SERVER_KEY_NAME)
         .expect("Failed to create server database");
-
-    // Set default auth key for the database
-    server_database.set_default_auth_key(SERVER_KEY_NAME);
 
     let room_id = server_database.root_id().clone();
     println!("🏠 Created room with ID: {}", room_id);
@@ -239,7 +236,19 @@ async fn test_chat_app_authenticated_bootstrap() {
         }
     }
 
-    let mut client_database = match client_instance.load_database(&room_id) {
+    // Load database with the client's key
+    let signing_key = client_instance
+        .backend()
+        .get_private_key(CLIENT_KEY_NAME)
+        .expect("Failed to get client signing key")
+        .expect("Client key should exist in backend");
+
+    let client_database = match eidetica::Database::open(
+        client_instance.backend().clone(),
+        &room_id,
+        signing_key,
+        CLIENT_KEY_NAME.to_string(),
+    ) {
         Ok(db) => {
             println!("✅ Client successfully loaded database");
             db
@@ -249,9 +258,6 @@ async fn test_chat_app_authenticated_bootstrap() {
             panic!("Client should be able to load database after bootstrap");
         }
     };
-
-    // Set default auth key for client's database
-    client_database.set_default_auth_key(CLIENT_KEY_NAME);
 
     // Verify client's key was added to the database auth settings
     println!("\n🔐 Checking authentication setup...");
@@ -557,13 +563,20 @@ async fn test_global_key_bootstrap() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Verify client can load and use the database
-    let mut client_database = client_instance
-        .load_database(&room_id)
-        .expect("Client should be able to load database");
+    // Verify client can load and use the database with global permission
+    let signing_key = client_instance
+        .backend()
+        .get_private_key("*")
+        .expect("Failed to get global signing key")
+        .expect("Global key should exist in backend");
 
-    // Configure the database to use global permission for transactions
-    client_database.set_default_auth_key("*");
+    let client_database = eidetica::Database::open(
+        client_instance.backend().clone(),
+        &room_id,
+        signing_key,
+        "*".to_string(),
+    )
+    .expect("Client should be able to load database");
 
     // Client should be able to write using global permission
     {

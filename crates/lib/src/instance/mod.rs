@@ -104,59 +104,78 @@ impl Instance {
 
         let backend: Arc<dyn BackendDB> = Arc::from(backend);
 
-        if backend.get_private_key(DEVICE_KEY_NAME)?.is_none() {
-            // New backend: initialize like create()
-            return Self::create_internal(backend);
-        }
+        // Load device_key first
+        let device_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
+            Some(key) => key,
+            None => {
+                // New backend: initialize like create()
+                return Self::create_internal(backend);
+            }
+        };
 
         // Existing backend: load system databases
         let all_roots = backend.all_roots()?;
 
         // Find system databases by name
-        let mut users_db = None;
-        let mut databases_db = None;
+        let mut users_db_root = None;
+        let mut databases_db_root = None;
 
         for root_id in all_roots {
             // FIXME(security): handle the security and loading of these databases in a better way
-            let db = Database::new_from_id(root_id, Arc::clone(&backend))?;
-            if let Ok(name) = db.get_name() {
+            // Use open_readonly temporarily to check name without setting up auth
+            let temp_db = Database::open_readonly(root_id.clone(), Arc::clone(&backend))?;
+            if let Ok(name) = temp_db.get_name() {
                 match name.as_str() {
                     USERS => {
-                        if users_db.is_some() {
+                        if users_db_root.is_some() {
                             panic!(
                                 "CRITICAL SECURITY ERROR: Multiple {USERS} databases found in backend. \
                                      This indicates database corruption or a potential security breach. \
                                      Backend integrity compromised."
                             );
                         }
-                        users_db = Some(db);
+                        users_db_root = Some(root_id);
                     }
                     DATABASES => {
-                        if databases_db.is_some() {
+                        if databases_db_root.is_some() {
                             panic!(
                                 "CRITICAL SECURITY ERROR: Multiple {DATABASES} databases found in backend. \
                                      This indicates database corruption or a potential security breach. \
                                      Backend integrity compromised."
                             );
                         }
-                        databases_db = Some(db);
+                        databases_db_root = Some(root_id);
                     }
                     _ => {} // Ignore other databases
                 }
             }
 
             // Stop searching if we found both
-            if users_db.is_some() && databases_db.is_some() {
+            if users_db_root.is_some() && databases_db_root.is_some() {
                 break;
             }
         }
 
         // Verify we found both system databases
-        let users_db = users_db.ok_or(
+        let users_db_root = users_db_root.ok_or(
             InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
         )?;
-        let databases_db = databases_db.ok_or(
+        let databases_db_root = databases_db_root.ok_or(
             InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
+        )?;
+
+        // Load system databases with device_key
+        let users_db = Database::open(
+            Arc::clone(&backend),
+            &users_db_root,
+            device_key.clone(),
+            "_device_key".to_string(),
+        )?;
+        let databases_db = Database::open(
+            Arc::clone(&backend),
+            &databases_db_root,
+            device_key,
+            "_device_key".to_string(),
         )?;
 
         Ok(Self {
@@ -229,11 +248,13 @@ impl Instance {
         // 1. Generate and store instance device key (_device_key)
         let (device_key, device_pubkey) = generate_keypair();
         let device_pubkey_str = format_public_key(&device_pubkey);
-        backend.store_private_key(DEVICE_KEY_NAME, device_key)?;
+        backend.store_private_key(DEVICE_KEY_NAME, device_key.clone())?;
 
-        // 2. Create system databases with _device_key
-        let users_db = create_users_database(Arc::clone(&backend), &device_pubkey_str)?;
-        let databases_db = create_databases_tracking(Arc::clone(&backend), &device_pubkey_str)?;
+        // 2. Create system databases with device_key passed directly
+        let users_db =
+            create_users_database(Arc::clone(&backend), &device_key, &device_pubkey_str)?;
+        let databases_db =
+            create_databases_tracking(Arc::clone(&backend), &device_key, &device_pubkey_str)?;
 
         // 3. Return instance
         Ok(Self {
@@ -346,10 +367,21 @@ impl Instance {
         settings: Doc,
         signing_key_name: impl AsRef<str>,
     ) -> Result<Database> {
-        let database = Database::new(
+        use crate::auth::AuthError;
+        let signing_key = match self.backend.get_private_key(signing_key_name.as_ref())? {
+            Some(key) => key,
+            None => {
+                return Err(AuthError::KeyNotFound {
+                    key_name: signing_key_name.as_ref().to_string(),
+                }
+                .into());
+            }
+        };
+        let database = Database::create(
             settings,
-            Arc::clone(&self.backend),
-            signing_key_name.as_ref(),
+            self.backend.clone(),
+            signing_key,
+            signing_key_name.as_ref().to_string(),
         )?;
         Ok(self.configure_database_sync_hooks(database))
     }
@@ -400,7 +432,7 @@ impl Instance {
         self.backend.get(root_id)?;
 
         // Create a database object with the given root_id
-        let database = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+        let database = Database::open_readonly(root_id.clone(), Arc::clone(&self.backend))?;
         Ok(self.configure_database_sync_hooks(database))
     }
 
@@ -416,7 +448,7 @@ impl Instance {
         let mut databases = Vec::new();
 
         for root_id in root_ids {
-            let database = Database::new_from_id(root_id.clone(), Arc::clone(&self.backend))?;
+            let database = Database::open_readonly(root_id.clone(), Arc::clone(&self.backend))?;
             databases.push(self.configure_database_sync_hooks(database));
         }
 

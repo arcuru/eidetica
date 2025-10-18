@@ -86,12 +86,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .expect("Failed to set admin auth");
     settings.set_doc("auth", auth_doc);
 
-    let mut device1_database = device1_instance
+    let device1_database = device1_instance
         .new_database(settings, CHAT_APP_KEY)
         .expect("Failed to create database on device1");
 
     let room_id = device1_database.root_id().clone();
-    device1_database.set_default_auth_key(CHAT_APP_KEY);
 
     // Add message A on device 1
     let message_a = ChatMessage::new(
@@ -162,11 +161,20 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify device 2 has the database and message A
-    let mut device2_database = device2_instance
-        .load_database(&room_id)
-        .expect("Device2 should have the database after bootstrap");
+    // Load database with the key for device2
+    let signing_key = device2_instance
+        .backend()
+        .get_private_key(CHAT_APP_KEY)
+        .expect("Failed to get device2 signing key")
+        .expect("Device2 key should exist in backend");
 
-    device2_database.set_default_auth_key(CHAT_APP_KEY);
+    let device2_database = eidetica::Database::open(
+        device2_instance.backend().clone(),
+        &room_id,
+        signing_key,
+        CHAT_APP_KEY.to_string(),
+    )
+    .expect("Failed to load database with key on device2");
 
     // Check device 2 has message A
     {

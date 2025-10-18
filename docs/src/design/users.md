@@ -700,7 +700,7 @@ The user accesses databases through the `User.load_database()` method, which han
    - Selects key with highest permission level
 3. System retrieves decrypted SigningKey from UserKeyManager
 4. System gets SigKey mapping via `get_database_sigkey()`
-5. System loads Database with `Database::load_with_key()`
+5. System loads Database with `Database::open()`
    - Database stores KeySource::Provided with signing key and sigkey
 6. User creates transactions normally: `database.new_transaction()`
    - Transaction automatically receives provided key from Database

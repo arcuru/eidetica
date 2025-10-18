@@ -30,16 +30,9 @@ pub fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &
     op.commit().expect("Failed to commit")
 }
 
-/// Create authenticated operation and add data
-pub fn add_authenticated_data(
-    tree: &Database,
-    key_name: &str,
-    subtree_name: &str,
-    data: &[(&str, &str)],
-) -> ID {
-    let op = tree
-        .new_authenticated_operation(key_name)
-        .expect("Failed to create authenticated operation");
+/// Create transaction and add data
+pub fn add_authenticated_data(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
+    let op = tree.new_transaction().expect("Failed to create operation");
     {
         let store = op
             .get_store::<DocStore>(subtree_name)
