@@ -7,6 +7,7 @@
 use eidetica::{
     Instance, Result,
     auth::{
+        AuthSettings,
         crypto::format_public_key,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
@@ -64,7 +65,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
 
     // Test delegated tree validation
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     let delegated_auth_id = create_delegation_path(&[
@@ -75,7 +76,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
     assert_permission_resolution(
         &mut validator,
         &delegated_auth_id,
-        &main_tree_settings,
+        &main_auth_settings,
         Some(db.backend()),
         Permission::Write(10),
         KeyStatus::Active,
@@ -112,7 +113,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     // Test permission clamping
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let delegated_tips = delegated_tree.get_tips()?;
 
     let delegated_auth_id = create_delegation_path(&[
@@ -124,7 +125,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
     assert_permission_resolution(
         &mut validator,
         &delegated_auth_id,
-        &main_tree_settings,
+        &main_auth_settings,
         Some(db.backend()),
         Permission::Read,
         KeyStatus::Active,
@@ -219,7 +220,7 @@ fn test_nested_delegation() -> Result<()> {
 
     // Test nested delegation: main -> org -> user
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     // Create a nested delegation chain: main -> org -> user
     let nested_auth_id = SigKey::DelegationPath(vec![
@@ -239,7 +240,7 @@ fn test_nested_delegation() -> Result<()> {
 
     // This should resolve with Write permissions (clamped through the chain)
     let resolved_auth =
-        validator.resolve_sig_key(&nested_auth_id, &main_tree_settings, Some(db.backend()))?;
+        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(db.backend()))?;
 
     // Permissions should be clamped: user has Admin(10) -> org clamps to Write(20) -> main doesn't clamp further
     // Final result should be Write(20) (clamped at org level)
@@ -309,7 +310,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 
     // Test with active key - should work
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     let delegated_auth_id = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -323,7 +324,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     ]);
 
     let resolved_auth =
-        validator.resolve_sig_key(&delegated_auth_id, &main_tree_settings, Some(db.backend()))?;
+        validator.resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(db.backend()))?;
 
     assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
@@ -347,11 +348,15 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     // We can't easily update the delegated tree state in this test, so we'll validate against
     // the revoked settings directly to test the revocation logic
     let delegated_settings_data = revoked_settings;
+    let revoked_auth_settings = match delegated_settings_data.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
 
     // Test validation against revoked key
     let resolved_auth_revoked = validator.resolve_sig_key(
         &SigKey::Direct("delegated_user".to_string()),
-        &delegated_settings_data,
+        &revoked_auth_settings,
         Some(db.backend()),
     )?;
 
@@ -439,9 +444,9 @@ fn test_delegation_depth_limits() -> Result<()> {
 
     // Test depth limit validation
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let result =
-        validator.resolve_sig_key(&nested_auth_id, &main_tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(db.backend()));
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
@@ -523,7 +528,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 
     // Validate
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     let auth_id = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -536,7 +541,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_tree_settings, Some(db.backend()))?;
+    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()))?;
 
     // Expect permission upgraded to Write(7)
     assert_eq!(resolved.effective_permission, Permission::Write(7));
@@ -615,7 +620,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
 
     // Validate
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     let auth_id = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -628,7 +633,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_tree_settings, Some(db.backend()))?;
+    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()))?;
 
     // Because Write(12) is within bounds (less privileged than Write(8)), it is preserved
     assert_eq!(resolved.effective_permission, Permission::Write(12));
@@ -677,9 +682,9 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
     let auth_id = SigKey::DelegationPath(delegation_steps);
 
     let mut validator = AuthValidator::new();
-    let settings_state = tree.get_settings()?.get_all()?;
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
-    let result = validator.resolve_sig_key(&auth_id, &settings_state, Some(db.backend()));
+    let result = validator.resolve_sig_key(&auth_id, &auth_settings, Some(db.backend()));
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("Maximum delegation depth") || msg.contains("not found"));
@@ -752,7 +757,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let main_tree = db.new_database(main_settings, "main_admin")?;
 
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
 
     let auth_id = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -765,7 +770,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&auth_id, &main_tree_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()));
     assert!(result.is_err());
 
     Ok(())

@@ -11,10 +11,10 @@ use crate::{
         crypto::parse_public_key,
         errors::AuthError,
         permission::clamp_permission,
-        types::{AuthKey, DelegatedTreeRef, DelegationStep, PermissionBounds, ResolvedAuth},
+        settings::AuthSettings,
+        types::{DelegationStep, PermissionBounds, ResolvedAuth},
     },
     backend::BackendDB,
-    crdt::{Doc, doc::Value},
     entry::ID,
 };
 
@@ -34,7 +34,7 @@ impl DelegationResolver {
     pub fn resolve_delegation_path_with_depth(
         &mut self,
         steps: &[DelegationStep],
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: &Arc<dyn BackendDB>,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
@@ -43,7 +43,7 @@ impl DelegationResolver {
         }
 
         // Iterate through delegation steps
-        let mut current_settings = settings.clone();
+        let mut current_auth_settings = auth_settings.clone();
         let current_backend = Arc::clone(backend);
         let mut cumulative_bounds = None;
 
@@ -61,7 +61,7 @@ impl DelegationResolver {
                 }
 
                 // Resolve the final key directly
-                let mut resolved = self.resolve_direct_key(&step.key, &current_settings)?;
+                let mut resolved = self.resolve_direct_key(&step.key, &current_auth_settings)?;
 
                 // Apply accumulated permission bounds
                 if let Some(bounds) = cumulative_bounds {
@@ -82,8 +82,7 @@ impl DelegationResolver {
                 let tips = step.tips.as_ref().unwrap();
 
                 // Get the delegated tree reference
-                let delegated_tree_ref =
-                    self.get_delegated_tree_ref(&step.key, &current_settings)?;
+                let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.key)?;
 
                 // Load the delegated tree
                 let root_id = delegated_tree_ref.tree.root.clone();
@@ -114,15 +113,15 @@ impl DelegationResolver {
                     .into());
                 }
 
-                // Get delegated tree's settings
-                let delegated_settings_dict = delegated_tree.get_settings().map_err(|e| {
+                // Get delegated tree's auth settings
+                let delegated_settings = delegated_tree.get_settings().map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!("Failed to get delegated tree settings: {e}"),
                     }
                 })?;
-                current_settings = delegated_settings_dict.get_all().map_err(|e| {
+                current_auth_settings = delegated_settings.get_auth_settings().map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
-                        reason: format!("Failed to get delegated tree settings data: {e}"),
+                        reason: format!("Failed to get delegated tree auth settings: {e}"),
                     }
                 })?;
 
@@ -159,35 +158,6 @@ impl DelegationResolver {
             reason: "Invalid delegation path structure".to_string(),
         }
         .into())
-    }
-
-    /// Get delegated tree reference from auth settings
-    fn get_delegated_tree_ref(
-        &self,
-        tree_ref_name: &str,
-        settings: &Doc,
-    ) -> Result<DelegatedTreeRef> {
-        // Get the auth section
-        let auth_section = settings
-            .get("auth")
-            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
-
-        let auth_nested = match auth_section {
-            Value::Doc(auth_map) => auth_map,
-            _ => {
-                return Err(AuthError::InvalidAuthConfiguration {
-                    reason: "Auth section must be a nested map".to_string(),
-                }
-                .into());
-            }
-        };
-
-        // Parse the delegated tree reference
-        Ok(auth_nested
-            .get_json::<DelegatedTreeRef>(tree_ref_name)
-            .map_err(|e| AuthError::InvalidAuthConfiguration {
-                reason: format!("Invalid delegated tree reference format: {e}"),
-            })?)
     }
 
     /// Validate tip ancestry using backend's DAG traversal
@@ -255,29 +225,13 @@ impl DelegationResolver {
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    fn resolve_direct_key(&self, key_name: &str, settings: &Doc) -> Result<ResolvedAuth> {
-        // First get the auth section from settings
-        let auth_section = settings
-            .get("auth")
-            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
-
-        // Extract the auth Map from the Value
-        let auth_nested = match auth_section {
-            Value::Doc(auth_map) => auth_map,
-            _ => {
-                return Err(AuthError::InvalidAuthConfiguration {
-                    reason: "Auth section must be a nested map".to_string(),
-                }
-                .into());
-            }
-        };
-
-        // Use get_json to parse AuthKey
-        let auth_key = auth_nested.get_json::<AuthKey>(key_name).map_err(|e| {
-            AuthError::InvalidAuthConfiguration {
-                reason: format!("Invalid auth key format: {e}"),
-            }
-        })?;
+    fn resolve_direct_key(
+        &self,
+        key_name: &str,
+        auth_settings: &AuthSettings,
+    ) -> Result<ResolvedAuth> {
+        // Get the auth key using AuthSettings
+        let auth_key = auth_settings.get_key(key_name)?;
 
         let public_key = parse_public_key(auth_key.pubkey())?;
 

@@ -6,6 +6,7 @@
 use eidetica::{
     Instance, Result,
     auth::{
+        AuthSettings,
         crypto::format_public_key,
         types::{AuthKey, DelegationStep, Permission, SigInfo, SigKey},
         validation::AuthValidator,
@@ -22,10 +23,10 @@ fn test_empty_delegation_path() -> Result<()> {
 
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
-    let settings = Doc::new();
+    let auth_settings = AuthSettings::new();
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
-    let result = validator.resolve_sig_key(&empty_delegation, &settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(db.backend()));
     assert!(result.is_err());
 
     Ok(())
@@ -56,9 +57,9 @@ fn test_direct_key_empty_id() -> Result<()> {
     // Test resolving empty key ID
     let empty_key = SigKey::Direct("".to_string());
     let mut validator = AuthValidator::new();
-    let tree_settings = tree.get_settings()?.get_all()?;
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
-    let result = validator.resolve_sig_key(&empty_key, &tree_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(db.backend()));
     assert!(result.is_ok());
 
     Ok(())
@@ -79,10 +80,10 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let settings = Doc::new();
+    let auth_settings = AuthSettings::new();
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
-    let result = validator.resolve_sig_key(&delegation_path, &settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(db.backend()));
     // Should error because intermediate steps need tips
     assert!(result.is_err());
 
@@ -285,10 +286,10 @@ fn test_circular_delegation_simple() -> Result<()> {
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash
-    let tree_settings = tree.get_settings()?.get_all()?;
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
     let mut validator = AuthValidator::new();
     let result =
-        validator.resolve_sig_key(&circular_delegation, &tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(db.backend()));
 
     // Should either work or fail gracefully (not crash)
     match result {

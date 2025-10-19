@@ -6,6 +6,7 @@
 use eidetica::{
     Instance, Result,
     auth::{
+        AuthSettings,
         crypto::format_public_key,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
@@ -29,13 +30,13 @@ fn test_delegation_without_backend() {
     ]);
 
     let mut validator = AuthValidator::new();
-    let settings = Doc::new();
+    let auth_settings = AuthSettings::new();
 
     // Should fail when database is required but not provided
     assert_permission_resolution_fails(
         &mut validator,
         &delegation_path,
-        &settings,
+        &auth_settings,
         None,
         "database",
     );
@@ -77,14 +78,14 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let tree_settings = tree.get_settings()?.get_all()?;
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
     assert_permission_resolution_fails(
         &mut validator,
         &delegation_path,
-        &tree_settings,
+        &auth_settings,
         Some(db.backend()),
-        "auth",
+        "key",
     );
 
     Ok(())
@@ -129,8 +130,8 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let tree_settings = tree.get_settings()?.get_all()?;
-    let result = validator.resolve_sig_key(&delegation_path, &tree_settings, Some(db.backend()));
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
+    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(db.backend()));
 
     // Should fail with appropriate error
     assert!(result.is_err());
@@ -208,9 +209,9 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let result =
-        validator.resolve_sig_key(&delegation_path, &main_tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(db.backend()));
 
     // Should succeed but with clamped permissions
     assert!(result.is_ok());
@@ -300,9 +301,9 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let result =
-        validator.resolve_sig_key(&delegation_path, &main_tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(db.backend()));
 
     // Should fail because tips are invalid
     assert!(result.is_err());
@@ -398,9 +399,9 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
     ]);
 
     let mut validator = AuthValidator::new();
-    let main_tree_settings = main_tree.get_settings()?.get_all()?;
+    let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
     let result =
-        validator.resolve_sig_key(&active_delegation, &main_tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&active_delegation, &main_auth_settings, Some(db.backend()));
 
     // Should succeed for active key
     assert!(result.is_ok());
@@ -420,7 +421,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
     ]);
 
     let result =
-        validator.resolve_sig_key(&revoked_delegation, &main_tree_settings, Some(db.backend()));
+        validator.resolve_sig_key(&revoked_delegation, &main_auth_settings, Some(db.backend()));
 
     // Should succeed in resolving but key should be marked as revoked
     assert!(result.is_ok());
@@ -451,20 +452,20 @@ fn test_validation_cache_error_conditions() -> Result<()> {
     let tree = db.new_database(settings, "admin")?;
 
     let mut validator = AuthValidator::new();
-    let tree_settings = tree.get_settings()?.get_all()?;
+    let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
     // First resolution should succeed and populate cache
     let sig_key = SigKey::Direct("admin".to_string());
-    let result1 = validator.resolve_sig_key(&sig_key, &tree_settings, Some(db.backend()));
+    let result1 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
     assert!(result1.is_ok());
 
     // Try to resolve non-existent key (should fail but not corrupt cache)
     let fake_key = SigKey::Direct("nonexistent".to_string());
-    let result2 = validator.resolve_sig_key(&fake_key, &tree_settings, Some(db.backend()));
+    let result2 = validator.resolve_sig_key(&fake_key, &auth_settings, Some(db.backend()));
     assert!(result2.is_err());
 
     // Original key should still resolve correctly (cache should be intact)
-    let result3 = validator.resolve_sig_key(&sig_key, &tree_settings, Some(db.backend()));
+    let result3 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
     assert!(result3.is_ok());
 
     Ok(())
@@ -492,11 +493,11 @@ fn test_error_message_consistency() {
     ];
 
     let mut validator = AuthValidator::new();
-    let settings = Doc::new();
+    let auth_settings = AuthSettings::new();
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     for (sig_key, expected_error_type) in test_cases {
-        let result = validator.resolve_sig_key(&sig_key, &settings, Some(db.backend()));
+        let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
         assert!(result.is_err());
 
         let error_msg = result.unwrap_err().to_string().to_lowercase();
@@ -538,12 +539,12 @@ fn test_concurrent_validation_basic() -> Result<()> {
     let mut settings = Doc::new();
     settings.set_doc("auth", auth);
     let tree = db.new_database(settings, "admin")?;
-    let tree_settings = Arc::new(tree.get_settings()?.get_all()?);
+    let auth_settings = Arc::new(tree.get_settings()?.get_auth_settings()?);
 
     let handles: Vec<_> = (0..4)
         .map(|_| {
             let db_clone = Arc::clone(&db);
-            let settings_clone = Arc::clone(&tree_settings);
+            let settings_clone = Arc::clone(&auth_settings);
 
             thread::spawn(move || {
                 let mut validator = AuthValidator::new();

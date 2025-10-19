@@ -850,8 +850,8 @@ impl Database {
     /// * `entry` - The entry to get historical settings for
     ///
     /// # Returns
-    /// A `Result` containing the historical settings data
-    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<Doc> {
+    /// A `Result` containing the historical authentication settings
+    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<AuthSettings> {
         // TODO: Implement full historical settings reconstruction from entry metadata
         // For now, use current settings for simplicity and backward compatibility
         //
@@ -864,7 +864,7 @@ impl Database {
         // but requires more complex CRDT state reconstruction logic.
 
         let settings = self.get_settings()?;
-        settings.get_all()
+        settings.get_auth_settings()
     }
 
     // === DATABASE QUERIES ===

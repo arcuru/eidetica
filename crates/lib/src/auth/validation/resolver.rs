@@ -11,10 +11,10 @@ use crate::{
     auth::{
         crypto::parse_public_key,
         errors::AuthError,
-        types::{AuthKey, ResolvedAuth, SigKey},
+        settings::AuthSettings,
+        types::{ResolvedAuth, SigKey},
     },
     backend::BackendDB,
-    crdt::{Doc, doc::Value},
 };
 
 /// Key resolver for handling both direct and delegated key resolution
@@ -38,36 +38,42 @@ impl KeyResolver {
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Document settings containing auth configuration
+    /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<ResolvedAuth> {
         // Note: We don't cache results here because auth settings can change
         // and cached results could become stale (e.g., revoked keys, updated permissions).
         // In a production system, caching would need to be more sophisticated with
         // invalidation strategies based on settings changes.
-        self.resolve_sig_key_with_depth(sig_key, settings, backend, 0)
+        self.resolve_sig_key_with_depth(sig_key, auth_settings, backend, 0)
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Document settings containing auth configuration
+    /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
     pub fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
-        self.resolve_sig_key_with_depth_and_pubkey(sig_key, settings, backend, 0, pubkey_override)
+        self.resolve_sig_key_with_depth_and_pubkey(
+            sig_key,
+            auth_settings,
+            backend,
+            0,
+            pubkey_override,
+        )
     }
 
     /// Resolve authentication identifier with recursion depth tracking
@@ -77,11 +83,11 @@ impl KeyResolver {
     pub fn resolve_sig_key_with_depth(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
         depth: usize,
     ) -> Result<ResolvedAuth> {
-        self.resolve_sig_key_with_depth_and_pubkey(sig_key, settings, backend, depth, None)
+        self.resolve_sig_key_with_depth_and_pubkey(sig_key, auth_settings, backend, depth, None)
     }
 
     /// Resolve authentication identifier with recursion depth tracking and pubkey override
@@ -91,7 +97,7 @@ impl KeyResolver {
     pub fn resolve_sig_key_with_depth_and_pubkey(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
         depth: usize,
         pubkey_override: Option<&str>,
@@ -107,52 +113,40 @@ impl KeyResolver {
 
         match sig_key {
             SigKey::Direct(key_name) => {
-                self.resolve_direct_key_with_pubkey(key_name, settings, pubkey_override)
+                self.resolve_direct_key_with_pubkey(key_name, auth_settings, pubkey_override)
             }
             SigKey::DelegationPath(steps) => {
                 let backend = backend.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
                 })?;
-                self.delegation_resolver
-                    .resolve_delegation_path_with_depth(steps, settings, backend, depth)
+                self.delegation_resolver.resolve_delegation_path_with_depth(
+                    steps,
+                    auth_settings,
+                    backend,
+                    depth,
+                )
             }
         }
     }
 
     /// Resolve a direct key reference from the main tree's auth settings
-    pub fn resolve_direct_key(&mut self, key_name: &str, settings: &Doc) -> Result<ResolvedAuth> {
-        self.resolve_direct_key_with_pubkey(key_name, settings, None)
+    pub fn resolve_direct_key(
+        &mut self,
+        key_name: &str,
+        auth_settings: &AuthSettings,
+    ) -> Result<ResolvedAuth> {
+        self.resolve_direct_key_with_pubkey(key_name, auth_settings, None)
     }
 
     /// Resolve a direct key reference with optional pubkey override for global permissions
     pub fn resolve_direct_key_with_pubkey(
         &mut self,
         key_name: &str,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
-        // First get the auth section from settings
-        let auth_section = settings
-            .get("auth")
-            .ok_or_else(|| AuthError::NoAuthConfiguration)?;
-
-        // Extract the auth Node from the Value
-        let auth_nested = match auth_section {
-            Value::Doc(auth_map) => auth_map,
-            _ => {
-                return Err(AuthError::InvalidAuthConfiguration {
-                    reason: "Auth section must be a nested map".to_string(),
-                }
-                .into());
-            }
-        };
-
-        // Use get_json to parse AuthKey
-        let auth_key = auth_nested.get_json::<AuthKey>(key_name).map_err(|e| {
-            AuthError::InvalidAuthConfiguration {
-                reason: format!("Invalid auth key format: {e}"),
-            }
-        })?;
+        // Get the auth key using AuthSettings
+        let auth_key = auth_settings.get_key(key_name)?;
 
         // Handle global "*" permission case
         let public_key = if key_name == "*" && auth_key.pubkey() == "*" {

@@ -1,14 +1,18 @@
+use std::sync::Arc;
+
 use ed25519_dalek::VerifyingKey;
 use eidetica::{
     Database, Instance,
     auth::{
         crypto::format_public_key,
+        settings::AuthSettings,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
             SigKey, TreeReference,
         },
         validation::AuthValidator,
     },
+    backend::BackendDB,
     crdt::Doc,
     entry::ID,
     store::DocStore,
@@ -322,13 +326,13 @@ pub fn test_operation_fails(tree: &Database, key_name: &str, subtree_name: &str,
 pub fn assert_permission_resolution(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
-    settings: &Doc,
-    backend: Option<&std::sync::Arc<dyn eidetica::backend::BackendDB>>,
+    auth_settings: &AuthSettings,
+    backend: Option<&Arc<dyn BackendDB>>,
     expected_permission: Permission,
     expected_status: KeyStatus,
 ) {
     let result = validator
-        .resolve_sig_key(sig_key, settings, backend)
+        .resolve_sig_key(sig_key, auth_settings, backend)
         .expect("Permission resolution should succeed");
 
     assert_eq!(
@@ -345,11 +349,11 @@ pub fn assert_permission_resolution(
 pub fn assert_permission_resolution_fails(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
-    settings: &Doc,
-    backend: Option<&std::sync::Arc<dyn eidetica::backend::BackendDB>>,
+    auth_settings: &AuthSettings,
+    backend: Option<&Arc<dyn BackendDB>>,
     expected_error_pattern: &str,
 ) {
-    let result = validator.resolve_sig_key(sig_key, settings, backend);
+    let result = validator.resolve_sig_key(sig_key, auth_settings, backend);
     assert!(
         result.is_err(),
         "Permission resolution should fail for {sig_key:?}"

@@ -1,5 +1,6 @@
 use eidetica::{
     auth::{
+        AuthSettings,
         crypto::{format_public_key, verify_entry_signature},
         types::{AuthKey, KeyStatus, Permission},
     },
@@ -171,8 +172,8 @@ fn test_entry_validation_with_corrupted_auth_section() {
     entry.sig.sig = Some(signature);
 
     // Test with no auth section at all
-    let empty_settings = Doc::new();
-    let result = validator.validate_entry(&entry, &empty_settings, None);
+    let empty_auth_settings = AuthSettings::new();
+    let result = validator.validate_entry(&entry, &empty_auth_settings, None);
     assert!(
         result.is_ok(),
         "Should allow unsigned when no auth configured"
@@ -182,14 +183,18 @@ fn test_entry_validation_with_corrupted_auth_section() {
     let mut corrupted_settings = Doc::new();
     corrupted_settings.set("auth", "invalid_string_value");
 
-    let result = validator.validate_entry(&entry, &corrupted_settings, None);
-    assert!(result.is_err(), "Should fail with corrupted auth section");
+    // Extract auth settings (will be empty since auth is not a Doc)
+    let corrupted_auth_settings = AuthSettings::new();
+    let result = validator.validate_entry(&entry, &corrupted_auth_settings, None);
+    assert!(result.is_ok(), "Should allow unsigned when auth is invalid");
 
     // Test with settings containing deleted auth section
     let mut deleted_settings = Doc::new();
     deleted_settings.set("auth", Value::Deleted);
 
-    let result = validator.validate_entry(&entry, &deleted_settings, None);
+    // Extract auth settings (will be empty since auth is deleted)
+    let deleted_auth_settings = AuthSettings::new();
+    let result = validator.validate_entry(&entry, &deleted_auth_settings, None);
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
 }
 
@@ -249,8 +254,14 @@ fn test_entry_validation_cache_behavior() {
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
+    // Extract AuthSettings from Doc
+    let auth_settings_from_doc = match settings.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
+
     // Validate the entry - should work
-    let result1 = validator.validate_entry(&entry, &settings, None);
+    let result1 = validator.validate_entry(&entry, &auth_settings_from_doc, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "First validation should succeed"
@@ -267,15 +278,21 @@ fn test_entry_validation_cache_behavior() {
         .unwrap();
     new_settings.set_doc("auth", new_auth_settings);
 
+    // Extract AuthSettings from new Doc
+    let new_auth_settings_from_doc = match new_settings.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
+
     // Validate with revoked key - should fail
-    let result2 = validator.validate_entry(&entry, &new_settings, None);
+    let result2 = validator.validate_entry(&entry, &new_auth_settings_from_doc, None);
     assert!(
         result2.is_ok() && !result2.unwrap(),
         "Validation with revoked key should fail"
     );
 
     // Validate with original settings again - should work (no stale cache)
-    let result3 = validator.validate_entry(&entry, &settings, None);
+    let result3 = validator.validate_entry(&entry, &auth_settings_from_doc, None);
     assert!(
         result3.is_ok() && result3.unwrap(),
         "Validation should work again with active key"
@@ -311,8 +328,14 @@ fn test_entry_validation_with_malformed_keys() {
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
+    // Extract AuthSettings from Doc
+    let auth_settings = match settings.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
+
     // Should validate successfully with correct settings
-    let result1 = validator.validate_entry(&correct_entry, &settings, None);
+    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -328,7 +351,7 @@ fn test_entry_validation_with_malformed_keys() {
     entry_with_wrong_sig.sig.sig = Some(wrong_signature);
 
     // Should fail validation because signature doesn't match the key in settings
-    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &settings, None);
+    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &auth_settings, None);
     assert!(
         result_wrong_sig.is_err() || (result_wrong_sig.is_ok() && !result_wrong_sig.unwrap()),
         "Entry should fail validation with mismatched signature"
@@ -338,7 +361,7 @@ fn test_entry_validation_with_malformed_keys() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
+    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {
@@ -362,7 +385,7 @@ fn test_entry_validation_with_malformed_keys() {
         eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
     wrong_signature_entry.sig.sig = Some(wrong_signature);
 
-    let result3 = validator.validate_entry(&wrong_signature_entry, &settings, None);
+    let result3 = validator.validate_entry(&wrong_signature_entry, &auth_settings, None);
     assert!(
         result3.is_ok() && !result3.unwrap(),
         "Entry with wrong key signature should fail validation"
@@ -379,8 +402,8 @@ fn test_entry_validation_unsigned_entry_detection() {
         .expect("Entry should build successfully");
 
     // Test with no auth settings
-    let empty_settings = Doc::new();
-    let result1 = validator.validate_entry(&entry, &empty_settings, None);
+    let empty_auth_settings = AuthSettings::new();
+    let result1 = validator.validate_entry(&entry, &empty_auth_settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Unsigned entry should be valid when no auth configured"
@@ -388,10 +411,16 @@ fn test_entry_validation_unsigned_entry_detection() {
 
     // Test with auth settings present
     let mut settings = Doc::new();
-    let auth_settings = Doc::new();
-    settings.set_doc("auth", auth_settings);
+    let auth_doc = Doc::new();
+    settings.set_doc("auth", auth_doc);
 
-    let result2 = validator.validate_entry(&entry, &settings, None);
+    // Extract AuthSettings from Doc (empty auth section)
+    let auth_settings = match settings.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
+
+    let result2 = validator.validate_entry(&entry, &auth_settings, None);
     assert!(
         result2.is_ok() && result2.unwrap(),
         "Unsigned entry should still be valid for backward compatibility"
@@ -426,8 +455,14 @@ fn test_entry_validation_with_invalid_signatures() {
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
+    // Extract AuthSettings from Doc
+    let auth_settings = match settings.get("auth") {
+        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        _ => AuthSettings::new(),
+    };
+
     // Should validate successfully
-    let result1 = validator.validate_entry(&correct_entry, &settings, None);
+    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None);
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -437,7 +472,7 @@ fn test_entry_validation_with_invalid_signatures() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &settings, None);
+    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None);
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {

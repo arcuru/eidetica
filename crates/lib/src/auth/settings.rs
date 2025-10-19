@@ -199,7 +199,7 @@ impl AuthSettings {
 
                 // Use AuthValidator to resolve the delegation path
                 let mut validator = AuthValidator::new();
-                validator.resolve_sig_key(sig_key, &self.inner, Some(backend))
+                validator.resolve_sig_key(sig_key, self, Some(backend))
             }
         }
     }

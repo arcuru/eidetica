@@ -5,15 +5,17 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use tracing::debug;
+
 use super::resolver::KeyResolver;
 use crate::{
     Entry, Result,
     auth::{
         crypto::verify_entry_signature,
+        settings::AuthSettings,
         types::{KeyStatus, Operation, ResolvedAuth, SigKey},
     },
     backend::BackendDB,
-    crdt::{Doc, doc::Value},
 };
 
 /// Authentication validator for validating entries and resolving auth information
@@ -37,12 +39,12 @@ impl AuthValidator {
     ///
     /// # Arguments
     /// * `entry` - The entry to validate
-    /// * `settings_state` - Current state of the _settings subtree for key lookup
+    /// * `auth_settings` - Authentication settings for key lookup
     /// * `backend` - Backend for loading delegated trees (optional for direct keys)
     pub fn validate_entry(
         &mut self,
         entry: &Entry,
-        settings_state: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
@@ -51,33 +53,25 @@ impl AuthValidator {
             && key_name.is_empty()
             && entry.sig.sig.is_none()
         {
+            debug!("Unsigned entry detected: {:?}", entry);
             // This is an unsigned entry - allow it to pass without authentication
             return Ok(true);
         }
 
-        // If the settings state has no 'auth' section or an empty 'auth' map, allow unsigned entries.
-        match settings_state.get("auth") {
-            Some(Value::Doc(auth_map)) => {
-                // If 'auth' section exists and is a map, check if it's empty
-                if auth_map.as_hashmap().is_empty() {
-                    return Ok(true);
-                }
-            }
-            None => {
-                // If 'auth' section does not exist at all, it means no keys are configured
-                return Ok(true);
-            }
-            _ => {
-                // If 'auth' section exists but is not a map (e.g., a string or deleted),
-                // or if it's a non-empty map, then proceed with normal validation.
-            }
+        // If auth settings has no keys configured, allow unsigned entries
+        if auth_settings.get_all_keys()?.is_empty() {
+            debug!(
+                "No keys configured in auth settings, allowing all access: {:?}",
+                entry
+            );
+            return Ok(true);
         }
 
         // For all other entries, proceed with normal authentication validation
         // Resolve the authentication information
         let resolved_auth = self.resolver.resolve_sig_key_with_pubkey(
             &entry.sig.key,
-            settings_state,
+            auth_settings,
             backend,
             entry.sig.pubkey.as_deref(),
         )?;
@@ -95,35 +89,36 @@ impl AuthValidator {
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Map settings containing auth configuration
+    /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
-        self.resolver.resolve_sig_key(sig_key, settings, backend)
+        self.resolver
+            .resolve_sig_key(sig_key, auth_settings, backend)
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
-    /// * `settings` - Map settings containing auth configuration
+    /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
     pub fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
-        settings: &Doc,
+        auth_settings: &AuthSettings,
         backend: Option<&Arc<dyn BackendDB>>,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver
-            .resolve_sig_key_with_pubkey(sig_key, settings, backend, pubkey_override)
+            .resolve_sig_key_with_pubkey(sig_key, auth_settings, backend, pubkey_override)
     }
 
     /// Check if a resolved authentication has sufficient permissions for an operation

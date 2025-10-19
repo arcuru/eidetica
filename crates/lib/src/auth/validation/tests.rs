@@ -5,20 +5,19 @@ use crate::{
     Entry,
     auth::{
         crypto::{format_public_key, generate_keypair, sign_entry},
+        settings::AuthSettings,
         types::{AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey},
     },
     crdt::Doc,
 };
 
-fn create_test_settings_with_key(key_name: &str, auth_key: &AuthKey) -> Doc {
-    let mut settings = Doc::new();
+fn create_test_auth_with_key(key_name: &str, auth_key: &AuthKey) -> AuthSettings {
     let mut auth_section = Doc::new();
     auth_section.as_hashmap_mut().insert(
         key_name.to_string(),
         serde_json::to_string(&auth_key).unwrap().into(),
     );
-    settings.set_doc("auth", auth_section);
-    settings
+    AuthSettings::from_doc(auth_section)
 }
 
 #[test]
@@ -29,7 +28,7 @@ fn test_basic_key_resolution() {
     let auth_key =
         AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
+    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
 
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
     let resolved = validator
@@ -47,7 +46,7 @@ fn test_revoked_key_validation() {
     let auth_key =
         AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
+    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
     let resolved = validator.resolve_sig_key(&sig_key, &settings, None);
     assert!(resolved.is_ok());
@@ -120,7 +119,7 @@ fn test_entry_validation_success() {
     let auth_key =
         AuthKey::active(format_public_key(&verifying_key), Permission::Write(20)).unwrap();
 
-    let settings = create_test_settings_with_key("KEY_LAPTOP", &auth_key);
+    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
 
     // Create a test entry using Entry::builder
     let mut entry = Entry::root_builder()
@@ -147,10 +146,10 @@ fn test_entry_validation_success() {
 #[test]
 fn test_missing_key() {
     let mut validator = AuthValidator::new();
-    let settings = Doc::new(); // Empty settings
+    let auth_settings = AuthSettings::new(); // Empty auth settings
 
     let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
-    let result = validator.resolve_sig_key(&sig_key, &settings, None);
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -162,7 +161,7 @@ fn test_missing_key() {
 #[test]
 fn test_delegated_tree_requires_backend() {
     let mut validator = AuthValidator::new();
-    let settings = Doc::new();
+    let auth_settings = AuthSettings::new();
 
     let sig_key = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -175,7 +174,7 @@ fn test_delegated_tree_requires_backend() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &settings, None);
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None);
     assert!(result.is_err());
     assert!(
         result
@@ -203,8 +202,8 @@ fn test_validate_entry_with_auth_info_against_empty_settings() {
     entry.sig.sig = Some(signature);
 
     // Validate against empty settings (no auth configuration)
-    let empty_settings = Doc::new();
-    let result = validator.validate_entry(&entry, &empty_settings, None);
+    let empty_auth_settings = AuthSettings::new();
+    let result = validator.validate_entry(&entry, &empty_auth_settings, None);
 
     // Should succeed because there's no auth configuration to validate against
     assert!(result.is_ok(), "Validation failed: {:?}", result.err());
@@ -223,7 +222,7 @@ fn test_entry_validation_with_revoked_key() {
     )
     .unwrap();
 
-    let settings = create_test_settings_with_key("KEY_LAPTOP", &revoked_key);
+    let settings = create_test_auth_with_key("KEY_LAPTOP", &revoked_key);
 
     // Create a test entry using Entry::builder
     let mut entry = Entry::root_builder()
@@ -255,7 +254,7 @@ fn test_performance_optimizations() {
     let auth_key =
         AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("PERF_KEY", &auth_key);
+    let settings = create_test_auth_with_key("PERF_KEY", &auth_key);
     let sig_key = SigKey::Direct("PERF_KEY".to_string());
 
     // Test that resolution works correctly
@@ -288,7 +287,7 @@ fn test_basic_delegated_tree_resolution() {
     let auth_key =
         AuthKey::active(format_public_key(&verifying_key), Permission::Admin(5)).unwrap();
 
-    let settings = create_test_settings_with_key("DIRECT_KEY", &auth_key);
+    let settings = create_test_auth_with_key("DIRECT_KEY", &auth_key);
 
     let sig_key = SigKey::Direct("DIRECT_KEY".to_string());
     let result = validator.resolve_sig_key(&sig_key, &settings, None);
@@ -391,7 +390,11 @@ fn test_complete_delegation_workflow() {
 
     // Test delegation resolution
     let mut validator = AuthValidator::new();
-    let main_settings = main_tree.get_settings().unwrap().get_all().unwrap();
+    let main_auth_settings = main_tree
+        .get_settings()
+        .unwrap()
+        .get_auth_settings()
+        .unwrap();
 
     let delegated_sig_key = SigKey::DelegationPath(vec![
         DelegationStep {
@@ -404,7 +407,8 @@ fn test_complete_delegation_workflow() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&delegated_sig_key, &main_settings, Some(db.backend()));
+    let result =
+        validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(db.backend()));
 
     // Should succeed with permission clamping (Admin -> Write due to bounds)
     assert!(
@@ -471,11 +475,11 @@ fn test_delegated_tree_requires_tips() {
         )
         .unwrap();
 
-    main_settings.set_doc("auth", main_auth);
+    main_settings.set_doc("auth", main_auth.clone());
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
-    let settings = main_settings;
+    let auth_settings = AuthSettings::from_doc(main_auth);
 
     // Create a DelegationPath sig_key with empty tips
     let sig_key = SigKey::DelegationPath(vec![
@@ -489,7 +493,7 @@ fn test_delegated_tree_requires_tips() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
 
     // Should fail because tips are required for delegated tree resolution
     assert!(result.is_err());
@@ -630,7 +634,11 @@ fn test_nested_delegation_with_permission_clamping() {
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User
     let mut validator = AuthValidator::new();
-    let main_settings = main_tree.get_settings().unwrap().get_all().unwrap();
+    let main_auth_settings = main_tree
+        .get_settings()
+        .unwrap()
+        .get_auth_settings()
+        .unwrap();
 
     // Create nested delegation SigKey:
     // Main tree delegates to "intermediate_delegation" ->
@@ -651,7 +659,8 @@ fn test_nested_delegation_with_permission_clamping() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&nested_sig_key, &main_settings, Some(db.backend()));
+    let result =
+        validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(db.backend()));
 
     // Should succeed with multi-level permission clamping:
     // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)
@@ -677,26 +686,27 @@ fn test_delegation_depth_limit() {
     // Test that excessive delegation depth is prevented
     let mut validator = AuthValidator::new();
 
-    // Create an empty settings (doesn't matter for depth test)
-    let settings = Doc::new();
+    // Create empty auth settings (doesn't matter for depth test)
+    let auth_settings = AuthSettings::new();
 
     // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
     let simple_sig_key = SigKey::Direct("base_key".to_string());
 
     // This should succeed (just under the limit)
-    let result = validator
-        .resolver
-        .resolve_sig_key_with_depth(&simple_sig_key, &settings, None, 9);
+    let result =
+        validator
+            .resolver
+            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9);
     // Should fail due to missing auth configuration, not depth limit
     assert!(result.is_err());
     let error = result.unwrap_err();
-    assert!(error.to_string().contains("No auth configuration found"));
+    assert!(error.to_string().contains("Key not found"));
 
     // This should fail due to depth limit (at the limit)
     let result =
         validator
             .resolver
-            .resolve_sig_key_with_depth(&simple_sig_key, &settings, None, 10);
+            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10);
     assert!(result.is_err());
     let error = result.unwrap_err();
     assert!(error.to_string().contains("Maximum delegation depth"));
@@ -713,7 +723,7 @@ fn test_global_permission_with_pubkey_field() {
     // Create settings with global "*" permission
     let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_key("*", &global_auth_key);
 
     // Create an entry that uses global permission
     let mut entry = Entry::root_builder()
@@ -748,7 +758,7 @@ fn test_global_permission_without_pubkey_fails() {
     // Create settings with global "*" permission
     let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_key("*", &global_auth_key);
 
     // Create an entry that uses global permission but doesn't include pubkey
     let mut entry = Entry::root_builder()
@@ -780,7 +790,7 @@ fn test_global_permission_resolver() {
     // Create settings with global "*" permission
     let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
 
-    let settings = create_test_settings_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_key("*", &global_auth_key);
 
     // Test resolving "*" with provided pubkey
     let sig_key = SigKey::Direct("*".to_string());
@@ -812,7 +822,7 @@ fn test_global_permission_insufficient_perms() {
     )
     .unwrap();
 
-    let settings = create_test_settings_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_key("*", &global_auth_key);
 
     // Test that global permissions still respect the permission level
     let sig_key = SigKey::Direct("*".to_string());
@@ -853,7 +863,6 @@ fn test_global_permission_vs_specific_key() {
     let (signing_key2, verifying_key2) = generate_keypair();
 
     // Create settings with both a specific key and global permission
-    let mut settings = Doc::new();
     let mut auth_section = Doc::new();
 
     // Add specific key
@@ -867,7 +876,7 @@ fn test_global_permission_vs_specific_key() {
     let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
     auth_section.set_json("*", &global_key).unwrap();
 
-    settings.set_doc("auth", auth_section);
+    let auth_settings = AuthSettings::from_doc(auth_section);
 
     // Test 1: Entry signed with specific key should work normally
     let mut entry1 = Entry::root_builder()
@@ -879,7 +888,7 @@ fn test_global_permission_vs_specific_key() {
     let signature1 = sign_entry(&entry1, &signing_key1).unwrap();
     entry1.sig.sig = Some(signature1);
 
-    let result1 = validator.validate_entry(&entry1, &settings, None);
+    let result1 = validator.validate_entry(&entry1, &auth_settings, None);
     assert!(result1.is_ok(), "Specific key validation should work");
 
     // Test 2: Entry using global permission should also work
@@ -894,7 +903,7 @@ fn test_global_permission_vs_specific_key() {
     entry2.sig.sig = Some(signature2);
 
     // Global permissions should now work with the pubkey field
-    let result2 = validator.validate_entry(&entry2, &settings, None);
+    let result2 = validator.validate_entry(&entry2, &auth_settings, None);
     assert!(
         result2.is_ok(),
         "Global permission validation should work: {:?}",

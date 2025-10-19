@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Database, Result, Store,
     auth::{
+        AuthSettings,
         crypto::{format_public_key, sign_entry},
         types::{AuthKey, Operation, Permission, SigInfo, SigKey},
         validation::AuthValidator,
@@ -871,7 +872,7 @@ impl Transaction {
                 // Bootstrap auth configuration by adding this key as admin:0
                 let public_key = signing_key.as_ref().unwrap().verifying_key();
 
-                let mut auth_settings = crate::auth::settings::AuthSettings::new();
+                let mut auth_settings = AuthSettings::new();
                 let super_user_auth_key = AuthKey::active(
                     format_public_key(&public_key),
                     Permission::Admin(0), // Highest priority
@@ -933,58 +934,60 @@ impl Transaction {
         // IMPORTANT: For permission checking, we must use the historical auth configuration
         // (before this transaction), not the auth configuration from the current entry.
         // This prevents operations from modifying their own permission requirements.
-        let settings_for_validation = effective_settings_for_validation.clone();
+
+        // Extract AuthSettings from effective settings for validation
+        let auth_settings_for_validation = match effective_settings_for_validation.get("auth") {
+            Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+            _ => AuthSettings::new(), // Empty if no auth config
+        };
 
         let verification_status = match validator.validate_entry(
             &entry,
-            &settings_for_validation,
+            &auth_settings_for_validation,
             Some(self.db.backend()),
         ) {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
-                match settings_for_validation.get("auth") {
-                    Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty() => {
-                        // We have auth configuration, so check permissions
-                        let operation_type = if has_settings_update
-                            || entry.subtrees().contains(&SETTINGS.to_string())
-                        {
-                            Operation::WriteSettings // Modifying settings is a settings operation
-                        } else {
-                            Operation::WriteData // Default to write for other data modifications
-                        };
+                // Check if we have auth configuration
+                let has_auth_config = !auth_settings_for_validation.get_all_keys()?.is_empty();
 
-                        let resolved_auth = validator.resolve_sig_key_with_pubkey(
-                            &entry.sig.key,
-                            &settings_for_validation,
-                            Some(self.db.backend()),
-                            entry.sig.pubkey.as_deref(),
-                        )?;
+                if has_auth_config {
+                    // We have auth configuration, so check permissions
+                    let operation_type = if has_settings_update
+                        || entry.subtrees().contains(&SETTINGS.to_string())
+                    {
+                        Operation::WriteSettings // Modifying settings is a settings operation
+                    } else {
+                        Operation::WriteData // Default to write for other data modifications
+                    };
 
-                        let has_permission =
-                            validator.check_permissions(&resolved_auth, &operation_type)?;
+                    let resolved_auth = validator.resolve_sig_key_with_pubkey(
+                        &entry.sig.key,
+                        &auth_settings_for_validation,
+                        Some(self.db.backend()),
+                        entry.sig.pubkey.as_deref(),
+                    )?;
 
-                        if has_permission {
-                            crate::backend::VerificationStatus::Verified
-                        } else {
-                            return Err(TransactionError::InsufficientPermissions.into());
-                        }
+                    let has_permission =
+                        validator.check_permissions(&resolved_auth, &operation_type)?;
+
+                    if has_permission {
+                        crate::backend::VerificationStatus::Verified
+                    } else {
+                        return Err(TransactionError::InsufficientPermissions.into());
                     }
-                    _ => {
-                        // No auth configuration found in historical settings
-                        // Check if this is a bootstrap operation (adding auth config for the first time)
-                        if has_settings_update || entry.subtrees().contains(&SETTINGS.to_string()) {
-                            // This operation is updating settings - check if it's adding auth configuration
-                            if let Ok(settings_data) = entry.data(SETTINGS) {
-                                if let Ok(new_settings) = serde_json::from_str::<Doc>(settings_data)
+                } else {
+                    // No auth configuration found in historical settings
+                    // Check if this is a bootstrap operation (adding auth config for the first time)
+                    if has_settings_update || entry.subtrees().contains(&SETTINGS.to_string()) {
+                        // This operation is updating settings - check if it's adding auth configuration
+                        if let Ok(settings_data) = entry.data(SETTINGS) {
+                            if let Ok(new_settings) = serde_json::from_str::<Doc>(settings_data) {
+                                if matches!(new_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty())
                                 {
-                                    if matches!(new_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty())
-                                    {
-                                        // This is a bootstrap operation - adding auth config for the first time
-                                        // Allow it since it's setting up authentication
-                                        crate::backend::VerificationStatus::Verified
-                                    } else {
-                                        return Err(TransactionError::NoAuthConfiguration.into());
-                                    }
+                                    // This is a bootstrap operation - adding auth config for the first time
+                                    // Allow it since it's setting up authentication
+                                    crate::backend::VerificationStatus::Verified
                                 } else {
                                     return Err(TransactionError::NoAuthConfiguration.into());
                                 }
@@ -994,6 +997,8 @@ impl Transaction {
                         } else {
                             return Err(TransactionError::NoAuthConfiguration.into());
                         }
+                    } else {
+                        return Err(TransactionError::NoAuthConfiguration.into());
                     }
                 }
             }
