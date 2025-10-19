@@ -91,7 +91,7 @@ Each Database maintains its settings as a key-value store in a special "settings
 # let database = db.new_database(settings_doc, "test_key")?;
 // Access database settings through a transaction
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Access common settings
 let name = settings_store.get_name()?;

@@ -28,7 +28,6 @@ use crate::{
     },
     backend::BackendDB,
     entry::ID,
-    store::SettingsStore,
 };
 
 /// Trait for handling sync requests with database access.
@@ -202,7 +201,7 @@ impl SyncHandlerImpl {
         let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
         let mut transaction = database.new_transaction()?;
         transaction.set_auth_key(DEVICE_KEY_NAME);
-        let settings_store = SettingsStore::new(&transaction)?;
+        let settings_store = transaction.get_settings()?;
 
         let auth_settings = settings_store.get_auth_settings()?;
 
@@ -760,7 +759,7 @@ impl SyncHandlerImpl {
         let database = Database::new_from_id(tree_id.clone(), self.backend.clone())?;
         let mut transaction = database.new_transaction()?;
         transaction.set_auth_key(DEVICE_KEY_NAME);
-        let settings_store = SettingsStore::new(&transaction)?;
+        let settings_store = transaction.get_settings()?;
 
         // Create the new auth key with validation
         let auth_key = AuthKey::active(public_key.to_string(), permission).unwrap();

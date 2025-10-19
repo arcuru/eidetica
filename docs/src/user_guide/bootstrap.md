@@ -105,7 +105,7 @@ use eidetica::store::SettingsStore;
 
 // Enable auto-approval in database settings
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Configure bootstrap auto-approval policy
 settings_store.update_auth_settings(|auth| {

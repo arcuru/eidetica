@@ -66,7 +66,7 @@ Give other users access to your database:
 # // Generate a keypair for the new user
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
 # let alice_public_key = format_public_key(&alice_verifying_key);
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Add a user with write access
 let user_key = AuthKey::active(
@@ -98,7 +98,7 @@ Allow anyone to read your database:
 # settings.set("name", "test_db");
 # let database = db.new_database(settings, "admin")?;
 # let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Wildcard key for public read access
 let public_key = AuthKey::active(
@@ -131,12 +131,12 @@ Remove a user's access:
 # let database = db.new_database(settings, "admin")?;
 // First add alice key so we can revoke it
 let transaction_setup = database.new_transaction()?;
-let settings_setup = SettingsStore::new(&transaction_setup)?;
+let settings_setup = transaction_setup.get_settings()?;
 settings_setup.set_auth_key("alice", AuthKey::active("*", Permission::Write(10))?)?;
 transaction_setup.commit()?;
 let transaction = database.new_transaction()?;
 
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Revoke the key
 settings_store.revoke_auth_key("alice")?;
@@ -164,7 +164,7 @@ Note: Historical entries created by revoked keys remain valid.
 # settings.set_string("name", "multi_user_example");
 # let database = db.new_database(settings, "admin")?;
 # let transaction = database.new_transaction()?;
-# let settings_store = SettingsStore::new(&transaction)?;
+# let settings_store = transaction.get_settings()?;
 #
 // Generate keypairs for different users
 let (_super_admin_signing_key, super_admin_verifying_key) = generate_keypair();
@@ -223,7 +223,7 @@ Databases can delegate authentication to other databases:
 
 ```rust,ignore
 let transaction = main_database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Use update_auth_settings for delegation setup
 settings_store.update_auth_settings(|auth| {

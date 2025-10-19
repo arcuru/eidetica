@@ -44,7 +44,7 @@ pub fn hash_password(password: impl AsRef<str>) -> Result<(String, String)> {
     let password_hash = argon2
         .hash_password(password.as_ref().as_bytes(), &salt)
         .map_err(|e| UserError::EncryptionFailed {
-            reason: format!("Password hashing failed: {}", e),
+            reason: format!("Password hashing failed: {e}"),
         })?
         .to_string();
 
@@ -89,7 +89,7 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
     }
 
     let salt = SaltString::from_b64(salt_str).map_err(|e| UserError::EncryptionFailed {
-        reason: format!("Invalid salt format: {}", e),
+        reason: format!("Invalid salt format: {e}"),
     })?;
 
     let argon2 = Argon2::default();
@@ -102,7 +102,7 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
             &mut key,
         )
         .map_err(|e| UserError::EncryptionFailed {
-            reason: format!("Key derivation failed: {}", e),
+            reason: format!("Key derivation failed: {e}"),
         })?;
 
     Ok(key)
@@ -140,7 +140,7 @@ pub fn encrypt_private_key(
     // Create cipher
     let cipher =
         Aes256Gcm::new_from_slice(encryption_key).map_err(|e| UserError::EncryptionFailed {
-            reason: format!("Failed to create cipher: {}", e),
+            reason: format!("Failed to create cipher: {e}"),
         })?;
 
     // Generate random nonce
@@ -150,7 +150,7 @@ pub fn encrypt_private_key(
     let ciphertext = cipher.encrypt(&nonce, key_bytes.as_ref()).map_err(|e| {
         key_bytes.zeroize();
         UserError::EncryptionFailed {
-            reason: format!("Encryption failed: {}", e),
+            reason: format!("Encryption failed: {e}"),
         }
     })?;
 
@@ -200,7 +200,7 @@ pub fn decrypt_private_key(
     // Create cipher
     let cipher =
         Aes256Gcm::new_from_slice(encryption_key).map_err(|e| UserError::DecryptionFailed {
-            reason: format!("Failed to create cipher: {}", e),
+            reason: format!("Failed to create cipher: {e}"),
         })?;
 
     // Create nonce
@@ -211,7 +211,7 @@ pub fn decrypt_private_key(
         cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| UserError::DecryptionFailed {
-                reason: format!("Decryption failed: {}", e),
+                reason: format!("Decryption failed: {e}"),
             })?;
 
     // Convert to SigningKey

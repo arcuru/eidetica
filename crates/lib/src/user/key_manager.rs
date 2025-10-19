@@ -320,7 +320,7 @@ mod tests {
             key_id: key_id.to_string(),
             private_key_bytes: encrypted_key,
             encryption: KeyEncryption::Encrypted { nonce },
-            display_name: Some(format!("Test key {}", key_id)),
+            display_name: Some(format!("Test key {key_id}")),
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

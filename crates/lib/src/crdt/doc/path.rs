@@ -882,9 +882,7 @@ mod tests {
             assert_eq!(
                 path.as_str(),
                 expected,
-                "Input '{}' should normalize to '{}'",
-                input,
-                expected
+                "Input '{input}' should normalize to '{expected}'"
             );
         }
     }

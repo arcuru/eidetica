@@ -8,10 +8,9 @@ use tracing::{debug, info};
 
 use crate::{
     Database, Entry, Result,
-    auth::{crypto::format_public_key, settings::AuthSettings, types::AuthKey},
-    constants::SETTINGS,
+    auth::{crypto::format_public_key, types::AuthKey},
     crdt::Doc,
-    store::{DocStore, SettingsStore},
+    store::DocStore,
 };
 
 pub mod background;
@@ -1281,7 +1280,7 @@ impl Sync {
         // Validate public key format by attempting to parse it
         crate::auth::crypto::parse_public_key(&requesting_public_key).map_err(|e| {
             SyncError::InvalidPublicKey {
-                reason: format!("Invalid public key format: {}", e),
+                reason: format!("Invalid public key format: {e}"),
             }
         })?;
 
@@ -1345,8 +1344,7 @@ impl Sync {
             .get_private_key(requesting_key_name)?
             .ok_or_else(|| {
                 SyncError::BackendError(format!(
-                    "Private key not found for key name: {}",
-                    requesting_key_name
+                    "Private key not found for key name: {requesting_key_name}"
                 ))
             })?;
 
@@ -1506,25 +1504,17 @@ impl Sync {
         tx.set_auth_key(approving_key_name);
 
         // Get settings store and update auth configuration
-        let settings_store = tx.get_store::<DocStore>(SETTINGS)?;
+        let settings_store = tx.get_settings()?;
 
-        // Get existing auth settings or create new ones
-        let mut auth_settings = match settings_store.get_node("auth") {
-            Ok(auth_doc) => AuthSettings::from_doc(auth_doc),
-            Err(_) => AuthSettings::new(), // Key doesn't exist, create new
-        };
-
+        // Create the auth key for the requesting device
         let auth_key = AuthKey::active(
             request.requesting_pubkey.clone(),
             request.requested_permission.clone(),
-        )
-        .unwrap();
+        )?;
 
-        // Add the new key to auth settings
-        auth_settings.add_key(&request.requesting_key_name, auth_key)?;
-
-        // Update the settings store with the modified auth configuration
-        settings_store.set_node("auth", auth_settings.as_doc().clone())?;
+        // Add the new key to auth settings using SettingsStore API
+        // This provides proper upsert behavior and validation
+        settings_store.set_auth_key(&request.requesting_key_name, auth_key)?;
 
         tx.commit()?;
 
@@ -1615,7 +1605,7 @@ impl Sync {
         let tx = database.new_transaction()?;
 
         // Get settings store and update auth configuration
-        let settings_store = SettingsStore::new(&tx)?;
+        let settings_store = tx.get_settings()?;
 
         // Create the auth key for the requesting device
         let auth_key = AuthKey::active(

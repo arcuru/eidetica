@@ -42,7 +42,7 @@ Settings can be accessed through two primary interfaces:
 use eidetica::store::SettingsStore;
 
 // Create a SettingsStore from a transaction
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Type-safe access to common settings
 let database_name = settings_store.get_name()?;
@@ -197,7 +197,7 @@ use eidetica::store::SettingsStore;
 use eidetica::auth::{AuthKey, Permission};
 
 // Get a SettingsStore handle for type-safe operations
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Update database name
 settings_store.set_name("My Database")?;

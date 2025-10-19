@@ -22,7 +22,7 @@ use crate::{
     crdt::{Doc, doc::Value},
     entry::{Entry, ID},
     instance::errors::InstanceError,
-    store::{DocStore, Store},
+    store::{SettingsStore, Store},
     sync::hooks::SyncHookCollection,
 };
 
@@ -504,24 +504,42 @@ impl Database {
         self.backend.get(&self.root)
     }
 
-    /// Get a settings store for the database.
+    /// Get a read-only settings store for the database.
     ///
-    /// Returns a DocStore for managing the database's settings.
-    /// TODO: Update this to use the new SettingsStore
+    /// Returns a SettingsStore that provides access to the database's settings.
+    /// Since this creates an internal transaction that is never committed, any
+    /// modifications made through the returned store will not persist.
+    ///
+    /// For making persistent changes to settings, create a transaction and use
+    /// `Transaction::get_settings()` instead.
     ///
     /// # Returns
-    /// A `Result` containing the `DocStore` for settings or an error.
-    pub fn get_settings(&self) -> Result<DocStore> {
-        self.get_store_viewer::<DocStore>(SETTINGS)
+    /// A `Result` containing the `SettingsStore` for settings or an error.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::Database;
+    /// # let database: Database = unimplemented!();
+    /// // Read-only access
+    /// let settings = database.get_settings()?;
+    /// let name = settings.get_name()?;
+    ///
+    /// // For modifications, use a transaction:
+    /// let txn = database.new_transaction()?;
+    /// let settings = txn.get_settings()?;
+    /// settings.set_name("new_name")?;
+    /// txn.commit()?;
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn get_settings(&self) -> Result<SettingsStore> {
+        let txn = self.new_transaction()?;
+        txn.get_settings()
     }
 
     /// Get the name of the database from its settings store
     pub fn get_name(&self) -> Result<String> {
-        // Get the settings store
         let settings = self.get_settings()?;
-
-        // Get the name from the settings
-        settings.get_string("name")
+        settings.get_name()
     }
 
     /// Create a new atomic transaction on this database
@@ -590,7 +608,8 @@ impl Database {
     /// This will return a Store initialized to point at the current state of the database.
     ///
     /// The returned store should NOT be used to modify the database, as it intentionally does not
-    /// expose the Transaction.
+    /// expose the Transaction. Since the Transaction is never committed, it does not have any
+    /// effect on the database.
     pub fn get_store_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
         T: Store,
@@ -813,13 +832,7 @@ impl Database {
         let settings_store = self.get_settings()?;
 
         // Get auth settings from the settings store
-        let auth_settings = match settings_store.get_node("auth") {
-            Ok(auth_doc) => AuthSettings::from_doc(auth_doc),
-            Err(_) => {
-                // No auth settings means no permissions
-                return Err(crate::instance::errors::InstanceError::AuthenticationRequired.into());
-            }
-        };
+        let auth_settings = settings_store.get_auth_settings()?;
 
         // Create SigKey and validate entry auth to get effective permission
         let sig_key = crate::auth::types::SigKey::Direct(sigkey.to_string());

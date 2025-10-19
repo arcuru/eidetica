@@ -187,9 +187,9 @@ pub fn create_user(
 
     // 3. Create user database with authentication for both _device_key and user's key
     let mut user_db_settings = Doc::new();
-    user_db_settings.set_string("name", format!("_user_{}", username));
+    user_db_settings.set_string("name", format!("_user_{username}"));
     user_db_settings.set_string("type", "user");
-    user_db_settings.set_string("description", format!("User database for {}", username));
+    user_db_settings.set_string("description", format!("User database for {username}"));
 
     // Get device key public key for auth settings
     let device_private_key =

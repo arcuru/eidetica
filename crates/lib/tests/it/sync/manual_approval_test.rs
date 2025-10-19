@@ -11,15 +11,10 @@ fn generate_public_key() -> String {
     format_public_key(&verifying_key)
 }
 use eidetica::{
-    Error,
     auth::{
         Permission as AuthPermission,
         crypto::{format_public_key, generate_keypair},
-        errors::AuthError,
-        settings::AuthSettings,
     },
-    constants::SETTINGS,
-    store::DocStore,
     sync::{
         RequestStatus,
         handler::{SyncHandler, SyncHandlerImpl},
@@ -137,14 +132,10 @@ async fn test_approve_bootstrap_request() {
         .new_transaction()
         .expect("Failed to create transaction");
     let settings_store = transaction
-        .get_store::<DocStore>(SETTINGS)
+        .get_settings()
         .expect("Failed to create settings store");
-    let auth_doc = settings_store
-        .get_node("auth")
-        .expect("Failed to get auth settings");
-    let auth_settings = AuthSettings::from_doc(auth_doc);
-    let added_key = auth_settings
-        .get_key("laptop_key")
+    let added_key = settings_store
+        .get_auth_key("laptop_key")
         .expect("Failed to get auth key");
 
     assert_eq!(added_key.pubkey(), &test_key);
@@ -219,17 +210,9 @@ async fn test_reject_bootstrap_request() {
         .new_transaction()
         .expect("Failed to create transaction");
     let settings_store = transaction
-        .get_store::<DocStore>(SETTINGS)
+        .get_settings()
         .expect("Failed to create settings store");
-    let key_result = match settings_store.get_node("auth") {
-        Ok(auth_doc) => {
-            let auth_settings = AuthSettings::from_doc(auth_doc);
-            auth_settings.get_key("laptop_key")
-        }
-        Err(_) => Err(Error::Auth(AuthError::KeyNotFound {
-            key_name: "laptop_key".to_string(),
-        })), // No auth settings means no keys
-    };
+    let key_result = settings_store.get_auth_key("laptop_key");
     assert!(
         key_result.is_err(),
         "Key should not have been added to database"

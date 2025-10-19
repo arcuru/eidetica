@@ -418,7 +418,7 @@ impl Entry {
                 // Validate parent ID format
                 Self::validate_id_format(
                     parent_id,
-                    &format!("subtree '{}' parent ID", subtree_name),
+                    &format!("subtree '{subtree_name}' parent ID"),
                 )?;
             }
         }
@@ -1029,13 +1029,11 @@ mod tests {
         let error_msg = format!("{:?}", result.unwrap_err());
         assert!(
             error_msg.contains("EntryValidationFailed"),
-            "Should be EntryValidationFailed error, got: {}",
-            error_msg
+            "Should be EntryValidationFailed error, got: {error_msg}"
         );
         assert!(
             error_msg.contains("empty main tree parents"),
-            "Error should mention empty parent requirement, got: {}",
-            error_msg
+            "Error should mention empty parent requirement, got: {error_msg}"
         );
     }
 
@@ -1070,13 +1068,11 @@ mod tests {
         let error_msg = format!("{:?}", result.unwrap_err());
         assert!(
             error_msg.contains("EntryValidationFailed"),
-            "Should be EntryValidationFailed error, got: {}",
-            error_msg
+            "Should be EntryValidationFailed error, got: {error_msg}"
         );
         assert!(
             error_msg.contains("empty parent ID"),
-            "Error should mention empty parent ID, got: {}",
-            error_msg
+            "Error should mention empty parent ID, got: {error_msg}"
         );
     }
 
@@ -1096,13 +1092,11 @@ mod tests {
         let error_msg = format!("{:?}", result.unwrap_err());
         assert!(
             error_msg.contains("EntryValidationFailed"),
-            "Should be EntryValidationFailed error, got: {}",
-            error_msg
+            "Should be EntryValidationFailed error, got: {error_msg}"
         );
         assert!(
             error_msg.contains("empty parent ID"),
-            "Error should mention empty parent ID, got: {}",
-            error_msg
+            "Error should mention empty parent ID, got: {error_msg}"
         );
     }
 

@@ -109,7 +109,6 @@ fn grant_user_permission_on_database(
     permission: Permission,
 ) -> eidetica::Result<()> {
     use eidetica::auth::types::AuthKey;
-    use eidetica::store::SettingsStore;
 
     // Get user's public key
     let signing_key = user.get_signing_key(user_key_id)?;
@@ -117,7 +116,7 @@ fn grant_user_permission_on_database(
 
     // Update database auth settings using SettingsStore API
     let tx = database.new_transaction()?;
-    let settings_store = SettingsStore::new(&tx)?;
+    let settings_store = tx.get_settings()?;
     settings_store.set_auth_key(user_key_id, AuthKey::active(pubkey, permission)?)?;
     tx.commit()?;
 

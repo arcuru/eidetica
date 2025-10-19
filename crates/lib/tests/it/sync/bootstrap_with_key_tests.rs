@@ -599,14 +599,10 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Verify the client's key was added to the server database auth settings
     let server_tx = server_database.new_transaction().unwrap();
-    let server_settings = server_tx
-        .get_store::<eidetica::store::DocStore>(eidetica::constants::SETTINGS)
-        .unwrap();
-    let auth_doc = server_settings.get_node("auth").unwrap();
-    let auth_settings = eidetica::auth::settings::AuthSettings::from_doc(auth_doc);
+    let settings_store = server_tx.get_settings().unwrap();
 
-    let client_auth_key = auth_settings
-        .get_key(&client_key_id)
+    let client_auth_key = settings_store
+        .get_auth_key(&client_key_id)
         .expect("Client key should be in server auth settings");
 
     assert_eq!(client_auth_key.permissions(), &Permission::Read);

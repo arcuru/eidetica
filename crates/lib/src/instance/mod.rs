@@ -124,10 +124,9 @@ impl Instance {
                     USERS => {
                         if users_db.is_some() {
                             panic!(
-                                "CRITICAL SECURITY ERROR: Multiple {} databases found in backend. \
+                                "CRITICAL SECURITY ERROR: Multiple {USERS} databases found in backend. \
                                      This indicates database corruption or a potential security breach. \
-                                     Backend integrity compromised.",
-                                USERS
+                                     Backend integrity compromised."
                             );
                         }
                         users_db = Some(db);
@@ -135,10 +134,9 @@ impl Instance {
                     DATABASES => {
                         if databases_db.is_some() {
                             panic!(
-                                "CRITICAL SECURITY ERROR: Multiple {} databases found in backend. \
+                                "CRITICAL SECURITY ERROR: Multiple {DATABASES} databases found in backend. \
                                      This indicates database corruption or a potential security breach. \
-                                     Backend integrity compromised.",
-                                DATABASES
+                                     Backend integrity compromised."
                             );
                         }
                         databases_db = Some(db);
@@ -582,7 +580,7 @@ impl Instance {
     #[deprecated(since = "0.1.0", note = "Deprecated API, will be removed")]
     pub fn remove_private_key(&self, key_id: &str) -> Result<()> {
         Err(InstanceError::OperationNotSupported {
-            operation: format!("remove_private_key('{}') not yet implemented", key_id),
+            operation: format!("remove_private_key('{key_id}') not yet implemented"),
         }
         .into())
     }
@@ -1106,8 +1104,7 @@ mod tests {
             let device_id = instance.device_id_string()?;
             assert_eq!(
                 device_id, device_id1,
-                "Device ID should be consistent on reload {}",
-                i
+                "Device ID should be consistent on reload {i}"
             );
 
             // User list should be the same

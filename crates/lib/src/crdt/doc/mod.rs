@@ -661,16 +661,13 @@ impl Doc {
             match value {
                 Value::Text(json) => serde_json::from_str(json).map_err(|e| {
                     CRDTError::DeserializationFailed {
-                        reason: format!(
-                            "Failed to deserialize JSON for path '{}': {}",
-                            path_str, e
-                        ),
+                        reason: format!("Failed to deserialize JSON for path '{path_str}': {e}"),
                     }
                     .into()
                 }),
                 _ => Err(CRDTError::TypeMismatch {
                     expected: "JSON string".to_string(),
-                    actual: format!("{:?}", value),
+                    actual: format!("{value:?}"),
                 }
                 .into()),
             }

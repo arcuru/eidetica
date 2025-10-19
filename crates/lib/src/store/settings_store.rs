@@ -13,7 +13,7 @@ use crate::{
         types::{AuthKey, ResolvedAuth, SigKey},
     },
     backend::BackendDB,
-    crdt::Doc,
+    crdt::{Doc, doc},
     store::{DocStore, Store},
 };
 
@@ -34,12 +34,14 @@ impl SettingsStore {
     /// This creates a SettingsStore that operates on the `_settings` subtree
     /// within the given transaction context.
     ///
+    /// This is crate-private - users should use `Transaction::get_settings()` instead.
+    ///
     /// # Arguments
     /// * `transaction` - The transaction to operate within
     ///
     /// # Returns
     /// A Result containing the SettingsStore or an error if creation fails
-    pub fn new(transaction: &Transaction) -> Result<Self> {
+    pub(crate) fn new(transaction: &Transaction) -> Result<Self> {
         let inner = <DocStore as Store>::new(transaction, "_settings")?;
         Ok(Self { inner })
     }
@@ -63,6 +65,38 @@ impl SettingsStore {
         self.inner.set_result("name", name)
     }
 
+    /// Get a value from settings by key
+    ///
+    /// # Arguments
+    /// * `key` - The key to retrieve
+    ///
+    /// # Returns
+    /// The value associated with the key, or an error if not found
+    pub fn get(&self, key: impl AsRef<str>) -> Result<doc::Value> {
+        self.inner.get(key)
+    }
+
+    /// Get a string value from settings by key
+    ///
+    /// # Arguments
+    /// * `key` - The key to retrieve
+    ///
+    /// # Returns
+    /// The string value associated with the key, or an error if not found or wrong type
+    pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
+        self.inner.get_string(key)
+    }
+
+    /// Get all settings as a Doc
+    ///
+    /// Returns a complete snapshot of all settings in the _settings subtree.
+    ///
+    /// # Returns
+    /// A Doc containing all current settings
+    pub fn get_all(&self) -> Result<Doc> {
+        self.inner.get_all()
+    }
+
     /// Get the current authentication settings as an AuthSettings instance
     ///
     /// This method loads the auth section from the settings and returns it as
@@ -76,7 +110,7 @@ impl SettingsStore {
             Ok(auth_value) => {
                 // Convert the Value to a Doc and create AuthSettings from it
                 match auth_value {
-                    crate::crdt::doc::Value::Doc(auth_doc) => Ok(AuthSettings::from_doc(auth_doc)),
+                    doc::Value::Doc(auth_doc) => Ok(AuthSettings::from_doc(auth_doc)),
                     _ => {
                         // Auth exists but isn't a node - return empty AuthSettings
                         Ok(AuthSettings::new())

@@ -206,7 +206,7 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 # let database = db.new_database(settings, "test_key")?;
 // Get a SettingsStore for the current transaction
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Set database name
 settings_store.set_name("My Application Database")?;
@@ -241,7 +241,7 @@ transaction.commit()?;
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
 # let alice_public_key = format_public_key(&alice_verifying_key);
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Add a new authentication key
 let auth_key = AuthKey::active(
@@ -291,11 +291,11 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 # let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(30))?;
 # // Add old_user first so we can revoke it
 # let setup_txn = database.new_transaction()?;
-# let setup_store = SettingsStore::new(&setup_txn)?;
+# let setup_store = setup_txn.get_settings()?;
 # setup_store.set_auth_key("old_user", old_user_key)?;
 # setup_txn.commit()?;
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Perform multiple auth operations atomically
 settings_store.update_auth_settings(|auth| {
@@ -324,7 +324,7 @@ For operations not covered by the convenience methods, access the underlying Doc
 
 ```rust,ignore
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Access underlying DocStore for advanced operations
 let doc_store = settings_store.as_doc_store();

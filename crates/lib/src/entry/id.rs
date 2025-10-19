@@ -54,12 +54,12 @@ pub enum IdError {
 impl std::fmt::Display for IdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IdError::InvalidFormat(s) => write!(f, "Invalid ID format: {}", s),
+            IdError::InvalidFormat(s) => write!(f, "Invalid ID format: {s}"),
             IdError::InvalidLength { expected, got } => {
-                write!(f, "Invalid ID length: expected {}, got {}", expected, got)
+                write!(f, "Invalid ID length: expected {expected}, got {got}")
             }
-            IdError::UnknownAlgorithm(alg) => write!(f, "Unknown hash algorithm: {}", alg),
-            IdError::InvalidHex(s) => write!(f, "Invalid hex characters: {}", s),
+            IdError::UnknownAlgorithm(alg) => write!(f, "Unknown hash algorithm: {alg}"),
+            IdError::InvalidHex(s) => write!(f, "Invalid hex characters: {s}"),
         }
     }
 }
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn test_parse_sha256_prefixed() {
         let hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let prefixed = format!("sha256:{}", hex);
+        let prefixed = format!("sha256:{hex}");
         let id = ID::parse(&prefixed).unwrap();
 
         assert_eq!(id.algorithm(), HashAlgorithm::Sha256);
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn test_parse_prefixed_blake3() {
         let hex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
-        let prefixed = format!("blake3:{}", hex);
+        let prefixed = format!("blake3:{hex}");
         let id = ID::parse(&prefixed).unwrap();
 
         assert_eq!(id.algorithm(), HashAlgorithm::Blake3);

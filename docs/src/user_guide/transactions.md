@@ -66,7 +66,7 @@ Using a `Transaction` follows a distinct lifecycle:
     // Get handles within a scope or manage their lifetime
     let _users_store = txn.get_store::<Table<User>>("users")?;
     let _config_store = txn.get_store::<DocStore>("config")?;
-    let _settings_store = SettingsStore::new(&txn)?;  // For database settings
+    let _settings_store = txn.get_settings()?;  // For database settings
 
     txn.commit()?;
     # Ok(())
@@ -97,7 +97,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # let txn = database.new_transaction()?;
     # let users_store = txn.get_store::<Table<User>>("users")?;
     # let config_store = txn.get_store::<DocStore>("config")?;
-    # let settings_store = SettingsStore::new(&txn)?;
+    # let settings_store = txn.get_settings()?;
     #
     // Insert a new user and get their ID
     let user_id = users_store.insert(User { name: "Alice".to_string() })?;
@@ -159,11 +159,11 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # let old_user_public_key = format_public_key(&old_user_verifying_key);
 # let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(15))?;
 # let setup_txn = database.new_transaction()?;
-# let setup_store = SettingsStore::new(&setup_txn)?;
+# let setup_store = setup_txn.get_settings()?;
 # setup_store.set_auth_key("old_user", old_user_key)?;
 # setup_txn.commit()?;
 let transaction = database.new_transaction()?;
-let settings_store = SettingsStore::new(&transaction)?;
+let settings_store = transaction.get_settings()?;
 
 // Update database name
 settings_store.set_name("Production Database")?;
