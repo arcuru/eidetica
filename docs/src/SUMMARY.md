@@ -30,6 +30,7 @@
   - [Database](internal/core_components/database.md)
   - [Transaction](internal/core_components/transaction.md)
   - [Authentication](internal/core_components/authentication.md)
+  - [Authentication Behavior Reference](internal/auth_behavior_reference.md)
   - [Synchronization](internal/core_components/synchronization.md)
   - [Bootstrap System](internal/core_components/bootstrap.md)
   - [Store Implementations](internal/core_components/stores.md)

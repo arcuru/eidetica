@@ -4,9 +4,36 @@ Comprehensive Ed25519-based cryptographic authentication system that ensures dat
 
 ## Overview
 
-Eidetica implements **mandatory authentication** for all entries - there are no unsigned entries in the system. Every operation requires valid Ed25519 signatures, providing strong guarantees about data authenticity and enabling sophisticated access control in decentralized environments.
+Eidetica provides **flexible authentication** supporting both unsigned and signed modes, although signed databases are the default. Databases that lack authentication are used for specialized purposes, such as local-only databases or 'overlays'.
+
+Once authentication is configured, all operations require valid Ed25519 signatures, providing strong guarantees about data authenticity and enabling access control in decentralized environments.
 
 The authentication system is deeply integrated with the core database, not merely a consumer of the API. This tight integration enables efficient validation, deterministic conflict resolution during network partitions, and preservation of historical validity.
+
+## Authentication States
+
+Databases operate in one of four authentication configuration states:
+
+| State             | `_settings.auth` Value      | Unsigned Ops | Authenticated Ops | Transition  | Error Type                   |
+| ----------------- | --------------------------- | ------------ | ----------------- | ----------- | ---------------------------- |
+| **Unsigned Mode** | Missing or `{}` (empty Doc) | ✓ Allowed    | ✓ Bootstrap       | → Signed    | N/A                          |
+| **Signed Mode**   | Valid keys configured       | ✗ Rejected   | ✓ Validated       | Permanent   | `AuthenticationRequired`     |
+| **Corrupted**     | Wrong type (String, etc.)   | ✗ Rejected   | ✗ Rejected        | → Fail-safe | `CorruptedAuthConfiguration` |
+| **Deleted**       | Tombstone (was deleted)     | ✗ Rejected   | ✗ Rejected        | → Fail-safe | `CorruptedAuthConfiguration` |
+
+**State Semantics**:
+
+- **Unsigned Mode**: Database has no authentication configured (missing or empty `_settings.auth`). Both missing and empty `{}` are equivalent. Unsigned operations succeed, authenticated operations trigger automatic bootstrap.
+
+- **Signed Mode**: Database has at least one key configured in `_settings.auth`. All operations require valid signatures. This is a permanent state - cannot return to unsigned mode.
+
+- **Corrupted**: Authentication configuration exists but has wrong type (not a Doc). **Fail-safe behavior**: ALL operations rejected to prevent security bypass through corruption.
+
+- **Deleted**: Authentication configuration was explicitly deleted (CRDT tombstone). **Fail-safe behavior**: ALL operations rejected since this indicates invalid security state.
+
+**Fail-Safe Principle**: When auth configuration is corrupted or deleted, the system rejects ALL operations rather than guessing or bypassing security. This prevents exploits through auth configuration manipulation. When the state is detected, those Entries are invalid and will be rejected by Instances that try to validate them.
+
+For complete behavioral details, see [Authentication Behavior Reference](../auth_behavior_reference.md).
 
 ## Architecture
 

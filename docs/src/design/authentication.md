@@ -12,6 +12,11 @@ This document outlines the authentication and authorization scheme for Eidetica,
 - [Authentication Design](#authentication-design)
   - [Table of Contents](#table-of-contents)
   - [Overview](#overview)
+  - [Authentication Modes and Bootstrap Behavior](#authentication-modes-and-bootstrap-behavior)
+    - [Unsigned Mode (No Authentication)](#unsigned-mode-no-authentication)
+    - [Signed Mode (Mandatory Authentication)](#signed-mode-mandatory-authentication)
+    - [Automatic Bootstrap Transition](#automatic-bootstrap-transition)
+    - [Future: Overlay Databases](#future-overlay-databases)
   - [Design Goals and Principles](#design-goals-and-principles)
     - [Primary Goals](#primary-goals)
     - [Non-Goals](#non-goals)
@@ -67,15 +72,73 @@ This document outlines the authentication and authorization scheme for Eidetica,
 
 Eidetica's authentication scheme is designed to leverage the same CRDT and Merkle-DAG principles that power the core database while providing robust access control for distributed environments. Unlike traditional authentication systems, this design must handle authorization conflicts that can arise from network partitions and concurrent modifications to access control rules.
 
-**As of the current implementation, authentication is mandatory for all entries.** All database operations require valid Ed25519 signatures, eliminating the concept of unsigned entries. This ensures data integrity and provides a consistent security model across all operations.
+Databases operate in one of two authentication modes: **unsigned mode** (no authentication configured) or **signed mode** (authentication required). This design supports both security-critical databases requiring signed operations, unsigned and typically local-only databases for higher performance, and unsigned 'overlay' trees that can be computed from signed trees.
 
 The authentication system is **not** implemented as a pure consumer of the database API but is tightly integrated with the core system. This integration enables efficient validation and conflict resolution during entry creation and database merging operations.
+
+## Authentication Modes and Bootstrap Behavior
+
+Eidetica databases support two distinct authentication modes with automatic transitions between them:
+
+### Unsigned Mode (No Authentication)
+
+Databases are in **unsigned mode** when created without authentication configuration. In this mode:
+
+- The `_settings.auth` key is either missing or contains an empty `Doc` (`{"auth": {}}`)
+- Both states are equivalent and treated identically by the system
+- **Unsigned operations succeed**: Transactions without signatures are allowed
+- **No validation overhead**: Authentication validation is skipped for performance
+- **Suitable for**: Local-only databases, temporary workspaces, development environments, overlay networks
+
+Unsigned mode enables use cases where authentication overhead is unnecessary, such as:
+
+- Local computation that never needs to sync
+- Development and testing environments
+- Temporary scratch databases
+- The upcoming "overlays" feature (see below)
+
+### Signed Mode (Mandatory Authentication)
+
+Once authentication is configured, databases are in **signed mode** where:
+
+- The `_settings.auth` key contains at least one authentication key
+- **All operations require valid signatures**: Only authenticated and transactions are valid
+- **Fail-safe validation**: Corrupted or deleted auth configuration causes all transactions to fail
+- **Permanent transition**: Cannot return to unsigned mode (would require creating a new database)
+
+In signed mode, unsigned operations will fail with an authentication error. The system enforces mandatory authentication to maintain security guarantees once authentication has been established.
+
+**Fail-Safe Behavior**:
+
+The validation system uses two-layer protection to prevent and detect authentication corruption:
+
+1. **Proactive Prevention** (Layer 1): Transactions that would corrupt or delete auth configuration fail during `commit()`, before the entry enters the Merkle DAG
+2. **Reactive Fail-Safe** (Layer 2): If auth is already corrupted (from older code versions or external manipulation), all subsequent operations on top of the corrupted state are also invalid
+
+**Validation States**:
+
+| Auth State        | `_settings.auth` Value      | Unsigned Operations | Authenticated Operations | Status            |
+| ----------------- | --------------------------- | ------------------- | ------------------------ | ----------------- |
+| **Unsigned Mode** | Missing or `{}` (empty Doc) | ✓ Allowed           | ✓ Triggers bootstrap     | Valid             |
+| **Signed Mode**   | Valid key configuration     | ✗ Rejected          | ✓ Validated              | Valid             |
+| **Corrupted**     | Wrong type (String, etc.)   | ✗ PREVENTED         | ✗ PREVENTED              | Cannot be created |
+| **Deleted**       | Tombstone (was deleted)     | ✗ PREVENTED         | ✗ PREVENTED              | Cannot be created |
+
+**Note**: Corrupted and Deleted states shown in the table are **theoretical** - the system prevents their creation through proactive validation. The fail-safe layer (Layer 2) remains as defense-in-depth against historical corruption or external DAG manipulation.
+
+This defense-in-depth approach ensures that corrupted authentication configuration cannot be created or exploited to bypass security. See [Authentication Behavior Reference](../internal/auth_behavior_reference.md) for detailed implementation information.
+
+### Future: Overlay Databases
+
+The unsigned mode design enables a planned feature called "overlays", computed databases that can be calculated from multiple machines.
+
+The idea is that an "overlay" adds information to a database, backups for example, that can be reconstructed entirely from the original database.
 
 ## Design Goals and Principles
 
 ### Primary Goals
 
-1. **Mandatory Authentication**: All entries must be cryptographically signed - no unsigned entries allowed
+1. **Flexible Authentication**: Support both unsigned mode for local-only work and signed mode for distributed collaboration
 2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
 3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
 4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
