@@ -26,6 +26,7 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Key Lifecycle](#key-lifecycle)
     - [Key Status Semantics](#key-status-semantics)
     - [Priority System](#priority-system)
+    - [Key Naming and Aliasing](#key-naming-and-aliasing)
   - [Delegation (Delegated Databases)](#delegation-delegated-databases)
     - [Concept and Benefits](#concept-and-benefits)
     - [Structure](#structure)
@@ -258,9 +259,90 @@ Priority values are u32 integers where lower values indicate higher priority:
 
 **Important**: Priority **only** affects administrative operations (key management). It does **not** influence CRDT merge conflict resolution, which uses Last Write Wins semantics based on the DAG structure.
 
-## Delegation (Delegated Databases)
+### Key Naming and Aliasing
 
-**Status**: Fully implemented and functional with comprehensive test coverage. Delegated databases enable powerful authentication delegation patterns.
+Auth settings serve two distinct purposes in delegation:
+
+1. **Delegation references** - Names that point to OTHER DATABASES (DelegatedTreeRef containing TreeReference)
+2. **Signing keys** - Names that point to PUBLIC KEYS (AuthKey containing Ed25519 public key)
+
+Auth settings can also contain multiple names for the same public key, each potentially with different permissions. This enables:
+
+- **Readable delegation paths** - Use friendly names like `"alice_laptop"` instead of long public key strings
+- **Permission contexts** - Same key can have different permissions depending on how it's referenced
+- **API compatibility** - Bootstrap can use public key strings while delegation uses friendly names
+
+**Example**: Multiple names for same key
+
+```json
+{
+  "_settings": {
+    "auth": {
+      "Ed25519:abc123...": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "admin:0",
+        "status": "active"
+      },
+      "alice_work": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "write:10",
+        "status": "active"
+      },
+      "alice_readonly": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "read",
+        "status": "active"
+      }
+    }
+  }
+}
+```
+
+**Use Cases**:
+
+- **Instance API bootstrap**: When using `instance.new_database(settings, key_name)`, the database is automatically bootstrapped with the signing key added to auth settings using the **public key string** as the name (e.g., `"Ed25519:abc123..."`). This is the name used for signature verification.
+
+- **User API bootstrap**: When using `user.new_database(settings, key_id)`, the behavior is similar - the key is added with its public key string as the name, regardless of any display name stored in user key metadata.
+
+- **Delegation paths**: Delegation references keys by their **name** in auth settings. To enable readable delegation paths like `["alice@example.com", "alice_laptop"]` instead of `["alice@example.com", "Ed25519:abc123..."]`, add friendly name aliases to the delegated database's auth settings.
+
+- **Permission differentiation**: The same physical key can have different permission levels depending on which name is used to reference it.
+
+**Key Aliasing Pattern**:
+
+```rust,ignore
+// Bootstrap creates entry with public key string as name
+let database = instance.new_database(settings, "alice_key")?;
+// Auth now contains: { "Ed25519:abc123...": AuthKey(...) }
+
+// Add friendly name alias for delegation
+let transaction = database.new_transaction()?;
+let settings = transaction.get_settings()?;
+settings.update_auth_settings(|auth| {
+    // Same public key, friendly name, potentially different permission
+    auth.add_key("alice_laptop", AuthKey::active(
+        "Ed25519:abc123...",  // Same public key
+        Permission::Write(10),  // Can differ from bootstrap permission
+    )?)?;
+    Ok(())
+})?;
+transaction.commit()?;
+// Auth now contains both:
+// { "Ed25519:abc123...": AuthKey(..., Admin(0)) }
+// { "alice_laptop": AuthKey(..., Write(10)) }
+```
+
+**Important Notes**:
+
+- Both entries reference the same cryptographic key but can have different permissions
+- Signature verification works with any name that maps to the correct public key
+- Delegation paths use the key **name** from auth settings, making friendly aliases essential for readable delegation
+- The name used in the `auth.key` field (either direct or in a delegation path) must exactly match a name in the auth settings
+- Adding multiple names for the same key does not create duplicates - they are intentional aliases with potentially different permission contexts
+
+## Delegation (Delegated Authentication)
+
+**Status**: Fully implemented and functional with comprehensive test coverage.
 
 ### Concept and Benefits
 
@@ -399,7 +481,16 @@ Delegated databases can reference other delegated databases, creating delegation
 - Each element has a `"key"` field and optionally `"tips"` for delegated databases
 - The final element must contain only a `"key"` field (the actual signing key)
 - Each step represents traversing from one database to the next in the delegation chain
-- Permission clamping applies at each level using the minimum function
+
+**Path Traversal**:
+
+- Steps with `tips` → lookup **delegation reference name** in current DB → find DelegatedTreeRef → jump to referenced database
+- Final step (no tips) → lookup **signing key name** in current DB → find AuthKey → get Ed25519 public key for signature verification
+- **Key names** at each step reference entries in that database's auth settings by name (see [Key Naming and Aliasing](#key-naming-and-aliasing))
+
+**Permission and Validation**:
+
+- Permission clamping applies at each level using the min/max function
 - Priority at each step is the priority inside the permission value that survives the clamp at that level (outer reference, inner key, or bound, depending on which one is selected by the clamping rules)
 - Tips must be valid at each level of the chain for the delegation to be valid
 

@@ -215,31 +215,333 @@ transaction.commit()?;
 4. **Regular key rotation**: Periodically update keys for security
 5. **Backup admin keys**: Keep secure copies of critical admin keys
 
-## Advanced: Cross-Database Authentication
+## Advanced: Cross-Database Authentication (Delegation)
 
-Databases can delegate authentication to other databases:
+Delegation allows databases to reference other databases as sources of authentication keys. This enables powerful patterns like:
 
-<!-- Code block ignored: Complex authentication flow requiring policy setup -->
+- Users manage their own keys in personal databases
+- Multiple projects share authentication across databases
+- Hierarchical access control without granting admin privileges
 
-```rust,ignore
-let transaction = main_database.new_transaction()?;
-let settings_store = transaction.get_settings()?;
+### How Delegation Works
 
-// Use update_auth_settings for delegation setup
-settings_store.update_auth_settings(|auth| {
-    // Reference another database for authentication
-    auth.add_delegated_tree("user@example.com", DelegatedTreeRef {
-        tree_root: "USER_TREE_ROOT_ID".to_string(),
-        max_permission: Permission::Write(15),
-        min_permission: Some(Permission::Read(1)),
+When you delegate to another database:
+
+1. **The delegating database** references another database in its `_settings.auth`
+2. **The delegated database** maintains its own keys in its `_settings.auth`
+3. **Permission clamping** ensures delegated keys can't exceed specified bounds
+4. **Delegation paths** reference keys by their **name** in the delegated database's auth settings
+
+### Basic Delegation Setup
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::auth::{DelegatedTreeRef, Permission, PermissionBounds, TreeReference};
+# use eidetica::store::SettingsStore;
+#
+# fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.add_private_key("admin")?;
+#
+# // Create user's personal database
+# let alice_database = instance.new_database(Doc::new(), "admin")?;
+#
+# // Create main project database
+# let project_database = instance.new_database(Doc::new(), "admin")?;
+// Get the user's database root and current tips
+let user_root = alice_database.root_id().clone();
+let user_tips = alice_database.get_tips()?;
+
+// Add delegation reference to project database
+let transaction = project_database.new_transaction()?;
+let settings = transaction.get_settings()?;
+
+settings.update_auth_settings(|auth| {
+    auth.add_delegated_tree("alice@example.com", DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            max: Permission::Write(15),
+            min: Some(Permission::Read),
+        },
+        tree: TreeReference {
+            root: user_root,
+            tips: user_tips,
+        },
     })?;
     Ok(())
 })?;
 
 transaction.commit()?;
+# Ok(())
+# }
 ```
 
-This allows users to manage their own keys in their personal databases while accessing your database with appropriate permissions.
+Now any key in Alice's personal database can access the project database, with permissions clamped to the specified bounds.
+
+### Understanding Delegation Paths
+
+**Critical concept**: A delegation path traverses through databases using **two different types of key names**:
+
+1. **Delegation reference names** - Point to other databases (DelegatedTreeRef)
+2. **Signing key names** - Point to public keys (AuthKey) for signature verification
+
+#### Delegation Reference Names
+
+These are names in the **delegating database's** auth settings that point to **other databases**:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::auth::{DelegatedTreeRef, Permission, PermissionBounds, TreeReference};
+# use eidetica::store::SettingsStore;
+#
+# fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.add_private_key("admin")?;
+# let alice_db = instance.new_database(Doc::new(), "admin")?;
+# let alice_root = alice_db.root_id().clone();
+# let alice_tips = alice_db.get_tips()?;
+# let project_db = instance.new_database(Doc::new(), "admin")?;
+# let transaction = project_db.new_transaction()?;
+# let settings = transaction.get_settings()?;
+// In project database: "alice@example.com" points to Alice's database
+settings.update_auth_settings(|auth| {
+    auth.add_delegated_tree(
+        "alice@example.com",  // ← Delegation reference name
+        DelegatedTreeRef {
+            tree: TreeReference {
+                root: alice_root,
+                tips: alice_tips,
+            },
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(15),
+                min: Some(Permission::Read),
+            },
+        }
+    )?;
+    Ok(())
+})?;
+# transaction.commit()?;
+# Ok(())
+# }
+```
+
+This creates an entry in the project database's auth settings:
+
+- **Name**: `"alice@example.com"`
+- **Points to**: Alice's database (via TreeReference)
+
+#### Signing Key Names
+
+These are names in the **delegated database's** auth settings that point to **public keys**:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::store::SettingsStore;
+#
+# fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# let pubkey = instance.add_private_key("alice_laptop")?;
+# let alice_db = instance.new_database(Doc::new(), "alice_laptop")?;
+# let alice_pubkey_str = eidetica::auth::crypto::format_public_key(&pubkey);
+# let transaction = alice_db.new_transaction()?;
+# let settings = transaction.get_settings()?;
+// In Alice's database: "alice_laptop" points to a public key
+// (This was added automatically during bootstrap, but we can add aliases)
+settings.update_auth_settings(|auth| {
+    auth.add_key(
+        "alice_work",  // ← Signing key name (alias)
+        AuthKey::active(
+            &alice_pubkey_str,  // The actual Ed25519 public key
+            Permission::Write(10),
+        )?
+    )?;
+    Ok(())
+})?;
+# transaction.commit()?;
+# Ok(())
+# }
+```
+
+This creates an entry in Alice's database auth settings:
+
+- **Name**: `"alice_work"` (an alias for the same key as `"alice_laptop"`)
+- **Points to**: An Ed25519 public key
+
+### Using Delegated Keys
+
+A delegation path is a sequence of steps that traverses from the delegating database to the signing key:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::auth::{SigKey, DelegationStep};
+# use eidetica::store::DocStore;
+#
+# fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.add_private_key("admin")?;
+# let project_db = instance.new_database(Doc::new(), "admin")?;
+# let user_db = instance.new_database(Doc::new(), "admin")?;
+# let user_tips = user_db.get_tips()?;
+// Create a delegation path with TWO steps:
+let delegation_path = SigKey::DelegationPath(vec![
+    // Step 1: Look up "alice@example.com" in PROJECT database's auth settings
+    //         This is a delegation reference name pointing to Alice's database
+    DelegationStep {
+        key: "alice@example.com".to_string(),
+        tips: Some(user_tips),  // Tips for Alice's database
+    },
+    // Step 2: Look up "alice_laptop" in ALICE'S database's auth settings
+    //         This is a signing key name pointing to an Ed25519 public key
+    DelegationStep {
+        key: "alice_laptop".to_string(),
+        tips: None,  // Final step has no tips (it's a pubkey, not a tree)
+    },
+]);
+
+// Use the delegation path to create an authenticated operation
+// Note: This requires the actual signing key to be available
+// project_database.new_operation_with_sig_key(delegation_path)?;
+# Ok(())
+# }
+```
+
+**Path traversal**:
+
+1. Start in **project database** auth settings
+2. Look up `"alice@example.com"` → finds DelegatedTreeRef → jumps to **Alice's database**
+3. Look up `"alice_laptop"` in Alice's database → finds AuthKey → gets **Ed25519 public key**
+4. Use that public key to verify the entry signature
+
+### Permission Clamping
+
+Permissions from delegated databases are automatically clamped:
+
+```text
+User DB key: Admin(5)     →  Project DB clamps to: Write(15)  (max bound)
+User DB key: Write(10)    →  Project DB keeps:      Write(10) (within bounds)
+User DB key: Read         →  Project DB keeps:      Read      (above min bound)
+```
+
+**Rules**:
+
+- If delegated permission > max bound: lowered to max
+- If delegated permission < min bound: raised to min (if specified)
+- Permissions within bounds are preserved
+- Admin permissions only apply within the delegated database
+
+This makes it convenient to reuse the same validation rules across both databases. Only an Admin can grant permissions to a database by modifying the Auth Settings, but we can grant lower access to a User, and allow them to use any key they want, by granting access to a User controlled database and giving **that** the desired permissions. The User can then manage their own keys using their own Admin keys, under exactly the same rules.
+
+### Multi-Level Delegation
+
+Delegated databases can themselves delegate to other databases, creating chains:
+
+```rust,ignore
+// Entry signed through a delegation chain:
+{
+  "auth": {
+    "sig": "...",
+    "key": [
+      {
+        "key": "team@example.com",      // Step 1: Delegation ref in Main DB → Team DB
+        "tips": ["team_db_tip"]
+      },
+      {
+        "key": "alice@example.com",     // Step 2: Delegation ref in Team DB → Alice's DB
+        "tips": ["alice_db_tip"]
+      },
+      {
+        "key": "alice_laptop",          // Step 3: Signing key in Alice's DB → pubkey
+        // No tips - this is a pubkey, not a tree
+      }
+    ]
+  }
+}
+```
+
+**Path traversal**:
+
+1. Look up `"team@example.com"` in **Main DB** → finds DelegatedTreeRef → jump to **Team DB**
+2. Look up `"alice@example.com"` in **Team DB** → finds DelegatedTreeRef → jump to **Alice's DB**
+3. Look up `"alice_laptop"` in **Alice's DB** → finds AuthKey → get **Ed25519 public key**
+4. Use that public key to verify the signature
+
+Each level applies its own permission clamping, with the final effective permission being the **minimum** across all levels.
+
+### Common Delegation Patterns
+
+**User-Managed Access**:
+
+```text
+Project DB → delegates to → Alice's Personal DB
+                              ↓
+                         Alice manages her own keys
+```
+
+**Team Hierarchy**:
+
+```text
+Main DB → delegates to → Team DB → delegates to → User DB
+          (max: Admin)            (max: Write)
+```
+
+**Cross-Project Authentication**:
+
+```text
+Project A ───┐
+             ├→ delegates to → Shared Auth DB
+Project B ───┘
+```
+
+### Key Aliasing
+
+Auth settings can contain multiple names for the same public key with different permissions:
+
+```json
+{
+  "_settings": {
+    "auth": {
+      "Ed25519:abc123...": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "admin:0",
+        "status": "active"
+      },
+      "alice_work": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "write:10",
+        "status": "active"
+      },
+      "alice_readonly": {
+        "pubkey": "Ed25519:abc123...",
+        "permissions": "read",
+        "status": "active"
+      }
+    }
+  }
+}
+```
+
+This allows:
+
+- The same key to have different permission contexts
+- Readable delegation path names instead of public key strings
+- Fine-grained access control based on how the key is referenced
+
+### Best Practices
+
+1. **Use descriptive delegation names**: `"alice@example.com"`, `"team-engineering"`
+2. **Set appropriate permission bounds**: Don't grant more access than needed
+3. **Update delegation tips**: Keep tips current to ensure revocations are respected
+4. **Use friendly key names**: Add aliases for keys that will be used in delegation paths
+5. **Document delegation chains**: Complex hierarchies can be hard to debug
+
+### See Also
+
+- [Delegation Design](../design/authentication.md#delegation-delegated-databases) - Technical details
+- [Permission System](../design/authentication.md#permission-hierarchy) - How permissions work
 
 ## Troubleshooting
 
