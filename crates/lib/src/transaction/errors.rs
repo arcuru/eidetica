@@ -47,6 +47,10 @@ pub enum TransactionError {
     #[error("No authentication configuration found")]
     NoAuthConfiguration,
 
+    /// Authentication configuration exists but is corrupted or malformed
+    #[error("Authentication configuration is corrupted or malformed")]
+    CorruptedAuthConfiguration,
+
     /// Insufficient permissions for the operation
     #[error("Insufficient permissions for operation")]
     InsufficientPermissions,
@@ -77,6 +81,7 @@ impl TransactionError {
             TransactionError::SigningKeyNotFound { .. }
                 | TransactionError::AuthenticationRequired
                 | TransactionError::NoAuthConfiguration
+                | TransactionError::CorruptedAuthConfiguration
                 | TransactionError::InsufficientPermissions
                 | TransactionError::SignatureVerificationFailed
                 | TransactionError::EntrySigningFailed { .. }

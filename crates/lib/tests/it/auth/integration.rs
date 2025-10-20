@@ -29,74 +29,74 @@ fn test_authenticated_operations() {
 }
 
 #[test]
-fn test_validation_pipeline_with_corrupted_auth_data() {
+fn test_prevent_auth_corruption() {
     let (_instance, mut user) = crate::helpers::test_instance_with_user("test_user");
 
-    let valid_key_id = user
-        .add_private_key(Some("VALID_KEY"))
-        .expect("Failed to add key");
+    let key_id = user
+        .get_default_key()
+        .expect("User should have default key");
 
-    // Create tree - auth is automatically bootstrapped with valid_key_id
-    // The key is added to auth settings with Permission::Admin(0) and KeyStatus::Active
+    // Create database (auth automatically bootstrapped with user's key)
     let tree = user
-        .new_database(Doc::new(), &valid_key_id)
+        .new_database(Doc::new(), &key_id)
         .expect("Failed to create tree");
 
-    // Valid operation should work
-    test_operation_succeeds(&tree, &valid_key_id, "data", "Valid key before corruption");
+    // Verify initial operation works
+    let op = tree.new_transaction().expect("Failed to create operation");
+    let store = op
+        .get_store::<DocStore>("data")
+        .expect("Failed to get store");
+    store
+        .set("before_corruption", "value")
+        .expect("Failed to set");
+    op.commit().expect("Initial operation should succeed");
 
-    // Create operation that corrupts auth settings
-    let op = tree
-        .new_authenticated_operation(&valid_key_id)
-        .expect("Failed to create operation");
+    // Test corruption path 1: Set auth to wrong type (String instead of Doc)
+    let op = tree.new_transaction().expect("Failed to create operation");
     let settings_store = op
         .get_store::<DocStore>("_settings")
-        .expect("Failed to get settings subtree");
-
-    // Corrupt the auth settings by setting it to a string instead of a map
+        .expect("Failed to get settings");
     settings_store
         .set("auth", "corrupted_auth_data")
         .expect("Failed to corrupt auth settings");
 
-    let _corruption_entry = op.commit().expect("Failed to commit corruption");
-
-    // After corruption, the system takes a fail-safe approach
-    // Both authenticated and unsigned operations should fail when auth is corrupted
-    // This prevents operations from proceeding with invalid security configuration
-
-    // Test that authenticated operations fail
-    let authenticated_op = tree
-        .new_authenticated_operation(&valid_key_id)
-        .expect("Should be able to create operation");
-    let auth_store = authenticated_op
-        .get_store::<DocStore>("data")
-        .expect("Failed to get data subtree");
-    auth_store
-        .set("should_fail", "value")
-        .expect("Failed to set value");
-
-    let auth_result = authenticated_op.commit();
+    let result = op.commit();
     assert!(
-        auth_result.is_err(),
-        "Authenticated operation should fail with corrupted auth settings"
+        result.is_err(),
+        "Corruption commit (wrong type) should fail immediately"
+    );
+    assert!(
+        result.unwrap_err().is_authentication_error(),
+        "Should be authentication error"
     );
 
-    // Test that even unsigned operations fail (fail-safe behavior)
-    let unsigned_op = tree
-        .new_transaction()
-        .expect("Should be able to create unsigned operation");
-    let unsigned_store = unsigned_op
-        .get_store::<DocStore>("data")
-        .expect("Failed to get data subtree");
-    unsigned_store
-        .set("unsigned_after_corruption", "value")
-        .expect("Failed to set value");
+    // Test corruption path 2: Delete auth (creates CRDT tombstone)
+    let op = tree.new_transaction().expect("Failed to create operation");
+    let settings_store = op
+        .get_store::<DocStore>("_settings")
+        .expect("Failed to get settings");
+    settings_store
+        .delete("auth")
+        .expect("Failed to delete auth settings");
 
-    let unsigned_result = unsigned_op.commit();
+    let result = op.commit();
     assert!(
-        unsigned_result.is_err(),
-        "Unsigned operations should also fail with corrupted auth (fail-safe behavior)"
+        result.is_err(),
+        "Deletion commit (tombstone) should fail immediately"
     );
-    let err = unsigned_result.unwrap_err();
-    assert!(err.is_authentication_error());
+    assert!(
+        result.unwrap_err().is_authentication_error(),
+        "Should be authentication error"
+    );
+
+    // Verify database is still functional after preventing corruption
+    let op = tree.new_transaction().expect("Failed to create operation");
+    let store = op
+        .get_store::<DocStore>("data")
+        .expect("Failed to get store");
+    store
+        .set("after_prevented_corruption", "value")
+        .expect("Failed to set value");
+    op.commit()
+        .expect("Normal operations should still work after preventing corruption");
 }

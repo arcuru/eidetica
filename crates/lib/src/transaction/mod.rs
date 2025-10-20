@@ -770,6 +770,27 @@ impl Transaction {
             historical_settings
         };
 
+        // VALIDATION: Ensure that the new settings state (after this transaction) doesn't corrupt auth
+        // This prevents committing entries that would corrupt the database's auth configuration
+        if has_settings_update {
+            // Compute what the new settings state will be after merging local changes
+            let local_settings = self.get_local_data::<Doc>(SETTINGS)?;
+            let new_settings = effective_settings_for_validation.merge(&local_settings)?;
+
+            // Check if the new settings would have corrupted auth
+            if new_settings.is_tombstone("auth") {
+                // Auth was explicitly deleted - this would corrupt the database
+                return Err(TransactionError::CorruptedAuthConfiguration.into());
+            } else if let Some(auth_value) = new_settings.get("auth") {
+                // Auth exists in new settings - check if it's the right type
+                if !matches!(auth_value, Value::Doc(_)) {
+                    // Auth exists but has wrong type (not a Doc) - this would corrupt the database
+                    return Err(TransactionError::CorruptedAuthConfiguration.into());
+                }
+            }
+            // If auth is None (not configured), that's fine - we allow empty auth
+        }
+
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
         let builder_from_cell = builder_cell
@@ -936,9 +957,27 @@ impl Transaction {
         // This prevents operations from modifying their own permission requirements.
 
         // Extract AuthSettings from effective settings for validation
-        let auth_settings_for_validation = match effective_settings_for_validation.get("auth") {
-            Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
-            _ => AuthSettings::new(), // Empty if no auth config
+        // IMPORTANT: Distinguish between empty auth vs corrupted/deleted auth:
+        // - None: No auth ever configured → Allow unsigned operations (empty AuthSettings)
+        // - Some(Doc): Normal auth configuration → Use it for validation
+        // - Tombstone (deleted): Auth was configured then deleted → CORRUPTED (fail-safe)
+        // - Some(other types): Wrong type in auth field → CORRUPTED (fail-safe)
+        //
+        // NOTE: Doc::get() hides tombstones (returns None for deleted values), so we need
+        // to check for tombstones explicitly using is_tombstone() before using get().
+        let auth_settings_for_validation = if effective_settings_for_validation.is_tombstone("auth")
+        {
+            // Auth was configured then explicitly deleted - this is corrupted
+            return Err(TransactionError::CorruptedAuthConfiguration.into());
+        } else {
+            match effective_settings_for_validation.get("auth") {
+                Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+                None => AuthSettings::new(), // Empty auth - never configured
+                Some(_) => {
+                    // Auth exists but has wrong type (not a Doc) - this is corrupted
+                    return Err(TransactionError::CorruptedAuthConfiguration.into());
+                }
+            }
         };
 
         let verification_status = match validator.validate_entry(
@@ -1035,5 +1074,72 @@ impl Transaction {
         }
 
         Ok(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        auth::crypto::generate_keypair,
+        backend::{BackendDB, database::InMemory},
+        crdt::Doc,
+        store::DocStore,
+    };
+
+    /// Test that corrupted auth configuration prevents commit
+    ///
+    /// Validates that transactions reject changes that would corrupt the auth configuration,
+    /// preventing corrupted entries from entering the Merkle DAG.
+    #[test]
+    fn test_prevent_auth_corruption() {
+        let backend = Arc::new(InMemory::new());
+        let (private_key, _) = generate_keypair();
+        backend.store_private_key("test_key", private_key).unwrap();
+
+        // Create database with auth bootstrapped
+        let database = Database::new(Doc::new(), backend, "test_key").unwrap();
+
+        // Initial operation should work
+        let tx = database.new_transaction().unwrap();
+        let store = tx.get_store::<DocStore>("data").unwrap();
+        store.set("initial", "value").unwrap();
+        tx.commit().expect("Initial operation should succeed");
+
+        // Test corruption path 1: Set auth to wrong type (String instead of Doc)
+        let tx = database.new_transaction().unwrap();
+        let settings = tx.get_store::<DocStore>("_settings").unwrap();
+        settings.set("auth", "corrupted_string").unwrap();
+
+        let result = tx.commit();
+        assert!(
+            result.is_err(),
+            "Corruption commit (wrong type) should fail immediately"
+        );
+        assert!(
+            result.unwrap_err().is_authentication_error(),
+            "Should be authentication error"
+        );
+
+        // Test corruption path 2: Delete auth (creates CRDT tombstone)
+        let tx = database.new_transaction().unwrap();
+        let settings = tx.get_store::<DocStore>("_settings").unwrap();
+        settings.delete("auth").unwrap();
+
+        let result = tx.commit();
+        assert!(
+            result.is_err(),
+            "Deletion commit (tombstone) should fail immediately"
+        );
+        assert!(
+            result.unwrap_err().is_authentication_error(),
+            "Should be authentication error"
+        );
+
+        // Verify database is still functional after preventing corruption
+        let tx = database.new_transaction().unwrap();
+        let store = tx.get_store::<DocStore>("data").unwrap();
+        store.set("after_prevented_corruption", "value").unwrap();
+        tx.commit().expect("Normal operations should still work");
     }
 }
