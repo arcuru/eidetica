@@ -202,6 +202,98 @@ fn test_get_nonexistent_signing_key() {
     );
 }
 
+#[test]
+fn test_get_public_key() {
+    let (instance, username) = setup_instance_with_user("laura", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Add a key
+    let key_id = add_user_key(&mut user, Some("Public Key Test"));
+
+    // Get both the signing key and public key
+    let signing_key = user
+        .get_signing_key(&key_id)
+        .expect("Should get signing key");
+    let public_key = user.get_public_key(&key_id).expect("Should get public key");
+
+    // Verify the public key matches the signing key's verifying key
+    let expected_pubkey = eidetica::auth::crypto::format_public_key(&signing_key.verifying_key());
+    assert_eq!(
+        public_key, expected_pubkey,
+        "Public key should match the signing key's verifying key"
+    );
+
+    // Verify the public key is not empty
+    assert!(!public_key.is_empty(), "Public key should not be empty");
+}
+
+#[test]
+fn test_get_public_key_for_default_key() {
+    let (instance, username) = setup_instance_with_user("mike", None);
+    let user = login_user(&instance, &username, None);
+
+    // Get the default key
+    let default_key_id = user.get_default_key().expect("Should have default key");
+
+    // Get the public key
+    let public_key = user
+        .get_public_key(&default_key_id)
+        .expect("Should get public key for default key");
+
+    // Verify it's a valid formatted public key
+    assert!(!public_key.is_empty(), "Public key should not be empty");
+}
+
+#[test]
+fn test_get_public_key_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("nancy", None);
+    let user = login_user(&instance, &username, None);
+
+    // Try to get public key for a nonexistent key
+    let fake_key_id = "nonexistent_key_id";
+    let result = user.get_public_key(fake_key_id);
+
+    assert!(
+        result.is_err(),
+        "Getting public key for nonexistent key should fail"
+    );
+}
+
+#[test]
+fn test_get_public_key_multiple_keys() {
+    let (instance, username) = setup_instance_with_user("oscar", None);
+    let mut user = login_user(&instance, &username, None);
+
+    // Add multiple keys
+    let key1_id = add_user_key(&mut user, Some("Key 1"));
+    let key2_id = add_user_key(&mut user, Some("Key 2"));
+    let key3_id = add_user_key(&mut user, Some("Key 3"));
+
+    // Get public keys for all three
+    let pubkey1 = user
+        .get_public_key(&key1_id)
+        .expect("Should get public key 1");
+    let pubkey2 = user
+        .get_public_key(&key2_id)
+        .expect("Should get public key 2");
+    let pubkey3 = user
+        .get_public_key(&key3_id)
+        .expect("Should get public key 3");
+
+    // Verify all public keys are unique
+    assert_ne!(pubkey1, pubkey2, "Public keys should be different");
+    assert_ne!(pubkey2, pubkey3, "Public keys should be different");
+    assert_ne!(pubkey1, pubkey3, "Public keys should be different");
+
+    // Verify each matches its corresponding signing key
+    let signing_key1 = user.get_signing_key(&key1_id).expect("Get signing key 1");
+    let expected_pubkey1 = eidetica::auth::crypto::format_public_key(&signing_key1.verifying_key());
+    assert_eq!(
+        pubkey1, expected_pubkey1,
+        "Public key 1 should match signing key 1"
+    );
+}
+
 // ===== KEY PERSISTENCE TESTS =====
 
 #[test]

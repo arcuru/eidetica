@@ -524,6 +524,24 @@ impl User {
             })
     }
 
+    /// Get the formatted public key string for a given key ID.
+    ///
+    /// Returns the public key in the same format used throughout Eidetica's auth system.
+    ///
+    /// # Arguments
+    /// * `key_id` - The key ID (public key string)
+    ///
+    /// # Returns
+    /// The formatted public key string if the key is found
+    pub fn get_public_key(&self, key_id: &str) -> Result<String> {
+        let verifying_key = self.key_manager.get_public_key(key_id).ok_or_else(|| {
+            crate::Error::from(crate::user::errors::UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })
+        })?;
+        Ok(crate::auth::crypto::format_public_key(&verifying_key))
+    }
+
     // === Bootstrap Request Management (User Context) ===
 
     /// Get all pending bootstrap requests from the sync system.

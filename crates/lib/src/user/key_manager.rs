@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{
@@ -102,6 +102,17 @@ impl UserKeyManager {
     /// A reference to the SigningKey if found
     pub fn get_signing_key(&self, key_id: &str) -> Option<&SigningKey> {
         self.decrypted_keys.get(key_id)
+    }
+
+    /// Get the public key (VerifyingKey) for a given key ID
+    ///
+    /// # Arguments
+    /// * `key_id` - The key identifier
+    ///
+    /// # Returns
+    /// The VerifyingKey (public key) if the signing key is found
+    pub fn get_public_key(&self, key_id: &str) -> Option<VerifyingKey> {
+        self.decrypted_keys.get(key_id).map(|sk| sk.verifying_key())
     }
 
     /// Add a key to the manager from metadata
@@ -367,6 +378,115 @@ mod tests {
         // Get key and verify it's the same
         let retrieved_key = manager.get_signing_key("key1").unwrap();
         assert_eq!(retrieved_key.to_bytes(), key1.to_bytes());
+    }
+
+    #[test]
+    fn test_key_manager_get_public_key() {
+        let password = "test_password";
+        let (_, salt) = hash_password(password).unwrap();
+        let encryption_key = derive_encryption_key(password, &salt).unwrap();
+
+        let (key1, pub_key1) = generate_keypair();
+        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+
+        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+
+        // Get public key and verify it matches the original
+        let retrieved_pub_key = manager.get_public_key("key1").unwrap();
+        assert_eq!(retrieved_pub_key, pub_key1);
+
+        // Verify non-existent key returns None
+        assert!(manager.get_public_key("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_key_manager_get_public_key_multiple_keys() {
+        let password = "test_password";
+        let (_, salt) = hash_password(password).unwrap();
+        let encryption_key = derive_encryption_key(password, &salt).unwrap();
+
+        // Create multiple keys
+        let (key1, pub_key1) = generate_keypair();
+        let (key2, pub_key2) = generate_keypair();
+        let (key3, pub_key3) = generate_keypair();
+
+        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let user_key2 = create_test_user_key("key2", &key2, &encryption_key);
+        let user_key3 = create_test_user_key("key3", &key3, &encryption_key);
+
+        let manager =
+            UserKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
+
+        // Verify all public keys match
+        assert_eq!(manager.get_public_key("key1").unwrap(), pub_key1);
+        assert_eq!(manager.get_public_key("key2").unwrap(), pub_key2);
+        assert_eq!(manager.get_public_key("key3").unwrap(), pub_key3);
+
+        // Verify all keys are different
+        assert_ne!(pub_key1, pub_key2);
+        assert_ne!(pub_key2, pub_key3);
+        assert_ne!(pub_key1, pub_key3);
+    }
+
+    #[test]
+    fn test_key_manager_get_public_key_passwordless() {
+        // Create passwordless keys
+        let (key1, pub_key1) = generate_keypair();
+        let (key2, pub_key2) = generate_keypair();
+
+        let user_key1 = UserKey {
+            key_id: "key1".to_string(),
+            private_key_bytes: key1.to_bytes().to_vec(),
+            encryption: KeyEncryption::Unencrypted,
+            display_name: Some("Key 1".to_string()),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            last_used: None,
+            is_default: true,
+            database_sigkeys: HashMap::new(),
+        };
+
+        let user_key2 = UserKey {
+            key_id: "key2".to_string(),
+            private_key_bytes: key2.to_bytes().to_vec(),
+            encryption: KeyEncryption::Unencrypted,
+            display_name: Some("Key 2".to_string()),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            last_used: None,
+            is_default: false,
+            database_sigkeys: HashMap::new(),
+        };
+
+        let manager = UserKeyManager::new_passwordless(vec![user_key1, user_key2]).unwrap();
+
+        // Verify public keys match for passwordless keys
+        assert_eq!(manager.get_public_key("key1").unwrap(), pub_key1);
+        assert_eq!(manager.get_public_key("key2").unwrap(), pub_key2);
+    }
+
+    #[test]
+    fn test_key_manager_get_public_key_consistency_with_signing_key() {
+        let password = "test_password";
+        let (_, salt) = hash_password(password).unwrap();
+        let encryption_key = derive_encryption_key(password, &salt).unwrap();
+
+        let (key1, pub_key1) = generate_keypair();
+        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+
+        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
+
+        // Get both signing key and public key
+        let signing_key = manager.get_signing_key("key1").unwrap();
+        let public_key = manager.get_public_key("key1").unwrap();
+
+        // Verify public key matches the signing key's verifying key
+        assert_eq!(signing_key.verifying_key(), public_key);
+        assert_eq!(public_key, pub_key1);
     }
 
     #[test]
