@@ -198,3 +198,405 @@ fn test_team_scenario_multiple_users_own_databases() {
     );
     assert_eq!(charlie_store.get("progress").expect("Read"), 90);
 }
+
+// ===== GLOBAL PERMISSION COLLABORATIVE DATABASE SCENARIOS =====
+
+#[test]
+fn test_collaborative_database_with_global_permissions() {
+    use eidetica::{
+        Database,
+        auth::{
+            Permission,
+            settings::AuthSettings,
+            types::{AuthKey, SigKey},
+        },
+        crdt::Doc,
+    };
+
+    println!("\n🧪 TEST: End-to-end collaborative database with global Write permissions");
+
+    // Setup two users on the same instance
+    let alice_name = "alice";
+    let bob_name = "bob";
+    let (instance, _) = setup_instance_with_users(&[(alice_name, None), (bob_name, None)]);
+
+    // Alice logs in and creates a database with global Write(10) permission
+    let mut alice = login_user(&instance, alice_name, None);
+    let alice_key = alice.get_default_key().expect("Alice get default key");
+
+    let mut alice_db_settings = Doc::new();
+    alice_db_settings.set_string("name", "Team Workspace");
+
+    // Configure auth settings with global Write permission
+    let mut auth_settings = AuthSettings::new();
+
+    // Add Alice's admin key
+    let alice_pubkey = alice.get_public_key(&alice_key).expect("Alice public key");
+    auth_settings
+        .add_key(
+            &alice_key,
+            AuthKey::active(&alice_pubkey, Permission::Admin(1)).unwrap(),
+        )
+        .unwrap();
+
+    // Add global Write(10) permission - anyone can access with Write permission
+    auth_settings
+        .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
+        .unwrap();
+
+    alice_db_settings.set_doc("auth", auth_settings.as_doc().clone());
+
+    // Create the new database with alice_key as the owner
+    let alice_db = alice
+        .new_database(alice_db_settings, &alice_key)
+        .expect("Alice creates database");
+    let db_id = alice_db.root_id().clone();
+
+    // Alice writes initial data
+    {
+        let tx = alice_db.new_transaction().expect("Alice transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        store.set("project", "Eidetica").expect("Write project");
+        store
+            .set("status", "Alice started the workspace")
+            .expect("Write status");
+        tx.commit().expect("Alice commits");
+    }
+    println!("✅ Alice created database with global Write(10) permission and added initial data");
+
+    alice.logout().expect("Alice logout");
+
+    // Bob logs in and discovers he can access the database
+    let mut bob = login_user(&instance, bob_name, None);
+    let bob_key = bob.get_default_key().expect("Bob get default key");
+
+    // Bob discovers available SigKeys for his public key
+    let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
+
+    let sigkeys = Database::find_sigkeys(instance.backend().clone(), &db_id, &bob_pubkey)
+        .expect("Bob discovers SigKeys");
+
+    // Should find the global "*" permission
+    assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
+    let (sigkey, permission) = &sigkeys[0];
+
+    // Verify it's the global permission
+    assert_eq!(
+        sigkey,
+        &SigKey::Direct("*".to_string()),
+        "Should discover global permission"
+    );
+    assert_eq!(
+        permission,
+        &Permission::Write(10),
+        "Should have Write(10) permission"
+    );
+    println!("✅ Bob discovered global '*' permission with Write(10)");
+
+    // Bob adds the database key mapping to his user preferences
+    bob.add_database_key_mapping(&bob_key, &db_id, "*")
+        .expect("Bob adds database key mapping");
+    println!("✅ Bob configured key mapping for the database");
+
+    // Bob loads the database
+    let bob_db = bob.load_database(&db_id).expect("Bob loads database");
+    assert_database_name(&bob_db, "Team Workspace");
+    println!("✅ Bob successfully loaded the database");
+
+    // Bob reads Alice's data
+    {
+        let tx = bob_db.new_transaction().expect("Bob read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        assert_eq!(
+            store.get("project").expect("Read").as_text(),
+            Some("Eidetica")
+        );
+        assert_eq!(
+            store.get("status").expect("Read").as_text(),
+            Some("Alice started the workspace")
+        );
+    }
+    println!("✅ Bob read Alice's data successfully");
+
+    // Bob makes changes (Write permission allows this)
+    {
+        let tx = bob_db.new_transaction().expect("Bob write transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        store.set("contributor", "Bob").expect("Write contributor");
+        store
+            .set("status", "Bob joined and contributed")
+            .expect("Update status");
+        tx.commit().expect("Bob commits changes");
+    }
+    println!("✅ Bob committed changes successfully");
+
+    bob.logout().expect("Bob logout");
+
+    // Alice logs back in and sees Bob's changes
+    let alice2 = login_user(&instance, alice_name, None);
+    let alice_db2 = alice2
+        .load_database(&db_id)
+        .expect("Alice reloads database");
+
+    {
+        let tx = alice_db2.new_transaction().expect("Alice read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        assert_eq!(
+            store.get("project").expect("Read").as_text(),
+            Some("Eidetica")
+        );
+        assert_eq!(
+            store.get("contributor").expect("Read").as_text(),
+            Some("Bob")
+        );
+        assert_eq!(
+            store.get("status").expect("Read").as_text(),
+            Some("Bob joined and contributed")
+        );
+    }
+    println!("✅ Alice sees Bob's changes - collaboration successful!");
+
+    println!("✅ End-to-end collaborative database flow complete");
+}
+
+#[tokio::test]
+async fn test_collaborative_database_with_sync_and_global_permissions() {
+    use eidetica::{
+        Database, Instance,
+        auth::{
+            Permission,
+            settings::AuthSettings,
+            types::{AuthKey, SigKey},
+        },
+        backend::database::InMemory,
+        crdt::Doc,
+    };
+    use std::time::Duration;
+
+    println!(
+        "\n🧪 TEST: End-to-end User API collaborative database with sync and global permissions"
+    );
+
+    // === ALICE'S INSTANCE (Server) ===
+    println!("\n👤 Setting up Alice's instance...");
+    let mut alice_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create Alice's instance")
+        .with_sync()
+        .expect("Failed to enable sync for Alice");
+
+    // Create Alice's user account
+    alice_instance
+        .create_user("alice", None)
+        .expect("Failed to create Alice");
+    let mut alice = alice_instance
+        .login_user("alice", None)
+        .expect("Failed to login Alice");
+    let alice_key = alice.get_default_key().expect("Alice get default key");
+
+    // Alice creates a database with global Write(10) permission
+    println!("📁 Alice creating collaborative database...");
+    let mut alice_db_settings = Doc::new();
+    alice_db_settings.set_string("name", "Team Workspace");
+
+    let mut auth_settings = AuthSettings::new();
+
+    // Add Alice's admin key
+    let alice_pubkey = alice.get_public_key(&alice_key).expect("Alice public key");
+    auth_settings
+        .add_key(
+            &alice_key,
+            AuthKey::active(&alice_pubkey, Permission::Admin(1)).unwrap(),
+        )
+        .unwrap();
+
+    // Add global Write(10) permission - anyone can access
+    auth_settings
+        .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
+        .unwrap();
+
+    alice_db_settings.set_doc("auth", auth_settings.as_doc().clone());
+
+    // Create the new database with alice_key as the owner
+    let alice_db = alice
+        .new_database(alice_db_settings, &alice_key)
+        .expect("Alice creates database");
+    let db_id = alice_db.root_id().clone();
+
+    // Alice writes initial data
+    {
+        let tx = alice_db.new_transaction().expect("Alice transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        store.set("project", "Eidetica").expect("Write project");
+        store
+            .set("status", "Alice started the workspace")
+            .expect("Write status");
+        tx.commit().expect("Alice commits");
+    }
+    println!(
+        "✅ Alice created database {} with global Write(10) permission",
+        db_id
+    );
+
+    // Alice starts sync server
+    let server_addr = {
+        let alice_sync = alice_instance.sync_mut().expect("Alice should have sync");
+        alice_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
+        alice_sync
+            .start_server_async("127.0.0.1:0")
+            .await
+            .expect("Failed to start Alice's server");
+        let addr = alice_sync
+            .get_server_address_async()
+            .await
+            .expect("Failed to get server address");
+        println!("🌐 Alice's server listening at: {}", addr);
+        addr
+    };
+
+    alice.logout().expect("Alice logout");
+
+    // === BOB'S INSTANCE (Client) ===
+    println!("\n👤 Setting up Bob's instance (separate from Alice)...");
+    let mut bob_instance = Instance::open(Box::new(InMemory::new()))
+        .expect("Failed to create Bob's instance")
+        .with_sync()
+        .expect("Failed to enable sync for Bob");
+
+    // Create Bob's user account
+    bob_instance
+        .create_user("bob", None)
+        .expect("Failed to create Bob");
+    let mut bob = bob_instance
+        .login_user("bob", None)
+        .expect("Failed to login Bob");
+    let bob_key = bob.get_default_key().expect("Bob get default key");
+
+    // Bob syncs with Alice's server to bootstrap the database
+    println!("\n🔄 Bob syncing with Alice's server to get the database...");
+    {
+        let bob_sync = bob_instance.sync_mut().expect("Bob should have sync");
+        bob_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
+
+        // Bootstrap sync - this will get the database from Alice
+        bob_sync
+            .sync_with_peer(&server_addr, Some(&db_id))
+            .await
+            .expect("Bob should sync successfully");
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("✅ Bob synced with Alice's server");
+
+    // Bob discovers available SigKeys for his public key
+    println!("\n🔍 Bob discovering available SigKeys...");
+    let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
+
+    let sigkeys = Database::find_sigkeys(bob_instance.backend().clone(), &db_id, &bob_pubkey)
+        .expect("Bob discovers SigKeys");
+
+    // Should find the global "*" permission
+    assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
+    let (sigkey, permission) = &sigkeys[0];
+    assert_eq!(
+        sigkey,
+        &SigKey::Direct("*".to_string()),
+        "Should discover global permission"
+    );
+    assert_eq!(permission, &Permission::Write(10));
+    println!("✅ Bob discovered global '*' permission with Write(10)");
+
+    // Bob adds the database key mapping to his user preferences
+    bob.add_database_key_mapping(&bob_key, &db_id, "*")
+        .expect("Bob adds database key mapping");
+    println!("✅ Bob configured key mapping for the database");
+
+    // Bob loads the database
+    let bob_db = bob.load_database(&db_id).expect("Bob loads database");
+    println!("✅ Bob successfully loaded the database");
+
+    // Bob reads Alice's data
+    {
+        let tx = bob_db.new_transaction().expect("Bob read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        assert_eq!(
+            store.get("project").expect("Read").as_text(),
+            Some("Eidetica")
+        );
+        assert_eq!(
+            store.get("status").expect("Read").as_text(),
+            Some("Alice started the workspace")
+        );
+    }
+    println!("✅ Bob read Alice's data successfully");
+
+    // Bob makes changes
+    {
+        let tx = bob_db.new_transaction().expect("Bob write transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        store.set("contributor", "Bob").expect("Write contributor");
+        store
+            .set("status", "Bob joined and contributed")
+            .expect("Update status");
+        tx.commit().expect("Bob commits changes");
+    }
+    println!("✅ Bob committed changes successfully");
+
+    // Bob syncs changes back to Alice's server
+    println!("\n🔄 Bob syncing changes back to Alice...");
+    {
+        let bob_sync = bob_instance.sync_mut().expect("Bob should have sync");
+        bob_sync
+            .sync_with_peer(&server_addr, Some(&db_id))
+            .await
+            .expect("Bob should sync back successfully");
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    println!("✅ Bob synced changes back to Alice");
+
+    bob.logout().expect("Bob logout");
+
+    // === ALICE VERIFIES BOB'S CHANGES ===
+    println!("\n🔍 Alice logging back in to verify Bob's changes...");
+    let alice2 = alice_instance
+        .login_user("alice", None)
+        .expect("Alice re-login");
+    let alice_db2 = alice2
+        .load_database(&db_id)
+        .expect("Alice reloads database");
+
+    {
+        let tx = alice_db2.new_transaction().expect("Alice read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        assert_eq!(
+            store.get("project").expect("Read").as_text(),
+            Some("Eidetica")
+        );
+        assert_eq!(
+            store.get("contributor").expect("Read").as_text(),
+            Some("Bob"),
+            "Alice should see Bob's contribution"
+        );
+        assert_eq!(
+            store.get("status").expect("Read").as_text(),
+            Some("Bob joined and contributed"),
+            "Alice should see Bob's status update"
+        );
+    }
+    println!("✅ Alice sees Bob's changes - bidirectional sync successful!");
+
+    // Cleanup
+    {
+        let alice_sync = alice_instance.sync_mut().expect("Alice should have sync");
+        alice_sync
+            .stop_server_async()
+            .await
+            .expect("Failed to stop Alice's server");
+    }
+
+    println!("\n✅ TEST COMPLETED: User API end-to-end collaborative database with sync works!");
+}
