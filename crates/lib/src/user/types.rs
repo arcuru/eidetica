@@ -28,8 +28,8 @@ pub struct UserInfo {
     /// None for passwordless users
     pub password_salt: Option<String>,
 
-    /// User account creation timestamp
-    pub created_at: u64,
+    /// User account creation timestamp (Unix timestamp)
+    pub created_at: i64,
 
     /// Account status
     pub status: UserStatus,
@@ -100,11 +100,11 @@ pub struct UserKey {
     /// Display name for this key
     pub display_name: Option<String>,
 
-    /// When this key was created
-    pub created_at: u64,
+    /// When this key was created (Unix timestamp)
+    pub created_at: i64,
 
-    /// Last time this key was used
-    pub last_used: Option<u64>,
+    /// Last time this key was used (Unix timestamp)
+    pub last_used: Option<i64>,
 
     /// Whether this is the user's default key, which has admin access on the user's DB
     /// Only one key should be marked as default at a time
@@ -116,36 +116,57 @@ pub struct UserKey {
 }
 
 /// User's preferences for a specific database
+///
+/// Stored in user's private database "databases" Table.
+/// Tracks which databases the user cares about and their sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserDatabasePreferences {
     /// Database ID
     pub database_id: ID,
 
-    /// Whether user wants to sync this database
-    pub sync_enabled: bool,
+    /// Which user key to use for this database
+    pub key_id: String,
 
-    /// Sync settings specific to this database
+    /// User's sync preferences for this database
     pub sync_settings: SyncSettings,
 
-    /// User's preferred SigKey for this database
-    pub preferred_sigkey: Option<String>,
-
-    /// Custom labels or notes
-    pub notes: Option<String>,
+    /// When user added this database (Unix timestamp)
+    pub added_at: i64,
 }
 
 /// Synchronization settings for a database
+///
+/// Per-user-per-database sync configuration.
+/// Different users may have different sync preferences for the same database.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct SyncSettings {
-    /// Sync interval in seconds
-    pub interval_seconds: Option<u64>,
+    /// Whether user wants to sync this database
+    pub sync_enabled: bool,
 
     /// Sync on commit
     /// Whether to sync after every commit
     pub sync_on_commit: bool,
 
+    /// Sync interval in seconds (for periodic sync)
+    pub interval_seconds: Option<u64>,
+
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
+}
+
+/// Database preferences input for adding/updating databases
+///
+/// Used when calling User::add_database() or User::set_database().
+#[derive(Clone, Debug)]
+pub struct DatabasePreferences {
+    /// Database ID to add/update
+    pub database_id: ID,
+
+    /// Which user key to use for this database
+    pub key_id: String,
+
+    /// Sync settings for this database
+    pub sync_settings: SyncSettings,
 }
 
 /// Database tracking information in _databases table
@@ -161,11 +182,11 @@ pub struct DatabaseTracking {
     /// (stores internal UUIDs, not usernames)
     pub users: Vec<String>,
 
-    /// Database creation time
-    pub created_at: u64,
+    /// Database creation time (Unix timestamp)
+    pub created_at: i64,
 
-    /// Last modification time
-    pub last_modified: u64,
+    /// Last modification time (Unix timestamp)
+    pub last_modified: i64,
 
     /// Additional metadata
     pub metadata: HashMap<String, String>,

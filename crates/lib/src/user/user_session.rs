@@ -2,20 +2,32 @@
 //!
 //! Represents an authenticated user session with decrypted keys.
 //!
-//! # Key Management Design Notes
+//! # API Overview
 //!
-//! ## Database-Key Mapping
+//! The User API is organized into three areas for managing Databases:
 //!
-//! The User API provides explicit control over which keys are used for database operations:
+//! ## Database Lifecycle
 //!
-//! - **Explicit Creation**: `new_database()` requires you to specify which key
-//!   should be used when creating a database, establishing a clear key-database relationship.
+//! - **`new_database()`** - Create a new database
+//! - **`open_database()`** - Open an existing database
+//! - **`find_database()`** - Search for databases by name
 //!
-//! - **Manual Mapping**: `add_database_key_mapping()` allows you to grant additional keys
-//!   access to existing databases, supporting multi-key and multi-device workflows.
+//! ## Database List Management
 //!
-//! - **Key Discovery**: `find_key_for_database()` helps locate appropriate keys when loading
-//!   databases, using the mappings you've configured.
+//! Manage your personal list of databases with preferences:
+//!
+//! - **`add_database()`** / **`set_database()`** - Add or update a database in your list (upsert)
+//! - **`database_prefs()`** - Get preferences for a database
+//! - **`list_database_prefs()`** - List all databases in your list
+//! - **`remove_database()`** - Remove a database from your list
+//!
+//! ## Key-Database Mappings
+//!
+//! Control which keys access which databases:
+//!
+//! - **`map_key()`** - Map a key to a SigKey identifier for a database
+//! - **`key_mapping()`** - Get the SigKey mapping for a key-database pair
+//! - **`find_key()`** - Find which key can access a database
 //!
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
@@ -23,7 +35,13 @@
 use std::sync::Arc;
 
 use super::{UserKeyManager, types::UserInfo};
-use crate::{Database, Result, backend::BackendDB};
+use crate::{
+    Database, Result,
+    auth::{self, SigKey},
+    backend::BackendDB,
+    store::Table,
+    user::{DatabasePreferences, UserDatabasePreferences, UserError},
+};
 
 /// User session object, returned after successful login
 ///
@@ -159,7 +177,7 @@ impl User {
     /// settings.set_string("name", "My Database");
     /// let database = user.new_database(settings, key_id)?;
     /// ```
-    pub fn new_database(
+    pub fn create_database(
         &mut self,
         settings: crate::crdt::Doc,
         key_id: &str,
@@ -184,7 +202,7 @@ impl User {
             key_id.to_string(),
         )?;
 
-        // Store the mapping in UserKey so load_database() can find it later
+        // Store the mapping in UserKey so open_database() can find it later
         let tx = self.user_database.new_transaction()?;
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
@@ -212,7 +230,7 @@ impl User {
         Ok(database)
     }
 
-    /// Load an existing database by its root ID using this user's keys.
+    /// Open an existing database by its root ID using this user's keys.
     ///
     /// This method automatically:
     /// 1. Finds an appropriate key that has access to the database
@@ -227,22 +245,22 @@ impl User {
     /// * `root_id` - The root entry ID of the database
     ///
     /// # Returns
-    /// The loaded Database configured to use this user's keys
+    /// The opened Database configured to use this user's keys
     ///
     /// # Errors
     /// - Returns an error if no key is found for the database
     /// - Returns an error if no SigKey mapping exists
     /// - Returns an error if the key is not in the UserKeyManager
-    pub fn load_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
+    pub fn open_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
         // Validate the root exists
         self.backend.get(root_id)?;
 
         // Find an appropriate key for this database
-        let key_id = self.find_key_for_database(root_id)?.ok_or_else(|| {
-            super::errors::UserError::NoKeyForDatabase {
-                database_id: root_id.clone(),
-            }
-        })?;
+        let key_id =
+            self.find_key(root_id)?
+                .ok_or_else(|| super::errors::UserError::NoKeyForDatabase {
+                    database_id: root_id.clone(),
+                })?;
 
         // Get the SigningKey from UserKeyManager
         let signing_key = self.key_manager.get_signing_key(&key_id).ok_or_else(|| {
@@ -252,7 +270,7 @@ impl User {
         })?;
 
         // Get the SigKey mapping for this database
-        let sigkey = self.get_database_sigkey(&key_id, root_id)?.ok_or_else(|| {
+        let sigkey = self.key_mapping(&key_id, root_id)?.ok_or_else(|| {
             super::errors::UserError::NoSigKeyMapping {
                 key_id: key_id.clone(),
                 database_id: root_id.clone(),
@@ -296,9 +314,9 @@ impl User {
         }
     }
 
-    /// Find the best key for accessing a database
+    /// Find which key can access a database.
     ///
-    /// Searches the user's keys to find one that can access the specified database.
+    /// Searches this user's keys to find one that can access the specified database.
     /// Considers the SigKey mappings stored in user key metadata.
     ///
     /// Returns the key_id of a suitable key, preferring keys with mappings for this database.
@@ -308,7 +326,7 @@ impl User {
     ///
     /// # Returns
     /// Some(key_id) if a suitable key is found, None if no keys can access this database
-    pub fn find_key_for_database(&self, database_id: &crate::entry::ID) -> Result<Option<String>> {
+    pub fn find_key(&self, database_id: &crate::entry::ID) -> Result<Option<String>> {
         // Iterate through all keys and find ones with SigKey mappings for this database
         for key_id in self.key_manager.list_key_ids() {
             if let Some(metadata) = self.key_manager.get_key_metadata(&key_id)
@@ -322,10 +340,10 @@ impl User {
         Ok(None)
     }
 
-    /// Get the SigKey mapping for a key in a specific database
+    /// Get the SigKey mapping for a key in a specific database.
     ///
     /// Users map their private keys to SigKey identifiers on a per-database basis.
-    /// This method retrieves the SigKey identifier that a specific key uses in
+    /// This retrieves the SigKey identifier that a specific key uses in
     /// a specific database's authentication settings.
     ///
     /// # Arguments
@@ -337,7 +355,7 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    pub fn get_database_sigkey(
+    pub fn key_mapping(
         &self,
         key_id: &str,
         database_id: &crate::entry::ID,
@@ -351,9 +369,9 @@ impl User {
         Ok(metadata.database_sigkeys.get(database_id).cloned())
     }
 
-    /// Add a SigKey mapping for a key in a specific database
+    /// Map a key to a SigKey identifier for a specific database.
     ///
-    /// Registers that a user's key should be used with a specific SigKey identifier
+    /// Registers that this user's key should be used with a specific SigKey identifier
     /// when interacting with a database. This is typically used when a user has been
     /// granted access to a database and needs to configure their local key to work with it.
     ///
@@ -370,8 +388,25 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the user database
-    pub fn add_database_key_mapping(
+    pub fn map_key(
         &mut self,
+        key_id: &str,
+        database_id: &crate::entry::ID,
+        sigkey: &str,
+    ) -> Result<()> {
+        let tx = self.user_database.new_transaction()?;
+        self.map_key_in_txn(&tx, key_id, database_id, sigkey)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Internal helper: Add a SigKey mapping within an existing transaction
+    ///
+    /// This is used internally by methods that manage their own transactions.
+    /// For external use, call `map_key()` instead.
+    fn map_key_in_txn(
+        &mut self,
+        tx: &crate::Transaction,
         key_id: &str,
         database_id: &crate::entry::ID,
         sigkey: &str,
@@ -379,8 +414,6 @@ impl User {
         use crate::store::Table;
         use crate::user::types::UserKey;
 
-        // Read from user database (source of truth)
-        let tx = self.user_database.new_transaction()?;
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
         // Find the key metadata in the database
@@ -399,10 +432,63 @@ impl User {
 
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone())?;
-        tx.commit()?;
 
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
+
+        Ok(())
+    }
+
+    /// Internal helper: Validate key and set up SigKey mapping within an existing transaction
+    ///
+    /// This validates that a key exists and has access to a database, discovers the appropriate
+    /// SigKey, and creates the mapping. Used by add_database (which has upsert behavior).
+    fn validate_and_map_key_in_txn(
+        &mut self,
+        tx: &crate::Transaction,
+        database_id: &crate::entry::ID,
+        key_id: &str,
+    ) -> Result<()> {
+        // Verify the key exists
+        let signing_key =
+            self.key_manager
+                .get_signing_key(key_id)
+                .ok_or_else(|| UserError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                })?;
+
+        // Get public key for SigKey discovery
+        let verifying_key = signing_key.verifying_key();
+        let public_key = auth::format_public_key(&verifying_key);
+
+        // Discover available SigKeys for this public key
+        let available_sigkeys =
+            Database::find_sigkeys(self.backend.clone(), database_id, &public_key)?;
+
+        if available_sigkeys.is_empty() {
+            return Err(UserError::NoSigKeyFound {
+                key_id: key_id.to_string(),
+                database_id: database_id.clone(),
+            }
+            .into());
+        }
+
+        // Select the first SigKey (highest permission, since find_sigkeys returns sorted list)
+        let (sigkey, _permission) = &available_sigkeys[0];
+        let sigkey_str = match sigkey {
+            SigKey::Direct(key_name) => key_name.clone(),
+            SigKey::DelegationPath(_) => {
+                // FIXME: Implement delegation path handling
+                return Err(UserError::NoSigKeyFound {
+                    key_id: key_id.to_string(),
+                    database_id: database_id.clone(),
+                }
+                .into());
+            }
+        };
+
+        // Create the key mapping within the provided transaction
+        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str)?;
 
         Ok(())
     }
@@ -423,12 +509,15 @@ impl User {
     pub fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
         use crate::auth::crypto::{format_public_key, generate_keypair};
         use crate::store::Table;
+        use crate::user::crypto::current_timestamp;
         use crate::user::types::{KeyEncryption, UserKey};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // Generate new keypair
         let (private_key, public_key) = generate_keypair();
         let key_id = format_public_key(&public_key);
+
+        // Get current timestamp
+        let timestamp = current_timestamp()?;
 
         // Prepare UserKey based on encryption type
         let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
@@ -441,10 +530,7 @@ impl User {
                 private_key_bytes: encrypted_bytes,
                 encryption: KeyEncryption::Encrypted { nonce },
                 display_name: display_name.map(|s| s.to_string()),
-                created_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                created_at: timestamp,
                 last_used: None,
                 is_default: false, // New keys are not default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -456,10 +542,7 @@ impl User {
                 private_key_bytes: private_key.to_bytes().to_vec(),
                 encryption: KeyEncryption::Unencrypted,
                 display_name: display_name.map(|s| s.to_string()),
-                created_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                created_at: timestamp,
                 last_used: None,
                 is_default: false, // New keys are not default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -513,6 +596,7 @@ impl User {
     /// # Returns
     /// The SigningKey if found
     pub fn get_signing_key(&self, key_id: &str) -> Result<ed25519_dalek::SigningKey> {
+        // FIXME: get_signing_key should be private
         self.key_manager
             .get_signing_key(key_id)
             .cloned()
@@ -674,8 +758,8 @@ impl User {
     ///     Permission::Write(5),
     /// ).await?;
     ///
-    /// // After approval, the database can be loaded
-    /// let database = user.load_database(&shared_database_id)?;
+    /// // After approval, the database can be opened
+    /// let database = user.open_database(&shared_database_id)?;
     /// ```
     pub async fn request_database_access(
         &self,
@@ -708,6 +792,172 @@ impl User {
 
         Ok(())
     }
+
+    // === Database Tracking and Preferences ===
+
+    /// Add or update a database in this user's list with auto-discovery of SigKeys.
+    ///
+    /// This method adds an existing database to your tracked database list with preferences,
+    /// or updates the preferences if already tracked (upsert behavior).
+    ///
+    /// When adding or updating:
+    /// 1. Uses Database::find_sigkeys() to discover which SigKey the user can use
+    /// 2. Automatically selects the SigKey with highest permission
+    /// 3. Stores the key mapping and preferences
+    /// 4. Preserves the original added_at timestamp if updating
+    ///
+    /// The sync_settings in preferences indicate your sync preferences, but do not
+    /// automatically configure sync. Use the Sync module's peer and tree methods to set up
+    /// actual sync relationships.
+    ///
+    /// # Arguments
+    /// * `prefs` - Database preferences including database_id, key_id, and sync_settings
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    ///
+    /// # Errors
+    /// - Returns `NoSigKeyFound` if no SigKey can be found for the specified key
+    /// - Returns `KeyNotFound` if the specified key_id doesn't exist
+    pub fn add_database(&mut self, prefs: DatabasePreferences) -> Result<()> {
+        use crate::user::crypto::current_timestamp;
+
+        // Single transaction for all operations
+        let tx = self.user_database.new_transaction()?;
+        let databases_table = tx.get_store::<Table<UserDatabasePreferences>>("databases")?;
+
+        // Use database ID as the key - check if it already exists (O(1))
+        let db_id_key = prefs.database_id.to_string();
+        let existing_prefs = databases_table.get(&db_id_key).ok();
+
+        // Determine if we need to validate and setup key mapping
+        let needs_key_validation = match &existing_prefs {
+            Some(existing) => existing.key_id != prefs.key_id, // Key changed
+            None => true,                                      // New database
+        };
+
+        // Validate key and set up mapping if needed
+        if needs_key_validation {
+            self.validate_and_map_key_in_txn(&tx, &prefs.database_id, &prefs.key_id)?;
+        }
+
+        // Create or update the preferences entry
+        let db_prefs = UserDatabasePreferences {
+            database_id: prefs.database_id.clone(),
+            key_id: prefs.key_id,
+            sync_settings: prefs.sync_settings.clone(),
+            added_at: existing_prefs
+                .map(|p| p.added_at)
+                .unwrap_or_else(|| current_timestamp().unwrap_or(0)),
+        };
+
+        // Store using database ID as explicit key (not using insert's auto-generated UUID)
+        databases_table.set(&db_id_key, db_prefs)?;
+
+        // Single commit for all changes
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    /// Alias for `add_database()` - add or update a database in your list.
+    ///
+    /// This is a convenience alias that calls `add_database()` with the same upsert behavior.
+    ///
+    /// # Arguments
+    /// * `prefs` - Database preferences including database_id, key_id, and sync_settings
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    ///
+    /// # Errors
+    /// See `add_database()` for error conditions
+    pub fn set_prefs(&mut self, prefs: DatabasePreferences) -> Result<()> {
+        self.add_database(prefs)
+    }
+
+    /// List all databases in this user's list.
+    ///
+    /// Returns the preferences for all databases the user has added to their list.
+    ///
+    /// # Returns
+    /// Vector of UserDatabasePreferences, sorted by added_at timestamp
+    pub fn list_database_prefs(&self) -> Result<Vec<UserDatabasePreferences>> {
+        let databases_table = self
+            .user_database
+            .get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
+
+        // Get all entries from the table (returns Vec<(key, value)>)
+        let all_entries = databases_table.search(|_| true)?;
+
+        // Extract just the values and sort by added_at timestamp
+        let mut all_prefs: Vec<UserDatabasePreferences> =
+            all_entries.into_iter().map(|(_key, prefs)| prefs).collect();
+
+        all_prefs.sort_by_key(|prefs| prefs.added_at);
+
+        Ok(all_prefs)
+    }
+
+    /// Get the preferences for a specific database in this user's list.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database
+    ///
+    /// # Returns
+    /// The UserDatabasePreferences if the database is in the user's list
+    ///
+    /// # Errors
+    /// Returns `DatabasePreferenceNotFound` if the database is not in the user's list
+    pub fn database_prefs(
+        &self,
+        database_id: &crate::entry::ID,
+    ) -> Result<crate::user::types::UserDatabasePreferences> {
+        let databases_table = self
+            .user_database()
+            .get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
+
+        // Direct O(1) lookup using database ID as key
+        let db_id_key = database_id.to_string();
+        databases_table.get(&db_id_key).map_err(|_| {
+            crate::user::errors::UserError::DatabasePreferenceNotFound {
+                database_id: database_id.to_string(),
+            }
+            .into()
+        })
+    }
+
+    /// Remove a database from this user's list.
+    ///
+    /// This removes the database from the user's list of tracked databases.
+    /// It does not delete the database itself, remove key mappings, or delete any data.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database to remove from the list
+    ///
+    /// # Errors
+    /// Returns `DatabasePreferenceNotFound` if the database is not in the user's list
+    pub fn remove_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
+        let tx = self.user_database.new_transaction()?;
+        let databases_table = tx.get_store::<Table<UserDatabasePreferences>>("databases")?;
+
+        // Direct O(1) delete using database ID as key
+        let db_id_key = database_id.to_string();
+
+        // Verify it exists before deleting
+        if databases_table.get(&db_id_key).is_err() {
+            return Err(crate::user::errors::UserError::DatabasePreferenceNotFound {
+                database_id: database_id.to_string(),
+            }
+            .into());
+        }
+
+        // Delete using database ID as key
+        databases_table.delete(&db_id_key)?;
+        tx.commit()?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -717,12 +967,13 @@ mod tests {
         auth::crypto::{format_public_key, generate_keypair},
         backend::database::InMemory,
         user::{
-            crypto::{derive_encryption_key, encrypt_private_key, hash_password},
+            crypto::{
+                current_timestamp, derive_encryption_key, encrypt_private_key, hash_password,
+            },
             types::{UserKey, UserStatus},
         },
     };
     use std::collections::HashMap;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_test_user_session() -> User {
         let backend = Arc::new(InMemory::new());
@@ -768,10 +1019,7 @@ mod tests {
             user_database_id: user_database.root_id().clone(),
             password_hash: Some(password_hash),
             password_salt: Some(password_salt.clone()),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: current_timestamp().unwrap(),
             status: UserStatus::Active,
         };
 
@@ -784,10 +1032,7 @@ mod tests {
             private_key_bytes: encrypted_key,
             encryption: crate::user::types::KeyEncryption::Encrypted { nonce },
             display_name: Some("Device Key".to_string()),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: current_timestamp().unwrap(),
             last_used: None,
             is_default: true,
             database_sigkeys: HashMap::new(),

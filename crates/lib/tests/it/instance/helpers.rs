@@ -23,7 +23,7 @@ pub fn create_database_with_default_key(user: &mut User) -> Database {
     let key_id = user
         .get_default_key()
         .expect("User should have default key");
-    user.new_database(eidetica::crdt::Doc::new(), &key_id)
+    user.create_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create database")
 }
 
@@ -96,7 +96,7 @@ pub fn test_tree_load_workflow(user: &mut User) -> (ID, Database) {
     drop(tree);
 
     // Load tree from ID
-    let loaded_tree = user.load_database(&root_id).expect("Failed to load tree");
+    let loaded_tree = user.open_database(&root_id).expect("Failed to load tree");
 
     (root_id, loaded_tree)
 }

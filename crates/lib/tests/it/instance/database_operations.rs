@@ -25,10 +25,10 @@ fn test_database_authentication_scenarios() {
 
     // Test tree creation with authentication
     let tree1 = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create tree with auth key");
     let tree2 = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create second tree with auth key");
 
     // Verify both trees are different
@@ -57,14 +57,14 @@ fn test_multiple_database_creation() {
         .get_default_key()
         .expect("User1 should have default key");
     let tree1 = user1
-        .new_database(Doc::new(), &key_id1)
+        .create_database(Doc::new(), &key_id1)
         .expect("Failed to create tree for user1");
 
     let key_id2 = user2
         .get_default_key()
         .expect("User2 should have default key");
     let tree2 = user2
-        .new_database(Doc::new(), &key_id2)
+        .create_database(Doc::new(), &key_id2)
         .expect("Failed to create tree for user2");
 
     // Verify they have different root IDs

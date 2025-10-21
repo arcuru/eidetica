@@ -293,7 +293,7 @@ fn test_database_persistence_across_sessions() {
     // Login again and verify database can be loaded
     let user2 = login_user(&instance, username, None);
     let db2 = user2
-        .load_database(&db_id)
+        .open_database(&db_id)
         .expect("Failed to load database");
 
     // Verify database properties match

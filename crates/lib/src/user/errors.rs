@@ -59,6 +59,12 @@ pub enum UserError {
         database_id: crate::entry::ID,
     },
 
+    #[error("No SigKey found for key {key_id} in database {database_id}")]
+    NoSigKeyFound {
+        key_id: String,
+        database_id: crate::entry::ID,
+    },
+
     #[error("Password required for operation: {operation}")]
     PasswordRequired { operation: String },
 

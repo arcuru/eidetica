@@ -97,7 +97,7 @@ fn test_multi_device_key_management_and_database_access() {
     let laptop_key = add_user_key(&mut user2, Some("Laptop"));
 
     let db2 = user2
-        .new_database(
+        .create_database(
             {
                 let mut settings = eidetica::crdt::Doc::new();
                 settings.set_string("name", "Laptop Work");
@@ -109,7 +109,7 @@ fn test_multi_device_key_management_and_database_access() {
     let db2_id = db2.root_id().clone();
 
     // Laptop can also access the shared database (created with default key)
-    let db1_from_laptop = user2.load_database(&db1_id).expect("Load shared db");
+    let db1_from_laptop = user2.open_database(&db1_id).expect("Load shared db");
     let tx2 = db1_from_laptop.new_transaction().expect("Laptop read");
     let store2 = tx2.get_store::<DocStore>("notes").expect("Store");
     assert_eq!(
@@ -130,12 +130,12 @@ fn test_multi_device_key_management_and_database_access() {
 
     // Phone can access both databases through their respective keys
     let db1_from_phone = user3
-        .load_database(&db1_id)
+        .open_database(&db1_id)
         .expect("Load shared db from phone");
     assert_database_name(&db1_from_phone, "Shared Notes");
 
     let db2_from_phone = user3
-        .load_database(&db2_id)
+        .open_database(&db2_id)
         .expect("Load laptop db from phone");
     assert_database_name(&db2_from_phone, "Laptop Work");
 }
@@ -248,7 +248,7 @@ fn test_collaborative_database_with_global_permissions() {
 
     // Create the new database with alice_key as the owner
     let alice_db = alice
-        .new_database(alice_db_settings, &alice_key)
+        .create_database(alice_db_settings, &alice_key)
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
 
@@ -294,12 +294,12 @@ fn test_collaborative_database_with_global_permissions() {
     println!("✅ Bob discovered global '*' permission with Write(10)");
 
     // Bob adds the database key mapping to his user preferences
-    bob.add_database_key_mapping(&bob_key, &db_id, "*")
+    bob.map_key(&bob_key, &db_id, "*")
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
-    let bob_db = bob.load_database(&db_id).expect("Bob loads database");
+    let bob_db = bob.open_database(&db_id).expect("Bob loads database");
     assert_database_name(&bob_db, "Team Workspace");
     println!("✅ Bob successfully loaded the database");
 
@@ -335,7 +335,7 @@ fn test_collaborative_database_with_global_permissions() {
     // Alice logs back in and sees Bob's changes
     let alice2 = login_user(&instance, alice_name, None);
     let alice_db2 = alice2
-        .load_database(&db_id)
+        .open_database(&db_id)
         .expect("Alice reloads database");
 
     {
@@ -418,7 +418,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Create the new database with alice_key as the owner
     let alice_db = alice
-        .new_database(alice_db_settings, &alice_key)
+        .create_database(alice_db_settings, &alice_key)
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
 
@@ -510,12 +510,12 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("✅ Bob discovered global '*' permission with Write(10)");
 
     // Bob adds the database key mapping to his user preferences
-    bob.add_database_key_mapping(&bob_key, &db_id, "*")
+    bob.map_key(&bob_key, &db_id, "*")
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
-    let bob_db = bob.load_database(&db_id).expect("Bob loads database");
+    let bob_db = bob.open_database(&db_id).expect("Bob loads database");
     println!("✅ Bob successfully loaded the database");
 
     // Bob reads Alice's data
@@ -566,7 +566,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .login_user("alice", None)
         .expect("Alice re-login");
     let alice_db2 = alice2
-        .load_database(&db_id)
+        .open_database(&db_id)
         .expect("Alice reloads database");
 
     {

@@ -414,7 +414,9 @@ pub fn setup_server_with_bootstrap_database(
     let mut settings = Doc::new();
     settings.set_string("name", db_name);
 
-    let server_database = server_user.new_database(settings, &server_key_id).unwrap();
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
+        .unwrap();
     let tree_id = server_database.root_id().clone();
 
     // Add bootstrap auto-approval policy
@@ -474,7 +476,7 @@ pub async fn request_and_map_database_access(
 
     // Establish database-key mapping
     // Use the same key_id as the SigKey identifier (common pattern)
-    user.add_database_key_mapping(key_id, tree_id, key_id)?;
+    user.map_key(key_id, tree_id, key_id)?;
 
     Ok(())
 }
@@ -511,7 +513,7 @@ pub fn setup_user_with_database(
     let mut user = instance.login_user(username, None).unwrap();
     let key_id = user.add_private_key(Some(key_name)).unwrap();
 
-    let database = user.new_database(Doc::new(), &key_id).unwrap();
+    let database = user.create_database(Doc::new(), &key_id).unwrap();
     let tree_id = database.root_id().clone();
 
     (user, key_id, database, tree_id)

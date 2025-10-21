@@ -194,41 +194,63 @@ pub enum KeyEncryption {
 }
 ```
 
-#### 4. UserDatabasePreferences (stored in user's private database `databases` subtree)
+#### 4. UserDatabasePreferences (stored in user's private database `databases` Table)
+
+**Purpose**: Tracks which databases a user cares about and their per-user sync preferences. The User tracks _preferences_ (what the user wants), while the Sync module tracks _status_ (what's happening). This separation allows multiple users with different sync preferences to sync the same database in a single Instance.
 
 <!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
 
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserDatabasePreferences {
-    /// Database ID
+    /// Database ID being tracked
     pub database_id: ID,
 
-    /// Whether user wants to sync this database
-    pub sync_enabled: bool,
+    /// Which user key to use for this database
+    pub key_id: String,
 
-    /// Sync settings specific to this database
+    /// User's sync preferences for this database
     pub sync_settings: SyncSettings,
 
-    /// User's preferred SigKey for this database
-    pub preferred_sigkey: Option<String>,
-
-    /// Custom labels or notes
-    pub notes: Option<String>,
+    /// When user added this database
+    pub added_at: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct SyncSettings {
-    /// Sync interval (if periodic)
-    pub interval_seconds: Option<u64>,
+    /// Whether user wants to sync this database
+    pub sync_enabled: bool,
 
     /// Sync on commit
     pub sync_on_commit: bool,
 
+    /// Sync interval (if periodic)
+    pub interval_seconds: Option<u64>,
+
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct DatabasePreferences {
+    /// Database ID to add/update
+    pub database_id: ID,
+
+    /// Which user key to use for this database
+    pub key_id: String,
+
+    /// Sync settings for this database
+    pub sync_settings: SyncSettings,
+}
 ```
+
+**Design Notes**:
+
+- **SigKey Discovery**: When adding a database via `add_database()`, the system automatically discovers which SigKey the user can use via `Database::find_sigkeys()`, selecting the highest-permission SigKey available. The discovered SigKey is stored in `UserKey.database_sigkeys` HashMap.
+
+- **Separation of Concerns**: The `key_id` in UserDatabasePreferences references the user's key, while the actual SigKey mapping is stored in `UserKey.database_sigkeys`. This allows the same key to use different SigKeys in different databases.
+
+- **Sync Settings vs Sync Status**: User preferences indicate what the user wants (sync_enabled, sync_on_commit), while the Sync module tracks actual sync status (last_synced, connection state). Multiple users can have different preferences for the same database.
 
 #### 5. DatabaseTracking (stored in `_databases` table)
 
@@ -368,7 +390,7 @@ User represents an authenticated session with decrypted keys:
 
 **Responsibilities:**
 
-- Database operations (new_database, load_database, find_database)
+- Database operations (create_database, open_database, find_database)
 - Key management (add_private_key, list_keys, get_signing_key)
 - Database preferences
 - Bootstrap approval
@@ -478,7 +500,7 @@ impl Instance {
 
 <!-- Code block ignored: API interface showing struct and impl with function signatures without bodies -->
 
-````rust,ignore
+```rust,ignore
 /// User session object, returned after successful login
 ///
 /// Represents an authenticated user with decrypted private keys loaded in memory.
@@ -502,81 +524,57 @@ impl User {
     // === Database Operations ===
 
     /// Create a new database in this user's context
-    pub fn new_database(&self, settings: Doc) -> Result<Database>;
+    pub fn create_database(&self, settings: Doc, signing_key: &str) -> Result<Database>;
 
     /// Load a database using this user's keys
-    ///
-    /// This is the primary method for users to access databases. It automatically:
-    /// 1. Finds an appropriate key that has access to the database
-    /// 2. Retrieves the decrypted SigningKey from the UserKeyManager
-    /// 3. Gets the SigKey mapping for this database
-    /// 4. Creates a Database instance configured with the user's key
-    ///
-    /// The returned Database can be used normally - all transactions will
-    /// automatically use the user's provided key instead of looking up keys
-    /// from backend storage.
-    ///
-    /// # Arguments
-    /// * `database_id` - The ID of the database to load
-    ///
-    /// # Returns
-    /// A Database instance configured to use this user's keys
-    ///
-    /// # Errors
-    /// - `NoKeyForDatabase`: User has no keys with access to this database
-    /// - `NoSigKeyMapping`: User's key has no SigKey mapping for this database
-    /// - `KeyNotFound`: Key exists in preferences but not in UserKeyManager
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let user = instance.login_user("alice", "password")?;
-    /// let database = user.load_database(&database_id)?;
-    ///
-    /// // Use database normally - transactions automatically use user's key
-    /// let tx = database.new_transaction()?;
-    /// tx.get_store::<DocStore>("data")?.set("key", "value")?;
-    /// tx.commit()?;
-    /// ```
-    pub fn load_database(&self, database_id: &ID) -> Result<Database>;
+    pub fn open_database(&self, database_id: &ID) -> Result<Database>;
 
     /// Find databases by name
     pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>>;
 
     /// Find the best key for accessing a database
-    ///
-    /// Searches the user's keys to find one that can access the specified database.
-    /// Considers both the SigKey mappings stored in user preferences and the
-    /// database's authentication settings to find a valid key.
-    ///
-    /// Returns the key_id of a suitable key, preferring keys with higher permissions.
-    ///
-    /// # Arguments
-    /// * `database_id` - The ID of the database
-    ///
-    /// # Returns
-    /// Some(key_id) if a suitable key is found, None if no keys can access this database
-    pub fn find_key_for_database(&self, database_id: &ID) -> Result<Option<String>>;
 
     /// Get the SigKey mapping for a key in a specific database
-    ///
-    /// Users map their private keys to SigKey identifiers on a per-database basis.
-    /// This method retrieves the SigKey identifier that a specific key uses in
-    /// a specific database's authentication settings.
-    ///
-    /// # Arguments
-    /// * `key_id` - The user's key identifier
-    /// * `database_id` - The database ID
-    ///
-    /// # Returns
-    /// Some(sigkey) if a mapping exists, None if no mapping is configured
-    ///
-    /// # Errors
-    /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    pub fn get_database_sigkey(
+    pub fn key_mapping(
         &self,
         key_id: &str,
         database_id: &ID,
     ) -> Result<Option<String>>;
+
+    /// Add a SigKey mapping for a key in a specific database
+    pub fn map_key(
+        &mut self,
+        key_id: &str,
+        database_id: &ID,
+        sigkey: &str,
+    ) -> Result<()>;
+
+    // === Database Tracking and Preferences ===
+
+    /// Add a database to this user's tracked databases with auto-discovery of SigKeys.
+    pub fn add_database(
+        &mut self,
+        prefs: DatabasePreferences,
+    ) -> Result<()>;
+
+    /// List all databases this user is tracking.
+    pub fn list_database_prefs(&self) -> Result<Vec<UserDatabasePreferences>>;
+
+    /// Get the preferences for a specific database.
+    pub fn database_prefs(
+        &self,
+        database_id: &ID,
+    ) -> Result<UserDatabasePreferences>;
+
+    /// Set/update preferences for a database (upsert behavior).
+    /// Alias for add_database.
+    pub fn set_database(
+        &mut self,
+        prefs: DatabasePreferences,
+    ) -> Result<()>;
+
+    /// Remove a database from this user's tracked databases.
+    pub fn remove_database(&mut self, database_id: &ID) -> Result<()>;
 
     // === Key Management ===
 
@@ -597,9 +595,7 @@ impl User {
     /// Logout (clears decrypted keys from memory)
     pub fn logout(self) -> Result<()>;
 }
-````
-
-**Note**: Additional User methods for database preferences, key discovery, and bootstrap management are planned but not yet implemented in the current phase.
+```
 
 ### UserKeyManager (Internal)
 
@@ -691,15 +687,15 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 ### Database Access Flow
 
-The user accesses databases through the `User.load_database()` method, which handles all key management automatically:
+The user accesses databases through the `User.open_database()` method, which handles all key management automatically:
 
-1. User calls `user.load_database(&database_id)`
-2. System finds appropriate key via `find_key_for_database()`
+1. User calls `user.open_database(&database_id)`
+2. System finds appropriate key via `find_key()`
    - Checks user's key metadata for SigKey mappings to this database
    - Verifies keys are authorized in database's auth settings
    - Selects key with highest permission level
 3. System retrieves decrypted SigningKey from UserKeyManager
-4. System gets SigKey mapping via `get_database_sigkey()`
+4. System gets SigKey mapping via `key_mapping()`
 5. System loads Database with `Database::open()`
    - Database stores KeySource::Provided with signing key and sigkey
 6. User creates transactions normally: `database.new_transaction()`
@@ -708,7 +704,7 @@ The user accesses databases through the `User.load_database()` method, which han
 7. User performs operations and commits
    - Transaction uses provided SigningKey directly during commit()
 
-**Key Insight**: Once a Database is loaded via `User.load_database()`, all subsequent operations transparently use the user's keys. The user doesn't need to think about key management - it's handled at database load time.
+**Key Insight**: Once a Database is loaded via `User.open_database()`, all subsequent operations transparently use the user's keys. The user doesn't need to think about key management - it's handled at database load time.
 
 ### Key Addition Flow
 

@@ -151,7 +151,7 @@ fn test_backend_serialization() {
 
     // Create database with first key (admin key)
     let tree = user
-        .new_database(settings, &key_id1)
+        .create_database(settings, &key_id1)
         .expect("Failed to create tree");
 
     // Create an entry with first key (tree is already loaded with key_id1)

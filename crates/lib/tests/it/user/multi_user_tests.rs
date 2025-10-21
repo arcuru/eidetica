@@ -101,7 +101,7 @@ fn test_database_created_by_one_user() {
 
     // Verify Alice can find the key for it
     let key = user1
-        .find_key_for_database(alice_db.root_id())
+        .find_key(alice_db.root_id())
         .expect("Should not error");
 
     assert!(key.is_some(), "Alice should have key for her database");

@@ -189,9 +189,7 @@ fn test_cannot_use_another_users_database_key() {
     let db_id = alice_db.root_id();
 
     // Bob tries to find a key for Alice's database
-    let result = user2
-        .find_key_for_database(db_id)
-        .expect("Should not error");
+    let result = user2.find_key(db_id).expect("Should not error");
 
     // Bob should not find a key (None returned)
     assert!(
@@ -209,7 +207,7 @@ fn test_database_access_requires_key() {
     let db_id = alice_db.root_id();
 
     // Bob tries to load the database
-    let result = user2.load_database(db_id);
+    let result = user2.open_database(db_id);
 
     // Bob should not be able to load without proper bootstrap
     assert!(result.is_err(), "User without key should not load database");

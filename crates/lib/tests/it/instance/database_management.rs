@@ -16,7 +16,7 @@ fn test_all_trees() {
         .expect("User should have default key");
 
     let database1 = user
-        .new_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create database 1");
     let root_id1 = database1.root_id().clone();
 
@@ -163,7 +163,7 @@ fn test_tree_metadata_management() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .new_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     update_tree_metadata(
@@ -213,7 +213,7 @@ fn test_tree_listing_and_searching() {
         .get_default_key()
         .expect("User should have default key");
     let _tree4 = user
-        .new_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create unnamed tree");
 
     // Test all_trees functionality

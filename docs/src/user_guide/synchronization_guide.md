@@ -204,6 +204,115 @@ for peer in peers {
 }
 ```
 
+## Database Tracking and Preferences
+
+When using Eidetica with user accounts, you can track which databases you want to sync and configure individual sync preferences for each database.
+
+### Adding a Database to Track
+
+To add a database to your user's tracked databases:
+
+<!-- Code block ignored: Requires complete database setup with permissions -->
+
+```rust,ignore
+// Configure preferences for a database
+let prefs = DatabasePreferences {
+    database_id: db_id.clone(),
+    key_id: user.get_default_key()?,
+    sync_settings: SyncSettings {
+        sync_enabled: true,
+        sync_on_commit: false,
+        interval_seconds: Some(60),  // Sync every 60 seconds
+        properties: Default::default(),
+    },
+};
+
+// Add to user's tracked databases
+user.add_database(prefs)?;
+```
+
+When you add a database, the system **automatically discovers** which signing key (SigKey) your user key can use to authenticate with that database. This uses the database's permission system to find the best available access level.
+
+### Managing Tracked Databases
+
+<!-- Code block ignored: Demonstrates full workflow requiring database setup -->
+
+```rust,ignore
+// List all tracked databases
+let databases = user.list_database_prefs()?;
+for db_prefs in databases {
+    println!("Database: {}", db_prefs.database_id);
+    println!("  Syncing: {}", db_prefs.sync_settings.sync_enabled);
+}
+
+// Get preferences for a specific database
+let prefs = user.database_prefs(&db_id)?;
+
+// Update sync preferences
+let mut updated_prefs = prefs.clone();
+updated_prefs.sync_settings.sync_enabled = false;
+user.set_prefs(updated_prefs.database_prefs)?;
+
+// Remove a database from tracking
+user.remove_database(&db_id)?;
+```
+
+### Loading Tracked Databases
+
+Once a database is tracked, you can easily load it:
+
+<!-- Code block ignored: Requires complete user and database setup -->
+
+```rust,ignore
+// Load a tracked database
+let database = user.open_database(&db_id)?;
+
+// The user's configured key and SigKey are automatically used
+// You can now work with the database normally
+```
+
+### Sync Preferences vs Sync Status
+
+It's important to understand the distinction:
+
+- **Preferences** (managed by User): What you _want_ to happen (sync enabled, interval, etc.)
+- **Status** (managed by Sync module): What is _actually_ happening (last sync time, success/failure, etc.)
+
+The user tracking system manages your preferences. The sync module reads these preferences to determine which databases to sync and when.
+
+### Multi-User Support
+
+Different users can track the same database with different preferences:
+
+<!-- Code block ignored: Demonstrates multi-user scenario requiring complex setup -->
+
+```rust,ignore
+// Alice wants to sync this database every minute
+alice_user.add_database(DatabasePreferences {
+    database_id: shared_db_id.clone(),
+    key_id: alice_key.clone(),
+    sync_settings: SyncSettings {
+        sync_enabled: true,
+        interval_seconds: Some(60),
+        ..Default::default()
+    },
+})?;
+
+// Bob wants to sync the same database, but only on commit
+bob_user.add_database(DatabasePreferences {
+    database_id: shared_db_id.clone(),
+    key_id: bob_key.clone(),
+    sync_settings: SyncSettings {
+        sync_enabled: true,
+        sync_on_commit: true,
+        interval_seconds: None,
+        ..Default::default()
+    },
+})?;
+```
+
+Each user maintains their own tracking list and preferences independently.
+
 ## Security
 
 ### Authentication

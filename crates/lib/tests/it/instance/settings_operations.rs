@@ -40,7 +40,7 @@ fn test_multiple_settings_updates() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .new_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(eidetica::crdt::Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     // First update: basic info
@@ -128,7 +128,7 @@ fn test_metadata_helper_functions() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     // Use metadata helper
@@ -160,7 +160,7 @@ fn test_settings_with_complex_values() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     // Set settings with various types of values
@@ -284,7 +284,7 @@ fn test_empty_and_edge_case_settings() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     // Test edge case values

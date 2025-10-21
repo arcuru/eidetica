@@ -216,7 +216,7 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
             let default_key = user.get_default_key()?;
 
             // User API automatically configures the database with user's keys
-            user.new_database(settings, &default_key)?
+            user.create_database(settings, &default_key)?
         }
         Err(e) => {
             // Propagate other errors

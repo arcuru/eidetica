@@ -229,7 +229,7 @@ impl UserKeyManager {
     ///
     /// Returns key IDs sorted by creation timestamp (oldest first) for deterministic behavior.
     pub fn list_key_ids(&self) -> Vec<String> {
-        let mut keys: Vec<(String, u64)> = self
+        let mut keys: Vec<(String, i64)> = self
             .decrypted_keys
             .keys()
             .filter_map(|key_id| {
@@ -317,8 +317,7 @@ impl ZeroizeOnDrop for UserKeyManager {}
 mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
-    use crate::user::crypto::{encrypt_private_key, hash_password};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::user::crypto::{current_timestamp, encrypt_private_key, hash_password};
 
     fn create_test_user_key(
         key_id: &str,
@@ -332,10 +331,7 @@ mod tests {
             private_key_bytes: encrypted_key,
             encryption: KeyEncryption::Encrypted { nonce },
             display_name: Some(format!("Test key {key_id}")),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: current_timestamp().unwrap(),
             last_used: None,
             is_default: false,
             database_sigkeys: HashMap::new(),
@@ -439,10 +435,7 @@ mod tests {
             private_key_bytes: key1.to_bytes().to_vec(),
             encryption: KeyEncryption::Unencrypted,
             display_name: Some("Key 1".to_string()),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: current_timestamp().unwrap(),
             last_used: None,
             is_default: true,
             database_sigkeys: HashMap::new(),
@@ -453,10 +446,7 @@ mod tests {
             private_key_bytes: key2.to_bytes().to_vec(),
             encryption: KeyEncryption::Unencrypted,
             display_name: Some("Key 2".to_string()),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: current_timestamp().unwrap(),
             last_used: None,
             is_default: false,
             database_sigkeys: HashMap::new(),

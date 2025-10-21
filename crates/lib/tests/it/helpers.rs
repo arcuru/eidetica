@@ -92,7 +92,7 @@ pub fn setup_tree() -> eidetica::Database {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
 
-    user.new_database(settings, &default_key)
+    user.create_database(settings, &default_key)
         .expect("Failed to create tree for testing")
 }
 
@@ -129,7 +129,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database
     db_settings.set_string("name", "test_tree_with_settings");
 
     let tree = user
-        .new_database(db_settings, &default_key)
+        .create_database(db_settings, &default_key)
         .expect("Failed to create tree");
 
     // Add the user settings through an operation

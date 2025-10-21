@@ -2,14 +2,11 @@
 //!
 //! Creates and manages _users and _databases system databases.
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use super::{
     User,
-    crypto::{derive_encryption_key, encrypt_private_key, hash_password},
+    crypto::{current_timestamp, derive_encryption_key, encrypt_private_key, hash_password},
     errors::UserError,
     key_manager::UserKeyManager,
     types::{KeyEncryption, UserInfo, UserKey, UserStatus},
@@ -261,10 +258,7 @@ pub fn create_user(
                 private_key_bytes: encrypted_key,
                 encryption: KeyEncryption::Encrypted { nonce },
                 display_name: Some("Default Key".to_string()),
-                created_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                created_at: current_timestamp()?,
                 last_used: None,
                 is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -277,10 +271,7 @@ pub fn create_user(
                 private_key_bytes: user_private_key.to_bytes().to_vec(),
                 encryption: KeyEncryption::Unencrypted,
                 display_name: Some("Default Key".to_string()),
-                created_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                created_at: current_timestamp()?,
                 last_used: None,
                 is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -294,17 +285,12 @@ pub fn create_user(
     tx.commit()?;
 
     // 5. Create UserInfo
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
     let user_info = UserInfo {
         username: username.to_string(),
         user_database_id,
         password_hash,
         password_salt,
-        created_at: now,
+        created_at: current_timestamp()?,
         status: UserStatus::Active,
     };
 
@@ -450,14 +436,9 @@ pub fn login_user(
 
     // 7. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
     let tx = users_db.new_transaction()?;
-    let last_login_table = tx.get_store::<Table<u64>>("last_login")?;
-    last_login_table.set(&user_uuid, now)?;
+    let last_login_table = tx.get_store::<Table<i64>>("last_login")?;
+    last_login_table.set(&user_uuid, current_timestamp()?)?;
     tx.commit()?;
 
     // 8. Create User session
@@ -655,7 +636,7 @@ mod tests {
 
         // Verify last_login was recorded in separate table
         let last_login_table = users_db
-            .get_store_viewer::<Table<u64>>("last_login")
+            .get_store_viewer::<Table<i64>>("last_login")
             .unwrap();
         let last_login = last_login_table.get(user.user_uuid()).unwrap();
         assert!(last_login > 0);
@@ -677,7 +658,7 @@ mod tests {
 
         // Verify last_login was recorded
         let last_login_table = users_db
-            .get_store_viewer::<Table<u64>>("last_login")
+            .get_store_viewer::<Table<i64>>("last_login")
             .unwrap();
         let last_login = last_login_table.get(user.user_uuid()).unwrap();
         assert!(last_login > 0);

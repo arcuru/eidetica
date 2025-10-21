@@ -28,6 +28,7 @@
   - [Database Interface](internal/core_components/backend.md)
   - [Instance](internal/core_components/instance.md)
   - [Database](internal/core_components/database.md)
+  - [User System](internal/core_components/user.md)
   - [Transaction](internal/core_components/transaction.md)
   - [Authentication](internal/core_components/authentication.md)
   - [Authentication Behavior Reference](internal/auth_behavior_reference.md)

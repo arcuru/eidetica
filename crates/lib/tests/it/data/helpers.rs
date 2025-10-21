@@ -25,7 +25,7 @@ pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
 
-    let tree = user.new_database(settings, &default_key)?;
+    let tree = user.create_database(settings, &default_key)?;
     Ok((instance, tree))
 }
 

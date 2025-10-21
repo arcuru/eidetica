@@ -120,7 +120,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
             // Verify client doesn't have the database initially
             assert!(
-                client_user.load_database(&tree_id).is_err(),
+                client_user.open_database(&tree_id).is_err(),
                 "Client {} should not have the database initially",
                 i
             );
@@ -137,7 +137,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
             .unwrap();
 
             // Verify client can now load the database using User API
-            let client_db = client_user.load_database(&tree_id).unwrap();
+            let client_db = client_user.open_database(&tree_id).unwrap();
 
             // Verify client's key was added to auth settings
             let settings = client_db.get_settings().unwrap();

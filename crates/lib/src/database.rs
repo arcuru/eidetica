@@ -122,6 +122,8 @@ impl Database {
         // Check if auth is configured in the initial settings
         let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
 
+        // FIXME: this should merge the provided settings and the added signing key should be added as root
+
         let final_database_settings = if auth_configured {
             // Auth settings are already provided - use them as-is with the provided signing key
             initial_settings
@@ -308,13 +310,16 @@ impl Database {
     /// - Global "*" permission if available
     /// - (Future) Delegation paths
     ///
+    /// The results are **sorted by permission level, highest first**, making it easy to
+    /// select the most privileged access available.
+    ///
     /// # Arguments
     /// * `backend` - Backend storage reference to load database from
     /// * `root_id` - Root entry ID of the database to check
     /// * `pubkey` - Public key string (e.g., "Ed25519:abc123...") to look up
     ///
     /// # Returns
-    /// A vector of (SigKey, Permission) tuples, one for each way the pubkey can access the database.
+    /// A vector of (SigKey, Permission) tuples, sorted by permission (highest first).
     /// Returns empty vector if no valid access methods are found.
     ///
     /// # Errors
@@ -336,10 +341,10 @@ impl Database {
     /// // Get the public key string
     /// let pubkey = format_public_key(&verifying_key);
     ///
-    /// // Find all SigKeys this pubkey can use
+    /// // Find all SigKeys this pubkey can use (sorted highest permission first)
     /// let sigkeys = Database::find_sigkeys(backend.clone(), &root_id, &pubkey)?;
     ///
-    /// // Use the first available SigKey to open the database
+    /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
     ///     let sigkey_str = match sigkey {
     ///         SigKey::Direct(name) => name.clone(),
@@ -362,7 +367,7 @@ impl Database {
         let settings_store = temp_db.get_settings()?;
         let auth_settings = settings_store.get_auth_settings()?;
 
-        // Find all SigKeys for this pubkey
+        // Find all SigKeys for this pubkey (returns sorted by highest permission first)
         Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
     }
 
@@ -780,5 +785,85 @@ impl Database {
     /// A `Result` containing a vector of all `Entry` objects in the database
     pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
         self.backend.get_tree(&self.root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{auth::crypto::generate_keypair, backend::database::InMemory};
+
+    #[test]
+    fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
+        // Create a backend
+        let backend = Arc::new(InMemory::new());
+
+        // Generate a test key
+        let (signing_key, public_key) = generate_keypair();
+        let pubkey_str = format_public_key(&public_key);
+
+        // Create initial settings with multiple keys having different permissions
+        let mut settings = Doc::new();
+        settings.set_string("name", "test_db");
+
+        let mut auth_settings = AuthSettings::new();
+
+        // Add keys with varying permissions (intentionally out of order)
+        auth_settings.add_key(
+            "key_write",
+            AuthKey::active(&pubkey_str, Permission::Write(10))?,
+        )?;
+        auth_settings.add_key(
+            "key_admin",
+            AuthKey::active(&pubkey_str, Permission::Admin(5))?,
+        )?;
+        auth_settings.add_key("key_read", AuthKey::active(&pubkey_str, Permission::Read)?)?;
+        auth_settings.add_key(
+            "key_write_high",
+            AuthKey::active(&pubkey_str, Permission::Write(2))?,
+        )?;
+
+        settings.set_doc("auth", auth_settings.as_doc().clone());
+
+        // Create database
+        let db = Database::create(
+            settings,
+            backend.clone(),
+            signing_key,
+            "key_admin".to_string(),
+        )?;
+
+        // Call find_sigkeys
+        let results = Database::find_sigkeys(backend, db.root_id(), &pubkey_str)?;
+
+        // Verify we got all 4 keys
+        assert_eq!(results.len(), 4, "Should find all 4 keys");
+
+        // Verify they're sorted by permission, highest first
+        // Admin(5) > Write(2) > Write(10) > Read
+        assert_eq!(
+            results[0].1,
+            Permission::Admin(5),
+            "First should be Admin(5)"
+        );
+        assert_eq!(
+            results[1].1,
+            Permission::Write(2),
+            "Second should be Write(2)"
+        );
+        assert_eq!(
+            results[2].1,
+            Permission::Write(10),
+            "Third should be Write(10)"
+        );
+        assert_eq!(results[3].1, Permission::Read, "Fourth should be Read");
+
+        // Verify the SigKey names match the permissions
+        assert_eq!(results[0].0, SigKey::Direct("key_admin".to_string()));
+        assert_eq!(results[1].0, SigKey::Direct("key_write_high".to_string()));
+        assert_eq!(results[2].0, SigKey::Direct("key_write".to_string()));
+        assert_eq!(results[3].0, SigKey::Direct("key_read".to_string()));
+
+        Ok(())
     }
 }

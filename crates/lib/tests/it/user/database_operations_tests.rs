@@ -87,7 +87,7 @@ fn test_load_database_after_creation() {
     let (db1, db_id) = create_database_with_id(&mut user, "Test DB");
 
     // Load the database
-    let db2 = user.load_database(&db_id).expect("Failed to load database");
+    let db2 = user.open_database(&db_id).expect("Failed to load database");
 
     // Verify it's the same database
     assert_eq!(db1.root_id(), db2.root_id());
@@ -102,7 +102,7 @@ fn test_load_database_preserves_name() {
     let (_db, db_id) = create_database_with_id(&mut user, db_name);
 
     // Load and verify name
-    let loaded_db = user.load_database(&db_id).expect("Failed to load database");
+    let loaded_db = user.open_database(&db_id).expect("Failed to load database");
     assert_database_name(&loaded_db, db_name);
 }
 
@@ -118,7 +118,7 @@ fn test_find_key_for_created_database() {
     let db_id = database.root_id();
 
     // Should find a key
-    let key_opt = user.find_key_for_database(db_id).expect("Should not error");
+    let key_opt = user.find_key(db_id).expect("Should not error");
 
     assert!(key_opt.is_some(), "Should find key for created database");
 }
@@ -134,7 +134,7 @@ fn test_find_key_returns_valid_key_id() {
 
     // Get the key
     let key_id = user
-        .find_key_for_database(db_id)
+        .find_key(db_id)
         .expect("Should not error")
         .expect("Should find key");
 
@@ -154,9 +154,7 @@ fn test_find_key_for_nonexistent_database() {
     let fake_id = ID::from("nonexistent_database");
 
     // Should return None
-    let result = user
-        .find_key_for_database(&fake_id)
-        .expect("Should not error");
+    let result = user.find_key(&fake_id).expect("Should not error");
 
     assert!(
         result.is_none(),
@@ -178,9 +176,7 @@ fn test_create_database_with_second_key() {
     let database = create_named_database(&mut user, "Test DB");
 
     // Should be able to find a key for it
-    let key_opt = user
-        .find_key_for_database(database.root_id())
-        .expect("Should not error");
+    let key_opt = user.find_key(database.root_id()).expect("Should not error");
 
     assert!(key_opt.is_some(), "Should find key for database");
 }
@@ -417,7 +413,7 @@ fn test_load_database_with_invalid_id() {
     use eidetica::entry::ID;
     let fake_id = ID::from("sha256:nonexistent_database_id_12345678");
 
-    let result = user.load_database(&fake_id);
+    let result = user.open_database(&fake_id);
 
     assert!(
         result.is_err(),
@@ -434,7 +430,7 @@ fn test_create_database_with_nonexistent_key() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "Test DB");
 
-    let result = user.new_database(settings, "nonexistent_key_id");
+    let result = user.create_database(settings, "nonexistent_key_id");
 
     assert!(result.is_err(), "Should return error for nonexistent key");
 }
@@ -465,14 +461,14 @@ fn test_create_databases_with_different_keys() {
     let mut settings1 = eidetica::crdt::Doc::new();
     settings1.set_string("name", "DB from Key 1");
     let db1 = user
-        .new_database(settings1, &key1)
+        .create_database(settings1, &key1)
         .expect("Should create with key1");
 
     // Create database with second key
     let mut settings2 = eidetica::crdt::Doc::new();
     settings2.set_string("name", "DB from Key 2");
     let db2 = user
-        .new_database(settings2, &key2)
+        .create_database(settings2, &key2)
         .expect("Should create with key2");
 
     // Both databases should exist and be different
@@ -482,13 +478,13 @@ fn test_create_databases_with_different_keys() {
 
     // Each database should be findable via its key
     assert!(
-        user.find_key_for_database(db1.root_id())
+        user.find_key(db1.root_id())
             .expect("Should not error")
             .is_some(),
         "Should find key for db1"
     );
     assert!(
-        user.find_key_for_database(db2.root_id())
+        user.find_key(db2.root_id())
             .expect("Should not error")
             .is_some(),
         "Should find key for db2"

@@ -45,7 +45,7 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// let mut settings = Doc::new();
 /// settings.set_string("name", "my_database");
 /// let default_key = user.get_default_key()?;
-/// let db = user.new_database(settings, &default_key)?;
+/// let db = user.create_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
 pub struct Instance {
@@ -96,7 +96,7 @@ impl Instance {
     /// let mut settings = Doc::new();
     /// settings.set_string("name", "my_database");
     /// let default_key = user.get_default_key()?;
-    /// let db = user.new_database(settings, &default_key)?;
+    /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     pub fn open(backend: Box<dyn BackendDB>) -> Result<Self> {
@@ -223,7 +223,7 @@ impl Instance {
     /// let mut settings = Doc::new();
     /// settings.set_string("name", "my_database");
     /// let default_key = user.get_default_key()?;
-    /// let db = user.new_database(settings, &default_key)?;
+    /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
     pub fn create(backend: Box<dyn BackendDB>) -> Result<Self> {
@@ -350,7 +350,7 @@ impl Instance {
 
     /// Create a new database in the instance.
     ///
-    /// **DEPRECATED**: Use `User::new_database()` instead. This method will be removed in a future version.
+    /// **DEPRECATED**: Use `User::create_database()` instead. This method will be removed in a future version.
     ///
     /// # Arguments
     /// * `settings` - The initial settings for the database
@@ -360,7 +360,7 @@ impl Instance {
     /// A `Result` containing the newly created `Database` or an error.
     #[deprecated(
         since = "0.1.0",
-        note = "Use User::new_database() instead for proper user context"
+        note = "Use User::create_database() instead for proper user context"
     )]
     pub fn new_database(
         &self,
@@ -388,7 +388,7 @@ impl Instance {
 
     /// Create a new database with default empty settings.
     ///
-    /// **DEPRECATED**: Use `User::new_database()` instead. This method will be removed in a future version.
+    /// **DEPRECATED**: Use `User::create_database()` instead. This method will be removed in a future version.
     ///
     /// # Arguments
     /// * `signing_key_name` - The name of the signing key to use
@@ -397,7 +397,7 @@ impl Instance {
     /// A `Result` containing the newly created `Database` or an error.
     #[deprecated(
         since = "0.1.0",
-        note = "Use User::new_database() instead for proper user context"
+        note = "Use User::create_database() instead for proper user context"
     )]
     #[allow(deprecated)]
     pub fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
@@ -876,7 +876,7 @@ mod tests {
         // Create a user database to verify it persists
         let mut settings = Doc::new();
         settings.set_string("name", "bob_database");
-        user1.new_database(settings, &default_key)?;
+        user1.create_database(settings, &default_key)?;
 
         // Save the backend to file
         let backend_guard = instance1.backend();
@@ -1065,13 +1065,13 @@ mod tests {
         let mut settings1 = Doc::new();
         settings1.set_string("name", "database_one");
         settings1.set_string("purpose", "testing");
-        let db1 = user1.new_database(settings1, &default_key)?;
+        let db1 = user1.create_database(settings1, &default_key)?;
         let db1_root = db1.root_id().clone();
 
         let mut settings2 = Doc::new();
         settings2.set_string("name", "database_two");
         settings2.set_string("purpose", "production");
-        let db2 = user1.new_database(settings2, &default_key)?;
+        let db2 = user1.create_database(settings2, &default_key)?;
         let db2_root = db2.root_id().clone();
 
         drop(db1);

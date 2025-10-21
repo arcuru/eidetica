@@ -145,7 +145,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
     settings.set_doc("auth", auth_settings);
 
     let tree = user
-        .new_database(settings, &key1_id)
+        .create_database(settings, &key1_id)
         .expect("Failed to create tree");
 
     // Create operation that adds KEY2 to auth settings
@@ -223,7 +223,7 @@ fn test_prevent_auth_corruption() {
     settings.set_doc("auth", auth_settings);
 
     let tree = user
-        .new_database(settings, &valid_key_id)
+        .create_database(settings, &valid_key_id)
         .expect("Failed to create tree");
 
     // Valid operation should work

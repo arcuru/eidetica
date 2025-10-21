@@ -82,7 +82,7 @@ pub fn create_user_database(user: &mut User) -> Database {
     // Get the default key (earliest created key)
     let default_key = user.get_default_key().expect("Failed to get default key");
 
-    user.new_database(settings, &default_key)
+    user.create_database(settings, &default_key)
         .expect("Failed to create database")
 }
 
@@ -94,7 +94,7 @@ pub fn create_named_database(user: &mut User, name: &str) -> Database {
     // Get the default key (earliest created key)
     let default_key = user.get_default_key().expect("Failed to get default key");
 
-    user.new_database(settings, &default_key)
+    user.create_database(settings, &default_key)
         .expect("Failed to create database")
 }
 
@@ -218,7 +218,7 @@ pub fn assert_user_has_database_access(
     database_id: &eidetica::entry::ID,
 ) {
     let sigkey = user
-        .get_database_sigkey(key_id, database_id)
+        .key_mapping(key_id, database_id)
         .expect("Failed to get database sigkey");
     assert!(
         sigkey.is_some(),
@@ -229,7 +229,7 @@ pub fn assert_user_has_database_access(
 /// Assert that a user can find a key for a database
 pub fn assert_user_can_access_database(user: &User, database_id: &eidetica::entry::ID) {
     let key = user
-        .find_key_for_database(database_id)
+        .find_key(database_id)
         .expect("Failed to find key for database");
     assert!(
         key.is_some(),
@@ -271,7 +271,7 @@ pub fn test_complete_user_lifecycle(
         .expect("Failed to re-login");
 
     // Load database
-    let loaded_db = user.load_database(&db_id).expect("Failed to load database");
+    let loaded_db = user.open_database(&db_id).expect("Failed to load database");
 
     (instance, user, loaded_db)
 }

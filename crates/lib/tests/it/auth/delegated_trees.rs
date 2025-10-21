@@ -148,14 +148,14 @@ fn test_nested_delegation() -> Result<()> {
     let user_key = user.add_private_key(Some("user"))?;
 
     // Create user tree (bottom level) using SettingsStore API
-    let user_tree = user.new_database(Doc::new(), &user_key)?;
+    let user_tree = user.create_database(Doc::new(), &user_key)?;
     configure_database_auth(
         &user_tree,
         &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
     )?;
 
     // Create org tree (middle level) that delegates to user tree using SettingsStore API
-    let org_tree = user.new_database(Doc::new(), &org_admin_key)?;
+    let org_tree = user.create_database(Doc::new(), &org_admin_key)?;
     configure_database_auth(
         &org_tree,
         &[(
@@ -180,7 +180,7 @@ fn test_nested_delegation() -> Result<()> {
     op.commit()?;
 
     // Create main tree (top level) that delegates to org tree using SettingsStore API
-    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key)?;
     configure_database_auth(
         &main_tree,
         &[(
@@ -249,7 +249,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
     // Create delegated tree with user key (initially active) using SettingsStore API
-    let delegated_tree = user.new_database(Doc::new(), &delegated_user_key)?;
+    let delegated_tree = user.create_database(Doc::new(), &delegated_user_key)?;
     configure_database_auth(
         &delegated_tree,
         &[(
@@ -261,7 +261,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     )?;
 
     // Create main tree with delegation using SettingsStore API
-    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key)?;
     configure_database_auth(
         &main_tree,
         &[(
@@ -349,14 +349,14 @@ fn test_delegation_depth_limits() -> Result<()> {
     let user_key = user.add_private_key(Some("user"))?;
 
     // Create a simple delegated tree using SettingsStore API
-    let delegated_tree = user.new_database(Doc::new(), &user_key)?;
+    let delegated_tree = user.create_database(Doc::new(), &user_key)?;
     configure_database_auth(
         &delegated_tree,
         &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
     )?;
 
     // Create main tree using SettingsStore API
-    let main_tree = user.new_database(Doc::new(), &admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &admin_key)?;
     configure_database_auth(
         &main_tree,
         &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
@@ -421,7 +421,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
     // ---------------- Delegated tree using SettingsStore API ----------------
-    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key)?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -442,7 +442,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // ---------------- Main tree with delegation using SettingsStore API ----------------
-    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key)?;
     configure_database_auth(
         &main_tree,
         &[(
@@ -506,7 +506,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
     // Delegated tree with user key Write(12) using SettingsStore API
-    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key)?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -527,7 +527,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_tips = delegated_tree.get_tips()?;
 
     // Main tree delegates with max Write(8) (more privileged) and no min using SettingsStore API
-    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key)?;
     configure_database_auth(
         &main_tree,
         &[(
@@ -582,7 +582,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
 
     // Setup simple tree with direct key using SettingsStore API
     let admin_key = user.add_private_key(Some("admin"))?;
-    let tree = user.new_database(Doc::new(), &admin_key)?;
+    let tree = user.create_database(Doc::new(), &admin_key)?;
     configure_database_auth(
         &tree,
         &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
@@ -631,7 +631,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let delegated_admin_key = user.add_private_key(Some("delegated_admin"))?;
     let delegated_user_key = user.add_private_key(Some("delegated_user"))?;
 
-    let delegated_tree = user.new_database(Doc::new(), &delegated_admin_key)?;
+    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key)?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -654,7 +654,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
     let bogus_tip = ID::new("nonexistent_tip_hash");
 
     // Main tree with delegation using bogus tip using SettingsStore API
-    let main_tree = user.new_database(Doc::new(), &main_admin_key)?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key)?;
     configure_database_auth(
         &main_tree,
         &[(

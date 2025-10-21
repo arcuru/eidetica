@@ -53,7 +53,7 @@ fn setup_user_with_database() -> eidetica::Result<(
     settings.set_string("name", "Alice's Database");
 
     let database = user
-        .new_database(settings, &user_key_id)
+        .create_database(settings, &user_key_id)
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
@@ -428,7 +428,7 @@ async fn test_multiple_users() {
     let mut alice_db_settings = Doc::new();
     alice_db_settings.set_string("name", "Alice's Database");
     let alice_db = alice
-        .new_database(alice_db_settings, &alice_key)
+        .create_database(alice_db_settings, &alice_key)
         .expect("Failed to create Alice's database");
     let alice_tree_id = alice_db.root_id().clone();
 
@@ -436,7 +436,7 @@ async fn test_multiple_users() {
     let mut bob_db_settings = Doc::new();
     bob_db_settings.set_string("name", "Bob's Database");
     let bob_db = bob
-        .new_database(bob_db_settings, &bob_key)
+        .create_database(bob_db_settings, &bob_key)
         .expect("Failed to create Bob's database");
     let bob_tree_id = bob_db.root_id().clone();
 
@@ -560,7 +560,7 @@ async fn test_user_without_admin_cannot_modify() {
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "Alice's Database");
     let alice_db = alice
-        .new_database(db_settings, &alice_key)
+        .create_database(db_settings, &alice_key)
         .expect("Failed to create Alice's database");
     let tree_id = alice_db.root_id().clone();
 
@@ -580,7 +580,7 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to grant Bob write permission");
 
     // Update Bob's key mapping to include Alice's database
-    bob.add_database_key_mapping(&bob_key, &tree_id, &bob_key)
+    bob.map_key(&bob_key, &tree_id, &bob_key)
         .expect("Failed to update Bob's key mapping");
 
     // Create a sync instance and bootstrap request

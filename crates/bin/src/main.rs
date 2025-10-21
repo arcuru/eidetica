@@ -201,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
 
-                match user.new_database(settings, &default_key) {
+                match user.create_database(settings, &default_key) {
                     Ok(tree) => {
                         tracing::info!("Created tree '{}' with root ID: {}", name, tree.root_id());
                         println!("Created tree '{}' with root ID: {}", name, tree.root_id());

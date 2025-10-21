@@ -71,7 +71,7 @@ pub fn setup_user_and_tree_with_key(
     // - Permission: Admin(0)
     // - Status: Active
     let tree = user
-        .new_database(Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .expect("Failed to create tree");
 
     (instance, user, tree, key_id)
@@ -249,7 +249,7 @@ pub fn setup_complete_auth_environment_with_user(
 
     // Create database - automatically bootstraps auth with admin key as Admin(0)
     let database = user
-        .new_database(Doc::new(), admin_key_id)
+        .create_database(Doc::new(), admin_key_id)
         .expect("Failed to create database");
 
     // Add friendly name aliases for ALL keys
@@ -310,7 +310,7 @@ pub fn create_delegated_tree_with_user(
     let admin_key_id = &key_ids[admin_key_idx];
 
     // Create database - automatically bootstraps auth with admin key as Admin(0)
-    let database = user.new_database(Doc::new(), admin_key_id)?;
+    let database = user.create_database(Doc::new(), admin_key_id)?;
 
     // Add friendly name aliases for ALL keys
     // Bootstrap added: auth[key_id] = AuthKey(pubkey, Admin(0))
@@ -401,7 +401,7 @@ impl DelegationChain {
             // - Permission: Admin(0)
             // - Status: Active
             // Note: Bootstrap always uses Admin(0), not the level-specific Admin(i)
-            let database = user.new_database(Doc::new(), &key_id)?;
+            let database = user.create_database(Doc::new(), &key_id)?;
 
             trees.push(database);
         }

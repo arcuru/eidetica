@@ -14,6 +14,8 @@ These components work together to provide Eidetica's unique combination of featu
 
 **[Instance](instance.md)**: The main database orchestration layer managing databases, authentication, and storage
 
+**[User System](user.md)**: Multi-user account management with per-user key storage, database tracking, and sync preferences
+
 **[Transaction](transaction.md)**: Transaction mechanism providing atomic operations across multiple stores
 
 ## Data Access and Storage
