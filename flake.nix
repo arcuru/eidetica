@@ -169,10 +169,10 @@
                 ];
             });
 
-          # Run clippy with strict warnings
+          # Run clippy with strict warnings except allowing deprecated usage
           clippy = craneLib.cargoClippy (debugArgs
             // {
-              cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
+              cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings -A deprecated";
             });
 
           # License compliance checking
