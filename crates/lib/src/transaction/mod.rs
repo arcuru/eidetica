@@ -17,7 +17,7 @@
 
 pub mod errors;
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc};
 
 pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,6 @@ use crate::{
     crdt::{CRDT, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     store::SettingsStore,
-    sync::hooks::{SyncHookCollection, SyncHookContext},
 };
 
 /// Metadata structure for entries
@@ -74,8 +73,6 @@ pub struct Transaction {
     /// Optional provided signing key when key is already decrypted
     /// Tuple contains (SigningKey, SigKey identifier)
     provided_signing_key: Option<(ed25519_dalek::SigningKey, String)>,
-    /// Optional sync hooks to execute after successful commit
-    sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
 impl Transaction {
@@ -132,7 +129,6 @@ impl Transaction {
             db: database.clone(),
             auth_key_name: None,
             provided_signing_key: None,
-            sync_hooks: None,
         })
     }
 
@@ -150,29 +146,6 @@ impl Transaction {
     pub fn with_auth(mut self, key_name: impl Into<String>) -> Self {
         self.auth_key_name = Some(key_name.into());
         self
-    }
-
-    /// Set sync hooks for this transaction.
-    ///
-    /// Sync hooks are called after successful commit to notify the sync system
-    /// about new entries that may need to be synchronized.
-    ///
-    /// # Arguments
-    /// * `hooks` - The sync hook collection to execute after commit
-    ///
-    /// # Returns
-    /// Self for method chaining
-    pub fn with_sync_hooks(mut self, hooks: Arc<SyncHookCollection>) -> Self {
-        self.sync_hooks = Some(hooks);
-        self
-    }
-
-    /// Set sync hooks for this transaction (mutable version).
-    ///
-    /// # Arguments
-    /// * `hooks` - The sync hook collection to execute after commit
-    pub fn set_sync_hooks(&mut self, hooks: Arc<SyncHookCollection>) {
-        self.sync_hooks = Some(hooks);
     }
 
     /// Set the authentication key ID for this transaction (mutable version).
@@ -987,24 +960,14 @@ impl Transaction {
         // Get the entry's ID
         let id = entry.id();
 
-        // Store in the backend with the determined verification status
-        self.db.backend()?.put(verification_status, entry.clone())?;
-
-        // Execute sync hooks if present
-        if let Some(hooks) = &self.sync_hooks
-            && hooks.has_hooks()
-        {
-            let context = SyncHookContext {
-                tree_id: self.db.root_id().clone(),
-                entry: entry.clone(),
-                is_root_entry: entry.root().is_empty(),
-            };
-
-            // Execute hooks - failures are logged but don't fail the commit
-            if let Err(e) = hooks.execute_hooks(&context) {
-                tracing::error!("Sync hook execution failed (commit succeeded): {e}");
-            }
-        }
+        // Write entry through Instance which handles backend storage and callback dispatch
+        let instance = self.db.instance()?;
+        instance.put_entry(
+            self.db.root_id(),
+            verification_status,
+            entry.clone(),
+            crate::instance::WriteSource::Local,
+        )?;
 
         Ok(id)
     }

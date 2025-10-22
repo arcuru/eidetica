@@ -5,8 +5,6 @@
 //! the history and relationships between entries. Database holds a weak reference to its
 //! parent Instance, accessing storage and coordination services through that handle.
 
-use std::sync::Arc;
-
 use ed25519_dalek::SigningKey;
 use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
@@ -24,7 +22,6 @@ use crate::{
     instance::backend::Backend,
     instance::errors::InstanceError,
     store::{SettingsStore, Store},
-    sync::hooks::SyncHookCollection,
 };
 
 /// Specifies where a Database gets its signing keys
@@ -53,8 +50,6 @@ pub struct Database {
     instance: WeakInstance,
     /// Key source for operations on this database
     key_source: Option<KeySource>,
-    /// Optional sync hooks to execute after successful commits
-    sync_hooks: Option<Arc<SyncHookCollection>>,
 }
 
 impl Database {
@@ -167,7 +162,6 @@ impl Database {
                 signing_key: Box::new(signing_key.clone()),
                 sigkey: sigkey.clone(),
             }),
-            sync_hooks: None,
         };
 
         // Create the transaction - it will use the provided key automatically
@@ -195,7 +189,6 @@ impl Database {
                 signing_key: Box::new(signing_key),
                 sigkey,
             }),
-            sync_hooks: None,
         })
     }
 
@@ -220,7 +213,6 @@ impl Database {
             root: id,
             instance: instance.downgrade(),
             key_source: None,
-            sync_hooks: None,
         })
     }
 
@@ -294,7 +286,6 @@ impl Database {
                 signing_key: Box::new(signing_key),
                 sigkey,
             }),
-            sync_hooks: None,
         })
     }
 
@@ -378,26 +369,97 @@ impl Database {
         }
     }
 
-    /// Set sync hooks for this database.
+    /// Register an Instance-wide callback to be invoked when entries are written locally to this database.
     ///
-    /// When sync hooks are set, all operations created via `new_transaction()` and
-    /// `new_transaction_with_tips()` will automatically include these hooks and execute
-    /// them after successful commits.
+    /// Local writes are those originating from transaction commits in the current Instance.
+    /// The callback receives the entry, database, and instance as parameters, providing
+    /// full context for any coordination or side effects needed.
+    ///
+    /// **Important:** This callback is registered at the Instance level and will fire for all local
+    /// writes to the database tree (identified by root ID), regardless of which Database handle
+    /// performed the write. Multiple Database handles pointing to the same root ID share the same
+    /// set of callbacks.
     ///
     /// # Arguments
-    /// * `hooks` - The sync hook collection to use for operations on this database
-    pub fn set_sync_hooks(&mut self, hooks: Arc<SyncHookCollection>) {
-        self.sync_hooks = Some(hooks);
+    /// * `callback` - Function to invoke on local writes to this database tree
+    ///
+    /// # Returns
+    /// A Result indicating success or failure
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use ed25519_dalek::SigningKey;
+    /// # fn example() -> Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # let settings = eidetica::crdt::Doc::new();
+    /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string())?;
+    ///
+    /// database.on_local_write(|entry, db, instance| {
+    ///     println!("Entry {} written to database {}", entry.id(), db.root_id());
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn on_local_write<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static,
+    {
+        let instance = self.instance()?;
+        instance.register_write_callback(
+            crate::instance::WriteSource::Local,
+            self.root_id().clone(),
+            callback,
+        )
     }
 
-    /// Clear sync hooks for this database.
-    pub fn clear_sync_hooks(&mut self) {
-        self.sync_hooks = None;
-    }
-
-    /// Get the sync hooks for this database.
-    pub fn sync_hooks(&self) -> Option<&Arc<SyncHookCollection>> {
-        self.sync_hooks.as_ref()
+    /// Register an Instance-wide callback to be invoked when entries are written remotely to this database.
+    ///
+    /// Remote writes are those originating from sync or replication from other nodes.
+    /// The callback receives the entry, database, and instance as parameters.
+    ///
+    /// **Important:** This callback is registered at the Instance level and will fire for all remote
+    /// writes to the database tree (identified by root ID), regardless of which Database handle
+    /// registered the callback. Multiple Database handles pointing to the same root ID share the same
+    /// set of callbacks.
+    ///
+    /// # Arguments
+    /// * `callback` - Function to invoke on remote writes to this database tree
+    ///
+    /// # Returns
+    /// A Result indicating success or failure
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::backend::database::InMemory;
+    /// # use ed25519_dalek::SigningKey;
+    /// # fn example() -> Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # let settings = eidetica::crdt::Doc::new();
+    /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string())?;
+    ///
+    /// database.on_remote_write(|entry, db, instance| {
+    ///     println!("Remote entry {} synced to database {}", entry.id(), db.root_id());
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn on_remote_write<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static,
+    {
+        let instance = self.instance()?;
+        instance.register_write_callback(
+            crate::instance::WriteSource::Remote,
+            self.root_id().clone(),
+            callback,
+        )
     }
 
     /// Get the ID of the root entry
@@ -498,11 +560,6 @@ impl Database {
         }) = &self.key_source
         {
             op.set_provided_key(*signing_key.clone(), sigkey.clone());
-        }
-
-        // Set sync hooks if configured
-        if let Some(ref hooks) = self.sync_hooks {
-            op.set_sync_hooks(hooks.clone());
         }
 
         Ok(op)

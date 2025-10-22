@@ -4,19 +4,23 @@
 //! `Instance` manages multiple `Database` instances and interacts with the storage `Database`.
 //! `Database` represents a single, independent history of data entries, analogous to a table or branch.
 
-use std::sync::{Arc, Weak};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+};
 
 use ed25519_dalek::VerifyingKey;
 use handle_trait::Handle;
 use rand::Rng;
 
 use crate::{
-    Database, Result, auth::crypto::format_public_key, backend::BackendImpl, crdt::Doc, entry::ID,
-    sync::Sync, user::User,
+    Database, Entry, Result, auth::crypto::format_public_key, backend::BackendImpl, crdt::Doc,
+    entry::ID, sync::Sync, user::User,
 };
 
 pub mod backend;
 pub mod errors;
+pub mod settings_merge;
 
 // Re-export main types for easier access
 use backend::Backend;
@@ -24,6 +28,42 @@ pub use errors::InstanceError;
 
 /// Private constants for device identity management
 const DEVICE_KEY_NAME: &str = "_device_key";
+
+/// Indicates whether an entry write originated locally or from a remote source (e.g., sync).
+///
+/// This distinction allows different callbacks to be triggered based on the write source,
+/// enabling behaviors like "only trigger sync for local writes" or "only update UI for remote writes".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WriteSource {
+    /// Write originated from a local transaction commit
+    Local,
+    /// Write originated from a remote source (e.g., sync, replication)
+    Remote,
+}
+
+/// Callback function trait for write operations.
+///
+/// Receives the entry that was written, the database it was written to, and the instance.
+/// Used for both local and remote write callbacks.
+///
+/// This trait alias can be used both as a trait bound (e.g., `F: WriteCallback`) and as a
+/// trait object type for storage (e.g., `Arc<dyn WriteCallback>`).
+pub trait WriteCallback:
+    Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync
+{
+}
+
+// Blanket implementation: any type that satisfies the bounds automatically implements WriteCallback
+impl<T> WriteCallback for T where
+    T: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync
+{
+}
+
+/// Type alias for a collection of write callbacks
+type CallbackVec = Vec<Arc<dyn WriteCallback>>;
+
+/// Type alias for the per-database callback map key
+type CallbackKey = (WriteSource, ID);
 
 /// Internal state for Instance
 ///
@@ -38,8 +78,11 @@ pub(crate) struct InstanceInternal {
     /// Root ID of the _users system database
     users_db_id: ID,
     /// Root ID of the _databases system database
-    #[allow(dead_code)]
     databases_db_id: ID,
+    /// Per-database callbacks keyed by (WriteSource, tree_id)
+    write_callbacks: Mutex<HashMap<CallbackKey, CallbackVec>>,
+    /// Global callbacks keyed by WriteSource (triggered regardless of database)
+    global_write_callbacks: Mutex<HashMap<WriteSource, CallbackVec>>,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -49,10 +92,23 @@ impl std::fmt::Debug for InstanceInternal {
             .field("sync", &self.sync)
             .field("users_db_id", &self.users_db_id)
             .field("databases_db_id", &self.databases_db_id)
+            .field(
+                "write_callbacks",
+                &format!(
+                    "<{} per-db callbacks>",
+                    self.write_callbacks.lock().unwrap().len()
+                ),
+            )
+            .field(
+                "global_write_callbacks",
+                &format!(
+                    "<{} global callbacks>",
+                    self.global_write_callbacks.lock().unwrap().len()
+                ),
+            )
             .finish()
     }
 }
-
 /// Database implementation on top of the storage backend.
 ///
 /// Instance manages infrastructure only:
@@ -174,6 +230,8 @@ impl Instance {
                     sync: std::sync::OnceLock::new(),
                     users_db_id: ID::from(""), // Placeholder - not accessed during name lookup
                     databases_db_id: ID::from(""), // Placeholder - not accessed during name lookup
+                    write_callbacks: Mutex::new(HashMap::new()),
+                    global_write_callbacks: Mutex::new(HashMap::new()),
                 }),
             };
             let temp_db = Database::open_readonly(root_id.clone(), &temp_instance)?;
@@ -217,12 +275,13 @@ impl Instance {
             database_name: DATABASES.to_string(),
         })?;
 
-        // Store root IDs (databases will be constructed on-demand to avoid circular refs)
         let inner = Arc::new(InstanceInternal {
             backend: Backend::new(backend),
             sync: std::sync::OnceLock::new(),
             users_db_id: users_db_root,
             databases_db_id: databases_db_root,
+            write_callbacks: Mutex::new(HashMap::new()),
+            global_write_callbacks: Mutex::new(HashMap::new()),
         });
 
         Ok(Self { inner })
@@ -308,6 +367,8 @@ impl Instance {
                 sync: std::sync::OnceLock::new(),
                 users_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
                 databases_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
+                write_callbacks: Mutex::new(HashMap::new()),
+                global_write_callbacks: Mutex::new(HashMap::new()),
             }),
         };
         let users_db = create_users_database(&temp_instance, &device_key, &device_pubkey_str)?;
@@ -320,6 +381,8 @@ impl Instance {
             sync: std::sync::OnceLock::new(),
             users_db_id: users_db.root_id().clone(),
             databases_db_id: databases_db.root_id().clone(),
+            write_callbacks: Mutex::new(HashMap::new()),
+            global_write_callbacks: Mutex::new(HashMap::new()),
         });
 
         Ok(Self { inner })
@@ -421,6 +484,8 @@ impl Instance {
         list_users(&users_db)
     }
 
+    // === User-Sync Integration ===
+
     // === Device Identity Management ===
     //
     // The Instance's device identity (_device_key) is stored in the backend.
@@ -491,7 +556,7 @@ impl Instance {
             signing_key,
             signing_key_name.as_ref().to_string(),
         )?;
-        Ok(self.configure_database_sync_hooks(database))
+        Ok(database)
     }
 
     /// Create a new database with default empty settings.
@@ -541,7 +606,7 @@ impl Instance {
 
         // Create a database object with the given root_id
         let database = Database::open_readonly(root_id.clone(), self)?;
-        Ok(self.configure_database_sync_hooks(database))
+        Ok(database)
     }
 
     /// Load all databases stored in the backend.
@@ -557,7 +622,7 @@ impl Instance {
 
         for root_id in root_ids {
             let database = Database::open_readonly(root_id.clone(), self)?;
-            databases.push(self.configure_database_sync_hooks(database));
+            databases.push(database);
         }
 
         Ok(databases)
@@ -746,11 +811,22 @@ impl Instance {
             return Ok(());
         }
         let sync = Sync::new(self.clone())?;
-        let _ = self.inner.sync.set(Arc::new(sync));
+        let sync_arc = Arc::new(sync);
+
+        // Register global callback for automatic sync on local writes
+        let sync_for_callback = Arc::clone(&sync_arc);
+        self.register_global_write_callback(
+            WriteSource::Local,
+            move |entry, database, instance| {
+                sync_for_callback.on_local_write(entry, database, instance)
+            },
+        )?;
+
+        let _ = self.inner.sync.set(sync_arc);
         Ok(())
     }
 
-    /// Get a reference to the Sync module for this database.
+    /// Get a reference to the Sync module.
     ///
     /// Returns a cheap-to-clone Arc handle to the Sync module. The Sync module
     /// uses interior mutability (AtomicBool and OnceLock) so &self methods are sufficient.
@@ -761,21 +837,150 @@ impl Instance {
         self.inner.sync.get().map(Arc::clone)
     }
 
-    /// Configure a database with sync hooks if sync is enabled.
+    // === Entry Write Coordination ===
+    //
+    // All entry writes go through Instance::put_entry() which handles backend storage
+    // and callback dispatch. This centralizes write coordination and ensures hooks fire.
+
+    /// Register a callback to be invoked when entries are written to a database.
     ///
-    /// This is a helper method that sets up sync hooks for a database
-    /// when sync is available in this Instance instance.
+    /// The callback receives the entry, database, and instance as parameters.
     ///
     /// # Arguments
-    /// * `database` - The database to configure with sync hooks
+    /// * `source` - The write source to monitor (Local or Remote)
+    /// * `tree_id` - The root ID of the database tree to monitor
+    /// * `callback` - Function to invoke on writes
     ///
     /// # Returns
-    /// The database with sync hooks configured if sync is enabled
-    fn configure_database_sync_hooks(&self, database: Database) -> Database {
-        // TODO: Implement database sync hooks for the new BackgroundSync architecture
-        // The new architecture requires per-peer hooks rather than a collection
-        // For now, sync hooks need to be set up manually per peer
-        database
+    /// A Result indicating success or failure
+    pub(crate) fn register_write_callback<F>(
+        &self,
+        source: WriteSource,
+        tree_id: ID,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync + 'static,
+    {
+        let mut callbacks = self.inner.write_callbacks.lock().unwrap();
+        callbacks
+            .entry((source, tree_id))
+            .or_default()
+            .push(Arc::new(callback));
+        Ok(())
+    }
+
+    /// Register a global callback to be invoked on all writes of a specific source.
+    ///
+    /// Global callbacks are invoked for all writes of the specified source across all databases.
+    /// This is useful for system-wide operations like synchronization that need to track
+    /// changes across all databases.
+    ///
+    /// # Arguments
+    /// * `source` - The write source to monitor (Local or Remote)
+    /// * `callback` - Function to invoke on all writes
+    ///
+    /// # Returns
+    /// A Result indicating success or failure
+    pub(crate) fn register_global_write_callback<F>(
+        &self,
+        source: WriteSource,
+        callback: F,
+    ) -> Result<()>
+    where
+        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync + 'static,
+    {
+        let mut callbacks = self.inner.global_write_callbacks.lock().unwrap();
+        callbacks
+            .entry(source)
+            .or_default()
+            .push(Arc::new(callback));
+        Ok(())
+    }
+
+    /// Write an entry to the backend and dispatch callbacks.
+    ///
+    /// This is the central coordination point for all entry writes in the system.
+    /// All writes must go through this method to ensure:
+    /// - Entries are persisted to the backend
+    /// - Appropriate callbacks are triggered based on write source
+    /// - Hooks have full context (entry, database, instance)
+    ///
+    /// # Arguments
+    /// * `tree_id` - The root ID of the database being written to
+    /// * `verification` - Authentication verification status of the entry
+    /// * `entry` - The entry to write
+    /// * `source` - Whether this is a local or remote write
+    ///
+    /// # Returns
+    /// A Result indicating success or failure
+    pub fn put_entry(
+        &self,
+        tree_id: &ID,
+        verification: crate::backend::VerificationStatus,
+        entry: Entry,
+        source: WriteSource,
+    ) -> Result<()> {
+        // 1. Persist to backend storage
+        self.backend().put(verification, entry.clone())?;
+
+        // 2. Look up and execute callbacks based on write source
+        // Clone the callbacks to avoid holding the lock while executing callbacks.
+        let per_db_callbacks = self
+            .inner
+            .write_callbacks
+            .lock()
+            .unwrap()
+            .get(&(source, tree_id.clone()))
+            .cloned();
+
+        let global_callbacks = self
+            .inner
+            .global_write_callbacks
+            .lock()
+            .unwrap()
+            .get(&source)
+            .cloned();
+
+        // 3. Execute callbacks if any are registered
+        let has_callbacks = per_db_callbacks.is_some() || global_callbacks.is_some();
+        if has_callbacks {
+            // Create a Database handle for the callbacks
+            // Use open_readonly since we only need it for callback context
+            let database = Database::open_readonly(tree_id.clone(), self)?;
+
+            // Execute per-database callbacks
+            if let Some(callbacks) = per_db_callbacks {
+                for callback in callbacks {
+                    if let Err(e) = callback(&entry, &database, self) {
+                        tracing::error!(
+                            tree_id = %tree_id,
+                            entry_id = %entry.id(),
+                            source = ?source,
+                            "Per-database callback failed: {}", e
+                        );
+                        // Continue executing other callbacks even if one fails
+                    }
+                }
+            }
+
+            // Execute global callbacks
+            if let Some(callbacks) = global_callbacks {
+                for callback in callbacks {
+                    if let Err(e) = callback(&entry, &database, self) {
+                        tracing::error!(
+                            tree_id = %tree_id,
+                            entry_id = %entry.id(),
+                            source = ?source,
+                            "Global callback failed: {}", e
+                        );
+                        // Continue executing other callbacks even if one fails
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Downgrade to a weak reference.

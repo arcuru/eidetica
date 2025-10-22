@@ -3,6 +3,8 @@
 //! This module tests Sync functionality including creation, loading,
 //! and settings management.
 
+mod auto_sync_e2e_test;
+mod auto_sync_tests;
 mod basic_operations;
 mod bidirectional_sync_test;
 mod bootstrap_client_behavior_test;

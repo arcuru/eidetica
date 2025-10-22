@@ -574,26 +574,26 @@ Store device keys securely and use different keys for different purposes when ap
 
 ## Advanced Topics
 
-### Custom Sync Hooks
+### Custom Write Callbacks for Sync
 
-You can implement custom sync hooks to extend the sync system:
+You can use write callbacks to trigger sync operations when entries are committed:
 
-```rust
-# extern crate eidetica;
-# use eidetica::{sync::hooks::{SyncHook, SyncHookContext}, Result};
-#
-# fn main() {
-struct CustomSyncHook;
+```rust,ignore
+use std::sync::Arc;
 
-impl SyncHook for CustomSyncHook {
-    fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()> {
-        println!("Entry {} committed to database {}", context.entry.id(), context.tree_id);
-        // Custom logic here
-        Ok(())
-    }
-}
-# }
+// Get the sync instance
+let sync = instance.sync().expect("Sync not enabled");
+
+// Set up a write callback to trigger sync
+let sync_clone = sync.clone();
+let peer_pubkey = "peer_public_key".to_string();
+database.on_local_write(move |entry, db, _instance| {
+    // Queue the entry for sync when it's committed
+    sync_clone.queue_entry_for_sync(&peer_pubkey, entry.id(), db.root_id())
+})?;
 ```
+
+This approach allows you to automatically sync entries when they're created, enabling real-time synchronization between peers.
 
 ### Multiple Database Instances
 

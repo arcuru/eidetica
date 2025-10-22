@@ -87,44 +87,47 @@ The sync system uses a thin frontend that sends commands to a background thread:
 
 ### 3. Hook-Based Change Detection
 
-**Decision:** Use trait-based hooks integrated into Transaction commit
+**Decision:** Use write callbacks for change detection and sync triggering
 
 **Rationale:**
 
-- **Automatic**: No manual sync triggering required
-- **Consistent**: Every commit is considered for sync
-- **Extensible**: Additional hooks can be added
-- **Performance**: Minimal overhead when sync disabled
+- **Flexible**: Callbacks can be attached per-database with full context
+- **Consistent**: Every commit triggers registered callbacks
+- **Simple**: Direct function calls with Entry, Database, and Instance parameters
+- **Performance**: Minimal overhead, no trait dispatch
 
 **Architecture:**
 
 ```rust,ignore
-// Hook trait for extensibility
-trait SyncHook {
-    fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
-}
+// Callback function type (stored internally as Arc by Instance)
+pub type WriteCallback = dyn Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync;
 
-// Integration point in Transaction
-impl Transaction {
-    pub fn commit(self) -> Result<ID> {
-        let entry = self.build_and_store_entry()?;
-
-        // Execute sync hooks after successful storage
-        if let Some(hooks) = &self.sync_hooks {
-            let context = SyncHookContext { tree_id, entry, ... };
-            hooks.execute_hooks(&context)?;
-        }
-
-        Ok(entry.id())
+// Integration with Database
+impl Database {
+    pub fn on_local_write<F>(&self, callback: F) -> Result<()>
+    where
+        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static
+    {
+        // Register callback with instance for this database
+        // Instance wraps the callback in Arc internally
     }
 }
+
+// Usage example for sync
+let sync = instance.sync().expect("Sync enabled");
+let sync_clone = sync.clone();
+let peer_pubkey = "peer_key".to_string();
+database.on_local_write(move |entry, db, _instance| {
+    sync_clone.queue_entry_for_sync(&peer_pubkey, entry.id(), db.root_id())
+})?;
 ```
 
 **Benefits:**
 
-- Zero-configuration automatic sync
-- Guaranteed coverage of all changes
-- Failure isolation (hook failures don't affect commits)
+- Direct access to Entry, Database, and Instance in callbacks
+- No need for context wrappers or trait implementations
+- Callbacks receive full context needed for sync decisions
+- Simple cloning pattern for use in closures
 - Easy testing and debugging
 
 ### 4. Modular Transport Layer with SyncHandler Architecture
@@ -260,8 +263,8 @@ BackgroundSync (Transient):
 ```mermaid
 graph LR
     subgraph "Change Detection"
-        A[Transaction::commit] --> B[SyncHooks]
-        B --> C[SyncHookImpl]
+        A[Transaction::commit] --> B[WriteCallbacks]
+        B --> C[Sync::queue_entry_for_sync]
     end
 
     subgraph "Command Channel"
@@ -295,9 +298,9 @@ graph LR
 ```text
 1. Application calls database.new_transaction().commit()
 2. Transaction stores entry in backend
-3. Transaction executes sync hooks
-4. SyncHookImpl creates QueueEntry command
-5. Command sent to BackgroundSync via channel
+3. Transaction triggers write callbacks with Entry, Database, and Instance
+4. Callback invokes sync.queue_entry_for_sync()
+5. Sync sends QueueEntry command to BackgroundSync via channel
 6. BackgroundSync fetches entry from backend
 7. Entry sent immediately to peer via transport
 8. Failed sends added to retry queue

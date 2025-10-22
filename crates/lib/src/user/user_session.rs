@@ -863,6 +863,14 @@ impl User {
         // Single commit for all changes
         tx.commit()?;
 
+        // Update sync system to immediately recompute combined settings
+        // This ensures automatic sync works right away, without waiting for background worker
+        if let Some(sync) = self.instance.sync() {
+            // Auto-sync user preferences if not already synced
+            // This is idempotent - safe to call multiple times
+            sync.sync_user(&self.user_uuid, self.user_database.root_id())?;
+        }
+
         Ok(())
     }
 

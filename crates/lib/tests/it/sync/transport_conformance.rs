@@ -84,21 +84,22 @@ fn setup_sync_hooks(
     peer1_pubkey: &str,
     peer2_pubkey: &str,
 ) -> Result<(eidetica::Database, eidetica::Database)> {
-    use eidetica::sync::hooks::SyncHookCollection;
+    let tree1 = db1.new_database_default("device_key")?;
+    let tree2 = db2.new_database_default("device_key")?;
 
-    let mut tree1 = db1.new_database_default("device_key")?;
-    let mut tree2 = db2.new_database_default("device_key")?;
+    // Set up sync callbacks using WriteCallback directly
+    // Clone sync instances and peer pubkeys for use in callbacks
+    let sync1_clone = sync1.clone();
+    let peer2_pubkey_owned = peer2_pubkey.to_string();
+    tree1.on_local_write(move |entry, db, _instance| {
+        sync1_clone.queue_entry_for_sync(&peer2_pubkey_owned, &entry.id(), db.root_id())
+    })?;
 
-    // Set up sync hooks
-    let hook1 = sync1.create_sync_hook(peer2_pubkey.to_string());
-    let mut hooks1 = SyncHookCollection::new();
-    hooks1.add_hook(hook1);
-    tree1.set_sync_hooks(std::sync::Arc::new(hooks1));
-
-    let hook2 = sync2.create_sync_hook(peer1_pubkey.to_string());
-    let mut hooks2 = SyncHookCollection::new();
-    hooks2.add_hook(hook2);
-    tree2.set_sync_hooks(std::sync::Arc::new(hooks2));
+    let sync2_clone = sync2.clone();
+    let peer1_pubkey_owned = peer1_pubkey.to_string();
+    tree2.on_local_write(move |entry, db, _instance| {
+        sync2_clone.queue_entry_for_sync(&peer1_pubkey_owned, &entry.id(), db.root_id())
+    })?;
 
     Ok((tree1, tree2))
 }

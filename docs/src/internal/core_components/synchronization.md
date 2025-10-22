@@ -24,15 +24,15 @@ graph TB
         BASEDB[Instance] --> TREE
         BASEDB --> SYNC[Sync Module]
         ATOMICOP --> COMMIT[Commit Operation]
-        COMMIT --> HOOKS[Execute Sync Hooks]
+        COMMIT --> CALLBACKS[Execute Write Callbacks]
     end
 
     subgraph "Sync Frontend"
         SYNC[Sync Module] --> CMDTX[Command Channel]
         SYNC --> PEERMGR[PeerManager]
         SYNC --> SYNCTREE[Sync Database]
-        HOOKS --> SYNCHOOK[SyncHookImpl]
-        SYNCHOOK --> CMDTX
+        CALLBACKS --> QUEUEENTRY[Sync::queue_entry_for_sync]
+        QUEUEENTRY --> CMDTX
     end
 
     subgraph "BackgroundSync Engine"
@@ -214,33 +214,34 @@ This architecture:
 - **Enables direct data access**: Both components access sync database directly for peer data
 - **Provides clean shutdown**: Graceful handling in both async and sync contexts
 
-### 4. Change Detection Hooks (`sync/hooks.rs`)
+### 4. Change Detection via Write Callbacks
 
-The hook system automatically detects when entries need synchronization:
+Write callbacks automatically detect when entries need synchronization:
 
 <!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
-pub trait SyncHook: Send + Sync {
-    fn on_entry_committed(&self, context: &SyncHookContext) -> Result<()>;
-}
+// Callback function type defined in instance/mod.rs (stored internally as Arc by Instance)
+pub type WriteCallback = dyn Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync;
 
-pub struct SyncHookContext {
-    pub tree_id: ID,
-    pub entry: Entry,
-    pub is_root_entry: bool,
-}
+// Usage for sync integration
+let sync = instance.sync().expect("Sync enabled");
+let sync_clone = sync.clone();
+let peer_pubkey = "peer_key".to_string();
+database.on_local_write(move |entry, db, _instance| {
+    sync_clone.queue_entry_for_sync(&peer_pubkey, entry.id(), db.root_id())
+})?;
 ```
 
 **Integration flow:**
 
-1. Transaction detects entry commit
-2. Executes registered sync hooks with entry context
-3. SyncHookImpl creates QueueEntry command
-4. Command sent to BackgroundSync via channel
-5. Background thread fetches and sends entry immediately
+1. Transaction commits entry and stores in backend
+2. Instance triggers registered write callbacks with Entry, Database, and Instance
+3. Callback invokes `Sync::queue_entry_for_sync()`
+4. Sync creates QueueEntry command and sends to BackgroundSync via channel
+5. Background thread fetches entry from backend and sends to peer immediately
 
-The hook implementation is per-peer, allowing targeted synchronization. Commands are fire-and-forget to avoid blocking the commit operation.
+Callbacks are per-database and per-peer, allowing targeted synchronization. The `queue_entry_for_sync` method uses `try_send` to avoid blocking the commit operation.
 
 ### 5. Peer Management (`sync/peer_manager.rs`)
 
@@ -471,17 +472,18 @@ sequenceDiagram
     participant App as Application
     participant Database as Database
     participant Transaction as Transaction
-    participant Hooks as SyncHooks
+    participant Callbacks as Write Callbacks
+    participant Sync as Sync Module
     participant Cmd as Command Channel
     participant BG as BackgroundSync
 
     App->>Database: new_transaction()
-    Database->>Transaction: create with sync hooks
     App->>Transaction: modify data
     App->>Transaction: commit()
     Transaction->>Backend: store entry
-    Transaction->>Hooks: execute_hooks(context)
-    Hooks->>Cmd: send(QueueEntry)
+    Transaction->>Callbacks: invoke(entry, db, instance)
+    Callbacks->>Sync: queue_entry_for_sync(peer, entry_id, tree_id)
+    Sync->>Cmd: try_send(QueueEntry)
     Cmd->>BG: deliver command
 
     Note over BG: Background thread
