@@ -55,10 +55,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n🧪 TEST: Starting chat app authenticated bootstrap test");
 
     // Setup server instance (like Device 1 creating a room)
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance with sync");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     // Add authentication key for server (like chat app does)
     server_instance
@@ -130,7 +131,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Setup sync on server and get address
     let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -147,10 +148,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Setup client instance (like Device 2 joining the room)
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance with sync");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     // Add authentication key for client (different key name to avoid conflicts)
     client_instance
@@ -169,28 +171,30 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
 
     // Client attempts to bootstrap with authentication
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
-    client_sync
-        .enable_http_transport()
-        .expect("Failed to enable HTTP transport");
+    {
+        let client_sync = client_instance.sync().expect("Client should have sync");
+        client_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
 
-    println!("\n🔄 Client attempting authenticated bootstrap...");
-    let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
-            &server_addr,
-            &room_id,
-            CLIENT_KEY_NAME,
-            eidetica::auth::Permission::Write(10),
-        )
-        .await;
+        println!("\n🔄 Client attempting authenticated bootstrap...");
+        let bootstrap_result = client_sync
+            .sync_with_peer_for_bootstrap(
+                &server_addr,
+                &room_id,
+                CLIENT_KEY_NAME,
+                eidetica::auth::Permission::Write(10),
+            )
+            .await;
 
-    match bootstrap_result {
-        Ok(_) => println!("✅ Bootstrap completed successfully"),
-        Err(e) => {
-            println!("❌ Bootstrap failed: {:?}", e);
-            panic!("Bootstrap should succeed but failed: {:?}", e);
+        match bootstrap_result {
+            Ok(_) => println!("✅ Bootstrap completed successfully"),
+            Err(e) => {
+                println!("❌ Bootstrap failed: {:?}", e);
+                panic!("Bootstrap should succeed but failed: {:?}", e);
+            }
         }
-    }
+    } // Drop guard here
 
     // Wait for sync to propagate
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -262,7 +266,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .expect("Client key should exist in backend");
 
     let client_database = match eidetica::Database::open(
-        client_instance.backend().clone(),
+        client_instance.clone(),
         &room_id,
         signing_key,
         CLIENT_KEY_NAME.to_string(),
@@ -446,7 +450,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Sync changes back to server
     println!("\n🔄 Syncing client changes back to server...");
     {
-        let client_sync = client_instance.sync_mut().expect("Client should have sync");
+        let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .sync_with_peer(&server_addr, Some(&room_id))
             .await
@@ -497,7 +501,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Cleanup
     {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .stop_server_async()
             .await
@@ -513,10 +517,11 @@ async fn test_global_key_bootstrap() {
     println!("\n🧪 TEST: Starting global key bootstrap test");
 
     // Setup similar to above but use '*' key
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     // Add a key for creating the database
     server_instance
@@ -568,7 +573,7 @@ async fn test_global_key_bootstrap() {
 
     // Setup sync on server
     let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -583,10 +588,11 @@ async fn test_global_key_bootstrap() {
     };
 
     // Setup client
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     // Add a private key for the client to use with global permissions
     client_instance
@@ -594,16 +600,18 @@ async fn test_global_key_bootstrap() {
         .expect("Failed to add client key");
 
     // Client syncs without authentication (relies on global '*' permission)
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
-    client_sync
-        .enable_http_transport()
-        .expect("Failed to enable HTTP transport");
+    {
+        let client_sync = client_instance.sync().expect("Client should have sync");
+        client_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
 
-    println!("🔄 Client syncing with global permission...");
-    client_sync
-        .sync_with_peer(&server_addr, Some(&room_id))
-        .await
-        .expect("Sync should succeed with global permission");
+        println!("🔄 Client syncing with global permission...");
+        client_sync
+            .sync_with_peer(&server_addr, Some(&room_id))
+            .await
+            .expect("Sync should succeed with global permission");
+    } // Drop guard here
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -615,7 +623,7 @@ async fn test_global_key_bootstrap() {
         .expect("Global key should exist in backend");
 
     let client_database = eidetica::Database::open(
-        client_instance.backend().clone(),
+        client_instance.clone(),
         &room_id,
         signing_key,
         "*".to_string(),
@@ -649,7 +657,7 @@ async fn test_global_key_bootstrap() {
 
     // Cleanup
     {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .stop_server_async()
             .await
@@ -663,10 +671,11 @@ async fn test_multiple_databases_sync() {
     println!("\n🧪 TEST: Starting multiple databases sync test");
 
     // Setup server with multiple databases
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key(SERVER_KEY_NAME)
@@ -714,7 +723,7 @@ async fn test_multiple_databases_sync() {
 
     // Setup sync on server
     let server_addr = {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -729,36 +738,39 @@ async fn test_multiple_databases_sync() {
     };
 
     // Setup client
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key(CLIENT_KEY_NAME)
         .expect("Failed to add client key");
 
     // Bootstrap each database
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
-    client_sync
-        .enable_http_transport()
-        .expect("Failed to enable HTTP transport");
-
-    for (i, room_id) in room_ids.iter().enumerate() {
-        println!("\n🔄 Bootstrapping room {}...", i + 1);
-
+    {
+        let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .sync_with_peer_for_bootstrap(
-                &server_addr,
-                room_id,
-                CLIENT_KEY_NAME,
-                eidetica::auth::Permission::Write(10),
-            )
-            .await
-            .unwrap_or_else(|_| panic!("Failed to bootstrap room {}", i + 1));
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        for (i, room_id) in room_ids.iter().enumerate() {
+            println!("\n🔄 Bootstrapping room {}...", i + 1);
+
+            client_sync
+                .sync_with_peer_for_bootstrap(
+                    &server_addr,
+                    room_id,
+                    CLIENT_KEY_NAME,
+                    eidetica::auth::Permission::Write(10),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("Failed to bootstrap room {}", i + 1));
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    } // Drop guard here
 
     // Now verify all databases were loaded
     for (i, room_id) in room_ids.iter().enumerate() {
@@ -779,7 +791,7 @@ async fn test_multiple_databases_sync() {
 
     // Cleanup
     {
-        let server_sync = server_instance.sync_mut().expect("Server should have sync");
+        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .stop_server_async()
             .await

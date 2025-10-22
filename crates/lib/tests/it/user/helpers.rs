@@ -311,7 +311,7 @@ pub fn test_multi_user_bootstrap_workflow(
     let requester = login_user(&instance, requester_name, None);
 
     // Create sync for bootstrap workflow
-    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
     (instance, owner, requester, database, sync, db_id)
 }

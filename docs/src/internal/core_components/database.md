@@ -15,9 +15,11 @@ Unlike traditional databases, Databases maintain full historical data through a 
 
 ## Architecture and Lifecycle
 
-**Database Creation**: Initialized with settings (stored as a Doc CRDT) and associated with an authentication key for signing operations.
+**Database Creation**: Initialized with settings (stored as a Doc CRDT) and associated with an authentication key for signing operations. Database holds a weak reference to its parent Instance for storage access.
 
 **Data Access**: Applications interact with Databases through Transaction instances, which provide transactional semantics and store access.
+
+**Storage Coordination**: Database accesses storage through Instance using weak references, preventing circular dependencies while maintaining clear ownership hierarchy.
 
 **Entry History**: Each operation creates new entries that reference their parents, building an immutable history DAG.
 

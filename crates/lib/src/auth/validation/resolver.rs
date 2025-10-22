@@ -3,7 +3,7 @@
 //! This module handles resolving authentication keys, both direct keys
 //! and delegation paths.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use super::delegation::DelegationResolver;
 use crate::{
@@ -14,7 +14,6 @@ use crate::{
         settings::AuthSettings,
         types::{ResolvedAuth, SigKey},
     },
-    backend::BackendDB,
 };
 
 /// Key resolver for handling both direct and delegated key resolution
@@ -39,18 +38,18 @@ impl KeyResolver {
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
     ) -> Result<ResolvedAuth> {
         // Note: We don't cache results here because auth settings can change
         // and cached results could become stale (e.g., revoked keys, updated permissions).
         // In a production system, caching would need to be more sophisticated with
         // invalidation strategies based on settings changes.
-        self.resolve_sig_key_with_depth(sig_key, auth_settings, backend, 0)
+        self.resolve_sig_key_with_depth(sig_key, auth_settings, instance, 0)
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
@@ -58,19 +57,19 @@ impl KeyResolver {
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
     pub fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
         self.resolve_sig_key_with_depth_and_pubkey(
             sig_key,
             auth_settings,
-            backend,
+            instance,
             0,
             pubkey_override,
         )
@@ -84,10 +83,10 @@ impl KeyResolver {
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
         depth: usize,
     ) -> Result<ResolvedAuth> {
-        self.resolve_sig_key_with_depth_and_pubkey(sig_key, auth_settings, backend, depth, None)
+        self.resolve_sig_key_with_depth_and_pubkey(sig_key, auth_settings, instance, depth, None)
     }
 
     /// Resolve authentication identifier with recursion depth tracking and pubkey override
@@ -98,7 +97,7 @@ impl KeyResolver {
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
         depth: usize,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
@@ -116,13 +115,13 @@ impl KeyResolver {
                 self.resolve_direct_key_with_pubkey(key_name, auth_settings, pubkey_override)
             }
             SigKey::DelegationPath(steps) => {
-                let backend = backend.ok_or_else(|| AuthError::DatabaseRequired {
+                let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
                 })?;
                 self.delegation_resolver.resolve_delegation_path_with_depth(
                     steps,
                     auth_settings,
-                    backend,
+                    instance,
                     depth,
                 )
             }

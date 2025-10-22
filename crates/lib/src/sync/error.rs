@@ -132,6 +132,10 @@ pub enum SyncError {
     /// Invalid key name provided.
     #[error("Invalid key name: {reason}")]
     InvalidKeyName { reason: String },
+
+    /// Instance has been dropped and is no longer available.
+    #[error("Instance has been dropped")]
+    InstanceDropped,
 }
 
 impl SyncError {

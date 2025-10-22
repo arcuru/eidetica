@@ -11,10 +11,10 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_bootstrap_sync_from_zero_state() {
     // Setup server (has the database)
-    let (_server_instance, mut server_sync) = setup();
+    let (_server_instance, server_sync) = setup();
 
     // Setup client (starts with no database)
-    let (client_instance, mut client_sync) = setup();
+    let (client_instance, client_sync) = setup();
 
     // Create some entries directly in the server's backend to simulate a tree with content
     // First create a proper root entry
@@ -39,15 +39,27 @@ async fn test_bootstrap_sync_from_zero_state() {
     let child_entry_id = child_entry.id().clone();
 
     // Store entries in server backend
-    server_sync.backend().put_verified(root_entry).unwrap();
-    server_sync.backend().put_verified(child_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(child_entry)
+        .unwrap();
 
     // Debug server state
-    let server_tips = server_sync.backend().get_tips(&test_tree_id).unwrap();
+    let server_tips = server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get_tips(&test_tree_id)
+        .unwrap();
     println!("🧪 DEBUG: Server tips: {:?}", server_tips);
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Verify client doesn't have the database initially
     assert!(
@@ -70,19 +82,26 @@ async fn test_bootstrap_sync_from_zero_state() {
     // Verify client now has the entries
     let root_client = client_sync
         .backend()
+        .expect("Failed to get backend")
         .get(&test_tree_id)
         .expect("Client should have the root entry");
     assert_eq!(root_client.id(), test_tree_id, "Root entry should match");
 
     // Check if client also has child entry
-    let child_result = client_sync.backend().get(&child_entry_id);
+    let child_result = client_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get(&child_entry_id);
     println!(
         "🧪 DEBUG: Client has child entry: {:?}",
         child_result.is_ok()
     );
 
     // Verify client has tips
-    let tips = client_sync.backend().get_tips(&test_tree_id);
+    let tips = client_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get_tips(&test_tree_id);
     println!("🧪 DEBUG: Client tips result: {:?}", tips);
     match tips {
         Ok(tip_vec) => {
@@ -111,17 +130,21 @@ async fn test_bootstrap_sync_from_zero_state() {
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap() {
     // Setup server and client
-    let (_server_instance, mut server_sync) = setup();
-    let (_client_instance, mut client_sync) = setup();
+    let (_server_instance, server_sync) = setup();
+    let (_client_instance, client_sync) = setup();
 
     // Create some entries on server
     let root_entry = create_test_tree_entry();
     let test_tree_id = root_entry.id().clone();
 
-    server_sync.backend().put_verified(root_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Bootstrap client
     client_sync.enable_http_transport().unwrap();
@@ -134,7 +157,11 @@ async fn test_incremental_sync_after_bootstrap() {
 
     // Verify client has bootstrapped tree
     assert!(
-        client_sync.backend().get(&test_tree_id).is_ok(),
+        client_sync
+            .backend()
+            .expect("Failed to get backend")
+            .get(&test_tree_id)
+            .is_ok(),
         "Client should have the tree"
     );
 
@@ -148,7 +175,11 @@ async fn test_incremental_sync_after_bootstrap() {
         .build()
         .expect("Entry should build successfully");
 
-    server_sync.backend().put_verified(entry2.clone()).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(entry2.clone())
+        .unwrap();
 
     // Now do incremental sync (client already has the tree)
     println!("🧪 TEST: Attempting incremental sync...");
@@ -160,14 +191,21 @@ async fn test_incremental_sync_after_bootstrap() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify client received the new entry
-    let entry2_client_result = client_sync.backend().get(&entry2.id());
+    let entry2_client_result = client_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get(&entry2.id());
     assert!(
         entry2_client_result.is_ok(),
         "Client should have received the new entry"
     );
 
     // Verify tips have been updated
-    let tips = client_sync.backend().get_tips(&test_tree_id).unwrap();
+    let tips = client_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get_tips(&test_tree_id)
+        .unwrap();
     assert!(
         tips.contains(&entry2.id()),
         "Client tips should include the new entry"
@@ -182,8 +220,8 @@ async fn test_incremental_sync_after_bootstrap() {
 /// Test error handling when trying to bootstrap a non-existent tree
 #[tokio::test]
 async fn test_bootstrap_nonexistent_tree() {
-    let (_server_instance, mut server_sync) = setup();
-    let (_client_instance, mut client_sync) = setup();
+    let (_server_instance, server_sync) = setup();
+    let (_client_instance, client_sync) = setup();
 
     // Start server (with no databases)
     server_sync.enable_http_transport().unwrap();
@@ -213,11 +251,11 @@ async fn test_bootstrap_nonexistent_tree() {
 /// Test the discover_peer_trees API (placeholder test since it's not fully implemented)
 #[tokio::test]
 async fn test_discover_peer_trees_placeholder() {
-    let (_server_instance, mut server_sync) = setup();
-    let (_client_instance, mut client_sync) = setup();
+    let (_server_instance, server_sync) = setup();
+    let (_client_instance, client_sync) = setup();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Try to discover trees (currently returns empty list)
     client_sync.enable_http_transport().unwrap();
@@ -238,17 +276,21 @@ async fn test_discover_peer_trees_placeholder() {
 /// Test bootstrap behavior with malformed request data
 #[tokio::test]
 async fn test_bootstrap_malformed_request_data() {
-    let (_server_instance, mut server_sync) = setup();
-    let (_client_instance, mut client_sync) = setup();
+    let (_server_instance, server_sync) = setup();
+    let (_client_instance, client_sync) = setup();
 
     // Create a valid tree on server
     let root_entry = create_test_tree_entry();
     let test_tree_id = root_entry.id().clone();
 
-    server_sync.backend().put_verified(root_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     client_sync.enable_http_transport().unwrap();
 
@@ -289,17 +331,21 @@ async fn test_bootstrap_malformed_request_data() {
 /// Test bootstrap with conflicting tree IDs
 #[tokio::test]
 async fn test_bootstrap_conflicting_tree_ids() {
-    let (_server_instance, mut server_sync) = setup();
-    let (_client_instance, mut client_sync) = setup();
+    let (_server_instance, server_sync) = setup();
+    let (_client_instance, client_sync) = setup();
 
     // Create a tree on server
     let root_entry = create_test_tree_entry();
     let _actual_tree_id = root_entry.id().clone();
 
-    server_sync.backend().put_verified(root_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     client_sync.enable_http_transport().unwrap();
 

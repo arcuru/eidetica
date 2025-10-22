@@ -1,5 +1,5 @@
 use eidetica::{
-    backend::{BackendDB, VerificationStatus, database::InMemory},
+    backend::{BackendImpl, VerificationStatus, database::InMemory},
     entry::{Entry, ID},
 };
 

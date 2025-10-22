@@ -73,27 +73,34 @@ graph TB
 
 ### 1. Sync Module (`sync/mod.rs`)
 
-The main `Sync` struct is now a **thin frontend** that communicates with a background sync engine:
+The main `Sync` struct is a **thread-safe frontend** that communicates with a background sync engine using **interior mutability**:
 
 <!-- Code block ignored: Internal synchronization architecture examples and implementation details not suitable for testing -->
 
 ```rust,ignore
 pub struct Sync {
-    /// Communication channel to the background sync engine
-    command_tx: mpsc::Sender<SyncCommand>,
-    /// The backend for read operations and database management
-    backend: Arc<dyn Database>,
-    /// The database containing synchronization settings
+    /// Communication channel to background sync (initialized once when transport is enabled)
+    command_tx: OnceLock<mpsc::Sender<SyncCommand>>,
+    /// The instance for read operations and tree management
+    instance: Instance,
+    /// The tree containing synchronization settings
     sync_tree: Database,
-    /// Track if transport has been enabled
-    transport_enabled: bool,
+    /// Track if transport has been enabled (atomic for lock-free access)
+    transport_enabled: AtomicBool,
 }
 ```
 
+**Design:**
+
+- **Thread-safe by design**: Uses `Arc<Sync>` without needing `Mutex` wrapper
+- **Interior mutability**: `AtomicBool` and `OnceLock` enable `&self` methods
+- **Lock-free operation**: No mutex contention, safe to share across threads
+- **One-time initialization**: `OnceLock` ensures command channel is initialized exactly once
+
 **Key responsibilities:**
 
-- Provides public API methods
-- Sends commands to background thread
+- Provides public API methods (all using `&self`)
+- Sends commands to background thread via channel
 - Manages sync database for peer/relationship storage
 - Creates hooks that send commands to background
 
@@ -107,7 +114,7 @@ The `BackgroundSync` struct handles all sync operations in a single background t
 pub struct BackgroundSync {
     // Core components
     transport: Box<dyn SyncTransport>,
-    backend: Arc<dyn Database>,
+    instance: WeakInstance,  // Weak reference to Instance for storage access
 
     // Reference to sync database for peer/relationship management
     sync_tree_id: ID,

@@ -2,7 +2,7 @@ use std::{fs, io::Write, path::PathBuf};
 
 use eidetica::{
     Entry,
-    backend::{BackendDB, database::InMemory},
+    backend::{BackendImpl, database::InMemory},
 };
 
 #[test]

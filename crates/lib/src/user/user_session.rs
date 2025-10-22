@@ -32,13 +32,10 @@
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
 
-use std::sync::Arc;
-
 use super::{UserKeyManager, types::UserInfo};
 use crate::{
-    Database, Result,
+    Database, Instance, Result,
     auth::{self, SigKey},
-    backend::BackendDB,
     store::Table,
     user::{DatabasePreferences, UserDatabasePreferences, UserError},
 };
@@ -58,8 +55,8 @@ pub struct User {
     /// User's private database (contains encrypted keys and preferences)
     user_database: Database,
 
-    /// Backend reference for database operations
-    backend: Arc<dyn BackendDB>,
+    /// Instance reference for database operations
+    instance: Instance,
 
     /// Decrypted user keys (in memory only during session)
     key_manager: UserKeyManager,
@@ -78,21 +75,21 @@ impl User {
     /// * `user_uuid` - Internal UUID (Table primary key)
     /// * `user_info` - User information from _users database
     /// * `user_database` - The user's private database
-    /// * `backend` - Backend reference
+    /// * `instance` - Instance reference
     /// * `key_manager` - Initialized key manager with decrypted keys
     #[allow(dead_code)]
     pub(crate) fn new(
         user_uuid: String,
         user_info: UserInfo,
         user_database: Database,
-        backend: Arc<dyn BackendDB>,
+        instance: Instance,
         key_manager: UserKeyManager,
     ) -> Self {
         Self {
             user_uuid,
             username: user_info.username.clone(),
             user_database,
-            backend,
+            instance,
             key_manager,
             user_info,
         }
@@ -116,8 +113,8 @@ impl User {
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn BackendDB> {
-        &self.backend
+    pub fn backend(&self) -> &crate::instance::backend::Backend {
+        self.instance.backend()
     }
 
     /// Get a reference to the user info
@@ -195,12 +192,7 @@ impl User {
             .clone();
 
         // Create the database with the provided key directly
-        let database = Database::create(
-            settings,
-            self.backend.clone(),
-            signing_key,
-            key_id.to_string(),
-        )?;
+        let database = Database::create(settings, &self.instance, signing_key, key_id.to_string())?;
 
         // Store the mapping in UserKey so open_database() can find it later
         let tx = self.user_database.new_transaction()?;
@@ -253,7 +245,7 @@ impl User {
     /// - Returns an error if the key is not in the UserKeyManager
     pub fn open_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
         // Validate the root exists
-        self.backend.get(root_id)?;
+        self.instance.backend().get(root_id)?;
 
         // Find an appropriate key for this database
         let key_id =
@@ -278,7 +270,7 @@ impl User {
         })?;
 
         // Create Database with user-provided key
-        Database::open(self.backend.clone(), root_id, signing_key.clone(), sigkey)
+        Database::open(self.instance.clone(), root_id, signing_key.clone(), sigkey)
     }
 
     /// Find databases by name.
@@ -292,11 +284,11 @@ impl User {
     /// Vector of matching databases
     pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
         let name = name.as_ref();
-        let all_roots = self.backend.all_roots()?;
+        let all_roots = self.instance.backend().all_roots()?;
         let mut matching = Vec::new();
 
         for root_id in all_roots {
-            if let Ok(db) = Database::open_readonly(root_id, self.backend.clone())
+            if let Ok(db) = Database::open_readonly(root_id, &self.instance)
                 && let Ok(db_name) = db.get_name()
                 && db_name == name
             {
@@ -462,8 +454,7 @@ impl User {
         let public_key = auth::format_public_key(&verifying_key);
 
         // Discover available SigKeys for this public key
-        let available_sigkeys =
-            Database::find_sigkeys(self.backend.clone(), database_id, &public_key)?;
+        let available_sigkeys = Database::find_sigkeys(&self.instance, database_id, &public_key)?;
 
         if available_sigkeys.is_empty() {
             return Err(UserError::NoSigKeyFound {
@@ -663,7 +654,7 @@ impl User {
     /// - Returns an error if the key addition to the database fails
     pub fn approve_bootstrap_request(
         &self,
-        sync: &mut crate::sync::Sync,
+        sync: &crate::sync::Sync,
         request_id: &str,
         approving_key_id: &str,
     ) -> Result<()> {
@@ -702,7 +693,7 @@ impl User {
     /// - Returns an error if the rejecting key lacks Admin permission on the target database
     pub fn reject_bootstrap_request(
         &self,
-        sync: &mut crate::sync::Sync,
+        sync: &crate::sync::Sync,
         request_id: &str,
         rejecting_key_id: &str,
     ) -> Result<()> {
@@ -763,7 +754,7 @@ impl User {
     /// ```
     pub async fn request_database_access(
         &self,
-        sync: &mut crate::sync::Sync,
+        sync: &crate::sync::Sync,
         peer_address: &str,
         database_id: &crate::entry::ID,
         key_id: &str,
@@ -965,7 +956,7 @@ mod tests {
     use super::*;
     use crate::{
         auth::crypto::{format_public_key, generate_keypair},
-        backend::database::InMemory,
+        backend::{BackendImpl, database::InMemory},
         user::{
             crypto::{
                 current_timestamp, derive_encryption_key, encrypt_private_key, hash_password,
@@ -973,7 +964,7 @@ mod tests {
             types::{UserKey, UserStatus},
         },
     };
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
     fn create_test_user_session() -> User {
         let backend = Arc::new(InMemory::new());
@@ -1002,9 +993,12 @@ mod tests {
             .unwrap();
         db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
+        // Create Instance for test
+        let instance = Instance::create_internal(backend.clone()).unwrap();
+
         let user_database = Database::create(
             db_settings,
-            backend.clone(),
+            &instance,
             device_key.clone(),
             "_device_key".to_string(),
         )
@@ -1046,7 +1040,7 @@ mod tests {
             "test-uuid-1234".to_string(),
             user_info,
             user_database,
-            backend,
+            instance,
             key_manager,
         )
     }

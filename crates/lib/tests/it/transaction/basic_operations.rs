@@ -11,7 +11,7 @@ use crate::helpers::*;
 #[test]
 fn test_transaction_through_dict() {
     // Create a backend and a tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a new operation
     let operation = tree.new_transaction().unwrap();
@@ -39,7 +39,7 @@ fn test_transaction_through_dict() {
 #[test]
 fn test_transaction_multiple_subtrees() {
     // Create a backend and a tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a new operation
     let operation = tree.new_transaction().unwrap();
@@ -71,7 +71,7 @@ fn test_transaction_multiple_subtrees() {
 #[test]
 fn test_transaction_empty_subtree_removal() {
     // Create a backend and a tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a new operation
     let operation = tree.new_transaction().unwrap();
@@ -109,7 +109,7 @@ fn test_transaction_empty_subtree_removal() {
 #[test]
 fn test_transaction_parent_relationships() {
     // Create a backend and a tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create first operation and set data
     let op1 = tree.new_transaction().unwrap();

@@ -25,7 +25,8 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
 // Create a database with sync enabled
-let db = Instance::open(backend)?.with_sync()?;
+let db = Instance::open(backend)?;
+db.enable_sync()?;
 
 // Add a private key for authentication
 db.add_private_key("device_key")?;
@@ -38,8 +39,8 @@ db.add_private_key("device_key")?;
 <!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
-// Get mutable access to sync module
-let sync = db.sync_mut().unwrap();
+// Get access to sync module
+let sync = db.sync().unwrap();
 
 // Enable HTTP transport
 sync.enable_http_transport()?;
@@ -56,7 +57,7 @@ For new devices joining existing databases, use authenticated bootstrap to reque
 
 ```rust,ignore
 // On another device - connect and bootstrap with authentication
-let client_sync = client_db.sync_mut().unwrap();
+let client_sync = client_db.sync().unwrap();
 client_sync.enable_http_transport()?;
 
 // Bootstrap with authentication - automatically requests write permission
@@ -326,7 +327,8 @@ All sync operations use Ed25519 digital signatures:
 # fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(InMemory::new());
-# let mut db = Instance::open(backend)?.with_sync()?;
+# let db = Instance::open(backend)?;
+# db.enable_sync()?;
 #
 // The sync system automatically uses your device key for authentication
 // First add the primary key
@@ -601,18 +603,18 @@ You can run multiple sync-enabled databases in the same process:
 
 ```rust,ignore
 // Database 1
-let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-db1.sync_mut()?.enable_http_transport()?;
-db1.sync_mut()?.start_server("127.0.0.1:8080")?;
+let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+db1.sync()?.enable_http_transport()?;
+db1.sync()?.start_server("127.0.0.1:8080")?;
 
 // Database 2
-let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-db2.sync_mut()?.enable_http_transport()?;
-db2.sync_mut()?.start_server("127.0.0.1:8081")?;
+let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+db2.sync()?.enable_http_transport()?;
+db2.sync()?.start_server("127.0.0.1:8081")?;
 
 // Connect them
 let addr = Address::http("127.0.0.1:8080")?;
-let peer_key = db2.sync_mut()?.connect_to_peer(&addr).await?;
+let peer_key = db2.sync()?.connect_to_peer(&addr).await?;
 ```
 
 ## Troubleshooting

@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use eidetica::sync::{Address, Sync};
 
 use crate::sync::helpers;
 
 #[tokio::test]
 async fn test_sync_iroh_transport_integration() {
-    let (_base_db, mut sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup();
 
     // Initially no transport should be enabled
     assert!(sync.start_server_async("ignored").await.is_err());
@@ -29,7 +27,7 @@ async fn test_sync_iroh_transport_integration() {
 
 #[test]
 fn test_sync_iroh_transport_blocking_interface() {
-    let (_base_db, mut sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup();
     sync.enable_iroh_transport().unwrap();
 
     // Test blocking interface (creates runtime internally)
@@ -45,8 +43,7 @@ fn test_sync_iroh_transport_blocking_interface() {
 fn test_sync_iroh_settings_persistence() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let (base_db, mut sync) = helpers::setup();
-        let backend = Arc::clone(base_db.backend());
+        let (base_db, sync) = helpers::setup();
 
         // Store some sync settings
         sync.set_setting("transport_type", "iroh").unwrap();
@@ -65,7 +62,7 @@ fn test_sync_iroh_settings_persistence() {
 
         // Create a new Sync instance from the same tree (simulating restart)
         let sync_tree_id = sync.sync_tree_root_id().clone();
-        let sync2 = Sync::load(backend, &sync_tree_id).unwrap();
+        let sync2 = Sync::load(base_db.clone(), &sync_tree_id).unwrap();
 
         // Settings should be preserved
         assert_eq!(
@@ -84,7 +81,7 @@ async fn test_send_entries_iroh() {
     use eidetica::Entry;
 
     // Create server instance
-    let (_base_db1, mut sync_server) = helpers::setup();
+    let (_base_db1, sync_server) = helpers::setup();
     sync_server.enable_iroh_transport().unwrap();
 
     // Start server
@@ -92,7 +89,7 @@ async fn test_send_entries_iroh() {
     let server_addr = sync_server.get_server_address_async().await.unwrap();
 
     // Create client instance
-    let (_base_db2, mut sync_client) = helpers::setup();
+    let (_base_db2, sync_client) = helpers::setup();
     sync_client.enable_iroh_transport().unwrap();
 
     // Create some test entries

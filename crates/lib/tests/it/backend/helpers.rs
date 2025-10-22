@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use eidetica::{
-    backend::{BackendDB, database::InMemory},
+    backend::{BackendImpl, database::InMemory},
     entry::{Entry, ID},
 };
 

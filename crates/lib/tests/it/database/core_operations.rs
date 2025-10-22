@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_insert_into_tree() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create and commit first entry using an atomic operation
     let op1 = tree.new_transaction().expect("Failed to create operation");
@@ -38,7 +38,7 @@ fn test_insert_into_tree() {
 fn test_get_settings() {
     // Set up the tree with initial settings
     let settings = [("setting_key", "setting_value")];
-    let tree = setup_tree_with_settings(&settings);
+    let (_instance, tree) = setup_tree_with_settings(&settings);
     let retrieved_settings = tree.get_settings().expect("Failed to get settings");
 
     assert_eq!(
@@ -52,7 +52,7 @@ fn test_get_settings() {
 #[test]
 fn test_subtree_operations() {
     // Create a fresh tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create and commit the initial data with operation
     let op1 = tree.new_transaction().expect("Failed to create operation");
@@ -143,7 +143,7 @@ fn test_subtree_operations() {
 fn test_get_name_from_settings() {
     // Create tree with settings
     let settings = [("name", "TestTree")];
-    let tree = setup_tree_with_settings(&settings);
+    let (_instance, tree) = setup_tree_with_settings(&settings);
 
     // Test that get_name works
     let name = tree.get_name().expect("Failed to get tree name");
@@ -168,7 +168,7 @@ fn test_get_name_from_settings() {
 
 #[test]
 fn test_atomic_op_scenarios() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // --- 1. Modify multiple subtrees in one op and read staged data ---
     let op1 = tree.new_transaction().expect("Op1: Failed to start");
@@ -248,7 +248,7 @@ fn test_atomic_op_scenarios() {
 
 #[test]
 fn test_get_store_viewer() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // --- Initial state ---
     let op1 = tree.new_transaction().expect("Op1: Failed start");
@@ -335,7 +335,7 @@ fn test_get_store_viewer() {
 
 #[test]
 fn test_get_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Initially, the tree should have one tip (the root entry)
     let initial_tips = tree.get_tips().expect("Failed to get initial tips");
@@ -386,7 +386,7 @@ fn test_get_tips() {
 
 #[test]
 fn test_new_transaction_with_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create first entry using helper
     let entry1_id = add_data_to_subtree(&tree, "data", &[("key1", "value1")]);
@@ -468,7 +468,7 @@ fn test_new_transaction_with_tips() {
 
 #[test]
 fn test_new_transaction_with_specific_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a chain of entries: A -> B -> C using helpers
     let entry_a_id = add_data_to_subtree(&tree, "data", &[("from_a", "value_a")]);
@@ -580,7 +580,7 @@ fn test_new_transaction_with_specific_tips() {
 
 #[test]
 fn test_new_transaction_with_multiple_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create initial entry using helper
     let base_id = add_data_to_subtree(&tree, "data", &[("base", "value")]);
@@ -621,7 +621,7 @@ fn test_new_transaction_with_multiple_tips() {
     let merge_id = op_merge.commit().expect("Failed to commit merge");
 
     // Verify the merge operation correctly set up parents
-    let backend = tree.backend();
+    let backend = tree.backend().expect("Failed to get backend");
     let merge_entry = backend.get(&merge_id).expect("Failed to get merge entry");
     let merge_parents = merge_entry.parents().expect("Failed to get merge parents");
 

@@ -192,7 +192,7 @@ mod tests {
         sync::DEVICE_KEY_NAME,
     };
 
-    fn create_test_sync_tree() -> Database {
+    fn create_test_sync_tree() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
         let instance = Instance::open(backend).expect("Failed to create test instance");
 
@@ -201,9 +201,11 @@ mod tests {
         sync_settings.set_string("name", "_sync");
         sync_settings.set_string("type", "sync_settings");
 
-        instance
+        let database = instance
             .new_database(sync_settings, DEVICE_KEY_NAME)
-            .unwrap()
+            .unwrap();
+
+        (instance, database)
     }
 
     fn create_test_request() -> BootstrapRequest {
@@ -224,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_store_and_get_request() {
-        let sync_tree = create_test_sync_tree();
+        let (_instance, sync_tree) = create_test_sync_tree();
         let op = sync_tree.new_transaction().unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
@@ -245,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_list_requests() {
-        let sync_tree = create_test_sync_tree();
+        let (_instance, sync_tree) = create_test_sync_tree();
         let op = sync_tree.new_transaction().unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
@@ -282,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_update_status() {
-        let sync_tree = create_test_sync_tree();
+        let (_instance, sync_tree) = create_test_sync_tree();
         let op = sync_tree.new_transaction().unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
@@ -307,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_get_nonexistent_request() {
-        let sync_tree = create_test_sync_tree();
+        let (_instance, sync_tree) = create_test_sync_tree();
         let op = sync_tree.new_transaction().unwrap();
         let manager = BootstrapRequestManager::new(&op);
 

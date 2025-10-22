@@ -57,7 +57,7 @@ fn test_tree_default_authentication() {
 
     // Reload the database with the other key - User API requires new Database instance per key
     let tree_with_other_key = eidetica::Database::open(
-        instance.backend().clone(),
+        instance.clone(),
         tree.root_id(),
         other_signing_key,
         other_key.clone(),
@@ -75,9 +75,8 @@ fn test_tree_default_authentication() {
     assert_eq!(op2.auth_key_name(), Some(other_key.as_str()));
 
     // Test database without key (using open_readonly) - operations should have no key
-    let tree_no_key =
-        eidetica::Database::open_readonly(tree.root_id().clone(), instance.backend().clone())
-            .expect("Failed to create database without key");
+    let tree_no_key = eidetica::Database::open_readonly(tree.root_id().clone(), &instance)
+        .expect("Failed to create database without key");
 
     assert_eq!(tree_no_key.default_auth_key(), None);
 
@@ -168,7 +167,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
         .clone();
 
     let tree_with_key2 = eidetica::Database::open(
-        instance.backend().clone(),
+        instance.clone(),
         tree.root_id(),
         key2_signing_key,
         key2_id.clone(),

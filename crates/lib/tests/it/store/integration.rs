@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_table_complex_data_merging() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to test concurrent modifications
     let (key1, merged_record) = test_table_concurrent_modifications(&tree, "merge_test");
@@ -48,7 +48,7 @@ fn test_table_complex_data_merging() {
 
 #[test]
 fn test_mixed_subtree_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create operations that use multiple subtree types in one operation
     let op = tree.new_transaction().expect("Failed to start operation");
@@ -98,7 +98,7 @@ fn test_mixed_subtree_operations() {
 
 #[test]
 fn test_subtree_persistence_across_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Operation 1: Create data in multiple subtrees
     let op1 = tree.new_transaction().expect("Op1: Failed to start");
@@ -170,7 +170,7 @@ fn test_subtree_persistence_across_operations() {
 
 #[test]
 fn test_subtree_concurrent_access_patterns() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base entry with both Doc and Table data
     let op_base = tree.new_transaction().expect("Base: Failed to start");
@@ -281,7 +281,7 @@ fn test_subtree_concurrent_access_patterns() {
 
 #[test]
 fn test_subtree_integration_with_helpers() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helpers to set up complex scenario
     let records = create_test_records();
@@ -301,7 +301,7 @@ fn test_subtree_integration_with_helpers() {
 
 #[test]
 fn test_subtree_helper_functions_integration() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test Doc helper functions
     let dict_data = &[("key1", "value1"), ("key2", "value2")];

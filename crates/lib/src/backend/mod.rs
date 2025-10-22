@@ -1,10 +1,12 @@
 //! Backend implementations for Eidetica storage
 //!
-//! This module provides the core `Database` trait and various backend implementations
+//! This module provides the core `BackendImpl` trait and various backend implementations
 //! organized by category (database, file, network, cloud).
 //!
-//! The `Database` trait defines the interface for storing and retrieving `Entry` objects.
+//! The `BackendImpl` trait defines the interface for storing and retrieving `Entry` objects.
 //! This allows the core database logic (`Instance`, `Database`) to be independent of the specific storage mechanism.
+//!
+//! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
 use std::any::Any;
 
@@ -47,7 +49,7 @@ pub enum VerificationStatus {
     // Unverified,
 }
 
-/// Database trait abstracting the underlying storage mechanism for Eidetica entries.
+/// BackendImpl trait abstracting the underlying storage mechanism for Eidetica entries.
 ///
 /// This trait defines the essential operations required for storing, retrieving,
 /// and querying entries and their relationships within databases and stores.
@@ -55,19 +57,22 @@ pub enum VerificationStatus {
 /// (e.g., in memory, on disk, in a remote database).
 ///
 /// Much of the performance-critical logic, particularly concerning tree traversal
-/// and tip calculation, resides within `Database` implementations, as the optimal
+/// and tip calculation, resides within `BackendImpl` implementations, as the optimal
 /// approach often depends heavily on the underlying storage characteristics.
 ///
-/// All database implementations must be `Send` and `Sync` to allow sharing across threads,
+/// All backend implementations must be `Send` and `Sync` to allow sharing across threads,
 /// and implement `Any` to allow for downcasting if needed.
+///
+/// Instance wraps BackendImpl in a `Backend` struct that provides additional coordination
+/// and will enable future development.
 ///
 /// ## Verification Status
 ///
-/// The database stores a verification status for each entry, indicating whether
+/// The backend stores a verification status for each entry, indicating whether
 /// the entry has been authenticated by the higher-level authentication system.
-/// The database itself does not perform verification - it only stores the status
+/// The backend itself does not perform verification - it only stores the status
 /// set by the calling code (typically Database/Transaction implementations).
-pub trait BackendDB: Send + Sync + Any {
+pub trait BackendImpl: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

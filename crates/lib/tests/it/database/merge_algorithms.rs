@@ -11,7 +11,7 @@ use crate::helpers::*;
 #[test]
 fn test_simple_linear_chain() {
     // Test basic parent-aware merging: A -> B -> C
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create entry A with initial data
     let op_a = tree.new_transaction().unwrap();
@@ -68,7 +68,7 @@ fn test_simple_linear_chain() {
 #[test]
 fn test_caching_consistency() {
     // Test that caching provides consistent results
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a simple chain to have some data to cache
     let op_a = tree.new_transaction().unwrap();
@@ -112,7 +112,7 @@ fn test_caching_consistency() {
 #[test]
 fn test_parent_merge_semantics() {
     // Test that parent states are properly merged
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base entry with shared data
     let op_base = tree.new_transaction().unwrap();
@@ -152,7 +152,7 @@ fn test_parent_merge_semantics() {
 #[test]
 fn test_deep_chain_performance() {
     // Test that deep chains don't cause stack overflow and use caching effectively
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a moderately deep chain (not too deep to avoid long test times)
     const CHAIN_LENGTH: u32 = 50;
@@ -191,7 +191,7 @@ fn test_deep_chain_performance() {
 #[test]
 fn test_multiple_reads_consistency() {
     // Test that multiple reads of the same data are consistent (deterministic)
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create some test data
     let op1 = tree.new_transaction().unwrap();
@@ -247,7 +247,7 @@ fn test_incorrect_parent_merging_would_fail() {
     // the incorrect approach would compute parent states with inconsistent orderings
     // and potentially lose or incorrectly merge data.
 
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a sequence of operations that build up a complex state
     // Step 1: Initial state with multiple fields
@@ -282,7 +282,10 @@ fn test_incorrect_parent_merging_would_fail() {
     op4.commit().unwrap();
 
     // Clear cache to force computation
-    tree.backend().clear_crdt_cache().unwrap();
+    tree.backend()
+        .expect("Failed to get backend")
+        .clear_crdt_cache()
+        .unwrap();
 
     // Read the final state - this exercises the complex merge algorithm
     let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
@@ -379,7 +382,7 @@ fn test_true_diamond_pattern() {
     //     \ /
     //      D (merge operation sees both B and C as tips)
 
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Step 1: Create entry A (common ancestor)
     let op_a = tree.new_transaction().unwrap();
@@ -437,7 +440,7 @@ fn test_true_diamond_pattern() {
 
     // Verify parent relationships - both B and C should have A as their only parent
     {
-        let backend = tree.backend();
+        let backend = tree.backend().expect("Failed to get backend");
         let entry_b = backend.get(&entry_b_id).unwrap();
         let entry_c = backend.get(&entry_c_id).unwrap();
 
@@ -454,7 +457,10 @@ fn test_true_diamond_pattern() {
     }
 
     // Clear cache to force fresh computation
-    tree.backend().clear_crdt_cache().unwrap();
+    tree.backend()
+        .expect("Failed to get backend")
+        .clear_crdt_cache()
+        .unwrap();
 
     // Step 3: Create merge operation D that automatically gets both B and C as parents
     let op_d = tree.new_transaction().unwrap(); // Uses current tips [B, C]
@@ -465,7 +471,7 @@ fn test_true_diamond_pattern() {
 
     // Verify D has both B and C as parents (the diamond merge)
     {
-        let backend = tree.backend();
+        let backend = tree.backend().expect("Failed to get backend");
         let entry_d = backend.get(&entry_d_id).unwrap();
         let parents = entry_d.parents().unwrap();
 
@@ -575,7 +581,7 @@ fn test_true_diamond_pattern() {
 /// Test helper functions for complex merge scenarios
 #[test]
 fn test_merge_algorithm_helpers() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test diamond pattern creation helper
     let base_data = &[("foundation", "solid"), ("version", "1.0")];
@@ -622,7 +628,7 @@ fn test_merge_algorithm_helpers() {
 /// Test performance with deep chains
 #[test]
 fn test_merge_performance_with_deep_chains() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create deep chain and verify performance
     assert_deep_operations_performance(&tree, 100);

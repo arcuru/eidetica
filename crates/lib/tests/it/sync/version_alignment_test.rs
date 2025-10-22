@@ -8,8 +8,8 @@ async fn test_version_alignment() {
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Start both servers
-    let handler1 = super::helpers::setup_test_handler();
-    let handler2 = super::helpers::setup_test_handler();
+    let (_instance1, handler1) = super::helpers::setup_test_handler();
+    let (_instance2, handler2) = super::helpers::setup_test_handler();
     http_transport
         .start_server("127.0.0.1:0", handler1)
         .await
@@ -42,7 +42,7 @@ async fn test_version_alignment() {
 #[tokio::test]
 async fn test_http_v0_endpoint_format() {
     let mut transport = HttpTransport::new().unwrap();
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     transport
         .start_server("127.0.0.1:0", handler)
         .await

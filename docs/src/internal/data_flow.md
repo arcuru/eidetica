@@ -4,12 +4,14 @@ The data flow in Eidetica follows a structured sequence of interactions between 
 
 ### Basic Flow
 
-1. User creates a Instance with a database backend
-2. User creates Databases within the database
-3. Operations construct immutable Entry objects through EntryBuilder
-4. Entries reference parent entries, forming a directed acyclic graph
-5. Entries are stored and retrieved through the database interface
-6. Authentication validates and signs entries when configured
+1. User creates an Instance with a storage backend
+2. User creates Databases within the Instance
+3. Database holds a weak reference to Instance for storage access
+4. Operations construct immutable Entry objects through EntryBuilder
+5. Entries reference parent entries, forming a directed acyclic graph
+6. Database accesses storage through Instance.backend() via weak reference upgrade
+7. Entries are stored and retrieved through the Instance's backend interface
+8. Authentication validates and signs entries when configured
 
 ### Authentication Flow
 

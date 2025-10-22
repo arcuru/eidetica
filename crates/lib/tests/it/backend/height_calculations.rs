@@ -1,6 +1,6 @@
 use eidetica::{
     Entry,
-    backend::{BackendDB, database::InMemory},
+    backend::{BackendImpl, database::InMemory},
 };
 
 use super::helpers::*;

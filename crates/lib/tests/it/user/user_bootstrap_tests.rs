@@ -58,7 +58,7 @@ fn setup_user_with_database() -> eidetica::Result<(
     let tree_id = database.root_id().clone();
 
     // Create sync instance
-    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
     Ok((instance, user, database, sync, tree_id, user_key_id))
 }
@@ -77,7 +77,10 @@ async fn create_pending_request(
     client_pubkey: &str,
     permission: Permission,
 ) -> String {
-    let handler = SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
 
     let request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
@@ -127,7 +130,7 @@ fn grant_user_permission_on_database(
 
 #[tokio::test]
 async fn test_user_approve_bootstrap_request() {
-    let (_instance, user, database, mut sync, tree_id, user_key_id) =
+    let (_instance, user, database, sync, tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -145,7 +148,7 @@ async fn test_user_approve_bootstrap_request() {
     println!("✅ Bootstrap request created and pending");
 
     // User approves the request using their key
-    user.approve_bootstrap_request(&mut sync, &request_id, &user_key_id)
+    user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
         .expect("Failed to approve bootstrap request");
     println!("✅ User successfully approved bootstrap request");
 
@@ -188,7 +191,7 @@ async fn test_user_approve_bootstrap_request() {
 
 #[tokio::test]
 async fn test_user_reject_bootstrap_request() {
-    let (_instance, user, database, mut sync, tree_id, user_key_id) =
+    let (_instance, user, database, sync, tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -205,7 +208,7 @@ async fn test_user_reject_bootstrap_request() {
     assert_eq!(pending.len(), 1);
 
     // User rejects the request
-    user.reject_bootstrap_request(&mut sync, &request_id, &user_key_id)
+    user.reject_bootstrap_request(&sync, &request_id, &user_key_id)
         .expect("Failed to reject bootstrap request");
     println!("✅ User successfully rejected bootstrap request");
 
@@ -248,7 +251,7 @@ async fn test_user_reject_bootstrap_request() {
 
 #[tokio::test]
 async fn test_user_approve_with_nonexistent_key() {
-    let (_instance, user, _database, mut sync, tree_id, _user_key_id) =
+    let (_instance, user, _database, sync, tree_id, _user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -259,7 +262,7 @@ async fn test_user_approve_with_nonexistent_key() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Try to approve with a key the user doesn't own
-    let result = user.approve_bootstrap_request(&mut sync, &request_id, "nonexistent_key");
+    let result = user.approve_bootstrap_request(&sync, &request_id, "nonexistent_key");
 
     assert!(result.is_err(), "Approval should fail with nonexistent key");
     let error_msg = result.unwrap_err().to_string();
@@ -273,7 +276,7 @@ async fn test_user_approve_with_nonexistent_key() {
 
 #[tokio::test]
 async fn test_user_reject_with_nonexistent_key() {
-    let (_instance, user, _database, mut sync, tree_id, _user_key_id) =
+    let (_instance, user, _database, sync, tree_id, _user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -284,7 +287,7 @@ async fn test_user_reject_with_nonexistent_key() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Try to reject with a key the user doesn't own
-    let result = user.reject_bootstrap_request(&mut sync, &request_id, "nonexistent_key");
+    let result = user.reject_bootstrap_request(&sync, &request_id, "nonexistent_key");
 
     assert!(
         result.is_err(),
@@ -301,11 +304,11 @@ async fn test_user_reject_with_nonexistent_key() {
 
 #[tokio::test]
 async fn test_user_approve_nonexistent_request() {
-    let (_instance, user, _database, mut sync, _tree_id, user_key_id) =
+    let (_instance, user, _database, sync, _tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Try to approve a request that doesn't exist
-    let result = user.approve_bootstrap_request(&mut sync, "nonexistent_request_id", &user_key_id);
+    let result = user.approve_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id);
 
     assert!(
         result.is_err(),
@@ -322,11 +325,11 @@ async fn test_user_approve_nonexistent_request() {
 
 #[tokio::test]
 async fn test_user_reject_nonexistent_request() {
-    let (_instance, user, _database, mut sync, _tree_id, user_key_id) =
+    let (_instance, user, _database, sync, _tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Try to reject a request that doesn't exist
-    let result = user.reject_bootstrap_request(&mut sync, "nonexistent_request_id", &user_key_id);
+    let result = user.reject_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id);
 
     assert!(
         result.is_err(),
@@ -343,7 +346,7 @@ async fn test_user_reject_nonexistent_request() {
 
 #[tokio::test]
 async fn test_user_cannot_approve_twice() {
-    let (_instance, user, _database, mut sync, tree_id, user_key_id) =
+    let (_instance, user, _database, sync, tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -354,11 +357,11 @@ async fn test_user_cannot_approve_twice() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Approve once
-    user.approve_bootstrap_request(&mut sync, &request_id, &user_key_id)
+    user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
         .expect("First approval should succeed");
 
     // Try to approve again
-    let result = user.approve_bootstrap_request(&mut sync, &request_id, &user_key_id);
+    let result = user.approve_bootstrap_request(&sync, &request_id, &user_key_id);
 
     assert!(result.is_err(), "Second approval should fail");
     let error_msg = result.unwrap_err().to_string();
@@ -372,7 +375,7 @@ async fn test_user_cannot_approve_twice() {
 
 #[tokio::test]
 async fn test_user_cannot_reject_after_approval() {
-    let (_instance, user, _database, mut sync, tree_id, user_key_id) =
+    let (_instance, user, _database, sync, tree_id, user_key_id) =
         setup_user_with_database().expect("Failed to setup test");
 
     // Create a client requesting access
@@ -383,11 +386,11 @@ async fn test_user_cannot_reject_after_approval() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Approve first
-    user.approve_bootstrap_request(&mut sync, &request_id, &user_key_id)
+    user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
         .expect("Approval should succeed");
 
     // Try to reject after approval
-    let result = user.reject_bootstrap_request(&mut sync, &request_id, &user_key_id);
+    let result = user.reject_bootstrap_request(&sync, &request_id, &user_key_id);
 
     assert!(result.is_err(), "Rejection should fail after approval");
     let error_msg = result.unwrap_err().to_string();
@@ -441,7 +444,7 @@ async fn test_multiple_users() {
     let bob_tree_id = bob_db.root_id().clone();
 
     // Create sync instance
-    let mut sync = Sync::new(instance.backend().clone()).expect("Failed to create sync object");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync object");
 
     // Client requests access to Alice's database
     let (_client_key, client_pubkey) = create_client_key();
@@ -454,11 +457,11 @@ async fn test_multiple_users() {
 
     // Alice approves her database request
     alice
-        .approve_bootstrap_request(&mut sync, &alice_request_id, &alice_key)
+        .approve_bootstrap_request(&sync, &alice_request_id, &alice_key)
         .expect("Alice should approve her request");
 
     // Bob rejects his database request
-    bob.reject_bootstrap_request(&mut sync, &bob_request_id, &bob_key)
+    bob.reject_bootstrap_request(&sync, &bob_request_id, &bob_key)
         .expect("Bob should reject his request");
 
     // Verify Alice's request is approved
@@ -584,13 +587,13 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to update Bob's key mapping");
 
     // Create a sync instance and bootstrap request
-    let mut sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
     let (_client_key, client_pubkey) = create_client_key();
     let request_id =
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Bob (who only has Write permission, not Admin) tries to reject the request
-    let result = bob.reject_bootstrap_request(&mut sync, &request_id, &bob_key);
+    let result = bob.reject_bootstrap_request(&sync, &request_id, &bob_key);
 
     // Should fail because Bob doesn't have Admin permission
     assert!(
@@ -607,7 +610,7 @@ async fn test_user_without_admin_cannot_modify() {
     println!("✅ User without Admin permission correctly cannot reject bootstrap requests");
 
     // Now confirm that Bob cannot approve the request either
-    let result = bob.approve_bootstrap_request(&mut sync, &request_id, &bob_key);
+    let result = bob.approve_bootstrap_request(&sync, &request_id, &bob_key);
 
     // Should fail because Bob doesn't have Admin permission
     assert!(

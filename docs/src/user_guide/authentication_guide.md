@@ -162,17 +162,16 @@ transaction.commit()?;
 # use eidetica::{Instance, Database, backend::database::InMemory};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 # use eidetica::auth::types::SigKey;
-# use std::sync::Arc;
 #
 # fn main() -> eidetica::Result<()> {
-# let backend = Arc::new(InMemory::new());
+# let instance = Instance::open(Box::new(InMemory::new()))?;
 # let (signing_key, verifying_key) = generate_keypair();
 # let database_root_id = "collaborative_db_root".into();
 // Get your public key
 let pubkey = format_public_key(&verifying_key);
 
 // Discover all SigKeys this public key can use
-let sigkeys = Database::find_sigkeys(backend.clone(), &database_root_id, &pubkey)?;
+let sigkeys = Database::find_sigkeys(&instance, &database_root_id, &pubkey)?;
 
 // Use the first available SigKey (will be "*" for global permissions)
 if let Some((sigkey, _permission)) = sigkeys.first() {
@@ -182,7 +181,7 @@ if let Some((sigkey, _permission)) = sigkeys.first() {
     };
 
     // Open the database with the discovered SigKey
-    let database = Database::open(backend, &database_root_id, signing_key, sigkey_str)?;
+    let database = Database::open(instance, &database_root_id, signing_key, sigkey_str)?;
 
     // Create transactions as usual
     let txn = database.new_transaction()?;

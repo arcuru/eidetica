@@ -16,7 +16,7 @@ use crate::helpers::*;
 #[cfg(feature = "y-crdt")]
 #[test]
 fn test_ydoc_basic_text_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create YDoc with text
     create_ydoc_text_operation(&tree, "yrs_text", "Hello, World!");
@@ -28,7 +28,7 @@ fn test_ydoc_basic_text_operations() {
 #[cfg(feature = "y-crdt")]
 #[test]
 fn test_ydoc_incremental_updates_save_diffs_only() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to test incremental updates
     let (first_diff_size, second_diff_size) = test_ydoc_incremental_updates(&tree, "yrs_diff_test");
@@ -80,7 +80,7 @@ fn test_ydoc_incremental_updates_save_diffs_only() {
 #[cfg(feature = "y-crdt")]
 #[test]
 fn test_ydoc_map_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create YDoc with map data
     let map_data = &[("key1", "value1"), ("key2", "42"), ("key3", "true")];
@@ -93,7 +93,7 @@ fn test_ydoc_map_operations() {
 #[cfg(feature = "y-crdt")]
 #[test]
 fn test_ydoc_multiple_operations_with_diffs() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Operation 1: Create initial state
     let op1 = tree.new_transaction().expect("Op1: Failed to start");
@@ -191,7 +191,7 @@ fn test_ydoc_multiple_operations_with_diffs() {
 #[cfg(feature = "y-crdt")]
 #[test]
 fn test_ydoc_apply_external_update() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create external update using helper
     let external_update = create_external_ydoc_update("External change");

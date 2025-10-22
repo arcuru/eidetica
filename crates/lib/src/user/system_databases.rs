@@ -2,8 +2,6 @@
 //!
 //! Creates and manages _users and _databases system databases.
 
-use std::sync::Arc;
-
 use super::{
     User,
     crypto::{current_timestamp, derive_encryption_key, encrypt_private_key, hash_password},
@@ -12,13 +10,12 @@ use super::{
     types::{KeyEncryption, UserInfo, UserKey, UserStatus},
 };
 use crate::{
-    Database, Result,
+    Database, Instance, Result,
     auth::{
         crypto::generate_keypair,
         settings::AuthSettings,
         types::{AuthKey, Permission},
     },
-    backend::BackendDB,
     constants::{DATABASES, INSTANCE, USERS},
     crdt::Doc,
     store::Table,
@@ -30,14 +27,14 @@ use crate::{
 /// It is authenticated with the Instance's _device_key.
 ///
 /// # Arguments
-/// * `backend` - The database backend
+/// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
 /// * `device_pubkey` - The public key for _device_key (used as admin)
 ///
 /// # Returns
 /// The _instance Database
 pub fn create_instance_database(
-    backend: Arc<dyn BackendDB>,
+    instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
@@ -58,7 +55,7 @@ pub fn create_instance_database(
     // Create the database with device signing key provided directly
     let database = Database::create(
         settings,
-        backend,
+        instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
     )?;
@@ -72,14 +69,14 @@ pub fn create_instance_database(
 /// It is authenticated with the Instance's _device_key.
 ///
 /// # Arguments
-/// * `backend` - The database backend
+/// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
 /// * `device_pubkey` - The public key for _device_key (used as admin)
 ///
 /// # Returns
 /// The created _users Database
 pub fn create_users_database(
-    backend: Arc<dyn BackendDB>,
+    instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
@@ -101,7 +98,7 @@ pub fn create_users_database(
     // Create the database with device signing key provided directly
     let database = Database::create(
         settings,
-        backend,
+        instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
     )?;
@@ -116,14 +113,14 @@ pub fn create_users_database(
 /// It is authenticated with the Instance's _device_key.
 ///
 /// # Arguments
-/// * `backend` - The database backend
+/// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
 /// * `device_pubkey` - The public key for _device_key (used as admin)
 ///
 /// # Returns
 /// The created _databases Database
 pub fn create_databases_tracking(
-    backend: Arc<dyn BackendDB>,
+    instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
@@ -145,7 +142,7 @@ pub fn create_databases_tracking(
     // Create the database with device signing key provided directly
     let database = Database::create(
         settings,
-        backend,
+        instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
     )?;
@@ -163,7 +160,7 @@ pub fn create_databases_tracking(
 ///
 /// # Arguments
 /// * `users_db` - The _users system database
-/// * `backend` - The database backend
+/// * `instance` - The Instance handle
 /// * `username` - Unique username for login
 /// * `password` - Optional password. If None, creates passwordless user (instant login, no encryption)
 ///
@@ -171,7 +168,7 @@ pub fn create_databases_tracking(
 /// A tuple of (user_uuid, UserInfo) where user_uuid is the generated primary key
 pub fn create_user(
     users_db: &Database,
-    backend: Arc<dyn BackendDB>,
+    instance: &Instance,
     username: impl AsRef<str>,
     password: Option<&str>,
 ) -> Result<(String, UserInfo)> {
@@ -213,12 +210,12 @@ pub fn create_user(
     user_db_settings.set_string("description", format!("User database for {username}"));
 
     // Get device key for auth settings and database creation
-    let device_private_key =
-        backend
-            .get_private_key("_device_key")?
-            .ok_or_else(|| UserError::KeyNotFound {
-                key_id: "_device_key".to_string(),
-            })?;
+    let device_private_key = instance
+        .backend()
+        .get_private_key("_device_key")?
+        .ok_or_else(|| UserError::KeyNotFound {
+            key_id: "_device_key".to_string(),
+        })?;
     let device_pubkey = device_private_key.verifying_key();
     let device_pubkey_str = crate::auth::crypto::format_public_key(&device_pubkey);
 
@@ -240,7 +237,7 @@ pub fn create_user(
     // Create database using device_key directly (KeySource::Provided)
     let user_database = Database::create(
         user_db_settings,
-        backend.clone(),
+        instance,
         device_private_key,
         "_device_key".to_string(),
     )?;
@@ -315,7 +312,7 @@ pub fn create_user(
 ///
 /// # Arguments
 /// * `users_db` - The _users system database
-/// * `backend` - The database backend
+/// * `instance` - The Instance handle
 /// * `username` - Username for login
 /// * `password` - Optional password. None for passwordless users.
 ///
@@ -323,7 +320,7 @@ pub fn create_user(
 /// A User session object with keys loaded
 pub fn login_user(
     users_db: &Database,
-    backend: Arc<dyn BackendDB>,
+    instance: &Instance,
     username: impl AsRef<str>,
     password: Option<&str>,
 ) -> Result<super::User> {
@@ -387,8 +384,7 @@ pub fn login_user(
     }
 
     // 3. Temporarily open user's private database to read keys (unauthenticated read)
-    let temp_user_database =
-        Database::open_readonly(user_info.user_database_id.clone(), backend.clone())?;
+    let temp_user_database = Database::open_readonly(user_info.user_database_id.clone(), instance)?;
 
     // 4. Load keys from user database
     let keys_table = temp_user_database.get_store_viewer::<Table<UserKey>>("keys")?;
@@ -428,7 +424,7 @@ pub fn login_user(
         .clone();
 
     let user_database = Database::open(
-        backend.clone(),
+        instance.clone(),
         &user_info.user_database_id,
         default_signing_key,
         default_key_id,
@@ -446,7 +442,7 @@ pub fn login_user(
         user_uuid,
         user_info,
         user_database,
-        backend,
+        instance.clone(),
         key_manager,
     ))
 }
@@ -471,28 +467,35 @@ pub fn list_users(users_db: &Database) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Instance;
     use crate::auth::crypto::{format_public_key, generate_keypair};
+    use crate::backend::BackendImpl;
     use crate::backend::database::InMemory;
     use crate::store::DocStore;
     use crate::store::SettingsStore;
 
-    /// Test helper: Create backend with device key initialized
-    fn setup_backend() -> (Arc<InMemory>, ed25519_dalek::SigningKey, String) {
+    use std::sync::Arc;
+
+    /// Test helper: Create Instance with device key initialized
+    fn setup_instance() -> (Instance, ed25519_dalek::SigningKey, String) {
         let backend = Arc::new(InMemory::new());
         let (device_key, device_pubkey) = generate_keypair();
         let pubkey_str = format_public_key(&device_pubkey);
         backend
             .store_private_key("_device_key", device_key.clone())
             .unwrap();
-        (backend, device_key, pubkey_str)
+
+        // Create Instance with initialized device key
+        let instance = Instance::create_internal(backend).unwrap();
+
+        (instance, device_key, pubkey_str)
     }
 
     #[test]
     fn test_create_instance_database() {
-        let (backend, device_key, pubkey_str) = setup_backend();
+        let (instance, device_key, pubkey_str) = setup_instance();
 
-        let instance_db =
-            create_instance_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let instance_db = create_instance_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Verify database was created
         assert!(!instance_db.root_id().to_string().is_empty());
@@ -513,9 +516,9 @@ mod tests {
 
     #[test]
     fn test_create_users_database() {
-        let (backend, device_key, pubkey_str) = setup_backend();
+        let (instance, device_key, pubkey_str) = setup_instance();
 
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Verify database was created
         assert!(!users_db.root_id().to_string().is_empty());
@@ -529,10 +532,9 @@ mod tests {
 
     #[test]
     fn test_create_databases_tracking() {
-        let (backend, device_key, pubkey_str) = setup_backend();
+        let (instance, device_key, pubkey_str) = setup_instance();
 
-        let databases_db =
-            create_databases_tracking(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let databases_db = create_databases_tracking(&instance, &device_key, &pubkey_str).unwrap();
 
         // Verify database was created
         assert!(!databases_db.root_id().to_string().is_empty());
@@ -546,9 +548,9 @@ mod tests {
 
     #[test]
     fn test_system_databases_have_device_key_auth() {
-        let (backend, device_key, pubkey_str) = setup_backend();
+        let (instance, device_key, pubkey_str) = setup_instance();
 
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Verify _device_key has admin access
         let transaction = users_db.new_transaction().unwrap();
@@ -562,12 +564,12 @@ mod tests {
 
     #[test]
     fn test_create_user() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a user with password
         let (user_uuid, user_info) =
-            create_user(&users_db, backend.clone(), "alice", Some("password123")).unwrap();
+            create_user(&users_db, &instance, "alice", Some("password123")).unwrap();
 
         // Verify user info
         assert_eq!(user_info.username, "alice");
@@ -586,11 +588,11 @@ mod tests {
 
     #[test]
     fn test_create_user_passwordless() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a passwordless user
-        let (user_uuid, user_info) = create_user(&users_db, backend.clone(), "bob", None).unwrap();
+        let (user_uuid, user_info) = create_user(&users_db, &instance, "bob", None).unwrap();
 
         // Verify user info
         assert_eq!(user_info.username, "bob");
@@ -609,27 +611,27 @@ mod tests {
 
     #[test]
     fn test_create_duplicate_user() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create first user
-        create_user(&users_db, backend.clone(), "alice", Some("password123")).unwrap();
+        create_user(&users_db, &instance, "alice", Some("password123")).unwrap();
 
         // Try to create duplicate
-        let result = create_user(&users_db, backend.clone(), "alice", Some("password456"));
+        let result = create_user(&users_db, &instance, "alice", Some("password456"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_login_user() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a user with password
-        create_user(&users_db, backend.clone(), "bob", Some("bobpassword")).unwrap();
+        create_user(&users_db, &instance, "bob", Some("bobpassword")).unwrap();
 
         // Login user
-        let user = login_user(&users_db, backend.clone(), "bob", Some("bobpassword")).unwrap();
+        let user = login_user(&users_db, &instance, "bob", Some("bobpassword")).unwrap();
 
         // Verify user session
         assert_eq!(user.username(), "bob");
@@ -644,14 +646,14 @@ mod tests {
 
     #[test]
     fn test_login_user_passwordless() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a passwordless user
-        create_user(&users_db, backend.clone(), "charlie", None).unwrap();
+        create_user(&users_db, &instance, "charlie", None).unwrap();
 
         // Login user without password
-        let user = login_user(&users_db, backend.clone(), "charlie", None).unwrap();
+        let user = login_user(&users_db, &instance, "charlie", None).unwrap();
 
         // Verify user session
         assert_eq!(user.username(), "charlie");
@@ -666,60 +668,60 @@ mod tests {
 
     #[test]
     fn test_login_wrong_password() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a user
-        create_user(&users_db, backend.clone(), "dave", Some("correct_password")).unwrap();
+        create_user(&users_db, &instance, "dave", Some("correct_password")).unwrap();
 
         // Try to login with wrong password
-        let result = login_user(&users_db, backend.clone(), "dave", Some("wrong_password"));
+        let result = login_user(&users_db, &instance, "dave", Some("wrong_password"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_login_password_mismatch() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Create a passwordless user
-        create_user(&users_db, backend.clone(), "eve", None).unwrap();
+        create_user(&users_db, &instance, "eve", None).unwrap();
 
         // Try to login with password (should fail)
-        let result = login_user(&users_db, backend.clone(), "eve", Some("password"));
+        let result = login_user(&users_db, &instance, "eve", Some("password"));
         assert!(result.is_err());
 
         // Create a password-protected user
-        create_user(&users_db, backend.clone(), "frank", Some("password")).unwrap();
+        create_user(&users_db, &instance, "frank", Some("password")).unwrap();
 
         // Try to login without password (should fail)
-        let result = login_user(&users_db, backend.clone(), "frank", None);
+        let result = login_user(&users_db, &instance, "frank", None);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_login_nonexistent_user() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Try to login user that doesn't exist
-        let result = login_user(&users_db, backend.clone(), "nonexistent", Some("password"));
+        let result = login_user(&users_db, &instance, "nonexistent", Some("password"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_list_users() {
-        let (backend, device_key, pubkey_str) = setup_backend();
-        let users_db = create_users_database(backend.clone(), &device_key, &pubkey_str).unwrap();
+        let (instance, device_key, pubkey_str) = setup_instance();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str).unwrap();
 
         // Initially no users
         let users = list_users(&users_db).unwrap();
         assert_eq!(users.len(), 0);
 
         // Create some users (mix of password-protected and passwordless)
-        create_user(&users_db, backend.clone(), "alice", Some("pass1")).unwrap();
-        create_user(&users_db, backend.clone(), "bob", None).unwrap();
-        create_user(&users_db, backend.clone(), "charlie", Some("pass3")).unwrap();
+        create_user(&users_db, &instance, "alice", Some("pass1")).unwrap();
+        create_user(&users_db, &instance, "bob", None).unwrap();
+        create_user(&users_db, &instance, "charlie", Some("pass3")).unwrap();
 
         // List users
         let users = list_users(&users_db).unwrap();

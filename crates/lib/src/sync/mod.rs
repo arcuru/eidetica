@@ -3,13 +3,19 @@
 //! The Sync module manages synchronization settings and state for the database,
 //! storing its configuration in a dedicated tree within the database.
 
-use std::sync::Arc;
+use handle_trait::Handle;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use tracing::{debug, info};
 
 use crate::{
-    Database, Entry, Result,
+    Database, Entry, Instance, Result, WeakInstance,
     auth::{crypto::format_public_key, types::AuthKey},
     crdt::Doc,
+    entry::ID,
+    instance::backend::Backend,
     store::{DocStore, SettingsStore},
 };
 
@@ -49,32 +55,34 @@ pub(crate) const DEVICE_KEY_NAME: &str = "_device_key";
 /// sync engine thread via command channels. All actual sync operations, transport
 /// communication, and state management happen in the background thread.
 pub struct Sync {
-    /// Communication channel to the background sync engine
-    command_tx: mpsc::Sender<SyncCommand>,
-    /// The backend for read operations and tree management
-    backend: Arc<dyn crate::backend::BackendDB>,
+    /// Communication channel to the background sync engine (initialized once when transport is enabled)
+    command_tx: OnceLock<mpsc::Sender<SyncCommand>>,
+    /// The instance for read operations and tree management
+    instance: WeakInstance,
     /// The tree containing synchronization settings
     sync_tree: Database,
     /// Track if transport has been enabled
-    transport_enabled: bool,
+    transport_enabled: AtomicBool,
 }
 
 impl Sync {
     /// Create a new Sync instance with a dedicated settings tree.
     ///
     /// # Arguments
-    /// * `backend` - The database backend for tree operations
+    /// * `instance` - The database instance for tree operations
     ///
     /// # Returns
     /// A new Sync instance with its own settings tree.
-    pub fn new(backend: Arc<dyn crate::backend::BackendDB>) -> Result<Self> {
+    pub fn new(instance: Instance) -> Result<Self> {
         // Ensure device key exists in the backend
         // If no device key exists, generate one automatically
-        let signing_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
+        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME)? {
             Some(key) => key,
             None => {
                 let (signing_key, _) = crate::auth::crypto::generate_keypair();
-                backend.store_private_key(DEVICE_KEY_NAME, signing_key.clone())?;
+                instance
+                    .backend()
+                    .store_private_key(DEVICE_KEY_NAME, signing_key.clone())?;
                 signing_key
             }
         };
@@ -85,57 +93,47 @@ impl Sync {
 
         let sync_tree = Database::create(
             sync_settings,
-            Arc::clone(&backend),
+            &instance,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
         )?;
 
-        // For now, create a placeholder command channel
-        // This will be properly initialized when a transport is enabled
-        let (command_tx, _) = mpsc::channel(100);
-
         Ok(Self {
-            command_tx,
-            backend,
+            command_tx: OnceLock::new(),
+            instance: instance.downgrade(),
             sync_tree,
-            transport_enabled: false,
+            transport_enabled: AtomicBool::new(false),
         })
     }
 
     /// Load an existing Sync instance from a sync tree root ID.
     ///
     /// # Arguments
-    /// * `backend` - The database backend
+    /// * `instance` - The database instance
     /// * `sync_tree_root_id` - The root ID of the existing sync tree
     ///
     /// # Returns
     /// A Sync instance loaded from the existing tree.
-    pub fn load(
-        backend: Arc<dyn crate::backend::BackendDB>,
-        sync_tree_root_id: &crate::entry::ID,
-    ) -> Result<Self> {
-        let device_key = backend.get_private_key(DEVICE_KEY_NAME)?.ok_or_else(|| {
-            SyncError::DeviceKeyNotFound {
+    pub fn load(instance: Instance, sync_tree_root_id: &ID) -> Result<Self> {
+        let device_key = instance
+            .backend()
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
-            }
-        })?;
+            })?;
 
         let sync_tree = Database::open(
-            Arc::clone(&backend),
+            instance.clone(),
             sync_tree_root_id,
             device_key,
             DEVICE_KEY_NAME.to_string(),
         )?;
 
-        // For now, create a placeholder command channel
-        // This will be properly initialized when a transport is enabled
-        let (command_tx, _) = mpsc::channel(100);
-
         Ok(Self {
-            command_tx,
-            backend,
+            command_tx: OnceLock::new(),
+            instance: instance.downgrade(),
             sync_tree,
-            transport_enabled: false,
+            transport_enabled: AtomicBool::new(false),
         })
     }
 
@@ -149,7 +147,7 @@ impl Sync {
     /// # Arguments
     /// * `key` - The setting key
     /// * `value` - The setting value
-    pub fn set_setting(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
+    pub fn set_setting(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let op = self.sync_tree.new_transaction()?;
         let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE)?;
         sync_settings.set_string(key, value)?;
@@ -175,9 +173,19 @@ impl Sync {
         }
     }
 
+    /// Upgrade the weak instance reference to a strong reference.
+    ///
+    /// # Returns
+    /// A `Result` containing the Instance or an error if the Instance has been dropped.
+    pub fn instance(&self) -> Result<Instance> {
+        self.instance
+            .upgrade()
+            .ok_or_else(|| SyncError::InstanceDropped.into())
+    }
+
     /// Get a reference to the underlying backend.
-    pub fn backend(&self) -> &Arc<dyn crate::backend::BackendDB> {
-        &self.backend
+    pub fn backend(&self) -> Result<Backend> {
+        Ok(self.instance()?.backend().clone())
     }
 
     /// Get a reference to the sync settings tree.
@@ -207,14 +215,13 @@ impl Sync {
     /// # Returns
     /// The device's private signing key if available.
     pub(crate) fn get_device_signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
-        self.backend
-            .get_private_key(DEVICE_KEY_NAME)?
-            .ok_or_else(|| {
-                SyncError::DeviceKeyNotFound {
-                    key_name: DEVICE_KEY_NAME.to_string(),
-                }
-                .into()
-            })
+        let backend = self.backend()?;
+        backend.get_private_key(DEVICE_KEY_NAME)?.ok_or_else(|| {
+            SyncError::DeviceKeyNotFound {
+                key_name: DEVICE_KEY_NAME.to_string(),
+            }
+            .into()
+        })
     }
 
     // === Peer Management Methods ===
@@ -228,7 +235,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub fn register_peer(
-        &mut self,
+        &self,
         pubkey: impl Into<String>,
         display_name: Option<&str>,
     ) -> Result<()> {
@@ -251,11 +258,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn update_peer_status(
-        &mut self,
-        pubkey: impl AsRef<str>,
-        status: PeerStatus,
-    ) -> Result<()> {
+    pub fn update_peer_status(&self, pubkey: impl AsRef<str>, status: PeerStatus) -> Result<()> {
         let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).update_peer_status(pubkey.as_ref(), status)?;
         op.commit()?;
@@ -294,7 +297,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn remove_peer(&mut self, pubkey: impl AsRef<str>) -> Result<()> {
+    pub fn remove_peer(&self, pubkey: impl AsRef<str>) -> Result<()> {
         let op = self.sync_tree.new_transaction()?;
         PeerManager::new(&op).remove_peer(pubkey)?;
         op.commit()?;
@@ -312,7 +315,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub fn add_tree_sync(
-        &mut self,
+        &self,
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
@@ -331,7 +334,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub fn remove_tree_sync(
-        &mut self,
+        &self,
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
@@ -377,10 +380,12 @@ impl Sync {
     ///
     /// # Returns
     /// A Result containing the peer's public key if successful.
-    pub async fn connect_to_peer(&mut self, address: &Address) -> Result<String> {
+    pub async fn connect_to_peer(&self, address: &Address) -> Result<String> {
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::ConnectToPeer {
                 address: address.clone(),
                 response: tx,
@@ -401,7 +406,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error.
     pub fn update_peer_connection_state(
-        &mut self,
+        &self,
         pubkey: impl AsRef<str>,
         state: ConnectionState,
     ) -> Result<()> {
@@ -452,11 +457,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub fn add_peer_address(
-        &mut self,
-        peer_pubkey: impl AsRef<str>,
-        address: Address,
-    ) -> Result<()> {
+    pub fn add_peer_address(&self, peer_pubkey: impl AsRef<str>, address: Address) -> Result<()> {
         let peer_pubkey_str = peer_pubkey.as_ref();
 
         // Update sync tree via PeerManager
@@ -477,7 +478,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or an error (true if removed, false if not found).
     pub fn remove_peer_address(
-        &mut self,
+        &self,
         peer_pubkey: impl AsRef<str>,
         address: &Address,
     ) -> Result<bool> {
@@ -514,14 +515,16 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    pub async fn start_server_async(&mut self, addr: &str) -> Result<()> {
-        if !self.transport_enabled {
+    pub async fn start_server_async(&self, addr: &str) -> Result<()> {
+        if !self.transport_enabled.load(Ordering::Acquire) {
             return Err(SyncError::NoTransportEnabled.into());
         }
 
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::StartServer {
                 addr: addr.to_string(),
                 response: tx,
@@ -537,13 +540,15 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
-    pub async fn stop_server_async(&mut self) -> Result<()> {
-        if !self.transport_enabled {
+    pub async fn stop_server_async(&self) -> Result<()> {
+        if !self.transport_enabled.load(Ordering::Acquire) {
             return Err(SyncError::NoTransportEnabled.into());
         }
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::StopServer { response: tx })
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
@@ -554,7 +559,7 @@ impl Sync {
 
         // Clear the transport_enabled flag after successfully stopping the server
         if result.is_ok() {
-            self.transport_enabled = false;
+            self.transport_enabled.store(false, Ordering::Release);
         }
 
         result
@@ -563,10 +568,10 @@ impl Sync {
     /// Enable HTTP transport for network communication.
     ///
     /// This initializes the HTTP transport layer and starts the background sync engine.
-    pub fn enable_http_transport(&mut self) -> Result<()> {
+    pub fn enable_http_transport(&self) -> Result<()> {
         let transport = HttpTransport::new()?;
         self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled = true;
+        self.transport_enabled.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -574,10 +579,10 @@ impl Sync {
     ///
     /// This initializes the Iroh transport layer with production defaults (n0's relay servers)
     /// and starts the background sync engine.
-    pub fn enable_iroh_transport(&mut self) -> Result<()> {
+    pub fn enable_iroh_transport(&self) -> Result<()> {
         let transport = IrohTransport::new()?;
         self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled = true;
+        self.transport_enabled.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -585,9 +590,9 @@ impl Sync {
     ///
     /// This allows specifying custom relay modes, discovery options, etc.
     /// Use IrohTransport::builder() to create a configured transport.
-    pub fn enable_iroh_transport_with_config(&mut self, transport: IrohTransport) -> Result<()> {
+    pub fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
         self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled = true;
+        self.transport_enabled.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -595,15 +600,15 @@ impl Sync {
     ///
     /// This is useful for testing and advanced configuration scenarios.
     /// Eventually we will support multiple concurrent transports.
-    pub fn add_transport(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
+    pub fn add_transport(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
         self.start_background_sync(transport)?;
-        self.transport_enabled = true;
+        self.transport_enabled.store(true, Ordering::Release);
         Ok(())
     }
 
     /// Start the background sync engine with the given transport
-    fn start_background_sync(&mut self, transport: Box<dyn SyncTransport>) -> Result<()> {
-        if self.transport_enabled {
+    fn start_background_sync(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        if self.transport_enabled.load(Ordering::Acquire) {
             return Err(SyncError::ServerAlreadyRunning {
                 // This is a placeholder until the backend supports multiple transports simultaneously.
                 address: "background sync".to_string(),
@@ -612,21 +617,30 @@ impl Sync {
         }
 
         let sync_tree_id = self.sync_tree.root_id().clone();
+        let instance = self.instance()?;
 
-        // If we're in an async context, spawn directly
-        if tokio::runtime::Handle::try_current().is_ok() {
-            self.command_tx = BackgroundSync::start(transport, self.backend.clone(), sync_tree_id);
+        // Create the background sync and get command sender
+        let command_tx = if tokio::runtime::Handle::try_current().is_ok() {
+            BackgroundSync::start(transport, instance, sync_tree_id)
         } else {
             // If not in async context, create a runtime to spawn the background task
             let rt = tokio::runtime::Runtime::new()
                 .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
 
             let _guard = rt.enter();
-            self.command_tx = BackgroundSync::start(transport, self.backend.clone(), sync_tree_id);
+            let tx = BackgroundSync::start(transport, instance, sync_tree_id);
 
             // Keep the runtime alive by detaching it
             std::mem::forget(rt);
-        }
+            tx
+        };
+
+        // Initialize the command channel (can only be done once)
+        self.command_tx
+            .set(command_tx)
+            .map_err(|_| SyncError::ServerAlreadyRunning {
+                address: "command channel already initialized".to_string(),
+            })?;
 
         Ok(())
     }
@@ -637,12 +651,14 @@ impl Sync {
     /// The address the server is bound to, or an error if no server is running.
     /// Get the server address (async version).
     pub async fn get_server_address_async(&self) -> Result<String> {
-        if !self.transport_enabled {
+        if !self.transport_enabled.load(Ordering::Acquire) {
             return Err(SyncError::NoTransportEnabled.into());
         }
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::GetServerAddress { response: tx })
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
@@ -674,7 +690,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    pub fn start_server(&mut self, addr: impl AsRef<str>) -> Result<()> {
+    pub fn start_server(&self, addr: impl AsRef<str>) -> Result<()> {
         // Try to use existing async context, or create runtime if needed
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(self.start_server_async(addr.as_ref()))
@@ -690,7 +706,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
-    pub fn stop_server(&mut self) -> Result<()> {
+    pub fn stop_server(&self) -> Result<()> {
         // Try to use existing async context, or create runtime if needed
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(self.stop_server_async())
@@ -732,8 +748,8 @@ impl Sync {
             .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
 
         // Get our current tips for this tree (empty if tree doesn't exist)
-        let our_tips = self
-            .backend
+        let backend = self.backend()?;
+        let our_tips = backend
             .get_tips(tree_id)
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
@@ -749,6 +765,8 @@ impl Sync {
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
                 request,
@@ -792,7 +810,8 @@ impl Sync {
         // Store root entry first
 
         // Store the root entry
-        self.backend
+        let backend = self.backend()?;
+        backend
             .put_verified(response.root_entry.clone())
             .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
 
@@ -817,7 +836,8 @@ impl Sync {
             .await?;
 
         // Step 2: Check if server is missing entries from us
-        let our_tips = self.backend.get_tips(&response.tree_id)?;
+        let backend = self.backend()?;
+        let our_tips = backend.get_tips(&response.tree_id)?;
         let their_tips = &response.their_tips;
 
         // Find tips they don't have
@@ -835,8 +855,9 @@ impl Sync {
             );
 
             // Collect entries server is missing
+            let backend = self.backend()?;
             let entries_for_server = crate::sync::utils::collect_ancestors_to_send(
-                self.backend.as_ref(),
+                backend.as_backend_impl(),
                 &missing_tip_ids,
                 their_tips,
             )?;
@@ -878,6 +899,8 @@ impl Sync {
         // Send via command channel
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: peer_address.clone(),
                 request,
@@ -929,7 +952,8 @@ impl Sync {
             // TODO: Add more validation (signatures, parent existence, etc.)
 
             // Store the entry (marking it as verified for now)
-            self.backend
+            let backend = self.backend()?;
+            backend
                 .put_verified(entry)
                 .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
         }
@@ -1012,6 +1036,8 @@ impl Sync {
     /// A Result indicating whether the command was successfully queued for background processing.
     pub async fn send_entries_to_peer(&self, peer_pubkey: &str, entries: Vec<Entry>) -> Result<()> {
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendEntries {
                 peer: peer_pubkey.to_string(),
                 entries,
@@ -1034,12 +1060,14 @@ impl Sync {
         request: &SyncRequest,
         address: &Address,
     ) -> Result<SyncResponse> {
-        if !self.transport_enabled {
+        if !self.transport_enabled.load(Ordering::Acquire) {
             return Err(SyncError::NoTransportEnabled.into());
         }
         let (tx, rx) = oneshot::channel();
 
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
                 request: request.clone(),
@@ -1062,10 +1090,7 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of TreeInfo describing available trees, or an error.
-    pub async fn discover_peer_trees(
-        &mut self,
-        peer_address: &str,
-    ) -> Result<Vec<protocol::TreeInfo>> {
+    pub async fn discover_peer_trees(&self, peer_address: &str) -> Result<Vec<protocol::TreeInfo>> {
         use peer_types::Address;
 
         let address = Address {
@@ -1099,7 +1124,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure.
     pub async fn sync_with_peer(
-        &mut self,
+        &self,
         peer_address: &str,
         tree_id: Option<&crate::entry::ID>,
     ) -> Result<()> {
@@ -1162,8 +1187,8 @@ impl Sync {
             .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
 
         // Get our current tips for this tree (empty if tree doesn't exist)
-        let our_tips = self
-            .backend
+        let backend = self.backend()?;
+        let our_tips = backend
             .get_tips(tree_id)
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
@@ -1179,6 +1204,8 @@ impl Sync {
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
         self.command_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
                 request,
@@ -1203,11 +1230,12 @@ impl Sync {
                 info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
 
                 // Store the root entry
-                self.backend.put_verified(bootstrap_response.root_entry)?;
+                let backend = self.backend()?;
+                backend.put_verified(bootstrap_response.root_entry)?;
 
                 // Store all other entries
                 for entry in bootstrap_response.all_entries {
-                    self.backend.put_unverified(entry)?;
+                    backend.put_unverified(entry)?;
                 }
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
@@ -1274,7 +1302,7 @@ impl Sync {
     /// * `SyncError::InvalidPublicKey` if the public key is empty or malformed
     /// * `SyncError::InvalidKeyName` if the key name is empty
     async fn sync_with_peer_for_bootstrap_internal(
-        &mut self,
+        &self,
         peer_address: &str,
         tree_id: &crate::entry::ID,
         requesting_public_key: String,
@@ -1346,15 +1374,15 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure.
     pub async fn sync_with_peer_for_bootstrap(
-        &mut self,
+        &self,
         peer_address: &str,
         tree_id: &crate::entry::ID,
         requesting_key_name: &str,
         requested_permission: crate::auth::Permission,
     ) -> Result<()> {
         // Get our public key for the requesting key from backend
-        let signing_key = self
-            .backend
+        let backend = self.backend()?;
+        let signing_key = backend
             .get_private_key(requesting_key_name)?
             .ok_or_else(|| {
                 SyncError::BackendError(format!(
@@ -1407,7 +1435,7 @@ impl Sync {
     /// ).await?;
     /// ```
     pub async fn sync_with_peer_for_bootstrap_with_key(
-        &mut self,
+        &self,
         peer_address: &str,
         tree_id: &crate::entry::ID,
         requesting_public_key: &str,
@@ -1490,7 +1518,7 @@ impl Sync {
     /// # Returns
     /// Result indicating success or failure of the approval operation.
     pub fn approve_bootstrap_request(
-        &mut self,
+        &self,
         request_id: &str,
         approving_key_name: &str,
     ) -> Result<()> {
@@ -1513,15 +1541,18 @@ impl Sync {
         }
 
         // Load target database with the approving key
-        let approving_signing_key = self
-            .backend
-            .get_private_key(approving_key_name)?
-            .ok_or_else(|| {
-                SyncError::BackendError(format!("Approving key not found: {approving_key_name}"))
-            })?;
+        let backend = self.backend()?;
+        let approving_signing_key =
+            backend
+                .get_private_key(approving_key_name)?
+                .ok_or_else(|| {
+                    SyncError::BackendError(format!(
+                        "Approving key not found: {approving_key_name}"
+                    ))
+                })?;
 
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             &request.tree_id,
             approving_signing_key,
             approving_key_name.to_string(),
@@ -1583,7 +1614,7 @@ impl Sync {
     /// Returns `SyncError::InsufficientPermission` if the approving key does not have
     /// Admin permission on the target database.
     pub fn approve_bootstrap_request_with_key(
-        &mut self,
+        &self,
         request_id: &str,
         approving_signing_key: &ed25519_dalek::SigningKey,
         approving_sigkey: &str,
@@ -1608,7 +1639,7 @@ impl Sync {
 
         // Load the existing database with the user's signing key
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             &request.tree_id,
             approving_signing_key.clone(),
             approving_sigkey.to_string(),
@@ -1679,7 +1710,7 @@ impl Sync {
     /// # Returns
     /// Result indicating success or failure of the rejection operation.
     pub fn reject_bootstrap_request(
-        &mut self,
+        &self,
         request_id: &str,
         rejecting_key_name: &str,
     ) -> Result<()> {
@@ -1741,7 +1772,7 @@ impl Sync {
     /// Returns `SyncError::InsufficientPermission` if the rejecting key does not have
     /// Admin permission on the target database.
     pub fn reject_bootstrap_request_with_key(
-        &mut self,
+        &self,
         request_id: &str,
         rejecting_signing_key: &ed25519_dalek::SigningKey,
         rejecting_sigkey: &str,
@@ -1766,7 +1797,7 @@ impl Sync {
 
         // Load the existing database with the user's signing key to validate permissions
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             &request.tree_id,
             rejecting_signing_key.clone(),
             rejecting_sigkey.to_string(),
@@ -1819,6 +1850,11 @@ impl Sync {
     /// A sync hook that sends commands to the background engine
     pub fn create_sync_hook(&self, peer_pubkey: String) -> Arc<dyn SyncHook> {
         use hooks::SyncHookImpl;
-        Arc::new(SyncHookImpl::new(self.command_tx.clone(), peer_pubkey))
+        let command_tx = self
+            .command_tx
+            .get()
+            .expect("Transport must be enabled before creating sync hook")
+            .clone();
+        Arc::new(SyncHookImpl::new(command_tx, peer_pubkey))
     }
 }

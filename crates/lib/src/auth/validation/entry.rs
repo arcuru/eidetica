@@ -3,7 +3,7 @@
 //! This module provides the main entry point for validating entries
 //! and the AuthValidator struct that coordinates all validation operations.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use tracing::debug;
 
@@ -15,7 +15,6 @@ use crate::{
         settings::AuthSettings,
         types::{KeyStatus, Operation, ResolvedAuth, SigKey},
     },
-    backend::BackendDB,
 };
 
 /// Authentication validator for validating entries and resolving auth information
@@ -40,12 +39,12 @@ impl AuthValidator {
     /// # Arguments
     /// * `entry` - The entry to validate
     /// * `auth_settings` - Authentication settings for key lookup
-    /// * `backend` - Backend for loading delegated trees (optional for direct keys)
+    /// * `instance` - Instance for loading delegated trees (optional for direct keys)
     pub fn validate_entry(
         &mut self,
         entry: &Entry,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
     ) -> Result<bool> {
         // Handle unsigned entries (for backward compatibility)
         // An entry is considered unsigned if it has an empty Direct key name and no signature
@@ -72,7 +71,7 @@ impl AuthValidator {
         let resolved_auth = self.resolver.resolve_sig_key_with_pubkey(
             &entry.sig.key,
             auth_settings,
-            backend,
+            instance,
             entry.sig.pubkey.as_deref(),
         )?;
 
@@ -90,16 +89,16 @@ impl AuthValidator {
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     pub fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver
-            .resolve_sig_key(sig_key, auth_settings, backend)
+            .resolve_sig_key(sig_key, auth_settings, instance)
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
@@ -107,18 +106,18 @@ impl AuthValidator {
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `backend` - Backend for loading delegated trees (required for DelegationPath sig_key)
+    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
     pub fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
         // Delegate to the resolver
         self.resolver
-            .resolve_sig_key_with_pubkey(sig_key, auth_settings, backend, pubkey_override)
+            .resolve_sig_key_with_pubkey(sig_key, auth_settings, instance, pubkey_override)
     }
 
     /// Check if a resolved authentication has sufficient permissions for an operation

@@ -54,7 +54,7 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
     // - Implementation must merge state, not just read root entry
 
     // Create sync handler to test policy resolution
-    let sync_handler = create_database_sync_handler(&database);
+    let sync_handler = create_database_sync_handler(&database, &instance);
 
     // Test that policy is resolved from merged state
     let is_auto_approve_allowed = sync_handler
@@ -70,7 +70,7 @@ async fn test_bootstrap_policy_bug_concurrent_policy_setting() {
 
     // Verify that root entry alone doesn't contain the policy
     // (demonstrating why merged state is necessary)
-    let root_entry = database.backend().get(&tree_id).unwrap();
+    let root_entry = database.backend().unwrap().get(&tree_id).unwrap();
     let only_root_has_policy = if let Ok(settings_data) =
         root_entry.data(eidetica::constants::SETTINGS)
         && let Ok(settings_doc) = serde_json::from_str::<eidetica::crdt::Doc>(settings_data)
@@ -182,7 +182,7 @@ async fn test_bootstrap_policy_multiple_concurrent_updates() {
     }
 
     // Create sync handler and test merged policy resolution
-    let sync_handler = create_database_sync_handler(&database);
+    let sync_handler = create_database_sync_handler(&database, &instance);
 
     // Test that bootstrap auto-approve is found from merged state
     let is_auto_approve_allowed = sync_handler
@@ -266,7 +266,7 @@ async fn test_bootstrap_policy_root_entry_vs_concurrent_tips() {
     set_bootstrap_auto_approve(&database, true).unwrap();
 
     // Test policy resolution from merged state
-    let sync_handler = create_database_sync_handler(&database);
+    let sync_handler = create_database_sync_handler(&database, &instance);
     let merged_policy_result = sync_handler
         .is_bootstrap_auto_approve_allowed(&tree_id)
         .await
@@ -274,7 +274,7 @@ async fn test_bootstrap_policy_root_entry_vs_concurrent_tips() {
 
     // The exact result depends on CRDT merge semantics
     // What matters is that it computes from merged state, not just root entry
-    let root_entry = database.backend().get(&tree_id).unwrap();
+    let root_entry = database.backend().unwrap().get(&tree_id).unwrap();
     let root_only_policy = if let Ok(settings_data) = root_entry.data(eidetica::constants::SETTINGS)
         && let Ok(settings_doc) = serde_json::from_str::<eidetica::crdt::Doc>(settings_data)
         && let Some(auth_doc) = settings_doc.get_doc("auth")

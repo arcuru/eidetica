@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_help();
 
     // Create or load the in-memory backend
-    let backend: Box<dyn eidetica::backend::BackendDB> = match InMemory::load_from_file(DB_FILE) {
+    let backend: Box<dyn eidetica::backend::BackendImpl> = match InMemory::load_from_file(DB_FILE) {
         Ok(backend) => {
             tracing::info!("Loaded database from {DB_FILE}");
             println!("Loaded database from {DB_FILE}");

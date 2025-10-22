@@ -20,7 +20,7 @@ const SYNC_PROPAGATION_DELAY_LONG: Duration = Duration::from_millis(200);
 #[tokio::test]
 async fn test_bootstrap_with_provided_key() {
     // Setup server with a database
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     // Add some content to the server database
     let root_entry = Entry::root_builder()
@@ -33,17 +33,18 @@ async fn test_bootstrap_with_provided_key() {
 
     server_sync
         .backend()
+        .expect("Failed to get backend")
         .put_verified(root_entry.clone())
         .unwrap();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a key we'll manage manually (not in backend)
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (client_instance, mut client_sync) = setup();
+    let (client_instance, client_sync) = setup();
     client_sync.enable_http_transport().unwrap();
 
     // Verify client doesn't have the database initially
@@ -70,12 +71,16 @@ async fn test_bootstrap_with_provided_key() {
     tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
 
     // Verify client now has the root entry
-    let root_client = client_sync.backend().get(&tree_id).unwrap_or_else(|e| {
-        panic!(
-            "Client should have the root entry after bootstrap (tree_id: {}): {:?}",
-            tree_id, e
-        )
-    });
+    let root_client = client_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get(&tree_id)
+        .unwrap_or_else(|e| {
+            panic!(
+                "Client should have the root entry after bootstrap (tree_id: {}): {:?}",
+                tree_id, e
+            )
+        });
     assert_eq!(
         root_client.id(),
         tree_id,
@@ -94,20 +99,21 @@ async fn test_bootstrap_with_provided_key() {
 #[tokio::test]
 async fn test_bootstrap_key_not_stored_in_backend() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     server_sync
         .backend()
+        .expect("Failed to get backend")
         .put_verified(create_test_tree_entry())
         .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (client_instance, mut client_sync) = setup();
+    let (client_instance, client_sync) = setup();
     client_sync.enable_http_transport().unwrap();
 
     // Verify the key is NOT in the backend before sync
@@ -146,7 +152,11 @@ async fn test_bootstrap_key_not_stored_in_backend() {
 
     // But the sync should have succeeded
     assert!(
-        client_sync.backend().get(&tree_id).is_ok(),
+        client_sync
+            .backend()
+            .expect("Failed to get backend")
+            .get(&tree_id)
+            .is_ok(),
         "Client should have successfully synced the tree"
     );
 
@@ -160,20 +170,21 @@ async fn test_bootstrap_key_not_stored_in_backend() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_key_fails() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, _tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, _tree_id) = setup_auto_approval_server();
 
     server_sync
         .backend()
+        .expect("Failed to get backend")
         .put_verified(create_test_tree_entry())
         .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a signing key
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (_client_instance, mut client_sync) = setup();
+    let (_client_instance, client_sync) = setup();
     client_sync.enable_http_transport().unwrap();
 
     // Try to sync with a non-existent tree (should fail)
@@ -204,30 +215,34 @@ async fn test_bootstrap_with_invalid_key_fails() {
 #[tokio::test]
 async fn test_multiple_clients_with_different_keys() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     let root_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"value": "shared data"}"#)
         .build()
         .expect("Failed to build entry");
 
-    server_sync.backend().put_verified(root_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup three clients with different user-managed keys
     let clients: Vec<_> = (0..3)
         .map(|i| {
             let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
             let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
-            let (instance, mut sync) = setup();
+            let (instance, sync) = setup();
             sync.enable_http_transport().unwrap();
             (instance, sync, key_id, i)
         })
         .collect();
 
     // Each client bootstraps with their own key
-    for (instance, mut sync, key_id, i) in clients {
+    for (instance, sync, key_id, i) in clients {
         println!("🧪 Client {} bootstrapping...", i);
 
         // Verify client doesn't have database initially
@@ -252,7 +267,7 @@ async fn test_multiple_clients_with_different_keys() {
         tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
 
         // Verify client has the tree
-        let tree_result = sync.backend().get(&tree_id);
+        let tree_result = sync.backend().expect("Failed to get backend").get(&tree_id);
         assert!(
             tree_result.is_ok(),
             "Client {} should have the tree after bootstrap (tree_id: {}). Got: {:?}",
@@ -285,14 +300,15 @@ async fn test_multiple_clients_with_different_keys() {
 #[tokio::test]
 async fn test_bootstrap_with_different_permissions() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     server_sync
         .backend()
+        .expect("Failed to get backend")
         .put_verified(create_test_tree_entry())
         .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Test different permission levels
     let permissions = vec![
@@ -307,7 +323,7 @@ async fn test_bootstrap_with_different_permissions() {
         let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
         let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
 
-        let (_instance, mut sync) = setup();
+        let (_instance, sync) = setup();
         sync.enable_http_transport().unwrap();
 
         // Bootstrap with this permission level
@@ -325,7 +341,10 @@ async fn test_bootstrap_with_different_permissions() {
 
         // Verify sync succeeded
         assert!(
-            sync.backend().get(&tree_id).is_ok(),
+            sync.backend()
+                .expect("Failed to get backend")
+                .get(&tree_id)
+                .is_ok(),
             "Bootstrap with {} should succeed",
             perm_name
         );
@@ -343,19 +362,23 @@ async fn test_bootstrap_with_different_permissions() {
 #[tokio::test]
 async fn test_with_key_equivalent_to_backend_key() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "data"}"#)
         .build()
         .unwrap();
 
-    server_sync.backend().put_verified(entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(entry)
+        .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Client 1: Use sync_with_peer_for_bootstrap (backend key)
-    let (client1_instance, mut client1_sync) = setup_bootstrap_client("client1_key");
+    let (client1_instance, client1_sync) = setup_bootstrap_client("client1_key");
     client1_sync.enable_http_transport().unwrap();
 
     client1_sync
@@ -369,7 +392,7 @@ async fn test_with_key_equivalent_to_backend_key() {
     let (_client2_signing_key, client2_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client2_key_id = eidetica::auth::crypto::format_public_key(&client2_verifying_key);
 
-    let (_client2_instance, mut client2_sync) = setup();
+    let (_client2_instance, client2_sync) = setup();
     client2_sync.enable_http_transport().unwrap();
 
     client2_sync
@@ -391,13 +414,25 @@ async fn test_with_key_equivalent_to_backend_key() {
         "Client 1 should have the database"
     );
     assert!(
-        client2_sync.backend().get(&tree_id).is_ok(),
+        client2_sync
+            .backend()
+            .expect("Failed to get backend")
+            .get(&tree_id)
+            .is_ok(),
         "Client 2 should have the tree"
     );
 
     // Verify both have the same tree data
-    let client1_entry = client1_sync.backend().get(&tree_id).unwrap();
-    let client2_entry = client2_sync.backend().get(&tree_id).unwrap();
+    let client1_entry = client1_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get(&tree_id)
+        .unwrap();
+    let client2_entry = client2_sync
+        .backend()
+        .expect("Failed to get backend")
+        .get(&tree_id)
+        .unwrap();
     assert_eq!(
         client1_entry.id(),
         client2_entry.id(),
@@ -414,16 +449,17 @@ async fn test_with_key_equivalent_to_backend_key() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_keys() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     server_sync
         .backend()
+        .expect("Failed to get backend")
         .put_verified(create_test_tree_entry())
         .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
-    let (_instance, mut sync) = setup();
+    let (_instance, sync) = setup();
     sync.enable_http_transport().unwrap();
 
     // Generate a valid public key for comparison
@@ -523,8 +559,7 @@ async fn test_bootstrap_with_invalid_keys() {
 #[tokio::test]
 async fn test_full_e2e_bootstrap_with_database_instances() {
     // Setup server with a proper Database instance
-    let (_server_instance, server_database, mut server_sync, _tree_id) =
-        setup_auto_approval_server();
+    let (_server_instance, server_database, server_sync, _tree_id) = setup_auto_approval_server();
 
     let tree_id = server_database.root_id().clone();
 
@@ -544,13 +579,13 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     println!("🧪 Server: Added message to database via transaction");
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key (simulating User API)
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (client_instance, mut client_sync) = setup();
+    let (client_instance, client_sync) = setup();
     client_sync.enable_http_transport().unwrap();
 
     // Verify client doesn't have the database initially
@@ -634,18 +669,22 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap_with_key() {
     // Setup server
-    let (_server_instance, _server_db, mut server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
 
     let root_entry = create_test_tree_entry();
-    server_sync.backend().put_verified(root_entry).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(root_entry)
+        .unwrap();
 
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (_client_instance, mut client_sync) = setup();
+    let (_client_instance, client_sync) = setup();
     client_sync.enable_http_transport().unwrap();
 
     // Bootstrap with provided public key
@@ -669,7 +708,11 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         .build()
         .expect("Failed to build entry");
 
-    server_sync.backend().put_verified(entry2.clone()).unwrap();
+    server_sync
+        .backend()
+        .expect("Failed to get backend")
+        .put_verified(entry2.clone())
+        .unwrap();
 
     // Do incremental sync (client already has the tree)
     println!("🧪 TEST: Attempting incremental sync after bootstrap...");
@@ -684,7 +727,11 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
 
     // Verify client received the new entry
     assert!(
-        client_sync.backend().get(&entry2.id()).is_ok(),
+        client_sync
+            .backend()
+            .expect("Failed to get backend")
+            .get(&entry2.id())
+            .is_ok(),
         "Client should have the new entry after incremental sync"
     );
 

@@ -37,3 +37,25 @@ User provides contextual operations (returned from login):
 - **Database Operations**: Create, load, and find databases in user context
 - **Key Management**: Add private keys, list keys, get signing keys
 - **Session Management**: Logout to clear decrypted keys from memory
+
+## Sync Integration
+
+Instance can be extended with synchronization capabilities via `enable_sync()`:
+
+```rust,ignore
+// Enable sync on an instance
+let instance = Instance::open(backend)?.enable_sync()?;
+
+// Access sync module via Arc (cheap to clone, thread-safe)
+let sync = instance.sync().expect("Sync enabled");
+```
+
+**Design:**
+
+- **Optional feature**: Sync is opt-in via `enable_sync()` method
+- **Arc-based sharing**: `sync()` returns `Option<Arc<Sync>>`
+- **Thread-safe**: `Arc<Sync>` can be shared across threads without additional locking
+- **Interior mutability**: Sync uses `AtomicBool` and `OnceLock` internally, eliminating need for `Mutex` wrapper
+- **Single accessor**: Only `sync()` method (no separate mutable accessor needed)
+
+This design eliminates deadlock risks and simplifies the API by avoiding `MutexGuard` lifetime management.

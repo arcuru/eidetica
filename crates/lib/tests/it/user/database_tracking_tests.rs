@@ -18,7 +18,6 @@ use super::helpers::{login_user, setup_instance};
 fn test_add_database() -> eidetica::Result<()> {
     // Create instance with a database that has global permissions
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     // Create a user
     instance.create_user("test_user", None)?;
@@ -40,8 +39,7 @@ fn test_add_database() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    // Create a DB owned by Alice but not yet added to user's preferences
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database to user's preferences
@@ -73,7 +71,6 @@ fn test_add_database() -> eidetica::Result<()> {
 #[test]
 fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -82,7 +79,9 @@ fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
     // Create a database without global permissions (user has no access)
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
-    backend.store_private_key("alice_key", alice_key.clone())?;
+    instance
+        .backend()
+        .store_private_key("alice_key", alice_key.clone())?;
 
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "private_db");
@@ -95,7 +94,7 @@ fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
     )?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     let prefs = DatabasePreferences {
@@ -115,7 +114,6 @@ fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
 #[test]
 fn test_list_databases() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -140,12 +138,7 @@ fn test_list_databases() -> eidetica::Result<()> {
         auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
         db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-        let db = Database::create(
-            db_settings,
-            backend.clone(),
-            alice_key,
-            format!("alice_{}", i),
-        )?;
+        let db = Database::create(db_settings, &instance, alice_key, format!("alice_{}", i))?;
 
         let prefs = DatabasePreferences {
             database_id: db.root_id().clone(),
@@ -167,7 +160,6 @@ fn test_list_databases() -> eidetica::Result<()> {
 #[test]
 fn test_get_database_preferences() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -188,7 +180,7 @@ fn test_get_database_preferences() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -220,7 +212,6 @@ fn test_get_database_preferences() -> eidetica::Result<()> {
 #[test]
 fn test_update_database_preferences() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -241,7 +232,7 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database with initial settings
@@ -285,7 +276,6 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
 #[test]
 fn test_remove_database() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -306,7 +296,7 @@ fn test_remove_database() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -334,7 +324,6 @@ fn test_remove_database() -> eidetica::Result<()> {
 #[test]
 fn test_load_tracked_database() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -355,7 +344,7 @@ fn test_load_tracked_database() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add to user's tracked databases
@@ -379,7 +368,6 @@ fn test_load_tracked_database() -> eidetica::Result<()> {
 #[test]
 fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -391,7 +379,9 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
     // Create database with global permission
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
-    backend.store_private_key("alice_key", alice_key.clone())?;
+    instance
+        .backend()
+        .store_private_key("alice_key", alice_key.clone())?;
 
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "test_db");
@@ -404,7 +394,7 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database with key1
@@ -442,7 +432,6 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
 #[test]
 fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -451,7 +440,9 @@ fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
     // Create database with global permission
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
-    backend.store_private_key("alice_key", alice_key.clone())?;
+    instance
+        .backend()
+        .store_private_key("alice_key", alice_key.clone())?;
 
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "test_db");
@@ -464,7 +455,7 @@ fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -494,7 +485,6 @@ fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
 #[test]
 fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -506,7 +496,9 @@ fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
     // Create database WITHOUT global permission - only alice has access
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
-    backend.store_private_key("alice_key", alice_key.clone())?;
+    instance
+        .backend()
+        .store_private_key("alice_key", alice_key.clone())?;
 
     let mut db_settings = Doc::new();
     db_settings.set_string("name", "private_db");
@@ -521,7 +513,7 @@ fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
 
     let db = Database::create(
         db_settings,
-        backend.clone(),
+        &instance,
         alice_key.clone(),
         "alice".to_string(),
     )?;
@@ -565,7 +557,6 @@ fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
 #[test]
 fn test_update_preferences_auto_creates_mapping() -> eidetica::Result<()> {
     let instance = setup_instance();
-    let backend = instance.backend().clone();
 
     instance.create_user("test_user", None)?;
     let mut user = login_user(&instance, "test_user", None);
@@ -589,7 +580,7 @@ fn test_update_preferences_auto_creates_mapping() -> eidetica::Result<()> {
     auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
     db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, backend.clone(), alice_key, "alice".to_string())?;
+    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
     // Add database with key1 (creates mapping: key1 -> "*")

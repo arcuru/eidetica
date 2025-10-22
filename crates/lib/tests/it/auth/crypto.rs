@@ -178,7 +178,7 @@ fn test_backend_serialization() {
         .expect("Failed to get signing key")
         .clone();
     let tree_with_key2 = eidetica::Database::open(
-        instance.backend().clone(),
+        instance.clone(),
         tree.root_id(),
         signing_key2_for_load,
         key_id2.clone(),

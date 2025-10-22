@@ -24,7 +24,7 @@ const TEST_TREE_ROOT_ID_2: &str = "tree_root_id_456";
 
 #[test]
 fn test_peer_registration() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -42,7 +42,7 @@ fn test_peer_registration() {
 
 #[test]
 fn test_peer_registration_without_display_name() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer without display name
     sync.register_peer(&*TEST_PEER_PUBKEY, None).unwrap();
@@ -56,7 +56,7 @@ fn test_peer_registration_without_display_name() {
 
 #[test]
 fn test_update_peer_status() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register and then update peer status
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -71,7 +71,7 @@ fn test_update_peer_status() {
 
 #[test]
 fn test_update_nonexistent_peer_status() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Try to update status of non-existent peer
     let result = sync.update_peer_status(&*TEST_PEER_PUBKEY, PeerStatus::Blocked);
@@ -81,7 +81,7 @@ fn test_update_nonexistent_peer_status() {
 
 #[test]
 fn test_list_peers() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Initially no peers
     let peers = sync.list_peers().unwrap();
@@ -104,7 +104,7 @@ fn test_list_peers() {
 
 #[test]
 fn test_remove_peer() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -122,7 +122,7 @@ fn test_remove_peer() {
 
 #[test]
 fn test_add_tree_sync() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer first
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -140,7 +140,7 @@ fn test_add_tree_sync() {
 
 #[test]
 fn test_add_multiple_synced_trees() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer first
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -161,7 +161,7 @@ fn test_add_multiple_synced_trees() {
 
 #[test]
 fn test_add_duplicate_synced_tree() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer first
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -181,7 +181,7 @@ fn test_add_duplicate_synced_tree() {
 
 #[test]
 fn test_remove_tree_sync() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer and add trees
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -204,7 +204,7 @@ fn test_remove_tree_sync() {
 
 #[test]
 fn test_get_tree_peers() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register multiple peers
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Peer 1"))
@@ -236,7 +236,7 @@ fn test_get_tree_peers() {
 
 #[test]
 fn test_is_tree_synced_with_peer() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -267,7 +267,7 @@ fn test_is_tree_synced_with_peer() {
 
 #[test]
 fn test_http_address_management() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer first
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -306,7 +306,7 @@ fn test_http_address_management() {
 
 #[test]
 fn test_iroh_info_management() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer first
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -345,7 +345,7 @@ fn test_iroh_info_management() {
 
 #[test]
 fn test_remove_transport_addresses() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer and set transport addresses
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))
@@ -398,7 +398,7 @@ fn test_remove_transport_addresses() {
 
 #[test]
 fn test_peer_removal_cleans_all_data() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Register a peer and add all types of data
     sync.register_peer(&*TEST_PEER_PUBKEY, Some("Test Peer"))

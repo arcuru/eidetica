@@ -109,7 +109,7 @@ impl SettingsStore {
 
     // Advanced access
     fn as_doc_store(&self) -> &DocStore;
-    fn validate_entry_auth(&self, sig_key: &SigKey, backend: Option<&Arc<dyn BackendDB>>) -> Result<ResolvedAuth>;
+    fn validate_entry_auth(&self, sig_key: &SigKey, instance: Option<&Instance>) -> Result<ResolvedAuth>;
 }
 ```
 

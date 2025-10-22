@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     Result,
-    backend::BackendDB,
+    backend::BackendImpl,
     entry::{Entry, ID},
     sync::error::SyncError,
 };
@@ -39,7 +39,7 @@ use crate::{
 /// let missing = collect_missing_ancestors(&backend, &missing_ids)?;
 /// // Returns IDs of entries that need to be fetched from peer
 /// ```
-pub fn collect_missing_ancestors(backend: &dyn BackendDB, entry_ids: &[ID]) -> Result<Vec<ID>> {
+pub fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) -> Result<Vec<ID>> {
     let mut missing = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -115,7 +115,7 @@ pub fn collect_missing_ancestors(backend: &dyn BackendDB, entry_ids: &[ID]) -> R
 /// // Returns entries that peer needs, excluding what they already have
 /// ```
 pub fn collect_ancestors_to_send(
-    backend: &dyn BackendDB,
+    backend: &dyn BackendImpl,
     entry_ids: &[ID],
     their_tips: &[ID],
 ) -> Result<Vec<Entry>> {

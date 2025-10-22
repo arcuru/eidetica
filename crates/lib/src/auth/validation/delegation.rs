@@ -14,7 +14,7 @@ use crate::{
         settings::AuthSettings,
         types::{DelegationStep, PermissionBounds, ResolvedAuth},
     },
-    backend::BackendDB,
+    backend::BackendImpl,
     entry::ID,
 };
 
@@ -35,7 +35,7 @@ impl DelegationResolver {
         &mut self,
         steps: &[DelegationStep],
         auth_settings: &AuthSettings,
-        backend: &Arc<dyn BackendDB>,
+        instance: &crate::Instance,
         _depth: usize,
     ) -> Result<ResolvedAuth> {
         if steps.is_empty() {
@@ -44,7 +44,7 @@ impl DelegationResolver {
 
         // Iterate through delegation steps
         let mut current_auth_settings = auth_settings.clone();
-        let current_backend = Arc::clone(backend);
+        let current_backend = Arc::clone(instance.backend().as_arc_backend_impl());
         let mut cumulative_bounds = None;
 
         // Process all steps except the last one (which should be the final key)
@@ -84,14 +84,14 @@ impl DelegationResolver {
                 // Get the delegated tree reference
                 let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.key)?;
 
-                // Load the delegated tree
                 let root_id = delegated_tree_ref.tree.root.clone();
                 let delegated_tree =
-                    Database::open_readonly(root_id.clone(), Arc::clone(&current_backend))
-                        .map_err(|e| AuthError::DelegatedTreeLoadFailed {
+                    Database::open_readonly(root_id.clone(), instance).map_err(|e| {
+                        AuthError::DelegatedTreeLoadFailed {
                             tree_id: root_id.to_string(),
                             source: Box::new(e),
-                        })?;
+                        }
+                    })?;
 
                 // Validate tips
                 let current_tips = current_backend.get_tips(&root_id).map_err(|e| {
@@ -172,7 +172,7 @@ impl DelegationResolver {
         &self,
         claimed_tips: &[ID],
         current_tips: &[ID],
-        backend: &Arc<dyn BackendDB>,
+        backend: &Arc<dyn BackendImpl>,
     ) -> Result<bool> {
         // Fast path: If no current tips, accept any claimed tips (first entry in tree)
         if current_tips.is_empty() {

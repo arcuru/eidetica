@@ -273,8 +273,8 @@ fn test_collaborative_database_with_global_permissions() {
     // Bob discovers available SigKeys for his public key
     let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
 
-    let sigkeys = Database::find_sigkeys(instance.backend().clone(), &db_id, &bob_pubkey)
-        .expect("Bob discovers SigKeys");
+    let sigkeys =
+        Database::find_sigkeys(&instance, &db_id, &bob_pubkey).expect("Bob discovers SigKeys");
 
     // Should find the global "*" permission
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
@@ -379,9 +379,10 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === ALICE'S INSTANCE (Server) ===
     println!("\n👤 Setting up Alice's instance...");
-    let mut alice_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create Alice's instance")
-        .with_sync()
+    let alice_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create Alice's instance");
+    alice_instance
+        .enable_sync()
         .expect("Failed to enable sync for Alice");
 
     // Create Alice's user account
@@ -439,7 +440,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Alice starts sync server
     let server_addr = {
-        let alice_sync = alice_instance.sync_mut().expect("Alice should have sync");
+        let alice_sync = alice_instance.sync().expect("Alice should have sync");
         alice_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -459,9 +460,10 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === BOB'S INSTANCE (Client) ===
     println!("\n👤 Setting up Bob's instance (separate from Alice)...");
-    let mut bob_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create Bob's instance")
-        .with_sync()
+    let bob_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create Bob's instance");
+    bob_instance
+        .enable_sync()
         .expect("Failed to enable sync for Bob");
 
     // Create Bob's user account
@@ -476,7 +478,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // Bob syncs with Alice's server to bootstrap the database
     println!("\n🔄 Bob syncing with Alice's server to get the database...");
     {
-        let bob_sync = bob_instance.sync_mut().expect("Bob should have sync");
+        let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -495,8 +497,8 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("\n🔍 Bob discovering available SigKeys...");
     let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
 
-    let sigkeys = Database::find_sigkeys(bob_instance.backend().clone(), &db_id, &bob_pubkey)
-        .expect("Bob discovers SigKeys");
+    let sigkeys =
+        Database::find_sigkeys(&bob_instance, &db_id, &bob_pubkey).expect("Bob discovers SigKeys");
 
     // Should find the global "*" permission
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
@@ -548,7 +550,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // Bob syncs changes back to Alice's server
     println!("\n🔄 Bob syncing changes back to Alice...");
     {
-        let bob_sync = bob_instance.sync_mut().expect("Bob should have sync");
+        let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
             .sync_with_peer(&server_addr, Some(&db_id))
             .await
@@ -591,7 +593,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Cleanup
     {
-        let alice_sync = alice_instance.sync_mut().expect("Alice should have sync");
+        let alice_sync = alice_instance.sync().expect("Alice should have sync");
         alice_sync
             .stop_server_async()
             .await

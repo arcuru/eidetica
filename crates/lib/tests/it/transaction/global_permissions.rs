@@ -86,7 +86,7 @@ fn test_level_1_transaction_builds_entry_with_pubkey() {
         .expect("Global key should exist in backend");
 
     let database_with_global_key = eidetica::Database::open(
-        instance.backend().clone(),
+        instance.clone(),
         database.root_id(),
         signing_key,
         "*".to_string(),

@@ -26,7 +26,7 @@ fn test_empty_delegation_path() -> Result<()> {
     let auth_settings = AuthSettings::new();
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
-    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(&db));
     assert!(result.is_err());
 
     Ok(())
@@ -59,7 +59,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
-    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(&db));
     assert!(result.is_ok());
 
     Ok(())
@@ -83,7 +83,7 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     let auth_settings = AuthSettings::new();
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
-    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db));
     // Should error because intermediate steps need tips
     assert!(result.is_err());
 
@@ -288,8 +288,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     // For now, we just test that it doesn't crash
     let auth_settings = tree.get_settings()?.get_auth_settings()?;
     let mut validator = AuthValidator::new();
-    let result =
-        validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(&db));
 
     // Should either work or fail gracefully (not crash)
     match result {

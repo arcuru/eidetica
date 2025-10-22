@@ -13,20 +13,24 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     info!("Running test: test_multiple_clients_bootstrap_same_database");
 
     // 1. Setup the server instance
-    let mut server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized();
 
     // Create some test data directly in the server's backend
     let root_entry = create_test_tree_entry();
     let test_tree_id = root_entry.id().clone();
 
     // Store entry in server backend
-    let server_sync = server_instance.sync_mut().unwrap();
-    server_sync.backend().put_verified(root_entry).unwrap();
+    let server_sync = server_instance.sync().unwrap();
+    server_sync
+        .backend()
+        .unwrap()
+        .put_verified(root_entry)
+        .unwrap();
 
     // Start server
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
-    // 3. Create multiple clients
+    // 3. Create multiple clients and bootstrap them concurrently
     let num_clients = 3; // Use fewer clients to avoid overloading
     let mut client_handles = Vec::new();
 
@@ -38,7 +42,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             info!("Starting client {}", i);
 
             // Create client instance
-            let mut client_instance = setup_instance_with_initialized();
+            let client_instance = setup_instance_with_initialized();
 
             // Verify client doesn't have the database initially
             assert!(
@@ -48,15 +52,17 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             );
 
             // Bootstrap from server
-            let client_sync = client_instance.sync_mut().unwrap();
-            client_sync.enable_http_transport().unwrap();
-            client_sync
-                .sync_with_peer(&addr, Some(&tree_id))
-                .await
-                .unwrap();
+            {
+                let client_sync = client_instance.sync().unwrap();
+                client_sync.enable_http_transport().unwrap();
+                client_sync
+                    .sync_with_peer(&addr, Some(&tree_id))
+                    .await
+                    .unwrap();
 
-            // Wait a moment for sync to complete
-            tokio::time::sleep(Duration::from_millis(100)).await;
+                // Wait a moment for sync to complete
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
 
             // Verify client can now load the database
             let _client_db = client_instance.load_database(&tree_id).unwrap();
@@ -75,7 +81,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     }
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().unwrap();
+    let server_sync = server_instance.sync().unwrap();
     server_sync.stop_server_async().await.unwrap();
 
     info!("Test finished: test_multiple_clients_bootstrap_same_database");
@@ -93,7 +99,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
     info!("Running test: test_concurrent_key_approval_requests (User API version)");
 
     // 1. Setup the server instance with an existing database that has bootstrap auto-approval enabled
-    let (mut server_instance, _server_user, _server_key_id, _server_database, test_tree_id) =
+    let (server_instance, _server_user, _server_key_id, _server_database, test_tree_id) =
         setup_server_with_bootstrap_database(
             "server_user",
             "server_admin",
@@ -101,8 +107,8 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
         );
 
     // Start server
-    let server_sync = server_instance.sync_mut().unwrap();
-    let server_addr = start_sync_server(server_sync).await;
+    let server_sync = server_instance.sync().unwrap();
+    let server_addr = start_sync_server(&server_sync).await;
 
     // 2. Create multiple clients that will request key approval concurrently
     let num_clients = 4;
@@ -157,7 +163,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
     }
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().unwrap();
+    let server_sync = server_instance.sync().unwrap();
     server_sync.stop_server_async().await.unwrap();
 
     info!("Test finished: test_concurrent_key_approval_requests");

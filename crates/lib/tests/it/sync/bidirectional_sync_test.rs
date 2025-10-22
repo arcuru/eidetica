@@ -47,10 +47,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
 
-    let mut device1_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create device1 instance");
+    let device1_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    device1_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on device1");
 
     device1_instance
         .add_private_key(CHAT_APP_KEY)
@@ -108,9 +109,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Start server on device 1
     let device1_server_addr = {
-        let sync = device1_instance
-            .sync_mut()
-            .expect("Device1 should have sync");
+        let sync = device1_instance.sync().expect("Device1 should have sync");
         sync.enable_http_transport()
             .expect("Failed to enable HTTP transport");
         sync.start_server_async("127.0.0.1:0")
@@ -126,10 +125,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let mut device2_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create device2 instance");
+    let device2_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    device2_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on device2");
 
     device2_instance
         .add_private_key(CHAT_APP_KEY)
@@ -137,9 +137,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Bootstrap sync from device 1 to device 2
     let bootstrap_result = {
-        let device2_sync = device2_instance
-            .sync_mut()
-            .expect("Device2 should have sync");
+        let device2_sync = device2_instance.sync().expect("Device2 should have sync");
         device2_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -169,7 +167,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .expect("Device2 key should exist in backend");
 
     let device2_database = eidetica::Database::open(
-        device2_instance.backend().clone(),
+        device2_instance.clone(),
         &room_id,
         signing_key,
         CHAT_APP_KEY.to_string(),
@@ -217,9 +215,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("\n🔄 STEP 4: Device 2 syncs back to Device 1");
 
     let sync_back_result = {
-        let device2_sync = device2_instance
-            .sync_mut()
-            .expect("Device2 should have sync");
+        let device2_sync = device2_instance.sync().expect("Device2 should have sync");
         device2_sync
             .sync_with_peer(&device1_server_addr, Some(&room_id))
             .await
@@ -256,6 +252,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Debug: Check current tips before adding message C
     let current_tips = device1_database
         .backend()
+        .expect("Failed to get backend")
         .get_tips(&room_id)
         .expect("Failed to get tips");
     println!(
@@ -264,6 +261,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     );
     let current_subtree_tips = device1_database
         .backend()
+        .expect("Failed to get backend")
         .get_store_tips(&room_id, "messages")
         .expect("Failed to get store tips");
     println!(
@@ -275,6 +273,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("🔍 All entries in Device 1's tree:");
     let all_entries = device1_database
         .backend()
+        .expect("Failed to get backend")
         .get_tree(&room_id)
         .expect("Failed to get tree entries");
     for (i, entry) in all_entries.iter().enumerate() {
@@ -369,9 +368,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     }
 
     // Cleanup
-    let server_sync = device1_instance
-        .sync_mut()
-        .expect("Device1 should have sync");
+    let server_sync = device1_instance.sync().expect("Device1 should have sync");
     server_sync.stop_server_async().await.unwrap();
 
     println!("🧹 Test completed successfully");

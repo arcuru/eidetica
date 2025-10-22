@@ -2,7 +2,14 @@
 
 Pluggable storage abstraction layer supporting different storage implementations.
 
-## Database Trait
+## Architecture
+
+The backend system has two layers:
+
+- **BackendImpl trait**: The storage trait that backends implement
+- **Backend wrapper**: Instance-level wrapper providing future local/remote dispatch
+
+## BackendImpl Trait
 
 Abstracts underlying storage to allow different backends without changing core logic.
 
@@ -19,7 +26,7 @@ Abstracts underlying storage to allow different backends without changing core l
 
 - Stores entries and verification status
 - Includes save/load functionality for state preservation
-- Supports all Database trait operations
+- Supports all BackendImpl trait operations
 
 ## Verification Status
 
@@ -41,9 +48,11 @@ Status determined during commit based on signature validation and permission che
 
 ## Custom Backend Implementation
 
-Implement Database trait with:
+Implement BackendImpl trait with:
 
 1. Storage-specific logic for all trait methods
 2. Verification status tracking support
 3. Thread safety (Send + Sync + Any)
 4. Performance considerations for graph operations
+
+The Backend wrapper will automatically delegate operations to your BackendImpl implementation.

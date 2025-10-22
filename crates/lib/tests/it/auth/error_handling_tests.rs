@@ -86,7 +86,7 @@ fn test_delegation_nonexistent_tree() -> Result<()> {
         &mut validator,
         &delegation_path,
         &auth_settings,
-        Some(db.backend()),
+        Some(&db),
         "key",
     );
 
@@ -133,7 +133,7 @@ fn test_delegation_corrupted_tree_references() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings()?.get_auth_settings()?;
-    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db));
 
     // Should fail with appropriate error
     assert!(result.is_err());
@@ -212,8 +212,7 @@ fn test_privilege_escalation_through_delegation() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
-    let result =
-        validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db));
 
     // Should succeed but with clamped permissions
     assert!(result.is_ok());
@@ -304,8 +303,7 @@ fn test_delegation_with_tampered_tips() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
-    let result =
-        validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db));
 
     // Should fail because tips are invalid
     assert!(result.is_err());
@@ -402,8 +400,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
-    let result =
-        validator.resolve_sig_key(&active_delegation, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&active_delegation, &main_auth_settings, Some(&db));
 
     // Should succeed for active key
     assert!(result.is_ok());
@@ -422,8 +419,7 @@ fn test_delegation_mixed_key_statuses() -> Result<()> {
         },
     ]);
 
-    let result =
-        validator.resolve_sig_key(&revoked_delegation, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&revoked_delegation, &main_auth_settings, Some(&db));
 
     // Should succeed in resolving but key should be marked as revoked
     assert!(result.is_ok());
@@ -458,16 +454,16 @@ fn test_validation_cache_error_conditions() -> Result<()> {
 
     // First resolution should succeed and populate cache
     let sig_key = SigKey::Direct("admin".to_string());
-    let result1 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
+    let result1 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db));
     assert!(result1.is_ok());
 
     // Try to resolve non-existent key (should fail but not corrupt cache)
     let fake_key = SigKey::Direct("nonexistent".to_string());
-    let result2 = validator.resolve_sig_key(&fake_key, &auth_settings, Some(db.backend()));
+    let result2 = validator.resolve_sig_key(&fake_key, &auth_settings, Some(&db));
     assert!(result2.is_err());
 
     // Original key should still resolve correctly (cache should be intact)
-    let result3 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
+    let result3 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db));
     assert!(result3.is_ok());
 
     Ok(())
@@ -499,7 +495,7 @@ fn test_error_message_consistency() {
     let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
 
     for (sig_key, expected_error_type) in test_cases {
-        let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
+        let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db));
         assert!(result.is_err());
 
         let error_msg = result.unwrap_err().to_string().to_lowercase();
@@ -554,11 +550,8 @@ fn test_concurrent_validation_basic() -> Result<()> {
 
                 // Each thread should be able to validate independently
                 for _ in 0..10 {
-                    let result = validator.resolve_sig_key(
-                        &sig_key,
-                        &settings_clone,
-                        Some(db_clone.backend()),
-                    );
+                    let result =
+                        validator.resolve_sig_key(&sig_key, &settings_clone, Some(&db_clone));
                     assert!(result.is_ok());
                 }
             })

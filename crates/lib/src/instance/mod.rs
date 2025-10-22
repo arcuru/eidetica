@@ -4,23 +4,42 @@
 //! `Instance` manages multiple `Database` instances and interacts with the storage `Database`.
 //! `Database` represents a single, independent history of data entries, analogous to a table or branch.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use ed25519_dalek::VerifyingKey;
 use rand::Rng;
 
 use crate::{
-    Database, Result, auth::crypto::format_public_key, backend::BackendDB, crdt::Doc, entry::ID,
+    Database, Result, auth::crypto::format_public_key, backend::BackendImpl, crdt::Doc, entry::ID,
     sync::Sync, user::User,
 };
 
+pub mod backend;
 pub mod errors;
 
 // Re-export main types for easier access
+use backend::Backend;
 pub use errors::InstanceError;
 
 /// Private constants for device identity management
 const DEVICE_KEY_NAME: &str = "_device_key";
+
+/// Internal state for Instance
+///
+/// This structure holds the actual implementation data for Instance.
+/// Instance itself is just a cheap-to-clone handle wrapping Arc<InstanceInternal>.
+pub(crate) struct InstanceInternal {
+    /// The database storage backend
+    backend: Backend,
+    /// Synchronization module for this database instance
+    /// TODO: Overengineered, Sync can be created by default but disabled
+    sync: std::sync::OnceLock<Arc<Sync>>,
+    /// Root ID of the _users system database
+    users_db_id: ID,
+    /// Root ID of the _databases system database
+    #[allow(dead_code)]
+    databases_db_id: ID,
+}
 
 /// Database implementation on top of the storage backend.
 ///
@@ -30,6 +49,8 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// - User account management (create, login, list)
 ///
 /// All database creation and key operations happen through User after login.
+///
+/// Instance is a cheap-to-clone handle around `Arc<InstanceInternal>`.
 ///
 /// ## Example
 ///
@@ -48,18 +69,21 @@ const DEVICE_KEY_NAME: &str = "_device_key";
 /// let db = user.create_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
+#[derive(Clone)]
 pub struct Instance {
-    /// The database storage used by the database.
-    backend: Arc<dyn BackendDB>,
-    /// Synchronization module for this database instance.
-    sync: Option<Sync>,
-    /// System database for user directory (_users)
-    users_db: Database,
-    /// System database for database tracking (_databases)
-    #[allow(dead_code)] // Reserved for future database tracking features
-    databases_db: Database,
-    // Blob storage will be separate, maybe even just an extension
-    // storage: IPFS;
+    inner: Arc<InstanceInternal>,
+}
+
+/// Weak reference to an Instance.
+///
+/// This is a weak handle that does not prevent the Instance from being dropped.
+/// Dependent objects (Database, Sync, BackgroundSync) hold weak references to avoid
+/// circular reference cycles that would leak memory.
+///
+/// Use `upgrade()` to convert to a strong `Instance` reference.
+#[derive(Clone)]
+pub struct WeakInstance {
+    inner: Weak<InstanceInternal>,
 }
 
 impl Instance {
@@ -99,13 +123,13 @@ impl Instance {
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn open(backend: Box<dyn BackendDB>) -> Result<Self> {
+    pub fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
         use crate::constants::{DATABASES, USERS};
 
-        let backend: Arc<dyn BackendDB> = Arc::from(backend);
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Load device_key first
-        let device_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
+        let _device_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
             Some(key) => key,
             None => {
                 // New backend: initialize like create()
@@ -123,7 +147,24 @@ impl Instance {
         for root_id in all_roots {
             // FIXME(security): handle the security and loading of these databases in a better way
             // Use open_readonly temporarily to check name without setting up auth
-            let temp_db = Database::open_readonly(root_id.clone(), Arc::clone(&backend))?;
+            // Note: We can't use self.clone() here because self doesn't exist yet during construction
+            // So we create a temporary Instance just for this lookup
+            //
+            // SAFETY: The temporary instance has empty users_db_id and databases_db_id placeholders.
+            // This is safe because:
+            // 1. We only use it for Database::open_readonly() which doesn't access these fields
+            // 2. The Database only calls get_name() which reads from the settings store
+            // 3. The temporary instance is dropped immediately after name lookup
+            // 4. No other code paths will access the invalid system database IDs
+            let temp_instance = Self {
+                inner: Arc::new(InstanceInternal {
+                    backend: Backend::new(Arc::clone(&backend)),
+                    sync: std::sync::OnceLock::new(),
+                    users_db_id: ID::from(""), // Placeholder - not accessed during name lookup
+                    databases_db_id: ID::from(""), // Placeholder - not accessed during name lookup
+                }),
+            };
+            let temp_db = Database::open_readonly(root_id.clone(), &temp_instance)?;
             if let Ok(name) = temp_db.get_name() {
                 match name.as_str() {
                     USERS => {
@@ -157,33 +198,22 @@ impl Instance {
         }
 
         // Verify we found both system databases
-        let users_db_root = users_db_root.ok_or(
-            InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
-        )?;
-        let databases_db_root = databases_db_root.ok_or(
-            InstanceError::DeviceKeyNotFound, // TODO: Better error for missing system DB
-        )?;
+        let users_db_root = users_db_root.ok_or(InstanceError::SystemDatabaseNotFound {
+            database_name: USERS.to_string(),
+        })?;
+        let databases_db_root = databases_db_root.ok_or(InstanceError::SystemDatabaseNotFound {
+            database_name: DATABASES.to_string(),
+        })?;
 
-        // Load system databases with device_key
-        let users_db = Database::open(
-            Arc::clone(&backend),
-            &users_db_root,
-            device_key.clone(),
-            "_device_key".to_string(),
-        )?;
-        let databases_db = Database::open(
-            Arc::clone(&backend),
-            &databases_db_root,
-            device_key,
-            "_device_key".to_string(),
-        )?;
+        // Store root IDs (databases will be constructed on-demand to avoid circular refs)
+        let inner = Arc::new(InstanceInternal {
+            backend: Backend::new(backend),
+            sync: std::sync::OnceLock::new(),
+            users_db_id: users_db_root,
+            databases_db_id: databases_db_root,
+        });
 
-        Ok(Self {
-            backend,
-            sync: None,
-            users_db,
-            databases_db,
-        })
+        Ok(Self { inner })
     }
 
     /// Create a new Instance on a fresh backend (strict creation).
@@ -226,8 +256,8 @@ impl Instance {
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn create(backend: Box<dyn BackendDB>) -> Result<Self> {
-        let backend: Arc<dyn BackendDB> = Arc::from(backend);
+    pub fn create(backend: Box<dyn BackendImpl>) -> Result<Self> {
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Check if already initialized
         if backend.get_private_key(DEVICE_KEY_NAME)?.is_some() {
@@ -238,8 +268,8 @@ impl Instance {
         Self::create_internal(backend)
     }
 
-    /// Internal implementation of new that works with Arc<dyn BackendDB>
-    fn create_internal(backend: Arc<dyn BackendDB>) -> Result<Self> {
+    /// Internal implementation of new that works with Arc<dyn BackendImpl>
+    pub(crate) fn create_internal(backend: Arc<dyn BackendImpl>) -> Result<Self> {
         use crate::{
             auth::crypto::{format_public_key, generate_keypair},
             user::system_databases::{create_databases_tracking, create_users_database},
@@ -251,23 +281,82 @@ impl Instance {
         backend.store_private_key(DEVICE_KEY_NAME, device_key.clone())?;
 
         // 2. Create system databases with device_key passed directly
-        let users_db =
-            create_users_database(Arc::clone(&backend), &device_key, &device_pubkey_str)?;
+        // Create a temporary Instance for database creation (databases will store full IDs later)
+        //
+        // SAFETY: The temporary instance has empty users_db_id and databases_db_id placeholders.
+        // This is safe because:
+        // 1. We only use it to create new system databases via Database::create()
+        // 2. Database::create() doesn't access the instance's system database IDs
+        // 3. The system databases don't exist yet, so their IDs can't be referenced
+        // 4. The temporary instance is only used during initial setup and discarded
+        // 5. The real instance is constructed afterward with the correct database IDs
+        let temp_instance = Self {
+            inner: Arc::new(InstanceInternal {
+                backend: Backend::new(Arc::clone(&backend)),
+                sync: std::sync::OnceLock::new(),
+                users_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
+                databases_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
+            }),
+        };
+        let users_db = create_users_database(&temp_instance, &device_key, &device_pubkey_str)?;
         let databases_db =
-            create_databases_tracking(Arc::clone(&backend), &device_key, &device_pubkey_str)?;
+            create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str)?;
 
-        // 3. Return instance
-        Ok(Self {
-            backend,
-            sync: None,
-            users_db,
-            databases_db,
-        })
+        // 3. Store root IDs and return instance
+        let inner = Arc::new(InstanceInternal {
+            backend: Backend::new(backend),
+            sync: std::sync::OnceLock::new(),
+            users_db_id: users_db.root_id().clone(),
+            databases_db_id: databases_db.root_id().clone(),
+        });
+
+        Ok(Self { inner })
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn BackendDB> {
-        &self.backend
+    pub fn backend(&self) -> &Backend {
+        &self.inner.backend
+    }
+
+    // === Backend pass-through methods (pub(crate) for internal use) ===
+
+    /// Get an entry from the backend
+    pub(crate) fn get(&self, id: &crate::entry::ID) -> Result<crate::entry::Entry> {
+        self.inner.backend.get(id)
+    }
+
+    /// Put an entry into the backend
+    pub(crate) fn put(
+        &self,
+        verification_status: crate::backend::VerificationStatus,
+        entry: crate::entry::Entry,
+    ) -> Result<()> {
+        self.inner.backend.put(verification_status, entry)
+    }
+
+    /// Get tips for a tree
+    pub(crate) fn get_tips(&self, tree: &crate::entry::ID) -> Result<Vec<crate::entry::ID>> {
+        self.inner.backend.get_tips(tree)
+    }
+
+    // === System database accessors ===
+
+    /// Get the _users database
+    ///
+    /// This constructs a Database instance on-the-fly to avoid circular references.
+    pub(crate) fn users_db(&self) -> Result<Database> {
+        let device_key = self
+            .inner
+            .backend
+            .get_private_key(DEVICE_KEY_NAME)?
+            .ok_or(InstanceError::DeviceKeyNotFound)?;
+
+        Database::open(
+            self.clone(),
+            &self.inner.users_db_id,
+            device_key,
+            "_device_key".to_string(),
+        )
     }
 
     // === User Management ===
@@ -286,8 +375,8 @@ impl Instance {
     pub fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
         use crate::user::system_databases::create_user;
 
-        let (user_uuid, _user_info) =
-            create_user(&self.users_db, Arc::clone(&self.backend), user_id, password)?;
+        let users_db = self.users_db()?;
+        let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password)?;
         Ok(user_uuid)
     }
 
@@ -305,7 +394,8 @@ impl Instance {
     pub fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
         use crate::user::system_databases::login_user;
 
-        login_user(&self.users_db, Arc::clone(&self.backend), user_id, password)
+        let users_db = self.users_db()?;
+        login_user(&users_db, self, user_id, password)
     }
 
     /// List all user IDs.
@@ -315,7 +405,8 @@ impl Instance {
     pub fn list_users(&self) -> Result<Vec<String>> {
         use crate::user::system_databases::list_users;
 
-        list_users(&self.users_db)
+        let users_db = self.users_db()?;
+        list_users(&users_db)
     }
 
     // === Device Identity Management ===
@@ -330,6 +421,7 @@ impl Instance {
     /// A `Result` containing the device's public key (device ID).
     pub fn device_id(&self) -> Result<VerifyingKey> {
         let device_key = self
+            .inner
             .backend
             .get_private_key(DEVICE_KEY_NAME)?
             .ok_or_else(|| crate::Error::from(InstanceError::DeviceKeyNotFound))?;
@@ -368,7 +460,11 @@ impl Instance {
         signing_key_name: impl AsRef<str>,
     ) -> Result<Database> {
         use crate::auth::AuthError;
-        let signing_key = match self.backend.get_private_key(signing_key_name.as_ref())? {
+        let signing_key = match self
+            .inner
+            .backend
+            .get_private_key(signing_key_name.as_ref())?
+        {
             Some(key) => key,
             None => {
                 return Err(AuthError::KeyNotFound {
@@ -379,7 +475,7 @@ impl Instance {
         };
         let database = Database::create(
             settings,
-            self.backend.clone(),
+            self,
             signing_key,
             signing_key_name.as_ref().to_string(),
         )?;
@@ -429,10 +525,10 @@ impl Instance {
     pub fn load_database(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
-        self.backend.get(root_id)?;
+        self.inner.backend.get(root_id)?;
 
         // Create a database object with the given root_id
-        let database = Database::open_readonly(root_id.clone(), Arc::clone(&self.backend))?;
+        let database = Database::open_readonly(root_id.clone(), self)?;
         Ok(self.configure_database_sync_hooks(database))
     }
 
@@ -444,11 +540,11 @@ impl Instance {
     /// # Returns
     /// A `Result` containing a vector of all `Database` instances or an error.
     pub fn all_databases(&self) -> Result<Vec<Database>> {
-        let root_ids = self.backend.all_roots()?;
+        let root_ids = self.inner.backend.all_roots()?;
         let mut databases = Vec::new();
 
         for root_id in root_ids {
-            let database = Database::open_readonly(root_id.clone(), Arc::clone(&self.backend))?;
+            let database = Database::open_readonly(root_id.clone(), self)?;
             databases.push(self.configure_database_sync_hooks(database));
         }
 
@@ -518,7 +614,9 @@ impl Instance {
         let (signing_key, verifying_key) = generate_keypair();
 
         // Store in backend with display_name as the key name (legacy storage)
-        self.backend.store_private_key(display_name, signing_key)?;
+        self.inner
+            .backend
+            .store_private_key(display_name, signing_key)?;
 
         Ok(verifying_key)
     }
@@ -529,7 +627,7 @@ impl Instance {
     /// A `Result` containing a vector of key IDs or an error.
     pub fn list_private_keys(&self) -> Result<Vec<String>> {
         // List keys from backend storage
-        self.backend.list_private_keys()
+        self.inner.backend.list_private_keys()
     }
 
     /// Import an existing Ed25519 keypair (deprecated).
@@ -552,7 +650,7 @@ impl Instance {
         signing_key: ed25519_dalek::SigningKey,
     ) -> Result<String> {
         // Import key into backend storage (legacy path)
-        self.backend.store_private_key(key_id, signing_key)?;
+        self.inner.backend.store_private_key(key_id, signing_key)?;
 
         Ok(key_id.to_string())
     }
@@ -572,7 +670,7 @@ impl Instance {
     )]
     pub fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey> {
         // Get signing key from backend storage (legacy path)
-        let signing_key = self.backend.get_private_key(key_id)?.ok_or_else(|| {
+        let signing_key = self.inner.backend.get_private_key(key_id)?.ok_or_else(|| {
             InstanceError::SigningKeyNotFound {
                 key_name: key_id.to_string(),
             }
@@ -622,61 +720,33 @@ impl Instance {
     // These methods provide access to the Sync module for managing synchronization
     // settings and state for this database instance.
 
-    /// Initialize the Sync module for this database.
+    /// Initializes the Sync module for this instance.
     ///
-    /// Creates a new sync settings database and initializes the sync module.
-    /// This method should be called once per database instance to enable sync functionality.
-    /// The sync module will have access to this database's device identity through the backend.
+    /// Enables synchronization operations for this instance. This method is idempotent;
+    /// calling it multiple times has no effect.
     ///
-    /// # Returns
-    /// A `Result` containing a new Instance with the sync module initialized.
-    pub fn with_sync(mut self) -> Result<Self> {
-        // Ensure device key exists before creating sync
-        self.device_id()?;
-
-        let sync = Sync::new(Arc::clone(&self.backend))?;
-        self.sync = Some(sync);
-        Ok(self)
+    /// # Errors
+    /// Returns an error if the sync settings database cannot be created or if device key
+    /// generation/storage fails.
+    pub fn enable_sync(&self) -> Result<()> {
+        // Check if there is an existing Sync database already configured
+        if self.inner.sync.get().is_some() {
+            return Ok(());
+        }
+        let sync = Sync::new(self.clone())?;
+        let _ = self.inner.sync.set(Arc::new(sync));
+        Ok(())
     }
 
     /// Get a reference to the Sync module for this database.
     ///
-    /// # Returns
-    /// An `Option` containing a reference to the `Sync` module if initialized.
-    pub fn sync(&self) -> Option<&Sync> {
-        self.sync.as_ref()
-    }
-
-    /// Get a mutable reference to the Sync module for this database.
-    ///
-    /// This allows calling mutable methods on the Sync module such as:
-    /// - `enable_http_transport()`
-    /// - `enable_iroh_transport()`
-    /// - `start_server_async()`
-    /// - `connect_to_peer()`
-    /// - `register_peer()`
-    /// - etc.
+    /// Returns a cheap-to-clone Arc handle to the Sync module. The Sync module
+    /// uses interior mutability (AtomicBool and OnceLock) so &self methods are sufficient.
     ///
     /// # Returns
-    /// An `Option` containing a mutable reference to the `Sync` module if initialized.
-    pub fn sync_mut(&mut self) -> Option<&mut Sync> {
-        self.sync.as_mut()
-    }
-
-    /// Load an existing Sync module from a sync database root ID.
-    ///
-    /// # Arguments
-    /// * `sync_database_root_id` - The root ID of an existing sync database
-    ///
-    /// # Returns
-    /// A `Result` containing a new Instance with the sync module loaded.
-    pub fn with_sync_from_database(mut self, sync_database_root_id: &ID) -> Result<Self> {
-        // Ensure device key exists before loading sync
-        self.device_id()?;
-
-        let sync = Sync::load(Arc::clone(&self.backend), sync_database_root_id)?;
-        self.sync = Some(sync);
-        Ok(self)
+    /// An `Option` containing an `Arc<Sync>` if the Sync module is initialized.
+    pub fn sync(&self) -> Option<Arc<Sync>> {
+        self.inner.sync.get().map(Arc::clone)
     }
 
     /// Configure a database with sync hooks if sync is enabled.
@@ -694,6 +764,47 @@ impl Instance {
         // The new architecture requires per-peer hooks rather than a collection
         // For now, sync hooks need to be set up manually per peer
         database
+    }
+
+    /// Downgrade to a weak reference.
+    ///
+    /// Creates a weak reference that does not prevent the Instance from being dropped.
+    /// This is useful for preventing circular reference cycles in dependent objects.
+    ///
+    /// # Returns
+    /// A `WeakInstance` that can be upgraded back to a strong reference.
+    pub fn downgrade(&self) -> WeakInstance {
+        WeakInstance {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+}
+
+impl WeakInstance {
+    /// Upgrade to a strong reference.
+    ///
+    /// Attempts to upgrade this weak reference to a strong `Instance` reference.
+    /// Returns `None` if the Instance has already been dropped.
+    ///
+    /// # Returns
+    /// `Some(Instance)` if the Instance still exists, `None` otherwise.
+    ///
+    /// # Example
+    /// ```
+    /// # use eidetica::{backend::database::InMemory, Instance};
+    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// let weak = instance.downgrade();
+    ///
+    /// // Upgrade works while instance exists
+    /// assert!(weak.upgrade().is_some());
+    ///
+    /// drop(instance);
+    /// // Upgrade fails after instance is dropped
+    /// assert!(weak.upgrade().is_none());
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn upgrade(&self) -> Option<Instance> {
+        self.inner.upgrade().map(|inner| Instance { inner })
     }
 }
 

@@ -31,7 +31,7 @@ pub mod user;
 
 pub use database::Database;
 pub use entry::Entry;
-pub use instance::Instance;
+pub use instance::{Instance, WeakInstance};
 pub use store::Store;
 /// Re-export fundamental types for easier access.
 pub use transaction::Transaction;

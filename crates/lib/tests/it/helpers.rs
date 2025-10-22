@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eidetica::{
-    Instance, backend::BackendDB, backend::database::InMemory, crdt::doc::Value, store::DocStore,
+    Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value, store::DocStore,
     user::User,
 };
 
@@ -12,7 +12,7 @@ use eidetica::{
 // for future backend matrix testing (e.g., TEST_BACKEND=sled).
 
 /// Creates a test backend (InMemory by default, future-proof for matrix testing)
-pub fn test_backend() -> Box<dyn BackendDB> {
+pub fn test_backend() -> Box<dyn BackendImpl> {
     Box::new(InMemory::new())
 }
 
@@ -85,26 +85,36 @@ pub fn setup_db_with_key(key_name: &str) -> Instance {
 }
 
 /// Creates a basic tree using User API with default key
-pub fn setup_tree() -> eidetica::Database {
-    let (_instance, mut user) = setup_db();
+///
+/// Note: Returns the Instance along with the Database because Database holds a weak reference.
+/// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
+pub fn setup_tree() -> (Instance, eidetica::Database) {
+    let (instance, mut user) = setup_db();
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
 
-    user.create_database(settings, &default_key)
-        .expect("Failed to create tree for testing")
+    let tree = user
+        .create_database(settings, &default_key)
+        .expect("Failed to create tree for testing");
+    (instance, tree)
 }
 
 /// Creates a tree with a specific key (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use User API for key management.
+///
+/// Note: Returns the Instance along with the Database because Database holds a weak reference.
+/// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
 #[deprecated(note = "Use test_instance_with_user() and User API instead")]
 #[allow(deprecated)]
-pub fn setup_tree_with_key(key_name: &str) -> eidetica::Database {
+pub fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name);
-    db.new_database_default(key_name)
-        .expect("Failed to create tree for testing")
+    let tree = db
+        .new_database_default(key_name)
+        .expect("Failed to create tree for testing");
+    (db, tree)
 }
 
 /// Creates a tree and database with a specific key (DEPRECATED PATTERN)
@@ -121,8 +131,11 @@ pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Databa
 }
 
 /// Creates a tree with initial settings using User API
-pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database {
-    let (_instance, mut user) = setup_db();
+///
+/// Note: Returns the Instance along with the Database because Database holds a weak reference.
+/// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
+pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetica::Database) {
+    let (instance, mut user) = setup_db();
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut db_settings = eidetica::crdt::Doc::new();
@@ -147,7 +160,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> eidetica::Database
     }
     op.commit().expect("Failed to commit settings");
 
-    tree
+    (instance, tree)
 }
 
 // ==========================

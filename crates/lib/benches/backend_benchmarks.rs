@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use eidetica::{
     Instance,
-    backend::{BackendDB, database::InMemory},
+    backend::{BackendImpl, database::InMemory},
     entry::ID,
     store::DocStore,
 };
@@ -76,7 +76,7 @@ fn create_branching_tree(
     let mut branches = Vec::new();
 
     // Get the root entry to branch from
-    let backend = tree.backend();
+    let backend = tree.backend().expect("Failed to get backend");
     let root_entries = backend
         .get_tree(tree.root_id())
         .expect("Failed to get tree");
@@ -130,7 +130,7 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
         "wide" => {
             // Create many siblings from root
             // Get the root entry to branch from
-            let backend = tree.backend();
+            let backend = tree.backend().expect("Failed to get backend");
             let root_entries = backend
                 .get_tree(tree.root_id())
                 .expect("Failed to get tree");
@@ -192,7 +192,7 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
                         let expected_lca = &entry_ids[0]; // In a linear chain, LCA of first and last is the first
 
                         // Access database to call find_lca
-                        let backend = tree.backend();
+                        let backend = tree.backend().expect("Failed to get backend");
                         let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemory>()
@@ -224,13 +224,9 @@ pub fn bench_lca_diamond_merge(c: &mut Criterion) {
                 (tree, test_entries, expected_lca)
             },
             |(tree, test_entries, expected_lca)| {
-                let backend = tree.backend();
-                let in_memory = backend
-                    .as_any()
-                    .downcast_ref::<InMemory>()
-                    .expect("Failed to downcast backend");
+                let backend = tree.backend().expect("Failed to get backend");
 
-                let lca = in_memory
+                let lca = backend
                     .find_lca(tree.root_id(), "data", &test_entries)
                     .expect("Failed to find LCA");
 
@@ -255,7 +251,7 @@ pub fn bench_tree_heights(c: &mut Criterion) {
                     tree
                 },
                 |tree| {
-                    let backend = tree.backend();
+                    let backend = tree.backend().expect("Failed to get backend");
                     let in_memory = backend
                         .as_any()
                         .downcast_ref::<InMemory>()
@@ -290,7 +286,7 @@ pub fn bench_height_calculation_overhead(c: &mut Criterion) {
                         tree
                     },
                     |tree| {
-                        let backend = tree.backend();
+                        let backend = tree.backend().expect("Failed to get backend");
                         let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemory>()
@@ -328,7 +324,7 @@ pub fn bench_tips_finding(c: &mut Criterion) {
                         tree
                     },
                     |tree| {
-                        let backend = tree.backend();
+                        let backend = tree.backend().expect("Failed to get backend");
                         let tips = backend
                             .get_tips(tree.root_id())
                             .expect("Failed to get tips");
@@ -364,7 +360,7 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                             tree
                         },
                         |tree| {
-                            let backend = tree.backend();
+                            let backend = tree.backend().expect("Failed to get backend");
                             let entries = backend
                                 .get_tree(tree.root_id())
                                 .expect("Failed to get tree");
@@ -434,7 +430,7 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                         (tree, last_entry_id)
                     },
                     |(tree, last_entry_id)| {
-                        let backend = tree.backend();
+                        let backend = tree.backend().expect("Failed to get backend");
                         let in_memory = backend
                             .as_any()
                             .downcast_ref::<InMemory>()

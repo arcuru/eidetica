@@ -4,8 +4,6 @@
 //! sync requests and generate responses. These handlers can be
 //! used by any transport implementation through the SyncHandler trait.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
@@ -21,13 +19,12 @@ use super::{
     },
 };
 use crate::{
-    Database, Result,
+    Database, Instance, Result,
     auth::{
         Permission,
         crypto::{create_challenge_response, format_public_key, generate_challenge},
         types::AuthKey,
     },
-    backend::BackendDB,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -55,38 +52,46 @@ pub trait SyncHandler: Send + std::marker::Sync {
 
 /// Default implementation of SyncHandler with database backend access.
 pub struct SyncHandlerImpl {
-    backend: Arc<dyn BackendDB>,
+    instance: crate::WeakInstance,
     sync_tree_id: ID,
 }
 
 impl SyncHandlerImpl {
-    /// Create a new SyncHandlerImpl with the given backend.
+    /// Create a new SyncHandlerImpl with the given instance.
     ///
     /// # Arguments
-    /// * `backend` - Database backend for storing and retrieving entries
+    /// * `instance` - Database instance for storing and retrieving entries
     /// * `sync_tree_id` - Root ID of the sync database for storing bootstrap requests
-    pub fn new(backend: Arc<dyn BackendDB>, sync_tree_id: ID) -> Self {
+    pub fn new(instance: Instance, sync_tree_id: ID) -> Self {
         Self {
-            backend,
+            instance: instance.downgrade(),
             sync_tree_id,
         }
+    }
+
+    /// Upgrade the weak instance reference to a strong reference.
+    fn instance(&self) -> Result<Instance> {
+        self.instance
+            .upgrade()
+            .ok_or_else(|| SyncError::InstanceDropped.into())
     }
 
     /// Get access to the sync tree for bootstrap request management.
     ///
     /// # Returns
     /// A Database instance for the sync tree with device key authentication.
-    fn get_sync_tree(&self) -> crate::Result<Database> {
+    fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
-        let signing_key = self
-            .backend
+        let instance = self.instance()?;
+        let signing_key = instance
+            .backend()
             .get_private_key(DEVICE_KEY_NAME)?
-            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
+            .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
 
         Database::open(
-            self.backend.clone(),
+            self.instance()?,
             &self.sync_tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
@@ -153,10 +158,16 @@ impl SyncHandler for SyncHandlerImpl {
                 let count = entries.len();
                 info!(count = count, "Received entries for synchronization");
 
+                // Get instance once before loop
+                let instance = match self.instance() {
+                    Ok(i) => i,
+                    Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+                };
+
                 // Store entries in the backend as unverified (from sync)
                 let mut stored_count = 0usize;
                 for entry in entries {
-                    match self.backend.put_unverified(entry.clone()) {
+                    match instance.backend().put_unverified(entry.clone()) {
                         Ok(_) => {
                             stored_count += 1;
                             trace!(entry_id = %entry.id(), "Stored entry successfully");
@@ -205,15 +216,16 @@ impl SyncHandlerImpl {
     ) -> Result<bool> {
         // FIXME: This should not be using the device key for auth checks
         // Load database with device key for accessing settings
-        let signing_key = self
-            .backend
+        let instance = self.instance()?;
+        let signing_key = instance
+            .backend()
             .get_private_key(DEVICE_KEY_NAME)?
             .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
 
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
@@ -265,15 +277,16 @@ impl SyncHandlerImpl {
         tree_id: &crate::entry::ID,
     ) -> crate::Result<bool> {
         // Load database with device key for accessing settings
-        let signing_key = self
-            .backend
+        let instance = self.instance()?;
+        let signing_key = instance
+            .backend()
             .get_private_key(DEVICE_KEY_NAME)?
             .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
 
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
@@ -317,7 +330,14 @@ impl SyncHandlerImpl {
             }
 
             // Get device signing key from backend
-            let signing_key = match self.backend.get_private_key(DEVICE_KEY_NAME) {
+            let instance = match self.instance() {
+                Ok(i) => i,
+                Err(e) => {
+                    error!(error = %e, "Failed to get instance");
+                    return SyncResponse::Error(format!("Failed to get instance: {e}"));
+                }
+            };
+            let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME) {
                 Ok(Some(key)) => {
                     debug!(device_key_name = %DEVICE_KEY_NAME, "Retrieved device signing key");
                     key
@@ -437,7 +457,11 @@ impl SyncHandlerImpl {
         requested_permission: Option<crate::auth::Permission>,
     ) -> SyncResponse {
         // Get the root entry (to verify tree exists)
-        let _root_entry = match self.backend.get(tree_id) {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+        };
+        let _root_entry = match instance.backend().get(tree_id) {
             Ok(entry) => entry,
             Err(e) if e.is_not_found() => {
                 warn!(tree_id = %tree_id, "Tree not found for bootstrap");
@@ -570,7 +594,11 @@ impl SyncHandlerImpl {
 
         // For bootstrap, we need to send the actual root entry (tree_id) as root_entry
         // The root_entry should always be the tree's root, not a tip
-        let root_entry = match self.backend.get(tree_id) {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+        };
+        let root_entry = match instance.backend().get(tree_id) {
             Ok(entry) => entry,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
@@ -607,7 +635,11 @@ impl SyncHandlerImpl {
         peer_tips: &[crate::entry::ID],
     ) -> SyncResponse {
         // Get our current tips
-        let our_tips = match self.backend.get_tips(tree_id) {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+        };
+        let our_tips = match instance.backend().get_tips(tree_id) {
             Ok(tips) => tips,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get our tips");
@@ -642,7 +674,14 @@ impl SyncHandlerImpl {
     /// Get list of available trees for discovery
     async fn get_available_trees(&self) -> Vec<TreeInfo> {
         // Get all root entries in the backend
-        match self.backend.all_roots() {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => {
+                error!(error = %e, "Failed to get instance");
+                return Vec::new();
+            }
+        };
+        match instance.backend().all_roots() {
             Ok(roots) => {
                 let mut tree_infos = Vec::new();
                 for root_id in roots {
@@ -676,7 +715,7 @@ impl SyncHandlerImpl {
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.backend.get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id)?;
         to_visit.extend(tips);
 
         // Traverse the DAG depth-first
@@ -686,7 +725,7 @@ impl SyncHandlerImpl {
             }
             visited.insert(entry_id.clone());
 
-            match self.backend.get(&entry_id) {
+            match self.instance()?.backend().get(&entry_id) {
                 Ok(entry) => {
                     // Add parents to visit list
                     if let Ok(parent_ids) = entry.parents() {
@@ -721,7 +760,7 @@ impl SyncHandlerImpl {
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.backend.get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id)?;
         to_visit.extend(tips);
 
         // Traverse the DAG depth-first, INCLUDING the root
@@ -731,7 +770,7 @@ impl SyncHandlerImpl {
             }
             visited.insert(entry_id.clone());
 
-            match self.backend.get(&entry_id) {
+            match self.instance()?.backend().get(&entry_id) {
                 Ok(entry) => {
                     // Add parents to visit list
                     if let Ok(parent_ids) = entry.parents() {
@@ -779,7 +818,11 @@ impl SyncHandlerImpl {
         }
 
         // Collect ancestors
-        super::utils::collect_ancestors_to_send(self.backend.as_ref(), &missing_tip_ids, peer_tips)
+        super::utils::collect_ancestors_to_send(
+            self.instance()?.backend().as_backend_impl(),
+            &missing_tip_ids,
+            peer_tips,
+        )
     }
 
     /// Count entries in a tree
@@ -789,7 +832,7 @@ impl SyncHandlerImpl {
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.backend.get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id)?;
         to_visit.extend(tips);
 
         // Count all entries
@@ -800,7 +843,7 @@ impl SyncHandlerImpl {
             visited.insert(entry_id.clone());
             count += 1;
 
-            if let Ok(entry) = self.backend.get(&entry_id)
+            if let Ok(entry) = self.instance()?.backend().get(&entry_id)
                 && let Ok(parent_ids) = entry.parents()
             {
                 for parent_id in parent_ids {
@@ -857,15 +900,16 @@ impl SyncHandlerImpl {
         );
 
         // Load database with device key to access settings through proper Transaction
-        let signing_key = self
-            .backend
+        let instance = self.instance()?;
+        let signing_key = instance
+            .backend()
             .get_private_key(DEVICE_KEY_NAME)?
             .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
 
         let database = Database::open(
-            self.backend.clone(),
+            self.instance()?,
             tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),

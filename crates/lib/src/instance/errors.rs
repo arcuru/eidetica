@@ -167,6 +167,21 @@ pub enum InstanceError {
         /// Description of the unsupported operation
         operation: String,
     },
+
+    /// Instance has been dropped and is no longer available.
+    #[error("Instance has been dropped")]
+    InstanceDropped,
+
+    /// Sync has already been enabled on this Instance.
+    #[error("Sync has already been enabled on this Instance")]
+    SyncAlreadyEnabled,
+
+    /// System database not found during instance initialization.
+    #[error("System database not found: {database_name}")]
+    SystemDatabaseNotFound {
+        /// Name of the system database that was not found
+        database_name: String,
+    },
 }
 
 impl InstanceError {
@@ -177,6 +192,7 @@ impl InstanceError {
             InstanceError::DatabaseNotFound { .. }
                 | InstanceError::EntryNotFound { .. }
                 | InstanceError::SigningKeyNotFound { .. }
+                | InstanceError::SystemDatabaseNotFound { .. }
         )
     }
 

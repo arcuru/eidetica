@@ -5,7 +5,7 @@
 //! _settings subtree - it doesn't implement CRDT itself since merging happens at
 //! the higher settings level.
 
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,6 @@ use crate::{
         types::{AuthKey, DelegatedTreeRef, KeyStatus, Permission, ResolvedAuth, SigKey},
         validation::AuthValidator,
     },
-    backend::BackendDB,
     crdt::Doc,
 };
 
@@ -177,7 +176,7 @@ impl AuthSettings {
     pub fn validate_entry_auth(
         &self,
         sig_key: &SigKey,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&crate::Instance>,
     ) -> Result<ResolvedAuth> {
         match sig_key {
             SigKey::Direct(key_name) => {
@@ -190,8 +189,8 @@ impl AuthSettings {
                 })
             }
             SigKey::DelegationPath(_) => {
-                // For delegation path entries, validate using the backend
-                let backend = backend.ok_or_else(|| {
+                // For delegation path entries, validate using the current instance
+                let instance = instance.ok_or_else(|| {
                     Error::from(AuthError::DatabaseRequired {
                         operation: "delegation path validation".to_string(),
                     })
@@ -199,7 +198,7 @@ impl AuthSettings {
 
                 // Use AuthValidator to resolve the delegation path
                 let mut validator = AuthValidator::new();
-                validator.resolve_sig_key(sig_key, self, Some(backend))
+                validator.resolve_sig_key(sig_key, self, Some(instance))
             }
         }
     }

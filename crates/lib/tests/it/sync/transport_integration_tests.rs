@@ -23,12 +23,12 @@ async fn test_transport_interface_consistency() {
     assert!(iroh_transport.stop_server().await.is_err());
 
     // Start both servers
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     http_transport
         .start_server("127.0.0.1:0", handler)
         .await
         .unwrap();
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     iroh_transport
         .start_server("ignored", handler)
         .await
@@ -54,8 +54,8 @@ async fn test_transport_interface_consistency() {
     assert!(iroh_addr.contains("direct_addresses"));
 
     // Both should fail to start again
-    let handler2 = super::helpers::setup_test_handler();
-    let handler3 = super::helpers::setup_test_handler();
+    let (_instance2, handler2) = super::helpers::setup_test_handler();
+    let (_instance3, handler3) = super::helpers::setup_test_handler();
     assert!(
         http_transport
             .start_server("127.0.0.1:0", handler2)
@@ -115,10 +115,10 @@ async fn test_transport_isolation() {
     let mut iroh2 = IrohTransport::new().unwrap();
 
     // All should be able to start servers independently
-    let handler1 = super::helpers::setup_test_handler();
-    let handler2 = super::helpers::setup_test_handler();
-    let handler3 = super::helpers::setup_test_handler();
-    let handler4 = super::helpers::setup_test_handler();
+    let (_instance1, handler1) = super::helpers::setup_test_handler();
+    let (_instance2, handler2) = super::helpers::setup_test_handler();
+    let (_instance3, handler3) = super::helpers::setup_test_handler();
+    let (_instance4, handler4) = super::helpers::setup_test_handler();
     http1.start_server("127.0.0.1:0", handler1).await.unwrap();
     http2.start_server("127.0.0.1:0", handler2).await.unwrap();
     iroh1.start_server("ignored", handler3).await.unwrap();
@@ -163,7 +163,7 @@ async fn test_transport_polymorphism() {
         assert!(!transport.is_server_running());
 
         let addr = if i == 0 { "127.0.0.1:0" } else { "ignored" };
-        let handler = super::helpers::setup_test_handler();
+        let (_instance, handler) = super::helpers::setup_test_handler();
         transport.start_server(addr, handler).await.unwrap();
 
         assert!(transport.is_server_running());
@@ -184,8 +184,8 @@ async fn test_concurrent_transport_operation() {
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Start both concurrently
-    let handler1 = super::helpers::setup_test_handler();
-    let handler2 = super::helpers::setup_test_handler();
+    let (_instance1, handler1) = super::helpers::setup_test_handler();
+    let (_instance2, handler2) = super::helpers::setup_test_handler();
     let http_future = http_transport.start_server("127.0.0.1:0", handler1);
     let iroh_future = iroh_transport.start_server("ignored", handler2);
 

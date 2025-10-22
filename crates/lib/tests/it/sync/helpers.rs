@@ -18,33 +18,38 @@ use iroh::RelayMode;
 
 // ===== SETUP HELPERS =====
 
-/// Create a Instance Arc with authentication key
-pub fn setup_db() -> Arc<Instance> {
+/// Create an Instance with authentication key
+pub fn setup_db() -> Instance {
     let (instance, _user) = crate::helpers::setup_db();
-    Arc::new(instance)
+    instance
 }
 
 /// Create a new Sync instance with standard setup
-pub fn setup() -> (Arc<Instance>, Sync) {
+pub fn setup() -> (Instance, Sync) {
     let base_db = setup_db();
-    let sync = Sync::new(Arc::clone(base_db.backend())).expect("Failed to create Sync");
+    let sync = Sync::new(base_db.clone()).expect("Failed to create Sync");
     (base_db, sync)
 }
 
 /// Create Instance with initialized sync module
 pub fn setup_instance_with_initialized() -> Instance {
     let (instance, _user) = crate::helpers::setup_db();
-    instance.with_sync().expect("Failed to initialize sync")
+    instance.enable_sync().expect("Failed to initialize sync");
+    instance
 }
 
 /// Create a test SyncHandler for transport-specific tests
-pub fn setup_test_handler() -> Arc<dyn SyncHandler> {
+///
+/// Returns (Instance, Handler) where the Instance must be kept alive
+/// for the handler's WeakInstance to remain valid.
+pub fn setup_test_handler() -> (Instance, Arc<dyn SyncHandler>) {
     let base_db = setup_db();
-    let sync = Sync::new(base_db.backend().clone()).expect("Failed to create Sync");
-    Arc::new(SyncHandlerImpl::new(
-        base_db.backend().clone(),
+    let sync = Sync::new(base_db.clone()).expect("Failed to create Sync");
+    let handler = Arc::new(SyncHandlerImpl::new(
+        base_db.clone(),
         sync.sync_tree_root_id().clone(),
-    ))
+    ));
+    (base_db, handler)
 }
 
 /// Test helper function for backward compatibility with existing tests.
@@ -53,7 +58,10 @@ pub async fn handle_request(
     sync: &Sync,
     request: &eidetica::sync::protocol::SyncRequest,
 ) -> eidetica::sync::protocol::SyncResponse {
-    let handler = SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
     handler.handle_request(request).await
 }
 
@@ -79,7 +87,7 @@ pub fn assert_trees_equal(sync1: &Sync, sync2: &Sync) {
 // ===== OPERATION HELPERS =====
 
 /// Set multiple settings on a sync instance
-pub fn set_multiple_settings(sync: &mut Sync, settings: &[(&str, &str)]) {
+pub fn set_multiple_settings(sync: &Sync, settings: &[(&str, &str)]) {
     for (key, value) in settings {
         sync.set_setting(*key, *value)
             .unwrap_or_else(|_| panic!("Failed to set setting: {key} = {value}"));
@@ -118,10 +126,7 @@ pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
 /// ```
 pub trait TransportFactory: Send + std::marker::Sync {
     /// Create a sync instance with this transport enabled
-    fn create_sync(
-        &self,
-        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
-    ) -> Result<Sync>;
+    fn create_sync(&self, instance: Instance) -> Result<Sync>;
 
     /// Get the expected address format for this transport
     fn create_address(&self, server_addr: &str) -> Address;
@@ -143,11 +148,8 @@ pub trait TransportFactory: Send + std::marker::Sync {
 pub struct HttpTransportFactory;
 
 impl TransportFactory for HttpTransportFactory {
-    fn create_sync(
-        &self,
-        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
-    ) -> Result<Sync> {
-        let mut sync = Sync::new(backend)?;
+    fn create_sync(&self, instance: Instance) -> Result<Sync> {
+        let sync = Sync::new(instance)?;
         sync.enable_http_transport()?;
         Ok(sync)
     }
@@ -165,11 +167,8 @@ impl TransportFactory for HttpTransportFactory {
 pub struct IrohTransportFactory;
 
 impl TransportFactory for IrohTransportFactory {
-    fn create_sync(
-        &self,
-        backend: std::sync::Arc<dyn eidetica::backend::BackendDB>,
-    ) -> Result<Sync> {
-        let mut sync = Sync::new(backend)?;
+    fn create_sync(&self, instance: Instance) -> Result<Sync> {
+        let sync = Sync::new(instance)?;
         let transport = IrohTransport::builder()
             .relay_mode(RelayMode::Disabled)
             .build()?;
@@ -266,7 +265,7 @@ pub fn setup_bootstrap_server(
     let tree_id = database.root_id().clone();
 
     // Create sync instance
-    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
     (instance, database, sync, tree_id)
 }
@@ -282,7 +281,7 @@ pub fn setup_auto_approval_server() -> (Instance, Database, Sync, eidetica::entr
 }
 
 /// Start a sync server with common settings
-pub async fn start_sync_server(sync: &mut Sync) -> String {
+pub async fn start_sync_server(sync: &Sync) -> String {
     sync.enable_http_transport()
         .expect("Failed to enable HTTP transport");
     sync.start_server_async("127.0.0.1:0")
@@ -308,7 +307,7 @@ pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Sync) {
         .add_private_key(key_name)
         .expect("Failed to add client key");
 
-    let sync = Sync::new(instance.backend().clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
     (instance, sync)
 }
@@ -352,7 +351,7 @@ pub async fn create_pending_bootstrap_request(
 }
 
 /// Approve a bootstrap request with error handling
-pub fn approve_request(sync: &mut Sync, request_id: &str, approver_key: &str) -> Result<()> {
+pub fn approve_request(sync: &Sync, request_id: &str, approver_key: &str) -> Result<()> {
     sync.approve_bootstrap_request(request_id, approver_key)
 }
 
@@ -391,7 +390,10 @@ pub fn assert_request_stored(sync: &Sync, expected_count: usize) {
 
 /// Create a sync handler for testing
 pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
-    SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone())
+    SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    )
 }
 
 // ===== USER API HELPERS =====
@@ -465,11 +467,13 @@ pub async fn request_and_map_database_access(
     permission: AuthPermission,
     sync_delay_ms: u64,
 ) -> Result<()> {
-    let client_sync = instance.sync_mut().expect("Sync not initialized");
-    client_sync.enable_http_transport()?;
+    {
+        let client_sync = instance.sync().expect("Sync not initialized");
+        client_sync.enable_http_transport()?;
 
-    user.request_database_access(client_sync, server_addr, tree_id, key_id, permission)
-        .await?;
+        user.request_database_access(&client_sync, server_addr, tree_id, key_id, permission)
+            .await?;
+    } // Drop Arc before sleep
 
     // Wait for sync to complete
     tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
@@ -522,12 +526,9 @@ pub fn setup_user_with_database(
 /// Creates a sync handler for testing bootstrap policy resolution
 ///
 /// Uses a temporary sync instance to get the sync tree root ID.
-pub fn create_database_sync_handler(database: &Database) -> SyncHandlerImpl {
-    let temp_sync = Sync::new(database.backend().clone()).unwrap();
-    SyncHandlerImpl::new(
-        database.backend().clone(),
-        temp_sync.sync_tree_root_id().clone(),
-    )
+pub fn create_database_sync_handler(_database: &Database, instance: &Instance) -> SyncHandlerImpl {
+    let temp_sync = Sync::new(instance.clone()).unwrap();
+    SyncHandlerImpl::new(instance.clone(), temp_sync.sync_tree_root_id().clone())
 }
 
 /// Sets the bootstrap auto-approval policy on a database

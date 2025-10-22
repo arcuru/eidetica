@@ -98,7 +98,7 @@ impl Transaction {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the database root exists in backend
-            let root_exists = database.backend().get(database.root_id()).is_ok();
+            let root_exists = database.backend()?.get(database.root_id()).is_ok();
 
             if root_exists {
                 return Err(TransactionError::EmptyTipsNotAllowed.into());
@@ -107,8 +107,9 @@ impl Transaction {
         }
 
         // Validate that all tips belong to the same tree
+        let backend = database.backend()?;
         for tip_id in tips {
-            let entry = database.backend().get(tip_id)?;
+            let entry = backend.get(tip_id)?;
             if !entry.in_tree(database.root_id()) {
                 return Err(TransactionError::InvalidTip {
                     tip_id: tip_id.to_string(),
@@ -328,10 +329,8 @@ impl Transaction {
 
         if !subtrees.contains(&subtree.to_string()) {
             // FIXME: we should get the subtree tips while still using the parent pointers
-            let tips = self
-                .db
-                .backend()
-                .get_store_tips(self.db.root_id(), subtree)?;
+            let backend = self.db.backend()?;
+            let tips = backend.get_store_tips(self.db.root_id(), subtree)?;
             builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
             builder.set_subtree_parents_mut(subtree, tips);
         } else {
@@ -379,17 +378,16 @@ impl Transaction {
                 // Determine whether this transaction is using custom parent tips or current database tips
                 // This affects how we calculate subtree parents
                 let main_parents = builder.parents().unwrap_or_default();
-                let current_database_tips = self.db.backend().get_tips(self.db.root_id())?;
+                let current_database_tips = self.db.backend()?.get_tips(self.db.root_id())?;
 
                 // Get subtree tips based on the transaction's parent context
                 let tips = if main_parents == current_database_tips {
                     // Using current database tips - get all current subtree tips
-                    self.db
-                        .backend()
-                        .get_store_tips(self.db.root_id(), &subtree_name)?
+                    let backend = self.db.backend()?;
+                    backend.get_store_tips(self.db.root_id(), &subtree_name)?
                 } else {
                     // Using custom parent tips - get subtree tips reachable from those parents
-                    self.db.backend().get_store_tips_up_to_entries(
+                    self.db.backend()?.get_store_tips_up_to_entries(
                         self.db.root_id(),
                         &subtree_name,
                         &main_parents,
@@ -494,15 +492,14 @@ impl Transaction {
         if !subtrees.contains(&subtree_name.to_string()) {
             // Check if this transaction was created with custom tips vs current tips
             let main_parents = builder.parents().unwrap_or_default();
-            let current_database_tips = self.db.backend().get_tips(self.db.root_id())?;
+            let current_database_tips = self.db.backend()?.get_tips(self.db.root_id())?;
 
             let tips = if main_parents == current_database_tips {
-                self.db
-                    .backend()
-                    .get_store_tips(self.db.root_id(), subtree_name)?
+                let backend = self.db.backend()?;
+                backend.get_store_tips(self.db.root_id(), subtree_name)?
             } else {
                 // This transaction uses custom tips - use special handler
-                self.db.backend().get_store_tips_up_to_entries(
+                self.db.backend()?.get_store_tips_up_to_entries(
                     self.db.root_id(),
                     subtree_name,
                     &main_parents,
@@ -563,7 +560,7 @@ impl Transaction {
         // Multiple entries: find LCA and compute state from there
         let lca_id = self
             .db
-            .backend()
+            .backend()?
             .find_lca(self.db.root_id(), subtree_name, entry_ids)?;
 
         // Get the LCA state recursively
@@ -571,7 +568,7 @@ impl Transaction {
 
         // Get all entries from LCA to all tip entries (deduplicated and sorted)
         let path_entries = {
-            self.db.backend().get_path_from_to(
+            self.db.backend()?.get_path_from_to(
                 self.db.root_id(),
                 subtree_name,
                 &lca_id,
@@ -613,7 +610,7 @@ impl Transaction {
         {
             if let Some(cached_state) = self
                 .db
-                .backend()
+                .backend()?
                 .get_cached_crdt_state(entry_id, subtree_name)?
             {
                 let result: T = serde_json::from_str(&cached_state)?;
@@ -623,9 +620,11 @@ impl Transaction {
 
         // Get the parents of this entry in the subtree
         let parents = {
-            self.db
-                .backend()
-                .get_sorted_store_parents(self.db.root_id(), entry_id, subtree_name)?
+            self.db.backend()?.get_sorted_store_parents(
+                self.db.root_id(),
+                entry_id,
+                subtree_name,
+            )?
         };
 
         // Step 2: Compute LCA state recursively
@@ -642,7 +641,7 @@ impl Transaction {
             // Multiple parents - find LCA and get its state
             let lca_id = {
                 self.db
-                    .backend()
+                    .backend()?
                     .find_lca(self.db.root_id(), subtree_name, &parents)?
             };
             let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
@@ -656,7 +655,7 @@ impl Transaction {
         if let Some(lca_id) = lca_id_opt {
             // Get all entries from LCA to all parents (deduplicated and sorted)
             let path_entries = {
-                self.db.backend().get_path_from_to(
+                self.db.backend()?.get_path_from_to(
                     self.db.root_id(),
                     subtree_name,
                     &lca_id,
@@ -670,7 +669,7 @@ impl Transaction {
 
         // Finally, merge the current entry's local data
         let local_data = {
-            let entry = self.db.backend().get(entry_id)?;
+            let entry = self.db.backend()?.get(entry_id)?;
             if let Ok(data) = entry.data(subtree_name) {
                 serde_json::from_str::<T>(data)?
             } else {
@@ -684,7 +683,7 @@ impl Transaction {
         {
             let serialized_state = serde_json::to_string(&result)?;
             self.db
-                .backend()
+                .backend()?
                 .cache_crdt_state(entry_id, subtree_name, serialized_state)?;
         }
 
@@ -705,7 +704,7 @@ impl Transaction {
         T: CRDT + Clone + Default + serde::de::DeserializeOwned,
     {
         for entry_id in entry_ids {
-            let entry = self.db.backend().get(entry_id)?;
+            let entry = self.db.backend()?.get(entry_id)?;
 
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
@@ -803,7 +802,7 @@ impl Transaction {
 
         // Add metadata with settings tips for all entries
         // Get the backend to access settings tips
-        let settings_tips = self.db.backend().get_store_tips_up_to_entries(
+        let settings_tips = self.db.backend()?.get_store_tips_up_to_entries(
             self.db.root_id(),
             SETTINGS,
             &self.db.get_tips()?,
@@ -912,10 +911,12 @@ impl Transaction {
             }
         };
 
+        let instance = self.db.instance()?;
+
         let verification_status = match validator.validate_entry(
             &entry,
             &auth_settings_for_validation,
-            Some(self.db.backend()),
+            Some(&instance),
         ) {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
@@ -935,7 +936,7 @@ impl Transaction {
                     let resolved_auth = validator.resolve_sig_key_with_pubkey(
                         &entry.sig.key,
                         &auth_settings_for_validation,
-                        Some(self.db.backend()),
+                        Some(&instance),
                         entry.sig.pubkey.as_deref(),
                     )?;
 
@@ -987,7 +988,7 @@ impl Transaction {
         let id = entry.id();
 
         // Store in the backend with the determined verification status
-        self.db.backend().put(verification_status, entry.clone())?;
+        self.db.backend()?.put(verification_status, entry.clone())?;
 
         // Execute sync hooks if present
         if let Some(hooks) = &self.sync_hooks
@@ -1013,7 +1014,8 @@ impl Transaction {
 mod tests {
     use super::*;
     use crate::{
-        auth::crypto::generate_keypair, backend::database::InMemory, crdt::Doc, store::DocStore,
+        Instance, auth::crypto::generate_keypair, backend::database::InMemory, crdt::Doc,
+        store::DocStore,
     };
 
     /// Test that corrupted auth configuration prevents commit
@@ -1022,12 +1024,13 @@ mod tests {
     /// preventing corrupted entries from entering the Merkle DAG.
     #[test]
     fn test_prevent_auth_corruption() {
-        let backend = Arc::new(InMemory::new());
+        let backend = InMemory::new();
+        let instance = Instance::open(Box::new(backend)).unwrap();
         let (private_key, _) = generate_keypair();
 
         // Create database with the test key
         let database =
-            Database::create(Doc::new(), backend, private_key, "test_key".to_string()).unwrap();
+            Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
 
         // Initial operation should work
         let tx = database.new_transaction().unwrap();

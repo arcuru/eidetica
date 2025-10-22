@@ -100,7 +100,7 @@ pub fn assert_entry_authentication(tree: &Database, entry_id: &ID, expected_key:
 
 /// Verify entry parent relationships
 pub fn assert_entry_parents(tree: &Database, entry_id: &ID, expected_parents: &[ID]) {
-    let backend = tree.backend();
+    let backend = tree.backend().expect("Failed to get backend");
     let entry = backend.get(entry_id).expect("Failed to get entry");
     let actual_parents = entry.parents().expect("Failed to get parents");
 
@@ -283,6 +283,7 @@ pub fn assert_deterministic_reads(tree: &Database, subtree_name: &str, read_coun
 pub fn assert_caching_consistency(tree: &Database, subtree_name: &str) {
     // Force cache clear
     tree.backend()
+        .expect("Failed to get backend")
         .clear_crdt_cache()
         .expect("Failed to clear cache");
 

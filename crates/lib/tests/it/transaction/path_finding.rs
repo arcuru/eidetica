@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_transaction_diamond_pattern() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base entry
     let op_base = tree.new_transaction().unwrap();
@@ -54,7 +54,7 @@ fn test_transaction_diamond_pattern() {
     let merge_id = op_merge.commit().unwrap();
 
     // Verify merge has correct parents
-    let backend = tree.backend();
+    let backend = tree.backend().unwrap();
     let merge_entry = backend.get(&merge_id).unwrap();
     let merge_parents = merge_entry.parents().unwrap();
 
@@ -71,7 +71,7 @@ fn test_transaction_diamond_pattern() {
 
 #[test]
 fn test_get_path_from_to_diamond_pattern() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a diamond pattern: A -> B,C -> D
     // A is the base
@@ -129,7 +129,7 @@ fn test_get_path_from_to_diamond_pattern() {
 
 #[test]
 fn test_get_path_from_to_diamond_between_lca_and_tip() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create the exact scenario you described:
     // LCA -> A -> C (tip)
@@ -207,7 +207,7 @@ fn test_get_path_from_to_diamond_between_lca_and_tip() {
 
 #[test]
 fn test_correct_lca_and_path_sorting() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a proper LCA scenario where sorting matters:
     // ROOT (LCA)
@@ -309,7 +309,7 @@ fn test_correct_lca_and_path_sorting() {
 
 #[test]
 fn test_lca_path_finding_with_helpers() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test LCA scenario creation helper
     let lca_scenario = create_lca_test_scenario(&tree);
@@ -323,7 +323,7 @@ fn test_lca_path_finding_with_helpers() {
 
 #[test]
 fn test_deterministic_operations_with_helper() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create some initial structure
     let diamond = create_diamond_pattern(&tree);
@@ -344,7 +344,7 @@ fn test_deterministic_operations_with_helper() {
 
 #[test]
 fn test_complex_path_finding_scenario() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a more complex scenario with multiple merges
     // ROOT -> A -> A1 -> MERGE1

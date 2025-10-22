@@ -4,15 +4,12 @@
 //! including specialized methods for authentication configuration. It wraps DocStore
 //! to provide settings-specific functionality while maintaining proper CRDT semantics.
 
-use std::sync::Arc;
-
 use crate::{
-    Result, Transaction,
+    Instance, Result, Transaction,
     auth::{
         settings::AuthSettings,
         types::{AuthKey, ResolvedAuth, SigKey},
     },
-    backend::BackendDB,
     crdt::{Doc, doc},
     store::{DocStore, Store},
 };
@@ -237,17 +234,17 @@ impl SettingsStore {
     ///
     /// # Arguments
     /// * `sig_key` - The signature key to validate
-    /// * `backend` - Optional backend for delegation path validation
+    /// * `instance` - Optional instance for delegation path validation
     ///
     /// # Returns
     /// ResolvedAuth information if validation succeeds
     pub fn validate_entry_auth(
         &self,
         sig_key: &SigKey,
-        backend: Option<&Arc<dyn BackendDB>>,
+        instance: Option<&Instance>,
     ) -> Result<ResolvedAuth> {
         let auth_settings = self.get_auth_settings()?;
-        auth_settings.validate_entry_auth(sig_key, backend)
+        auth_settings.validate_entry_auth(sig_key, instance)
     }
 
     /// Get access to the underlying DocStore for advanced operations
@@ -274,7 +271,7 @@ mod tests {
         backend::database::InMemory,
     };
 
-    fn create_test_database() -> Database {
+    fn create_test_database() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
         let instance = Instance::open(backend).expect("Failed to create test instance");
 
@@ -286,12 +283,12 @@ mod tests {
         settings_store.set_name("test_db").unwrap();
         transaction.commit().unwrap();
 
-        database
+        (instance, database)
     }
 
     #[test]
     fn test_settings_store_creation() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -301,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_name_operations() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -317,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_auth_settings_integration() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -346,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_auth_key_operations() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -372,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_update_auth_settings_closure() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -398,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_auth_doc_for_validation() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
@@ -417,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_error_handling() {
-        let database = create_test_database();
+        let (_instance, database) = create_test_database();
         let transaction = database.new_transaction().unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 

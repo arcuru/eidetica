@@ -47,10 +47,15 @@ pub fn create_multi_subtree_operation(
 }
 
 /// Setup a tree with initial data across multiple subtrees
-pub fn setup_tree_with_data(subtree_data: &[(&str, &[(&str, &str)])]) -> eidetica::Database {
-    let tree = setup_tree();
+///
+/// Note: Returns the Instance along with the Database because Database holds a weak reference.
+/// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
+pub fn setup_tree_with_data(
+    subtree_data: &[(&str, &[(&str, &str)])],
+) -> (eidetica::Instance, eidetica::Database) {
+    let (instance, tree) = setup_tree();
     create_multi_subtree_operation(&tree, subtree_data);
-    tree
+    (instance, tree)
 }
 
 // ===== CUSTOM TIPS HELPERS =====

@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_table_basic_crud_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create initial record
     let initial_record = TestRecord {
@@ -73,7 +73,7 @@ fn test_table_basic_crud_operations() {
 
 #[test]
 fn test_table_multiple_records() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create multiple records
     let values = &[10, 20, 30, 40, 50];
@@ -92,7 +92,7 @@ fn test_table_multiple_records() {
 
 #[test]
 fn test_table_search_functionality() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create test records
     let records = create_test_records();
@@ -134,7 +134,7 @@ fn test_table_search_functionality() {
 
 #[test]
 fn test_table_uuid_generation() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Generate 100 records to test UUID uniqueness
     let values: Vec<i32> = (1..=100).collect();
@@ -156,7 +156,7 @@ fn test_table_uuid_generation() {
 
 #[test]
 fn test_table_multiple_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to test multi-operation workflow
     let (key1, key2, key3) = test_table_multi_operations(&tree, "multi_op_test");
@@ -193,7 +193,7 @@ fn test_table_multiple_operations() {
 
 #[test]
 fn test_table_empty_search() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
     let op = tree.new_transaction().expect("Failed to start operation");
 
     {
@@ -223,7 +223,7 @@ fn test_table_empty_search() {
 
 #[test]
 fn test_empty_table_behavior() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test empty Table behavior
     let table_viewer = tree
@@ -238,7 +238,7 @@ fn test_empty_table_behavior() {
 
 #[test]
 fn test_table_delete_basic() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create initial records using helper
     let initial_records = vec![
@@ -298,7 +298,7 @@ fn test_table_delete_basic() {
 
 #[test]
 fn test_table_delete_nonexistent() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create one record
     let record = TestRecord {
@@ -335,7 +335,7 @@ fn test_table_delete_nonexistent() {
 
 #[test]
 fn test_table_delete_and_reinsert() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create initial record
     let initial_record = TestRecord {
@@ -400,7 +400,7 @@ fn test_table_delete_and_reinsert() {
 
 #[test]
 fn test_table_search_after_delete() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create test records using helper
     let records = create_test_records();
@@ -437,7 +437,7 @@ fn test_table_search_after_delete() {
 
 #[test]
 fn test_table_delete_multiple() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create multiple records
     let values = &[10, 20, 30, 40, 50];
@@ -487,7 +487,7 @@ fn test_table_delete_multiple() {
 
 #[test]
 fn test_table_delete_concurrent_modifications() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base record
     let op_base = tree.new_transaction().expect("Failed to start operation");

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Result,
-    backend::{BackendDB, VerificationStatus, errors::BackendError},
+    backend::{BackendImpl, VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
 };
 
@@ -177,7 +177,7 @@ impl Default for InMemory {
     }
 }
 
-impl BackendDB for InMemory {
+impl BackendImpl for InMemory {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

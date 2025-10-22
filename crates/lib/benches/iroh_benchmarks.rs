@@ -35,8 +35,8 @@ async fn setup_iroh_sync_pair() -> (
         Arc::new(Instance::open(Box::new(InMemory::new())).expect("Benchmark setup failed"));
 
     // Create sync engines
-    let mut sync1 = Sync::new(base_db1.backend().clone()).unwrap();
-    let mut sync2 = Sync::new(base_db2.backend().clone()).unwrap();
+    let sync1 = Sync::new((*base_db1).clone()).unwrap();
+    let sync2 = Sync::new((*base_db2).clone()).unwrap();
 
     // Configure Iroh transports for local testing (no relays for consistent benchmarks)
     let transport1 = IrohTransport::builder()
@@ -74,7 +74,7 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     // Setup connection once for all benchmarks
-    let (base_db1, mut sync1, _base_db2, mut sync2, addr2) =
+    let (base_db1, sync1, _base_db2, sync2, addr2) =
         rt.block_on(async { setup_iroh_sync_pair().await });
 
     // Add authentication key
@@ -146,7 +146,7 @@ fn bench_iroh_connection_setup(c: &mut Criterion) {
                     let start = std::time::Instant::now();
 
                     // Measure time to set up Iroh P2P connection
-                    let (_base_db1, mut sync1, _base_db2, mut sync2, _addr2) =
+                    let (_base_db1, sync1, _base_db2, sync2, _addr2) =
                         black_box(setup_iroh_sync_pair().await);
 
                     let duration = start.elapsed();

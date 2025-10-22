@@ -319,7 +319,7 @@ The Instance manages four separate system databases, all authenticated with `_de
 - **Structure**: Various subtrees for sync settings, peer info, bootstrap requests
 - **Authentication**: `_device_key` as Admin
 - **Access**: Managed by Instance and Sync module
-- **Created**: When sync is enabled via `Instance::with_sync()`
+- **Created**: When sync is enabled via `Instance::enable_sync()`
 
 ### Instance Identity vs User Management
 
@@ -462,7 +462,7 @@ impl Instance {
     /// Create instance
     /// - Loads/generates _device_key from backend
     /// - Creates system databases (_instance, _users, _databases)
-    pub fn new(backend: Box<dyn BackendDB>) -> Result<Self>;
+    pub fn open(backend: Box<dyn BackendImpl>) -> Result<Self>;
 }
 ```
 
@@ -509,7 +509,7 @@ pub struct User {
     user_uuid: String,   // Stable internal UUID (Table primary key)
     username: String,    // Username (login identifier)
     user_database: Database,
-    backend: Arc<dyn BackendDB>,
+    instance: WeakInstance,  // Weak reference to Instance for storage access
     /// Decrypted user keys (in memory only during session)
     key_manager: UserKeyManager,
 }

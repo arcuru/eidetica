@@ -406,8 +406,8 @@ async fn test_bidirectional_sync_flow() {
 #[tokio::test]
 async fn test_real_sync_transport_setup() {
     // Create two separate database instances using the helper
-    let (_base_db1, mut sync1) = helpers::setup();
-    let (_base_db2, mut sync2) = helpers::setup();
+    let (_base_db1, sync1) = helpers::setup();
+    let (_base_db2, sync2) = helpers::setup();
 
     // Enable HTTP transport for both
     sync1.enable_http_transport().unwrap();
@@ -485,8 +485,8 @@ async fn test_sync_protocol_implementation() {
     // This test verifies that the sync protocol methods (GetTips, GetEntries, SendEntries)
     // are properly implemented with the SyncHandler architecture and that data actually syncs
 
-    let (base_db1, mut sync1) = helpers::setup();
-    let (base_db2, mut sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup();
+    let (base_db2, sync2) = helpers::setup();
 
     // Enable HTTP transport for both
     sync1.enable_http_transport().unwrap();
@@ -506,13 +506,8 @@ async fn test_sync_protocol_implementation() {
     // Create a tree with data in database 1
     let mut settings = eidetica::crdt::Doc::new();
     settings.set_string("name", "test_tree");
-    let tree1 = Database::create(
-        settings,
-        base_db1.backend().clone(),
-        device_key,
-        "_device_key".to_string(),
-    )
-    .unwrap();
+    let tree1 =
+        Database::create(settings, &base_db1, device_key, "_device_key".to_string()).unwrap();
     let tree_root_id = tree1.root_id().clone();
 
     // Get the root entry to verify it exists
@@ -660,8 +655,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db1, mut sync1) = helpers::setup();
-    let (base_db2, mut sync2) = helpers::setup();
+    let (_base_db1, sync1) = helpers::setup();
+    let (base_db2, sync2) = helpers::setup();
 
     // Enable Iroh transport for both with relays disabled for local testing
     let transport1 = IrohTransport::builder()
@@ -778,7 +773,7 @@ async fn test_iroh_transport_production_defaults() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db, mut sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup();
 
     // Test 1: Default constructor uses production relays
     sync.enable_iroh_transport().unwrap();
@@ -790,7 +785,7 @@ async fn test_iroh_transport_production_defaults() {
     sync.stop_server_async().await.unwrap();
 
     // Test 2: Builder with explicit Default mode
-    let (_base_db2, mut sync2) = helpers::setup();
+    let (_base_db2, sync2) = helpers::setup();
     let transport = IrohTransport::builder()
         .relay_mode(RelayMode::Default)
         .build()
@@ -810,7 +805,7 @@ async fn test_iroh_transport_staging_mode() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db, mut sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup();
 
     let transport = IrohTransport::builder()
         .relay_mode(RelayMode::Staging)
@@ -833,7 +828,7 @@ async fn test_iroh_transport_custom_relay_config() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::{RelayMap, RelayMode, RelayNode, RelayUrl};
 
-    let (_base_db, mut sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup();
 
     // Create a custom relay map pointing to a local relay server
     // (In real usage, you'd run: iroh-relay --dev)

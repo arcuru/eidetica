@@ -2,7 +2,8 @@
 //!
 //! A `Database` represents a hierarchical structure of entries, like a traditional database
 //! or a branch in a version control system. Each database has a root entry and maintains
-//! the history and relationships between entries, interfacing with a backend storage system.
+//! the history and relationships between entries. Database holds a weak reference to its
+//! parent Instance, accessing storage and coordination services through that handle.
 
 use std::sync::Arc;
 
@@ -11,16 +12,16 @@ use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
 use crate::{
-    Result, Transaction,
+    Error, Instance, Result, Transaction,
     auth::{
         crypto::format_public_key,
         settings::AuthSettings,
         types::{AuthKey, Permission, SigKey},
     },
-    backend::BackendDB,
     constants::{ROOT, SETTINGS},
     crdt::{Doc, doc::Value},
     entry::{Entry, ID},
+    instance::backend::Backend,
     instance::errors::InstanceError,
     store::{SettingsStore, Store},
     sync::hooks::SyncHookCollection,
@@ -45,11 +46,11 @@ pub enum KeySource {
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
 ///
 /// Each `Database` is identified by the ID of its root `Entry` and manages the history of data
-/// associated with that root. It interacts with the underlying `Backend` for storage.
+/// associated with that root. It interacts with the underlying storage through the Instance handle.
 #[derive(Clone)]
 pub struct Database {
     root: ID,
-    backend: Arc<dyn BackendDB>,
+    instance: crate::WeakInstance,
     /// Key source for operations on this database
     key_source: Option<KeySource>,
     /// Optional sync hooks to execute after successful commits
@@ -76,7 +77,7 @@ impl Database {
     /// # Arguments
     /// * `initial_settings` - A `Doc` CRDT containing the initial settings for the database.
     ///   If no auth configuration is provided, it will be bootstrapped with the provided key.
-    /// * `backend` - Backend storage reference where database entries will be stored
+    /// * `instance` - Instance handle for storage and coordination
     /// * `signing_key` - The signing key to use for the initial commit and subsequent operations.
     ///   This key should already be decrypted and ready to use.
     /// * `sigkey` - The SigKey identifier to use in the database's auth settings.
@@ -91,9 +92,8 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::crdt::Doc;
-    /// # use std::sync::Arc;
     /// # fn example() -> Result<()> {
-    /// let backend = Arc::new(InMemory::new());
+    /// let instance = Instance::open(Box::new(InMemory::new()))?;
     /// let (signing_key, public_key) = generate_keypair();
     /// let sigkey = format_public_key(&public_key);
     ///
@@ -103,7 +103,7 @@ impl Database {
     /// // Create database with user-managed key (no backend storage needed)
     /// let database = Database::create(
     ///     settings,
-    ///     backend,
+    ///     &instance,
     ///     signing_key,
     ///     sigkey,
     /// )?;
@@ -115,7 +115,7 @@ impl Database {
     /// ```
     pub fn create(
         initial_settings: Doc,
-        backend: Arc<dyn BackendDB>,
+        instance: &crate::Instance,
         signing_key: SigningKey,
         sigkey: String,
     ) -> Result<Self> {
@@ -162,7 +162,7 @@ impl Database {
         // This allows the bootstrap transaction to use the provided key directly
         let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
-            backend: backend.clone(),
+            instance: instance.downgrade(),
             key_source: Some(KeySource::Provided {
                 signing_key: Box::new(signing_key.clone()),
                 sigkey: sigkey.clone(),
@@ -190,7 +190,7 @@ impl Database {
         // Now create the real database with the new_root_id and KeySource::Provided
         Ok(Self {
             root: new_root_id,
-            backend,
+            instance: instance.downgrade(),
             key_source: Some(KeySource::Provided {
                 signing_key: Box::new(signing_key),
                 sigkey,
@@ -201,7 +201,7 @@ impl Database {
 
     /// Creates a new `Database` instance from an existing ID without authentication.
     ///
-    /// This constructor takes an existing `ID` and an `Arc<dyn Backend>`
+    /// This constructor takes an existing `ID` and an Instance handle
     /// and constructs a `Database` instance with the specified root ID.
     /// The resulting database has no key source set, so operations will fail
     /// at commit time without authentication.
@@ -211,14 +211,14 @@ impl Database {
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
-    /// * `backend` - An `Arc<dyn Backend>` reference to the backend where the database's entries will be stored.
+    /// * `instance` - Instance handle for storage and coordination
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
-    pub fn open_readonly(id: ID, backend: Arc<dyn BackendDB>) -> Result<Self> {
+    pub fn open_readonly(id: ID, instance: &crate::Instance) -> Result<Self> {
         Ok(Self {
             root: id,
-            backend,
+            instance: instance.downgrade(),
             key_source: None,
             sync_hooks: None,
         })
@@ -243,7 +243,7 @@ impl Database {
     /// To discover which SigKey to use for a given public key, use `Database::find_sigkeys()`.
     ///
     /// # Arguments
-    /// * `backend` - Backend storage reference
+    /// * `instance` - Instance handle for storage and coordination
     /// * `root_id` - The root entry ID of the existing database to open
     /// * `signing_key` - Decrypted signing key from UserKeyManager
     /// * `sigkey` - SigKey identifier string (use `find_sigkeys()` to discover available options)
@@ -257,14 +257,13 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::auth::types::SigKey;
-    /// # use std::sync::Arc;
     /// # fn example() -> Result<()> {
-    /// # let backend = Arc::new(InMemory::new());
+    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
     /// # let (signing_key, verifying_key) = generate_keypair();
     /// # let root_id = "existing_database_root_id".into();
     /// // Find all SigKeys this public key can use
     /// let pubkey = format_public_key(&verifying_key);
-    /// let sigkeys = Database::find_sigkeys(backend.clone(), &root_id, &pubkey)?;
+    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey)?;
     ///
     /// // Use the first available SigKey
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
@@ -274,7 +273,7 @@ impl Database {
     ///     };
     ///
     ///     // Open database with the resolved SigKey
-    ///     let database = Database::open(backend, &root_id, signing_key, sigkey_str)?;
+    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str)?;
     ///
     ///     // All transactions automatically use the provided key
     ///     let tx = database.new_transaction()?;
@@ -283,14 +282,14 @@ impl Database {
     /// # }
     /// ```
     pub fn open(
-        backend: Arc<dyn BackendDB>,
+        instance: Instance,
         root_id: &ID,
         signing_key: SigningKey,
         sigkey: String,
     ) -> Result<Self> {
         Ok(Self {
             root: root_id.clone(),
-            backend,
+            instance: instance.downgrade(),
             key_source: Some(KeySource::Provided {
                 signing_key: Box::new(signing_key),
                 sigkey,
@@ -314,7 +313,7 @@ impl Database {
     /// select the most privileged access available.
     ///
     /// # Arguments
-    /// * `backend` - Backend storage reference to load database from
+    /// * `instance` - Instance handle for storage and coordination
     /// * `root_id` - Root entry ID of the database to check
     /// * `pubkey` - Public key string (e.g., "Ed25519:abc123...") to look up
     ///
@@ -333,16 +332,15 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::auth::types::SigKey;
-    /// # use std::sync::Arc;
     /// # fn example() -> Result<()> {
-    /// # let backend = Arc::new(InMemory::new());
+    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
     /// # let (signing_key, verifying_key) = generate_keypair();
     /// # let root_id = "database_root_id".into();
     /// // Get the public key string
     /// let pubkey = format_public_key(&verifying_key);
     ///
     /// // Find all SigKeys this pubkey can use (sorted highest permission first)
-    /// let sigkeys = Database::find_sigkeys(backend.clone(), &root_id, &pubkey)?;
+    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey)?;
     ///
     /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
@@ -350,18 +348,18 @@ impl Database {
     ///         SigKey::Direct(name) => name.clone(),
     ///         _ => panic!("Delegation paths not yet supported"),
     ///     };
-    ///     let database = Database::open(backend, &root_id, signing_key, sigkey_str)?;
+    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str)?;
     /// }
     /// # Ok(())
     /// # }
     /// ```
     pub fn find_sigkeys(
-        backend: Arc<dyn BackendDB>,
+        instance: &Instance,
         root_id: &ID,
         pubkey: &str,
     ) -> Result<Vec<(SigKey, Permission)>> {
         // Create temporary database to load settings (no key source needed for reading)
-        let temp_db = Self::open_readonly(root_id.clone(), backend)?;
+        let temp_db = Self::open_readonly(root_id.clone(), instance)?;
 
         // Load auth settings
         let settings_store = temp_db.get_settings()?;
@@ -407,14 +405,25 @@ impl Database {
         &self.root
     }
 
+    /// Upgrade the weak instance reference to a strong reference.
+    ///
+    /// # Returns
+    /// A `Result` containing the Instance or an error if the Instance has been dropped.
+    pub(crate) fn instance(&self) -> Result<Instance> {
+        self.instance
+            .upgrade()
+            .ok_or_else(|| Error::Instance(InstanceError::InstanceDropped))
+    }
+
     /// Get a reference to the backend
-    pub fn backend(&self) -> &Arc<dyn BackendDB> {
-        &self.backend
+    pub fn backend(&self) -> Result<Backend> {
+        Ok(self.instance()?.backend().clone())
     }
 
     /// Retrieve the root entry from the backend
     pub fn get_root(&self) -> Result<Entry> {
-        self.backend.get(&self.root)
+        let instance = self.instance()?;
+        instance.get(&self.root)
     }
 
     /// Get a read-only settings store for the database.
@@ -501,12 +510,12 @@ impl Database {
 
     /// Insert an entry into the database without modifying it.
     /// This is primarily for testing purposes or when you need full control over the entry.
-    /// Note: Since all entries must now be authenticated, this method assumes the entry
-    /// is already properly signed and verified.
+    /// Note: This method assumes the entry is already properly signed and verified.
     pub fn insert_raw(&self, entry: Entry) -> Result<ID> {
+        let instance = self.instance()?;
         let id = entry.id();
 
-        self.backend.put_verified(entry)?;
+        instance.put(crate::backend::VerificationStatus::Verified, entry)?;
 
         Ok(id)
     }
@@ -532,7 +541,8 @@ impl Database {
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
     pub fn get_tips(&self) -> Result<Vec<ID>> {
-        self.backend.get_tips(&self.root)
+        let instance = self.instance()?;
+        instance.get_tips(&self.root)
     }
 
     /// Get the full `Entry` objects for the current tips of the main database branch.
@@ -540,8 +550,9 @@ impl Database {
     /// # Returns
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
     pub fn get_tip_entries(&self) -> Result<Vec<Entry>> {
-        let tips = self.backend.get_tips(&self.root)?;
-        let entries: Result<Vec<_>> = tips.iter().map(|id| self.backend.get(id)).collect();
+        let instance = self.instance()?;
+        let tips = instance.get_tips(&self.root)?;
+        let entries: Result<Vec<_>> = tips.iter().map(|id| instance.get(id)).collect();
         entries
     }
 
@@ -580,8 +591,9 @@ impl Database {
     /// # }
     /// ```
     pub fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
+        let instance = self.instance()?;
         let id = entry_id.into();
-        let entry = self.backend.get(&id)?;
+        let entry = instance.get(&id)?;
 
         // Check if the entry belongs to this database
         if !entry.in_tree(&self.root) {
@@ -633,10 +645,11 @@ impl Database {
     {
         // Collect IDs first to minimize conversions and avoid repeat work in iterator chain
         let ids: Vec<ID> = entry_ids.into_iter().map(Into::into).collect();
+        let instance = self.instance()?;
         let mut entries = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let entry = self.backend.get(&id)?;
+            let entry = instance.get(&id)?;
 
             // Check if the entry belongs to this database
             if !entry.in_tree(&self.root) {
@@ -689,8 +702,9 @@ impl Database {
         let historical_settings = self.get_historical_settings_for_entry(&entry)?;
 
         // Use the authentication validator with historical settings
+        let instance = self.instance()?;
         let mut validator = crate::auth::validation::AuthValidator::new();
-        validator.validate_entry(&entry, &historical_settings, Some(&self.backend))
+        validator.validate_entry(&entry, &historical_settings, Some(&instance))
     }
 
     /// Get the effective permission level for a given SigKey in this database.
@@ -716,13 +730,12 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
-    /// # use std::sync::Arc;
     /// # fn example() -> Result<()> {
-    /// # let backend = Arc::new(InMemory::new());
+    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
     /// # let (signing_key, _) = generate_keypair();
     /// # let database = Database::create(
     /// #     eidetica::crdt::Doc::new(),
-    /// #     backend,
+    /// #     &instance,
     /// #     signing_key,
     /// #     "my_key".to_string(),
     /// # )?;
@@ -742,8 +755,9 @@ impl Database {
         let auth_settings = settings_store.get_auth_settings()?;
 
         // Create SigKey and validate entry auth to get effective permission
+        let instance = self.instance()?;
         let sig_key = crate::auth::types::SigKey::Direct(sigkey.to_string());
-        let resolved_auth = auth_settings.validate_entry_auth(&sig_key, Some(&self.backend))?;
+        let resolved_auth = auth_settings.validate_entry_auth(&sig_key, Some(&instance))?;
 
         Ok(resolved_auth.effective_permission)
     }
@@ -784,7 +798,8 @@ impl Database {
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the database
     pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
-        self.backend.get_tree(&self.root)
+        let instance = self.instance()?;
+        instance.backend().get_tree(&self.root)
     }
 }
 
@@ -795,8 +810,8 @@ mod tests {
 
     #[test]
     fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
-        // Create a backend
-        let backend = Arc::new(InMemory::new());
+        // Create instance
+        let instance = Instance::open(Box::new(InMemory::new()))?;
 
         // Generate a test key
         let (signing_key, public_key) = generate_keypair();
@@ -826,15 +841,10 @@ mod tests {
         settings.set_doc("auth", auth_settings.as_doc().clone());
 
         // Create database
-        let db = Database::create(
-            settings,
-            backend.clone(),
-            signing_key,
-            "key_admin".to_string(),
-        )?;
+        let db = Database::create(settings, &instance, signing_key, "key_admin".to_string())?;
 
         // Call find_sigkeys
-        let results = Database::find_sigkeys(backend, db.root_id(), &pubkey_str)?;
+        let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str)?;
 
         // Verify we got all 4 keys
         assert_eq!(results.len(), 4, "Should find all 4 keys");

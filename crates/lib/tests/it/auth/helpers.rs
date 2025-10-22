@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ed25519_dalek::VerifyingKey;
 use eidetica::{
     Database, Instance,
@@ -12,7 +10,6 @@ use eidetica::{
         },
         validation::AuthValidator,
     },
-    backend::BackendDB,
     crdt::Doc,
     entry::ID,
     store::DocStore,
@@ -460,12 +457,12 @@ pub fn assert_permission_resolution(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     auth_settings: &AuthSettings,
-    backend: Option<&Arc<dyn BackendDB>>,
+    instance: Option<&Instance>,
     expected_permission: Permission,
     expected_status: KeyStatus,
 ) {
     let result = validator
-        .resolve_sig_key(sig_key, auth_settings, backend)
+        .resolve_sig_key(sig_key, auth_settings, instance)
         .expect("Permission resolution should succeed");
 
     assert_eq!(
@@ -483,10 +480,10 @@ pub fn assert_permission_resolution_fails(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     auth_settings: &AuthSettings,
-    backend: Option<&Arc<dyn BackendDB>>,
+    instance: Option<&Instance>,
     expected_error_pattern: &str,
 ) {
-    let result = validator.resolve_sig_key(sig_key, auth_settings, backend);
+    let result = validator.resolve_sig_key(sig_key, auth_settings, instance);
     assert!(
         result.is_err(),
         "Permission resolution should fail for {sig_key:?}"

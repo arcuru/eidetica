@@ -23,10 +23,11 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
     // Setup server with restricted auth policy - only specific admin keys allowed
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     // Add server admin key
     server_instance
@@ -68,14 +69,17 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     );
 
     // Start server
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = {
+        let server_sync = server_instance.sync().expect("Server should have sync");
+        start_sync_server(&server_sync).await
+    };
 
     // Setup client with its own key
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("unauthorized_client")
@@ -91,23 +95,26 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     );
 
     // Enable client sync
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
-    client_sync
-        .enable_http_transport()
-        .expect("Failed to enable HTTP transport");
+    let bootstrap_result = {
+        let client_sync = client_instance.sync().expect("Client should have sync");
+        client_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
 
-    // Attempt bootstrap with key approval request - should be REJECTED by default
-    let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
-            &server_addr,
-            &restricted_tree_id,
-            "unauthorized_client", // Client's key name
-            Permission::Write(10), // Requested permission level
-        )
-        .await;
+        // Attempt bootstrap with key approval request - should be REJECTED by default
+        let result = client_sync
+            .sync_with_peer_for_bootstrap(
+                &server_addr,
+                &restricted_tree_id,
+                "unauthorized_client", // Client's key name
+                Permission::Write(10), // Requested permission level
+            )
+            .await;
 
-    // Wait for any async processing
-    tokio::time::sleep(Duration::from_millis(100)).await;
+        // Wait for any async processing
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        result
+    };
 
     println!("🔍 Bootstrap result: {:?}", bootstrap_result);
 
@@ -150,7 +157,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     );
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_sync = server_instance.sync().expect("Server should have sync");
     server_sync.stop_server_async().await.unwrap();
 }
 
@@ -167,10 +174,11 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Setup server with a database that has NO authentication configuration
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_key")
@@ -192,14 +200,17 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Start server
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = {
+        let server_sync = server_instance.sync().expect("Server should have sync");
+        start_sync_server(&server_sync).await
+    };
 
     // Setup client
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("client_key")
@@ -209,22 +220,25 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
         .get_formatted_public_key("client_key")
         .expect("Failed to get client public key");
 
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
-    client_sync
-        .enable_http_transport()
-        .expect("Failed to enable HTTP transport");
+    let bootstrap_result = {
+        let client_sync = client_instance.sync().expect("Client should have sync");
+        client_sync
+            .enable_http_transport()
+            .expect("Failed to enable HTTP transport");
 
-    // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
-    let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
-            &server_addr,
-            &unprotected_tree_id,
-            "client_key",
-            Permission::Write(10),
-        )
-        .await;
+        // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
+        let result = client_sync
+            .sync_with_peer_for_bootstrap(
+                &server_addr,
+                &unprotected_tree_id,
+                "client_key",
+                Permission::Write(10),
+            )
+            .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        result
+    };
 
     println!("🔍 Bootstrap result: {:?}", bootstrap_result);
 
@@ -269,7 +283,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_sync = server_instance.sync().expect("Server should have sync");
     server_sync.stop_server_async().await.unwrap();
 }
 
@@ -282,10 +296,11 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
     // Setup server
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_key")
@@ -302,14 +317,17 @@ async fn test_bootstrap_invalid_public_key_format() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = {
+        let server_sync = server_instance.sync().expect("Server should have sync");
+        start_sync_server(&server_sync).await
+    };
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     // Note: We can't directly test malformed keys in the current API since
     // add_private_key() creates valid keys. This test documents the need for
@@ -318,7 +336,7 @@ async fn test_bootstrap_invalid_public_key_format() {
         .add_private_key("client_with_spaces_and_symbols!@#")
         .expect("Failed to add client key");
 
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
+    let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
         .expect("Failed to enable HTTP transport");
@@ -349,7 +367,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("✅ Expected secure behavior: Bootstrap rejected unusual key name");
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_sync = server_instance.sync().expect("Server should have sync");
     server_sync.stop_server_async().await.unwrap();
 }
 
@@ -362,10 +380,11 @@ async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
     // Setup server with auth configuration including a revoked key
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_admin")
@@ -419,14 +438,17 @@ async fn test_bootstrap_with_revoked_key() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = {
+        let server_sync = server_instance.sync().expect("Server should have sync");
+        start_sync_server(&server_sync).await
+    };
 
     // Setup different client instance (to simulate external client using revoked key)
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     // Note: In a real scenario, the client would have the private key corresponding
     // to the revoked public key. For testing, we create a key with the same name.
@@ -434,7 +456,7 @@ async fn test_bootstrap_with_revoked_key() {
         .add_private_key("attempting_revoked_access")
         .expect("Failed to add client key");
 
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
+    let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
         .expect("Failed to enable HTTP transport");
@@ -467,7 +489,7 @@ async fn test_bootstrap_with_revoked_key() {
     );
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_sync = server_instance.sync().expect("Server should have sync");
     server_sync.stop_server_async().await.unwrap();
 }
 
@@ -480,10 +502,11 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
     // Setup server with policy allowing only Read permissions for new clients
-    let mut server_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create server instance");
+    let server_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    server_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_admin")
@@ -519,20 +542,23 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let tree_id = server_database.root_id().clone();
 
     // Start server
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
-    let server_addr = start_sync_server(server_sync).await;
+    let server_addr = {
+        let server_sync = server_instance.sync().expect("Server should have sync");
+        start_sync_server(&server_sync).await
+    };
 
     // Setup client requesting Admin permissions (should be excessive)
-    let mut client_instance = Instance::open(Box::new(InMemory::new()))
-        .expect("Failed to create test instance")
-        .with_sync()
-        .expect("Failed to create client instance");
+    let client_instance =
+        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    client_instance
+        .enable_sync()
+        .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("greedy_client")
         .expect("Failed to add client key");
 
-    let client_sync = client_instance.sync_mut().expect("Client should have sync");
+    let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
         .expect("Failed to enable HTTP transport");
@@ -581,6 +607,6 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     );
 
     // Cleanup
-    let server_sync = server_instance.sync_mut().expect("Server should have sync");
+    let server_sync = server_instance.sync().expect("Server should have sync");
     server_sync.stop_server_async().await.unwrap();
 }

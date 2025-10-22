@@ -407,8 +407,7 @@ fn test_complete_delegation_workflow() {
         },
     ]);
 
-    let result =
-        validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&db));
 
     // Should succeed with permission clamping (Admin -> Write due to bounds)
     assert!(
@@ -493,7 +492,7 @@ fn test_delegated_tree_requires_tips() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db));
 
     // Should fail because tips are required for delegated tree resolution
     assert!(result.is_err());
@@ -659,8 +658,7 @@ fn test_nested_delegation_with_permission_clamping() {
         },
     ]);
 
-    let result =
-        validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&db));
 
     // Should succeed with multi-level permission clamping:
     // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)

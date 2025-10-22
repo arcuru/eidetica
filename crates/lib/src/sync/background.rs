@@ -27,7 +27,6 @@ use super::{
 use crate::{
     Database, Result,
     auth::crypto::{format_public_key, generate_challenge, verify_challenge_response},
-    backend::BackendDB,
     entry::{Entry, ID},
 };
 
@@ -91,7 +90,7 @@ struct RetryEntry {
 pub struct BackgroundSync {
     // Core components - owns everything
     transport: Box<dyn SyncTransport>,
-    backend: Arc<dyn BackendDB>,
+    instance: crate::WeakInstance,
     sync_tree_id: ID,
 
     // Server state
@@ -108,14 +107,14 @@ impl BackgroundSync {
     /// Start the background sync engine and return a command sender
     pub fn start(
         transport: Box<dyn SyncTransport>,
-        backend: Arc<dyn BackendDB>,
+        instance: crate::Instance,
         sync_tree_id: ID,
     ) -> mpsc::Sender<SyncCommand> {
         let (tx, rx) = mpsc::channel(100);
 
         let background = Self {
             transport,
-            backend,
+            instance: instance.downgrade(),
             sync_tree_id,
             server_address: None,
             retry_queue: Vec::new(),
@@ -135,18 +134,26 @@ impl BackgroundSync {
         tx
     }
 
+    /// Upgrade the weak instance reference to a strong reference.
+    fn instance(&self) -> Result<crate::Instance> {
+        self.instance
+            .upgrade()
+            .ok_or_else(|| crate::sync::error::SyncError::InstanceDropped.into())
+    }
+
     /// Get the sync tree for accessing peer data
     fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
-        let signing_key = self
-            .backend
+        let instance = self.instance()?;
+        let signing_key = instance
+            .backend()
             .get_private_key(DEVICE_KEY_NAME)?
             .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
 
         Database::open(
-            self.backend.clone(),
+            instance,
             &self.sync_tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
@@ -220,7 +227,8 @@ impl BackgroundSync {
                 tree_id: _,
             } => {
                 // Fetch entry and send immediately
-                match self.backend.get(&entry_id) {
+                let instance = self.instance()?;
+                match instance.backend().get(&entry_id) {
                     Ok(entry) => {
                         if let Err(e) = self.send_to_peer(&peer, vec![entry.clone()]).await {
                             self.add_to_retry_queue(peer, vec![entry], e);
@@ -503,8 +511,9 @@ impl BackgroundSync {
             trace!(peer = %peer_pubkey, tree = %tree_id, "Starting unified tree synchronization");
 
             // Get our tips for this tree (empty if tree doesn't exist)
-            let our_tips = self
-                .backend
+            let instance = self.instance()?;
+            let our_tips = instance
+                .backend()
                 .get_tips(tree_id)
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
@@ -575,7 +584,8 @@ impl BackgroundSync {
             // Verify parent entries exist before storing children
             if let Ok(parents) = entry.parents() {
                 for parent_id in &parents {
-                    if let Err(e) = self.backend.get(parent_id) {
+                    let instance = self.instance()?;
+                    if let Err(e) = instance.backend().get(parent_id) {
                         if e.is_not_found() {
                             return Err(SyncError::InvalidEntry(format!(
                                 "Parent entry {} not found when storing entry {}",
@@ -597,7 +607,9 @@ impl BackgroundSync {
             }
 
             // Store the entry
-            self.backend
+            let instance = self.instance()?;
+            instance
+                .backend()
                 .put_verified(entry)
                 .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
         }
@@ -621,9 +633,9 @@ impl BackgroundSync {
             .into());
         }
 
-        // Create a sync handler with backend access and sync tree ID
+        // Create a sync handler with instance access and sync tree ID
         let handler = Arc::new(SyncHandlerImpl::new(
-            self.backend.clone(),
+            self.instance()?,
             self.sync_tree_id.clone(),
         ));
 
@@ -670,15 +682,17 @@ impl BackgroundSync {
 
         // Get our device info from backend
         let device_id = "background_sync_device".to_string(); // TODO: Get actual device ID
-        let public_key = if let Some(signing_key) = self.backend.get_private_key(DEVICE_KEY_NAME)? {
-            let verifying_key = signing_key.verifying_key();
-            format_public_key(&verifying_key)
-        } else {
-            return Err(SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            }
-            .into());
-        };
+        let instance = self.instance()?;
+        let public_key =
+            if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME)? {
+                let verifying_key = signing_key.verifying_key();
+                format_public_key(&verifying_key)
+            } else {
+                return Err(SyncError::DeviceKeyNotFound {
+                    key_name: DEVICE_KEY_NAME.to_string(),
+                }
+                .into());
+            };
 
         // Create handshake request
         let handshake_request = HandshakeRequest {
@@ -782,7 +796,9 @@ impl BackgroundSync {
         trace!(tree_id = %response.tree_id, "Processing bootstrap response");
 
         // Store root entry first
-        self.backend
+        let instance = self.instance()?;
+        instance
+            .backend()
             .put_verified(response.root_entry)
             .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
 

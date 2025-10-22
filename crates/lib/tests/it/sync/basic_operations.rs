@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::helpers::*;
 
 #[test]
@@ -22,7 +20,7 @@ fn test_sync_load() {
     let sync_root_id = sync.sync_tree_root_id().clone();
 
     // Load the sync instance from the root ID
-    let loaded_sync = Sync::load(Arc::clone(base_db.backend()), &sync_root_id).unwrap();
+    let loaded_sync = Sync::load(base_db.clone(), &sync_root_id).unwrap();
 
     // Verify it's the same sync tree
     assert_trees_equal(&sync, &loaded_sync);
@@ -30,7 +28,7 @@ fn test_sync_load() {
 
 #[test]
 fn test_sync_settings_operations() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Store a dummy setting
     sync.set_setting("test_setting", "test_value").unwrap();
@@ -50,7 +48,7 @@ fn test_sync_settings_operations() {
 fn test_sync_settings_persistence() {
     use eidetica::sync::Sync;
 
-    let (base_db, mut sync) = setup();
+    let (base_db, sync) = setup();
 
     // Store a persistent setting
     sync.set_setting("persistent_setting", "persistent_value")
@@ -58,7 +56,7 @@ fn test_sync_settings_persistence() {
     let sync_root_id = sync.sync_tree_root_id().clone();
 
     // Load a new Sync instance from the same root ID
-    let loaded_sync = Sync::load(Arc::clone(base_db.backend()), &sync_root_id).unwrap();
+    let loaded_sync = Sync::load(base_db.clone(), &sync_root_id).unwrap();
 
     // Verify the setting was persisted
     assert_setting(&loaded_sync, "persistent_setting", "persistent_value");
@@ -66,7 +64,7 @@ fn test_sync_settings_persistence() {
 
 #[test]
 fn test_sync_multiple_settings() {
-    let (_base_db, mut sync) = setup();
+    let (_base_db, sync) = setup();
 
     // Set multiple settings using helper
     let settings_to_set = &[
@@ -74,7 +72,7 @@ fn test_sync_multiple_settings() {
         ("config_option_2", "value_2"),
         ("server_url", "https://example.com"),
     ];
-    set_multiple_settings(&mut sync, settings_to_set);
+    set_multiple_settings(&sync, settings_to_set);
 
     // Verify all settings using helper
     assert_multiple_settings(&sync, settings_to_set);

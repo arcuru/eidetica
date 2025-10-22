@@ -35,8 +35,8 @@ where
     F: TransportFactory,
 {
     // Create sync instances with transports
-    let mut sync1 = factory.create_sync(db1.backend().clone())?;
-    let mut sync2 = factory.create_sync(db2.backend().clone())?;
+    let sync1 = factory.create_sync(db1.clone())?;
+    let sync2 = factory.create_sync(db2.clone())?;
 
     // Start servers on any available port
     sync1.start_server_async("127.0.0.1:0").await?;
@@ -104,10 +104,7 @@ fn setup_sync_hooks(
 }
 
 /// Clean up sync instances
-async fn cleanup_sync(
-    mut sync1: eidetica::sync::Sync,
-    mut sync2: eidetica::sync::Sync,
-) -> Result<()> {
+async fn cleanup_sync(sync1: eidetica::sync::Sync, sync2: eidetica::sync::Sync) -> Result<()> {
     sync1.stop_server_async().await?;
     sync2.stop_server_async().await?;
     Ok(())

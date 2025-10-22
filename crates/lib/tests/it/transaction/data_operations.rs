@@ -15,7 +15,7 @@ use crate::helpers::*;
 #[test]
 fn test_transaction_with_delete() {
     // Create a backend and a tree
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create an operation and add some data
     let op1 = tree.new_transaction().unwrap();
@@ -50,7 +50,7 @@ fn test_transaction_with_delete() {
 #[test]
 fn test_transaction_nested_values() {
     const TEST_KEY: &str = "test_key";
-    let (_db, tree) = setup_db_and_tree_with_key(TEST_KEY);
+    let (_instance, tree) = setup_db_and_tree_with_key(TEST_KEY);
 
     // Create an operation
     let op1 = tree.new_transaction().unwrap();
@@ -98,7 +98,7 @@ fn test_transaction_nested_values() {
 
 #[test]
 fn test_transaction_staged_data_isolation() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create initial data
     let op1 = tree.new_transaction().unwrap();
@@ -144,7 +144,7 @@ fn test_transaction_staged_data_isolation() {
 
 #[test]
 fn test_metadata_for_settings_entries() {
-    let tree = setup_tree_with_settings(&[("name", "test_tree")]);
+    let (_instance, tree) = setup_tree_with_settings(&[("name", "test_tree")]);
 
     // Create a settings update
     let settings_op = tree.new_transaction().unwrap();
@@ -176,7 +176,7 @@ fn test_metadata_for_settings_entries() {
 
 #[test]
 fn test_delete_operations_with_helpers() {
-    let tree = setup_tree_with_data(&[(
+    let (_instance, tree) = setup_tree_with_data(&[(
         "data",
         &[
             ("keep1", "value1"),
@@ -204,7 +204,7 @@ fn test_delete_operations_with_helpers() {
 
 #[test]
 fn test_nested_map_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test nested map creation helper
     let nested_value = create_nested_map(&[("key1", "val1"), ("key2", "val2")]);
@@ -235,7 +235,7 @@ fn test_nested_map_operations() {
 
 #[test]
 fn test_nested_data_operations_with_helpers() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test nested data creation helper
     let entry_id = create_operation_with_nested_data(&tree);

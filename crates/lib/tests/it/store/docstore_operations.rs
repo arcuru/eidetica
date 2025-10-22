@@ -16,7 +16,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_dict_set_and_get_via_op() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create initial data
     let initial_data = &[("key1", "value1"), ("key2", "value2")];
@@ -59,7 +59,7 @@ fn test_dict_set_and_get_via_op() {
 
 #[test]
 fn test_dict_get_all_via_viewer() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test dict persistence helper
     test_dict_persistence(&tree, "my_kv");
@@ -88,7 +88,7 @@ fn test_dict_get_all_via_viewer() {
 
 #[test]
 fn test_dict_get_all_empty() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Get viewer for a non-existent subtree
     let viewer = tree
@@ -102,7 +102,7 @@ fn test_dict_get_all_empty() {
 
 #[test]
 fn test_dict_delete() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
     let op = tree.new_transaction().expect("Failed to start operation");
 
     {
@@ -138,7 +138,7 @@ fn test_dict_delete() {
 
 #[test]
 fn test_dict_set_value() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create nested map operation
     create_dict_with_nested_map(&tree, "my_kv");
@@ -157,7 +157,7 @@ fn test_dict_set_value() {
 
 #[test]
 fn test_dict_list_basic_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Use helper to create Doc with list
     let list_items = &["apple", "banana", "orange"];
@@ -169,7 +169,7 @@ fn test_dict_list_basic_operations() {
 
 #[test]
 fn test_dict_list_nonexistent_key() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
     let op = tree.new_transaction().expect("Failed to start operation");
 
     {
@@ -205,7 +205,7 @@ fn test_dict_list_nonexistent_key() {
 
 #[test]
 fn test_dict_list_persistence() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create list in first operation
     let op1 = tree.new_transaction().expect("Failed to start op1");
@@ -254,7 +254,7 @@ fn test_dict_list_persistence() {
 
 #[test]
 fn test_dict_update_nested_value() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // First operation: Create initial nested structure
     let op1 = tree.new_transaction().expect("Op1: Failed to start");
@@ -329,7 +329,7 @@ fn test_dict_update_nested_value() {
 
 #[test]
 fn test_dict_comprehensive_operations() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
     let op = tree.new_transaction().expect("Failed to start operation");
 
     {
@@ -377,7 +377,7 @@ fn test_dict_comprehensive_operations() {
 
 #[test]
 fn test_empty_dict_behavior() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Test empty Doc behavior
     assert_dict_viewer_count(&tree, "empty_dict", 0);
@@ -390,7 +390,7 @@ fn test_empty_dict_behavior() {
 
 #[test]
 fn test_docstore_path_based_access() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create operation and set up nested data structure
     let op = tree.new_transaction().expect("Failed to start operation");
@@ -535,7 +535,7 @@ fn test_docstore_path_based_access() {
 
 #[test]
 fn test_docstore_path_mixed_with_staging() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create initial committed data
     {
@@ -623,7 +623,7 @@ fn test_docstore_path_mixed_with_staging() {
 
 #[test]
 fn test_docstore_set_path() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -714,7 +714,7 @@ fn test_docstore_set_path() {
 
 #[test]
 fn test_docstore_modify_path() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -783,7 +783,7 @@ fn test_docstore_modify_path() {
 
 #[test]
 fn test_docstore_get_or_insert_path() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -874,7 +874,7 @@ fn test_docstore_get_or_insert_path() {
 
 #[test]
 fn test_docstore_modify_or_insert_path() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -995,7 +995,7 @@ fn test_docstore_modify_or_insert_path() {
 
 #[test]
 fn test_docstore_path_mutation_interoperability() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -1098,7 +1098,7 @@ fn test_docstore_path_mutation_interoperability() {
 
 #[test]
 fn test_docstore_contains_key() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -1170,7 +1170,7 @@ fn test_docstore_contains_key() {
 
 #[test]
 fn test_docstore_contains_path() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op
@@ -1284,7 +1284,7 @@ fn test_docstore_contains_path() {
 
 #[test]
 fn test_docstore_contains_methods_consistency() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     let op = tree.new_transaction().expect("Failed to start operation");
     let dict = op

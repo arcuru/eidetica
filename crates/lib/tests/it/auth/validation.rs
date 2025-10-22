@@ -30,7 +30,7 @@ fn test_authentication_validation_revoked_key() {
         .expect("Revoked key should exist in backend");
 
     let tree_with_revoked_key = eidetica::Database::open(
-        db.backend().clone(),
+        db.clone(),
         tree.root_id(),
         revoked_signing_key,
         "REVOKED_KEY".to_string(),
@@ -70,7 +70,7 @@ fn test_permission_checking_admin_operations() {
         .expect("Failed to get write key")
         .expect("Write key should exist in backend");
     let tree_with_write_key = eidetica::Database::open(
-        db.backend().clone(),
+        db.clone(),
         tree.root_id(),
         write_signing_key,
         "WRITE_KEY".to_string(),
@@ -90,7 +90,7 @@ fn test_permission_checking_admin_operations() {
         .expect("Failed to get secondary admin key")
         .expect("Secondary admin key should exist in backend");
     let tree_with_secondary_admin_key = eidetica::Database::open(
-        db.backend().clone(),
+        db.clone(),
         tree.root_id(),
         secondary_admin_signing_key,
         "SECONDARY_ADMIN_KEY".to_string(),
@@ -234,7 +234,7 @@ fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get active key")
         .expect("Active key should exist in backend");
     let tree_with_active_key = eidetica::Database::open(
-        db.backend().clone(),
+        db.clone(),
         tree.root_id(),
         active_signing_key,
         "ACTIVE_KEY".to_string(),
@@ -255,7 +255,7 @@ fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get revoked key")
         .expect("Revoked key should exist in backend");
     let tree_with_revoked_key = eidetica::Database::open(
-        db.backend().clone(),
+        db.clone(),
         tree.root_id(),
         revoked_signing_key,
         "REVOKED_KEY".to_string(),

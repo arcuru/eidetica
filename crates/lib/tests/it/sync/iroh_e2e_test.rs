@@ -16,8 +16,8 @@ use super::helpers;
 #[tokio::test]
 async fn test_iroh_e2e_basic_local() {
     // Setup with disabled relays for reliable local testing
-    let (base_db1, mut sync1) = helpers::setup();
-    let (_base_db2, mut sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup();
+    let (_base_db2, sync2) = helpers::setup();
 
     let transport1 = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
@@ -91,8 +91,8 @@ async fn test_iroh_e2e_basic_local() {
 #[ignore = "Slow test: Includes intentional network timeouts (10-30+ seconds)"]
 async fn test_iroh_e2e_resilience() {
     // Setup nodes with local transport
-    let (base_db1, mut sync1) = helpers::setup();
-    let (_base_db2, mut sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup();
+    let (_base_db2, sync2) = helpers::setup();
 
     let transport1 = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
@@ -221,8 +221,8 @@ async fn test_iroh_e2e_with_relays() {
     println!();
 
     // Create two independent databases with sync engines
-    let (base_db1, mut sync1) = helpers::setup();
-    let (base_db2, mut sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup();
+    let (base_db2, sync2) = helpers::setup();
 
     // Enable Iroh transport with production relays (default)
     println!("🔧 Enabling Iroh transport with production relay servers...");

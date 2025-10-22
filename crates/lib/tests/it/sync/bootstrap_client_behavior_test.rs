@@ -16,13 +16,13 @@ async fn test_client_polling_for_pending_status() {
     info!("Testing client polling for pending bootstrap request status");
 
     // Setup server with manual approval
-    let (_server_instance, _database, mut server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (_client_instance, mut client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client();
 
     // Client attempts bootstrap (should be pending due to manual approval)
     client_sync.enable_http_transport().unwrap();
@@ -58,13 +58,13 @@ async fn test_client_retry_after_pending() {
     info!("Testing client retry behavior after pending approval");
 
     // Setup server with manual approval
-    let (_server_instance, _database, mut server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, mut client_sync) = setup_simple_client();
+    let (client_instance, client_sync) = setup_simple_client();
 
     // First attempt - should be pending
     client_sync.enable_http_transport().unwrap();
@@ -121,13 +121,13 @@ async fn test_duplicate_bootstrap_requests() {
     info!("Testing duplicate bootstrap requests from same client");
 
     // Setup server with manual approval
-    let (_server_instance, _database, mut server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (_client_instance, mut client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client();
 
     // First bootstrap attempt
     client_sync.enable_http_transport().unwrap();
@@ -173,13 +173,13 @@ async fn test_client_behavior_after_rejection() {
     info!("Testing client behavior after bootstrap request rejection");
 
     // Setup server with manual approval
-    let (_server_instance, _database, mut server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, mut client_sync) = setup_simple_client();
+    let (client_instance, client_sync) = setup_simple_client();
 
     // Bootstrap attempt - should be pending
     client_sync.enable_http_transport().unwrap();
@@ -225,10 +225,10 @@ async fn test_client_different_permission_requests() {
     info!("Testing client bootstrap with different permission levels");
 
     // Setup server with manual approval
-    let (_server_instance, _database, mut server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
 
     // Start server
-    let server_addr = start_sync_server(&mut server_sync).await;
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Test different permission levels
     let permission_levels = [
@@ -239,7 +239,7 @@ async fn test_client_different_permission_requests() {
 
     for (i, permission) in permission_levels.iter().enumerate() {
         let client_key = format!("client_key_{}", i);
-        let (_client_instance, mut client_sync) = setup_bootstrap_client(&client_key);
+        let (_client_instance, client_sync) = setup_bootstrap_client(&client_key);
 
         client_sync.enable_http_transport().unwrap();
 
@@ -278,7 +278,7 @@ async fn test_client_connection_error_handling() {
     info!("Testing client connection error handling");
 
     // Setup client
-    let (_client_instance, mut client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client();
     client_sync.enable_http_transport().unwrap();
 
     // Try to connect to non-existent server

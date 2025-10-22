@@ -90,7 +90,7 @@ async fn test_auto_approve_still_works() {
 
 #[tokio::test]
 async fn test_approve_bootstrap_request() {
-    let (_instance, database, mut sync, tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, tree_id) = setup_manual_approval_server();
 
     // Server already has admin key "server_admin" from setup_manual_approval_server
 
@@ -110,7 +110,7 @@ async fn test_approve_bootstrap_request() {
     assert_request_stored(&sync, 1);
 
     // Approve the request using server admin key
-    approve_request(&mut sync, &request_id, "server_admin")
+    approve_request(&sync, &request_id, "server_admin")
         .expect("Failed to approve bootstrap request");
 
     println!("✅ Bootstrap request approved successfully");
@@ -157,12 +157,14 @@ async fn test_approve_bootstrap_request() {
 
 #[tokio::test]
 async fn test_reject_bootstrap_request() {
-    let (_instance, database, mut sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id) = setup_manual_approval_server();
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler =
-        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let sync_handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
 
     // Create a bootstrap request that will be stored as pending
     let test_key = generate_public_key();
@@ -230,14 +232,16 @@ async fn test_reject_bootstrap_request() {
 
 #[tokio::test]
 async fn test_list_bootstrap_requests_by_status() {
-    let (_instance, database, mut sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id) = setup_manual_approval_server();
     let tree_id = database.root_id().clone();
 
     // Server already has admin key "server_admin" from setup_manual_approval_server
 
     // Create sync handler
-    let sync_handler =
-        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let sync_handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
 
     // Create and store a bootstrap request
     let test_key = generate_public_key();
@@ -288,8 +292,10 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler =
-        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let sync_handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
 
     // Create first bootstrap request
     let test_key = generate_public_key();
@@ -357,7 +363,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
 
 #[tokio::test]
 async fn test_approval_with_nonexistent_request_id() {
-    let (_instance, _database, mut sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, _database, sync, _tree_id) = setup_manual_approval_server();
 
     // Try to approve a request that doesn't exist
     let result = sync.approve_bootstrap_request("nonexistent_request_id", "_device_key");
@@ -398,8 +404,10 @@ async fn test_malformed_permission_requests() {
     let tree_id = database.root_id().clone();
 
     // Create sync handler
-    let sync_handler =
-        SyncHandlerImpl::new(sync.backend().clone(), sync.sync_tree_root_id().clone());
+    let sync_handler = SyncHandlerImpl::new(
+        sync.instance().expect("Failed to get instance").clone(),
+        sync.sync_tree_root_id().clone(),
+    );
 
     // Generate a test key to use for all permission tests
     let test_key = generate_public_key();
@@ -503,7 +511,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Test 1: Request Write(15) permission - should be auto-approved via global permission
@@ -651,7 +659,7 @@ async fn test_global_permission_overrides_manual_policy() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Test 1: Request Read permission - should be auto-approved despite manual policy
@@ -775,7 +783,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Now try to bootstrap with the same key requesting Write(10) permission (should succeed)
@@ -873,7 +881,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Try to bootstrap with any key requesting Write(10) permission (should succeed via global)
@@ -997,7 +1005,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         .unwrap();
 
     // Set up sync system and handler
-    let sync = eidetica::sync::Sync::new(database.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Client bootstraps via global permission - this should succeed
@@ -1103,7 +1111,7 @@ async fn test_global_permission_enables_transactions() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.backend().clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Setup client instance
@@ -1179,12 +1187,8 @@ async fn test_global_permission_enables_transactions() {
     let client_pubkey = client_instance
         .get_formatted_public_key(client_key_name)
         .unwrap();
-    let sigkeys = eidetica::Database::find_sigkeys(
-        client_instance.backend().clone(),
-        &tree_id,
-        &client_pubkey,
-    )
-    .expect("Should find valid SigKeys");
+    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_pubkey)
+        .expect("Should find valid SigKeys");
 
     // Should have at least one SigKey (global "*")
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
@@ -1198,7 +1202,7 @@ async fn test_global_permission_enables_transactions() {
     assert_eq!(sigkey_str, "*", "Should resolve to global permission");
 
     let client_db = eidetica::Database::open(
-        client_instance.backend().clone(),
+        client_instance.clone(),
         &tree_id,
         client_signing_key,
         sigkey_str,

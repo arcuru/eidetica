@@ -78,7 +78,7 @@ fn test_delegated_tree_basic_validation() -> Result<()> {
         &mut validator,
         &delegated_auth_id,
         &main_auth_settings,
-        Some(db.backend()),
+        Some(&db),
         Permission::Write(10),
         KeyStatus::Active,
     );
@@ -128,7 +128,7 @@ fn test_delegated_tree_permission_clamping() -> Result<()> {
         &mut validator,
         &delegated_auth_id,
         &main_auth_settings,
-        Some(db.backend()),
+        Some(&db),
         Permission::Read,
         KeyStatus::Active,
     );
@@ -228,7 +228,7 @@ fn test_nested_delegation() -> Result<()> {
 
     // This should resolve with Write permissions (clamped through the chain)
     let resolved_auth =
-        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(db.backend()))?;
+        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db))?;
 
     // Permissions should be clamped: user has Admin(10) -> org clamps to Write(20) -> main doesn't clamp further
     // Final result should be Write(20) (clamped at org level)
@@ -301,7 +301,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     ]);
 
     let resolved_auth =
-        validator.resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(db.backend()))?;
+        validator.resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(&db))?;
 
     assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
@@ -329,7 +329,7 @@ fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let resolved_auth_revoked = validator.resolve_sig_key(
         &SigKey::Direct("delegated_user".to_string()),
         &revoked_auth_settings,
-        Some(db.backend()),
+        Some(&db),
     )?;
 
     assert_eq!(resolved_auth_revoked.key_status, KeyStatus::Revoked);
@@ -398,8 +398,7 @@ fn test_delegation_depth_limits() -> Result<()> {
     // Test depth limit validation
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings()?.get_auth_settings()?;
-    let result =
-        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db));
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
@@ -484,7 +483,7 @@ fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()))?;
+    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))?;
 
     // Expect permission upgraded to Write(7)
     assert_eq!(resolved.effective_permission, Permission::Write(7));
@@ -565,7 +564,7 @@ fn test_delegated_tree_priority_preservation() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()))?;
+    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))?;
 
     // Because Write(12) is within bounds (less privileged than Write(8)), it is preserved
     assert_eq!(resolved.effective_permission, Permission::Write(12));
@@ -611,7 +610,7 @@ fn test_delegation_depth_limit_exact() -> Result<()> {
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
-    let result = validator.resolve_sig_key(&auth_id, &auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&auth_id, &auth_settings, Some(&db));
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("Maximum delegation depth") || msg.contains("not found"));
@@ -701,7 +700,7 @@ fn test_delegated_tree_invalid_tips() -> Result<()> {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(db.backend()));
+    let result = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db));
     assert!(result.is_err());
 
     Ok(())

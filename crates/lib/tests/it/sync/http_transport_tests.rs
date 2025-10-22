@@ -12,7 +12,7 @@ async fn test_http_transport_server_lifecycle() {
     assert!(!transport.is_server_running());
 
     // Start server
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     transport
         .start_server("127.0.0.1:0", handler)
         .await
@@ -29,14 +29,14 @@ async fn test_http_transport_double_start_error() {
     let mut transport = HttpTransport::new().unwrap();
 
     // Start server
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     transport
         .start_server("127.0.0.1:0", handler)
         .await
         .unwrap();
 
     // Attempting to start again should fail
-    let handler = super::helpers::setup_test_handler();
+    let (_instance2, handler) = super::helpers::setup_test_handler();
     let result = transport.start_server("127.0.0.1:0", handler).await;
     assert!(result.is_err());
 
@@ -61,7 +61,7 @@ async fn test_http_transport_client_server_communication() {
     let client_transport = HttpTransport::new().unwrap();
 
     // Start server on port 0 for dynamic assignment
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     server_transport
         .start_server("127.0.0.1:0", handler)
         .await
@@ -144,7 +144,7 @@ async fn test_http_transport_get_server_address() {
     assert!(result.is_err());
 
     // Start server on port 0
-    let handler = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler();
     transport
         .start_server("127.0.0.1:0", handler)
         .await

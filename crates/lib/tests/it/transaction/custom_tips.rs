@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_transaction_with_custom_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create a chain of operations: A -> B -> C
     let op_a = tree.new_transaction().unwrap();
@@ -46,7 +46,7 @@ fn test_transaction_with_custom_tips() {
     let branch_id = op_from_a.commit().unwrap();
 
     // Verify the branch entry has correct parent relationship
-    let backend = tree.backend();
+    let backend = tree.backend().unwrap();
     let branch_entry = backend.get(&branch_id).unwrap();
     let branch_parents = branch_entry.parents().unwrap();
 
@@ -59,7 +59,7 @@ fn test_transaction_with_custom_tips() {
 
 #[test]
 fn test_transaction_multiple_subtrees_with_custom_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base entry with multiple subtrees
     let op_base = tree.new_transaction().unwrap();
@@ -121,7 +121,7 @@ fn test_transaction_multiple_subtrees_with_custom_tips() {
 
 #[test]
 fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create base entry with subtree data
     let op1 = tree.new_transaction().unwrap();
@@ -174,7 +174,7 @@ fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
 
 #[test]
 fn test_transaction_custom_tips_no_subtree_data_in_tips() {
-    let tree = setup_tree();
+    let (_instance, tree) = setup_tree();
 
     // Create entry with subtree data
     let op1 = tree.new_transaction().unwrap();

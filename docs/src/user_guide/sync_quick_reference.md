@@ -13,13 +13,13 @@ use eidetica::{Instance, backend::InMemory};
 
 // Create database with sync enabled
 let backend = Box::new(InMemory::new());
-let db = Instance::open(backend)?.with_sync()?;
+let db = Instance::open(backend)?.enable_sync()?;
 
 // Add authentication key
 db.add_private_key("device_key")?;
 
 // Enable transport
-let sync = db.sync_mut().unwrap();
+let sync = db.sync().unwrap();
 sync.enable_http_transport()?;
 sync.start_server_async("127.0.0.1:8080").await?;
 ```
@@ -33,10 +33,11 @@ sync.start_server_async("127.0.0.1:8080").await?;
 # fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(InMemory::new());
-# let mut db = Instance::open(backend)?.with_sync()?;
+# let db = Instance::open(backend)?;
+# db.enable_sync()?;
 #
 // The BackgroundSync engine starts automatically with transport
-let sync = db.sync_mut().unwrap();
+let sync = db.sync().unwrap();
 sync.enable_http_transport()?; // Starts background thread
 
 // Background thread configuration and behavior:
@@ -148,7 +149,7 @@ if let Some(peer) = db.sync()?.get_peer_info(&peer_key)? {
 }
 
 // Update peer status
-db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
+db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 ```
 
 ## Database Synchronization
@@ -161,7 +162,8 @@ db.sync_mut()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?.with_sync()?;
+# let db = Instance::open(backend)?;
+# db.enable_sync()?;
 # db.add_private_key("device_key")?;
 // Create a database to share
 let mut settings = Doc::new();
@@ -278,7 +280,7 @@ op.commit()?;
 
 ```rust,ignore
 // Start/stop sync server
-let sync = db.sync_mut()?;
+let sync = db.sync()?;
 sync.start_server("127.0.0.1:8080")?;
 
 // Check server status
@@ -408,12 +410,12 @@ for peer in peers {
 ```rust,ignore
 // Fast, responsive sync for development
 // Enable HTTP transport for easy debugging
-db.sync_mut()?.enable_http_transport()?;
-db.sync_mut()?.start_server("127.0.0.1:8080")?;
+db.sync()?.enable_http_transport()?;
+db.sync()?.start_server("127.0.0.1:8080")?;
 
 // Connect to local test peer
 let addr = Address::http("127.0.0.1:8081")?;
-let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
+let peer = db.sync()?.connect_to_peer(&addr).await?;
 ```
 
 ### Production Setup
@@ -422,7 +424,7 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ```rust,ignore
 // Use Iroh for production deployments (defaults to n0's relay servers)
-db.sync_mut()?.enable_iroh_transport()?;
+db.sync()?.enable_iroh_transport()?;
 
 // Or configure for specific environments:
 use iroh::RelayMode;
@@ -437,11 +439,11 @@ let relay_node = iroh::RelayNode {
 let transport = IrohTransport::builder()
     .relay_mode(RelayMode::Custom(iroh::RelayMap::from_iter([relay_node])))
     .build()?;
-db.sync_mut()?.enable_iroh_transport_with_config(transport)?;
+db.sync()?.enable_iroh_transport_with_config(transport)?;
 
 // Connect to peers
 let addr = Address::iroh(peer_node_id)?;
-let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
+let peer = db.sync()?.connect_to_peer(&addr).await?;
 
 // Sync happens automatically:
 // - Immediate on commit
@@ -455,17 +457,17 @@ let peer = db.sync_mut()?.connect_to_peer(&addr).await?;
 
 ```rust,ignore
 // Run multiple sync-enabled databases
-let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-db1.sync_mut()?.enable_http_transport()?;
-db1.sync_mut()?.start_server("127.0.0.1:8080")?;
+let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+db1.sync()?.enable_http_transport()?;
+db1.sync()?.start_server("127.0.0.1:8080")?;
 
-let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-db2.sync_mut()?.enable_http_transport()?;
-db2.sync_mut()?.start_server("127.0.0.1:8081")?;
+let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+db2.sync()?.enable_http_transport()?;
+db2.sync()?.start_server("127.0.0.1:8081")?;
 
 // Connect them together
 let addr = Address::http("127.0.0.1:8080")?;
-let peer = db2.sync_mut()?.connect_to_peer(&addr).await?;
+let peer = db2.sync()?.connect_to_peer(&addr).await?;
 ```
 
 ## Testing Patterns
@@ -489,21 +491,21 @@ async fn test_iroh_sync_local() -> Result<()> {
         .build()?;
 
     // Setup databases with local Iroh transport
-    let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-    db1.sync_mut()?.enable_iroh_transport_with_config(transport1)?;
-    db1.sync_mut()?.start_server("ignored")?; // Iroh manages its own addresses
+    let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+    db1.sync()?.enable_iroh_transport_with_config(transport1)?;
+    db1.sync()?.start_server("ignored")?; // Iroh manages its own addresses
 
-    let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
-    db2.sync_mut()?.enable_iroh_transport_with_config(transport2)?;
-    db2.sync_mut()?.start_server("ignored")?;
+    let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+    db2.sync()?.enable_iroh_transport_with_config(transport2)?;
+    db2.sync()?.start_server("ignored")?;
 
     // Get the serialized NodeAddr (includes direct addresses)
     let addr1 = db1.sync()?.get_server_address()?;
     let addr2 = db2.sync()?.get_server_address()?;
 
     // Connect peers using full NodeAddr info
-    let peer1 = db2.sync_mut()?.connect_to_peer(&Address::iroh(&addr1)).await?;
-    let peer2 = db1.sync_mut()?.connect_to_peer(&Address::iroh(&addr2)).await?;
+    let peer1 = db2.sync()?.connect_to_peer(&Address::iroh(&addr1)).await?;
+    let peer2 = db1.sync()?.connect_to_peer(&Address::iroh(&addr2)).await?;
 
     // Now they can sync directly via P2P
     Ok(())
@@ -518,28 +520,28 @@ async fn test_iroh_sync_local() -> Result<()> {
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
-    let db1 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
+    let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
     db1.add_private_key("peer1")?;
-    db1.sync_mut()?.enable_http_transport()?;
-    db1.sync_mut()?.start_server("127.0.0.1:0")?; // Random port
+    db1.sync()?.enable_http_transport()?;
+    db1.sync()?.start_server("127.0.0.1:0")?; // Random port
 
     let addr1 = db1.sync()?.get_server_address()?;
 
     // Setup second peer
-    let db2 = Instance::open(Box::new(InMemory::new())?.with_sync()?;
+    let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
     db2.add_private_key("peer2")?;
-    db2.sync_mut()?.enable_http_transport()?;
+    db2.sync()?.enable_http_transport()?;
 
     // Connect peers
     let addr = Address::http(&addr1)?;
-    let peer1_key = db2.sync_mut()?.connect_to_peer(&addr).await?;
-    db2.sync_mut()?.update_peer_status(&peer1_key, PeerStatus::Active)?;
+    let peer1_key = db2.sync()?.connect_to_peer(&addr).await?;
+    db2.sync()?.update_peer_status(&peer1_key, PeerStatus::Active)?;
 
     // Setup sync relationship
     let tree1 = db1.new_database(Doc::new(), "peer1")?;
     let tree2 = db2.new_database(Doc::new(), "peer2")?;
 
-    db2.sync_mut()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
+    db2.sync()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
 
     // Test sync
     let op1 = tree1.new_transaction()?;
