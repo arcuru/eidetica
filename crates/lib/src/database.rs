@@ -12,7 +12,7 @@ use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
 use crate::{
-    Error, Instance, Result, Transaction,
+    Error, Instance, Result, Transaction, WeakInstance,
     auth::{
         crypto::format_public_key,
         settings::AuthSettings,
@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// Specifies where a Database gets its signing keys
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum KeySource {
     /// Look up private key from backend storage using this key name
     /// The key name is also used as the SigKey identifier in auth settings
@@ -47,10 +47,10 @@ pub enum KeySource {
 ///
 /// Each `Database` is identified by the ID of its root `Entry` and manages the history of data
 /// associated with that root. It interacts with the underlying storage through the Instance handle.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Database {
     root: ID,
-    instance: crate::WeakInstance,
+    instance: WeakInstance,
     /// Key source for operations on this database
     key_source: Option<KeySource>,
     /// Optional sync hooks to execute after successful commits

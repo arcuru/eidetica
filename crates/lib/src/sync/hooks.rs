@@ -53,6 +53,14 @@ pub struct SyncHookCollection {
     hooks: Vec<Arc<dyn SyncHook>>,
 }
 
+impl std::fmt::Debug for SyncHookCollection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncHookCollection")
+            .field("hook_count", &self.hooks.len())
+            .finish()
+    }
+}
+
 impl SyncHookCollection {
     /// Create a new empty hook collection.
     pub fn new() -> Self {

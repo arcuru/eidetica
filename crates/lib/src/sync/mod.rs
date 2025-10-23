@@ -54,6 +54,7 @@ pub(crate) const DEVICE_KEY_NAME: &str = "_device_key";
 /// The Sync module is a thin frontend that communicates with a background
 /// sync engine thread via command channels. All actual sync operations, transport
 /// communication, and state management happen in the background thread.
+#[derive(Debug)]
 pub struct Sync {
     /// Communication channel to the background sync engine (initialized once when transport is enabled)
     command_tx: OnceLock<mpsc::Sender<SyncCommand>>,

@@ -65,6 +65,19 @@ pub struct User {
     user_info: UserInfo,
 }
 
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("User")
+            .field("user_uuid", &self.user_uuid)
+            .field("username", &self.username)
+            .field("user_database", &self.user_database)
+            .field("instance", &self.instance)
+            .field("key_manager", &"<KeyManager [sensitive]>")
+            .field("user_info", &self.user_info)
+            .finish()
+    }
+}
+
 impl User {
     /// Create a new User session
     ///

@@ -516,7 +516,7 @@ impl Entry {
 ///     .set_subtree_data("users", "initial_user_data")
 ///     .build();
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EntryBuilder {
     tree: TreeNode,
     subtrees: Vec<SubTreeNode>,

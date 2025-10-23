@@ -63,7 +63,7 @@ struct EntryMetadata {
 /// 6. Persists the resulting immutable `Entry` to the backend
 ///
 /// `Transaction` instances are typically created via `Database::new_transaction()`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,

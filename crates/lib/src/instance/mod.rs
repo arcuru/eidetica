@@ -41,6 +41,17 @@ pub(crate) struct InstanceInternal {
     databases_db_id: ID,
 }
 
+impl std::fmt::Debug for InstanceInternal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceInternal")
+            .field("backend", &"<BackendDB>")
+            .field("sync", &self.sync)
+            .field("users_db_id", &self.users_db_id)
+            .field("databases_db_id", &self.databases_db_id)
+            .finish()
+    }
+}
+
 /// Database implementation on top of the storage backend.
 ///
 /// Instance manages infrastructure only:
@@ -69,7 +80,7 @@ pub(crate) struct InstanceInternal {
 /// let db = user.create_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Instance {
     inner: Arc<InstanceInternal>,
 }
@@ -81,7 +92,7 @@ pub struct Instance {
 /// circular reference cycles that would leak memory.
 ///
 /// Use `upgrade()` to convert to a strong `Instance` reference.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WeakInstance {
     inner: Weak<InstanceInternal>,
 }
