@@ -15,7 +15,12 @@ An app developer does not need to deal with anything else, just use the database
 
 It's not _quite_ all there yet, but I'm working on it. Peer-to-Peer connectivity is only minimal at the moment.
 
-[Extensive docs are maintained under docs/, linked here.](https://arcuru.github.io/eidetica)
+[Extensive (largely LLM Generated/Human Curated) docs are maintained under docs/, linked here.](https://arcuru.github.io/eidetica)
+
+Discuss on Matrix:
+
+- [Space (if your client supports it)](https://matrix.to/#/#eidetica:jackson.dev)
+- [General Room](https://matrix.to/#/#eidetica-general:jackson.dev)
 
 ### EXPERIMENTAL
 
