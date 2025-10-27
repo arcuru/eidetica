@@ -39,6 +39,7 @@ criterion = "0.5"
 argon2 = "0.5"
 aes-gcm = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
+handle_trait = "1.1"
 # Networking dependencies
 tokio = { version = "1", features = [
     "rt-multi-thread",

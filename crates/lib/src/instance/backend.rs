@@ -7,6 +7,7 @@
 use std::{any::Any, sync::Arc};
 
 use ed25519_dalek::SigningKey;
+use handle_trait::Handle;
 
 use crate::{
     Result,
@@ -21,7 +22,7 @@ use crate::{
 ///
 /// In the future, this will be converted to an enum to support both local and remote
 /// (RPC-based) backends, allowing for transparent local/remote dispatch.
-#[derive(Clone)]
+#[derive(Clone, Handle)]
 pub struct Backend {
     backend_impl: Arc<dyn BackendImpl>,
 }

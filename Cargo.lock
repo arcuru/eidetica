@@ -1037,6 +1037,7 @@ dependencies = [
  "criterion",
  "ctor",
  "ed25519-dalek",
+ "handle_trait",
  "hex",
  "iroh",
  "rand 0.8.5",
@@ -1451,6 +1452,26 @@ checksum = "459196ed295495a68f7d7fe1d84f6c4b7ff0e21fe3017b2f283c6fac3ad803c9"
 dependencies = [
  "cfg-if",
  "crunchy",
+]
+
+[[package]]
+name = "handle_trait"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4740ecf2194169a05e70e16de074c0bb21a961361a25f5b4626b25990c83aee9"
+dependencies = [
+ "handle_trait_derive",
+]
+
+[[package]]
+name = "handle_trait_derive"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e46dbf6b28fbb72d11388a8664af3a63e34b5fcaa61ad8b1e36012a8d556c902"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]

@@ -124,7 +124,7 @@ impl Sync {
             })?;
 
         let sync_tree = Database::open(
-            instance.clone(),
+            instance.handle(),
             sync_tree_root_id,
             device_key,
             DEVICE_KEY_NAME.to_string(),
@@ -186,7 +186,7 @@ impl Sync {
 
     /// Get a reference to the underlying backend.
     pub fn backend(&self) -> Result<Backend> {
-        Ok(self.instance()?.backend().clone())
+        Ok(self.instance()?.backend().handle())
     }
 
     /// Get a reference to the sync settings tree.

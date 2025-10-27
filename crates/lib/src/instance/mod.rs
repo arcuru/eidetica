@@ -7,6 +7,7 @@
 use std::sync::{Arc, Weak};
 
 use ed25519_dalek::VerifyingKey;
+use handle_trait::Handle;
 use rand::Rng;
 
 use crate::{
@@ -80,7 +81,7 @@ impl std::fmt::Debug for InstanceInternal {
 /// let db = user.create_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Handle)]
 pub struct Instance {
     inner: Arc<InstanceInternal>,
 }
@@ -92,7 +93,7 @@ pub struct Instance {
 /// circular reference cycles that would leak memory.
 ///
 /// Use `upgrade()` to convert to a strong `Instance` reference.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Handle)]
 pub struct WeakInstance {
     inner: Weak<InstanceInternal>,
 }

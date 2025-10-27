@@ -2,6 +2,8 @@
 //!
 //! Creates and manages _users and _databases system databases.
 
+use handle_trait::Handle;
+
 use super::{
     User,
     crypto::{current_timestamp, derive_encryption_key, encrypt_private_key, hash_password},
@@ -424,7 +426,7 @@ pub fn login_user(
         .clone();
 
     let user_database = Database::open(
-        instance.clone(),
+        instance.handle(),
         &user_info.user_database_id,
         default_signing_key,
         default_key_id,
@@ -442,7 +444,7 @@ pub fn login_user(
         user_uuid,
         user_info,
         user_database,
-        instance.clone(),
+        instance.handle(),
         key_manager,
     ))
 }

@@ -32,6 +32,8 @@
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
 
+use handle_trait::Handle;
+
 use super::{UserKeyManager, types::UserInfo};
 use crate::{
     Database, Instance, Result,
@@ -283,7 +285,7 @@ impl User {
         })?;
 
         // Create Database with user-provided key
-        Database::open(self.instance.clone(), root_id, signing_key.clone(), sigkey)
+        Database::open(self.instance.handle(), root_id, signing_key.clone(), sigkey)
     }
 
     /// Find databases by name.
@@ -1007,7 +1009,7 @@ mod tests {
         db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
         // Create Instance for test
-        let instance = Instance::create_internal(backend.clone()).unwrap();
+        let instance = Instance::create_internal(backend.handle()).unwrap();
 
         let user_database = Database::create(
             db_settings,
