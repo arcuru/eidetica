@@ -251,7 +251,7 @@ store.set_string("message", "Hello World")?;
 store.set_path("user.name", "Alice")?;
 store.set_path("user.age", 30)?;
 
-// Commit triggers sync hooks automatically
+// Commit triggers sync callbacks automatically
 op.commit()?; // Entries queued for sync to all configured peers
 ```
 
@@ -574,7 +574,7 @@ async fn test_sync_between_peers() -> Result<()> {
 ### ❌ Don't
 
 - **Manually manage peers** unless you need fine control (use `sync_with_peer()` instead)
-- **Disable sync hooks** on databases you want to synchronize
+- **Remove peer relationships** for databases you want to synchronize
 - **Manually manage sync queues** (BackgroundSync handles this)
 - **Ignore sync errors** in production code
 - **Use HTTP transport** for high-volume production (prefer Iroh)

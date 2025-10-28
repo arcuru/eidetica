@@ -138,7 +138,7 @@ sync.sync_with_peer(&peer_address_json, Some(&tree_id)).await?;
 
 The sync system automatically starts a background thread when transport is enabled. Once configured, all operations are handled automatically:
 
-- **When you commit changes**, they're sent immediately via sync hooks
+- **When you commit changes**, they're sent immediately via sync callbacks
 - **Failed sends** are retried with exponential backoff (2^attempts seconds, max 64 seconds)
 - **Periodic sync** runs every 5 minutes
 - **Connection checks** every 60 seconds
@@ -642,3 +642,29 @@ let peer_key = db2.sync()?.connect_to_peer(&addr).await?;
 - Ensure private keys are properly configured
 - Verify peer public keys are correct
 - Check that peers are using compatible protocol versions
+
+## Complete Synchronization Example
+
+For a full working example that demonstrates real-time synchronization between peers, see the **[Chat Example](../../examples/chat/README.md)** in the repository.
+
+The chat application demonstrates:
+
+- **Multi-Transport Sync**: Both HTTP (simple client-server) and Iroh (P2P with NAT traversal)
+- **Bootstrap Protocol**: Automatic access requests when joining existing rooms
+- **User API Integration**: User-based authentication with automatic key management
+- **Sync Hooks**: Real-time message updates via periodic refresh
+- **Peer Discovery**: Server address sharing for easy peer connection
+- **Multiple Databases**: Each chat room is a separate synchronized database
+
+### Quick Start with the Chat Example
+
+```bash
+# Terminal 1 - Create a room with HTTP transport
+cd examples/chat
+cargo run -- --username alice --transport http --create-only --room-name "Demo"
+
+# Terminal 2 - Connect to the room
+cargo run -- --username bob --transport http --connect "room_id@127.0.0.1:PORT"
+```
+
+See the [full chat documentation](../../examples/chat/README.md) for detailed usage, transport options, and troubleshooting.

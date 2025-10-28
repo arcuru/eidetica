@@ -494,3 +494,245 @@ if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemor
 # Ok(())
 # }
 ```
+
+---
+
+## Complete Example: Chat Application
+
+For a full working example that demonstrates Eidetica in a real application, see the **[Chat Example](../../examples/chat/README.md)** in the repository.
+
+The chat application showcases:
+
+- **User Management**: Automatic passwordless user creation with key management
+- **Multiple Databases**: Each chat room is a separate database
+- **Table Store**: Messages stored with auto-generated IDs
+- **Multi-Transport Sync**: HTTP for local testing, Iroh for P2P with NAT traversal
+- **Bootstrap Protocol**: Automatic access requests when joining rooms
+- **Real-time Updates**: Periodic message refresh with automatic sync
+- **TUI Interface**: Interactive terminal UI using Ratatui
+
+### Key Architectural Concepts
+
+The chat example demonstrates several advanced patterns:
+
+**1. User API with Automatic Key Management**
+
+<!-- Code block ignored: Requires tokio runtime for async operations -->
+
+```rust,ignore
+// Initialize instance with sync enabled
+let backend = InMemory::new();
+let instance = Instance::create(Box::new(backend))?;
+instance.enable_sync()?;
+
+// Create passwordless user (or use existing)
+let username = "alice";
+let _ = instance.create_user(username, None);
+
+// Login to get User session (handles key management automatically)
+let user = instance.login_user(username, None)?;
+
+// User API automatically manages cryptographic keys for databases
+let default_key = user.get_default_key()?;
+println!("User {} has key: {}", username, default_key);
+```
+
+**2. Room Creation with Global Access**
+
+<!-- Code block ignored: Requires tokio runtime and User API mutability -->
+
+```rust,ignore
+// Create a chat room (database) with settings
+let mut settings = Doc::new();
+settings.set_string("name", "Team Chat");
+
+let key_id = user.get_default_key()?;
+let database = user.create_database(settings, &key_id)?;
+
+// Add global wildcard permission so anyone can join and write
+let tx = database.new_transaction()?;
+let settings_store = tx.get_settings()?;
+let global_key = auth::AuthKey::active("*", auth::Permission::Write(10))?;
+settings_store.set_auth_key("*", global_key)?;
+tx.commit()?;
+
+println!("Chat room created with ID: {}", database.root_id());
+```
+
+**3. Message Storage with Table**
+
+<!-- Code block ignored: Requires chrono and uuid crates for timestamp/ID generation -->
+
+```rust,ignore
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMessage {
+    id: String,
+    author: String,
+    content: String,
+    timestamp: DateTime<Utc>,
+}
+
+impl ChatMessage {
+    fn new(author: String, content: String) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            author,
+            content,
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+// Send a message to the chat room
+let message = ChatMessage::new("alice".to_string(), "Hello, world!".to_string());
+
+let op = database.new_transaction()?;
+let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
+messages_store.insert(message)?;
+op.commit()?;
+
+// Read all messages
+let viewer_op = database.new_transaction()?;
+let viewer_store = viewer_op.get_store::<Table<ChatMessage>>("messages")?;
+let all_messages = viewer_store.search(|_| true)?;
+
+for (_, msg) in all_messages {
+    println!("[{}] {}: {}", msg.timestamp.format("%H:%M:%S"), msg.author, msg.content);
+}
+```
+
+**4. Bootstrap Connection to Remote Room**
+
+<!-- Code block ignored: Requires network connectivity and running server -->
+
+```rust,ignore
+// Join an existing room using bootstrap protocol
+let room_address = "abc123def456@127.0.0.1:8080"; // From room creator
+
+// Parse room address (format: room_id@server_address)
+let parts: Vec<&str> = room_address.split('@').collect();
+let room_id = eidetica::entry::ID::from(parts[0]);
+let server_addr = parts[1];
+
+// Enable sync transport
+if let Some(sync) = instance.sync() {
+    sync.enable_http_transport()?;
+
+    // Request access to the room (bootstrap protocol)
+    let key_id = user.get_default_key()?;
+    user.request_database_access(
+        &sync,
+        server_addr,
+        &room_id,
+        &key_id,
+        eidetica::auth::Permission::Write(10),
+    ).await?;
+
+    // Register the database with User's key manager
+    user.add_database(eidetica::user::types::DatabasePreferences {
+        database_id: room_id.clone(),
+        key_id: key_id.clone(),
+        sync_settings: eidetica::user::types::SyncSettings {
+            sync_enabled: true,
+            sync_on_commit: true,
+            interval_seconds: None,
+            properties: std::collections::HashMap::new(),
+        },
+    })?;
+
+    // Open the synced database
+    let database = user.open_database(&room_id)?;
+    println!("Joined room successfully!");
+}
+```
+
+**5. Real-time Sync with Callbacks**
+
+<!-- Code block ignored: Complex setup with running server -->
+
+```rust,ignore
+// Automatic sync is configured via peer relationships
+// When you add a peer for a database, commits automatically trigger sync
+if let Some(sync) = instance.sync() {
+    if let Ok(peers) = sync.list_peers() {
+        if let Some(peer) = peers.first() {
+            // Add tree sync relationship - this enables automatic sync on commit
+            sync.add_tree_sync(&peer.pubkey, &database.root_id()).await?;
+
+            println!("Automatic sync enabled for database");
+        }
+    }
+}
+
+// Manually trigger immediate sync for a specific database
+sync.sync_with_peer(server_addr, Some(&database.root_id())).await?;
+```
+
+### Running the Chat Example
+
+```bash
+# From the repository root
+cd examples/chat
+
+# Create a new room (default uses Iroh P2P transport)
+cargo run -- --username alice
+
+# Or use HTTP transport for local testing
+cargo run -- --username alice --transport http
+
+# Connect to an existing room
+cargo run -- <room_address> --username bob
+```
+
+**Creating a new room:**
+When you run without a room address, the app will:
+
+1. Create a new room
+2. Display the room address that others can use to join
+3. Wait for you to press Enter before starting the chat interface
+
+Example output:
+
+```text
+🚀 Eidetica Chat Room Created!
+📍 Room Address: abc123@127.0.0.1:54321
+👤 Username: alice
+
+Share this address with others to invite them to the chat.
+Press Enter to start chatting...
+```
+
+**Joining an existing room:**
+When you provide a room address as the first argument, the app connects and starts the chat interface immediately.
+
+### Transport Options
+
+**HTTP Transport** (`--transport http`):
+
+- Simple client-server model for local networks
+- Server binds to `127.0.0.1` with random port
+- Address format: `room_id@127.0.0.1:PORT`
+- Best for testing and same-machine demos
+
+**Iroh Transport** (`--transport iroh`, default):
+
+- Peer-to-peer with built-in NAT traversal
+- Uses QUIC protocol with relay servers
+- Address format: `room_id@{node-info-json}`
+- Best for internet connections across networks
+
+### Architecture Highlights
+
+The chat example demonstrates production-ready patterns:
+
+- **Multi-database architecture**: Each room is isolated with independent sync state
+- **User session management**: Automatic key discovery and database registration
+- **Bootstrap protocol**: Seamless joining of rooms with access requests
+- **Dual transport support**: Flexible networking for different environments
+- **CRDT-based messages**: Eventual consistency with deterministic ordering
+- **Automatic sync**: Background synchronization triggered by commits via callbacks
+
+See the [full chat example documentation](../../examples/chat/README.md) for detailed usage instructions, complete workflow examples, troubleshooting tips, and implementation details.

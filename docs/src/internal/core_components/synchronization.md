@@ -102,7 +102,7 @@ pub struct Sync {
 - Provides public API methods (all using `&self`)
 - Sends commands to background thread via channel
 - Manages sync database for peer/relationship storage
-- Creates hooks that send commands to background
+- Registers callbacks that queue entries when commits occur
 
 ### 2. BackgroundSync Engine (`sync/background.rs`)
 

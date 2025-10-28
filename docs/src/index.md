@@ -20,8 +20,17 @@ Eidetica is organized as a Cargo workspace:
 - **CLI Binary** (`crates/bin/`): Command-line interface using the library
 - **Examples** (`examples/`): Standalone applications demonstrating usage
 
-Choose a section to get started:
+## Quick Links
 
-- [User Guide](user_guide/index.md): Learn how to use the Eidetica library.
-- [Internal Documentation](internal/index.md): Understand the internal design and contribute to Eidetica.
-- [Design Documents](design/index.md): Architectural documents used for development.
+### Documentation Sections
+
+- [User Guide](user_guide/index.md): Learn how to use the Eidetica library
+- [Getting Started](user_guide/getting_started.md): Set up your first Eidetica database
+- [Synchronization Guide](user_guide/synchronization_guide.md): Enable peer-to-peer sync
+- [Internal Documentation](internal/index.md): Understand the internal design and contribute
+- [Design Documents](design/index.md): Architectural documents used for development
+
+### Examples
+
+- **[Chat Application](../examples/chat/README.md)** - Complete multi-user chat with P2P sync
+- **[Todo Application](../examples/todo/README.md)** - Task management example

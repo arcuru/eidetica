@@ -22,7 +22,7 @@ Each Instance maintains a unique device identity (`_device_key`) through an auto
 - **User-Centric**: All database and key operations run in User context after login
 - **Pluggable Storage**: Storage backends can be swapped without affecting application logic
 - **Multi-User**: Always multi-user underneath, supporting both passwordless and password-protected users
-- **Sync-Ready**: Built-in device identity and hooks for distributed synchronization
+- **Sync-Ready**: Built-in device identity and callbacks for distributed synchronization
 
 ## Architecture Layers
 

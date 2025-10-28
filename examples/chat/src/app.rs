@@ -378,7 +378,7 @@ impl App {
             let store = op.get_store::<Table<ChatMessage>>("messages")?;
             store.insert(message.clone())?;
             op.commit()?;
-            // Note: commit() may trigger sync hooks, but they run in background
+            // Note: commit() triggers sync callbacks which queue entries in background
 
             self.messages.push(message);
             self.input.clear();

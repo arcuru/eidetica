@@ -35,7 +35,7 @@ use crate::{
 pub enum SyncCommand {
     /// Send entries to a specific peer
     SendEntries { peer: String, entries: Vec<Entry> },
-    /// Queue an entry for sending to a peer (from hook)
+    /// Queue an entry for sending to a peer (from callback)
     QueueEntry {
         peer: String,
         entry_id: ID,

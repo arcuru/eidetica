@@ -342,15 +342,24 @@ op.commit()?;
 # }
 ```
 
-## A Complete Example
+## Complete Examples
 
-For a complete working example, see the [Todo Example](../../examples/todo/README.md) included in the repository.
+For complete working examples, see:
+
+- **[Chat Example](../../examples/chat/README.md)** - Multi-user chat application demonstrating:
+  - User accounts and authentication
+  - Real-time synchronization with HTTP and Iroh transports
+  - Bootstrap protocol for joining rooms
+  - TUI interface with Ratatui
+
+- **[Todo Example](../../examples/todo/README.md)** - Task management application
 
 ## Next Steps
 
 After getting familiar with the basics, you might want to explore:
 
 - [Core Concepts](core_concepts.md) to understand Eidetica's unique features
+- [Synchronization Guide](synchronization_guide.md) to set up peer-to-peer data sync
+- [Authentication Guide](authentication_guide.md) for secure multi-user applications
 - Advanced operations like querying and filtering
 - Using different store types for various data patterns
-- Configuring and optimizing your database

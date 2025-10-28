@@ -323,9 +323,9 @@ graph LR
 ```text
 1. Application calls sync.add_tree_sync(peer_id, tree_id)
 2. PeerManager stores relationship in sync database
-3. Future commits to database trigger sync hooks
-4. SyncChangeDetector finds this peer in relationships
-5. Entries queued for sync with this peer
+3. Future commits to database trigger sync callbacks
+4. Callbacks query relationships from sync database
+5. Entries queued for sync with configured peers
 ```
 
 ### BackgroundSync Command Management
