@@ -4,6 +4,7 @@
 //! Iroh's QUIC-based networking with hole punching and relay servers.
 
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use iroh::{
@@ -156,7 +157,7 @@ impl IrohTransportBuilder {
     /// `SyncEngine::enable_iroh_transport_with_config()`.
     pub fn build(self) -> Result<IrohTransport> {
         Ok(IrohTransport {
-            endpoint: None,
+            endpoint: Arc::new(Mutex::new(None)),
             server_state: ServerState::new(),
             handler: None,
             config: IrohTransportConfig {
@@ -216,8 +217,8 @@ struct IrohTransportConfig {
 /// # }
 /// ```
 pub struct IrohTransport {
-    /// The Iroh endpoint for P2P communication.
-    endpoint: Option<Endpoint>,
+    /// The Iroh endpoint for P2P communication (lazily initialized).
+    endpoint: Arc<Mutex<Option<Endpoint>>>,
     /// Shared server state management.
     server_state: ServerState,
     /// Handler for processing sync requests.
@@ -234,6 +235,8 @@ impl IrohTransport {
     ///
     /// Uses `RelayMode::Default` which connects to n0's production relay
     /// infrastructure. For custom configuration, use `IrohTransport::builder()`.
+    ///
+    /// The endpoint will be lazily initialized on first use.
     ///
     /// # Example
     ///
@@ -272,8 +275,10 @@ impl IrohTransport {
     }
 
     /// Initialize the Iroh endpoint if not already done.
-    async fn ensure_endpoint(&mut self) -> Result<&Endpoint> {
-        if self.endpoint.is_none() {
+    async fn ensure_endpoint(&self) -> Result<Endpoint> {
+        let mut endpoint_lock = self.endpoint.lock().await;
+
+        if endpoint_lock.is_none() {
             // Create a new Iroh endpoint with configured relay mode
             let builder = Endpoint::builder()
                 .alpns(vec![SYNC_ALPN.to_vec()])
@@ -283,10 +288,10 @@ impl IrohTransport {
                 SyncError::TransportInit(format!("Failed to create Iroh endpoint: {e}"))
             })?;
 
-            self.endpoint = Some(endpoint);
+            *endpoint_lock = Some(endpoint);
         }
 
-        Ok(self.endpoint.as_ref().unwrap())
+        Ok(endpoint_lock.as_ref().unwrap().clone())
     }
 
     /// Start the server request handling loop.
@@ -458,15 +463,8 @@ impl SyncTransport for IrohTransport {
             .into());
         }
 
-        // Ensure we have an endpoint
-        let endpoint = match &self.endpoint {
-            Some(endpoint) => endpoint,
-            None => {
-                return Err(
-                    SyncError::TransportInit("Endpoint not initialized".to_string()).into(),
-                );
-            }
-        };
+        // Ensure we have an endpoint (lazy initialization)
+        let endpoint = self.ensure_endpoint().await?;
 
         // Parse the target node address from serialized NodeAddrInfo
         let node_addr_info: NodeAddrInfo = serde_json::from_str(&address.address).map_err(|e| {
