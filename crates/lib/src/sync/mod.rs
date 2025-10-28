@@ -1636,6 +1636,17 @@ impl Sync {
 
                 debug!(peer = %peer_pubkey, tree = %tree_id, "Incremental sync completed");
             }
+            SyncResponse::BootstrapPending {
+                request_id,
+                message,
+            } => {
+                info!(peer = %peer_pubkey, tree = %tree_id, request_id = %request_id, "Bootstrap request pending manual approval");
+                return Err(SyncError::BootstrapPending {
+                    request_id,
+                    message,
+                }
+                .into());
+            }
             SyncResponse::Error(err) => {
                 return Err(SyncError::Network(format!("Peer returned error: {err}")).into());
             }

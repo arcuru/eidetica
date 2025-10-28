@@ -21,7 +21,7 @@ use super::{
 use crate::{
     Database, Instance, Result,
     auth::{
-        Permission,
+        KeyStatus, Permission,
         crypto::{create_challenge_response, format_public_key, generate_challenge},
         types::AuthKey,
     },
@@ -249,6 +249,56 @@ impl SyncHandlerImpl {
         Ok(false)
     }
 
+    /// Check if a database requires authentication for unauthenticated requests.
+    ///
+    /// This method checks if the database requires authentication for bootstrap requests
+    /// that don't provide credentials. A database allows unauthenticated access if:
+    /// 1. It has no auth settings configured at all (empty auth), OR
+    /// 2. It has a global `*` permission configured that allows unauthenticated access
+    ///
+    /// # Arguments
+    /// * `tree_id` - The database/tree ID to check auth configuration for
+    ///
+    /// # Returns
+    /// - `Ok(true)` if database requires authentication (has auth but no global permission)
+    /// - `Ok(false)` if database allows unauthenticated access (no auth or has global permission)
+    /// - `Err` if the check fails
+    async fn check_if_database_has_auth(&self, tree_id: &ID) -> Result<bool> {
+        let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
+        let transaction = database.new_transaction()?;
+        let settings_store = SettingsStore::new(&transaction)?;
+
+        let auth_settings = settings_store.get_auth_settings()?;
+
+        // Check if auth settings is completely empty (no auth configured)
+        if auth_settings.as_doc().as_hashmap().is_empty() {
+            debug!(
+                tree_id = %tree_id,
+                "Database has no auth configured - allowing unauthenticated access"
+            );
+            return Ok(false); // No auth required
+        }
+
+        // Auth is configured - check if there's an Active global "*" permission
+        if let Ok(global_key) = auth_settings.get_key("*")
+            && *global_key.status() == KeyStatus::Active
+        {
+            debug!(
+                tree_id = %tree_id,
+                global_permission = ?global_key.permissions(),
+                "Database has global '*' permission - allowing unauthenticated access"
+            );
+            return Ok(false); // Global permission allows unauthenticated access
+        }
+
+        // Auth is configured but no global permission - require authentication
+        debug!(
+            tree_id = %tree_id,
+            "Database has auth configured without global permission - requiring authentication"
+        );
+        Ok(true) // Auth required
+    }
+
     /// Returns whether bootstrap key auto-approval is allowed by policy for this tree.
     ///
     /// This method checks the bootstrap approval policy stored in the target database's
@@ -472,6 +522,28 @@ impl SyncHandlerImpl {
                 return SyncResponse::Error(format!("Failed to get tree root: {e}"));
             }
         };
+
+        // Check if database has authentication configured
+        let auth_configured = match self.check_if_database_has_auth(tree_id).await {
+            Ok(has_auth) => has_auth,
+            Err(e) => {
+                error!(tree_id = %tree_id, error = %e, "Failed to check if database has auth");
+                return SyncResponse::Error(format!("Failed to check database auth: {e}"));
+            }
+        };
+
+        // If auth is configured but no credentials provided, reject the request
+        if auth_configured && requesting_key.is_none() {
+            warn!(
+                tree_id = %tree_id,
+                "Unauthenticated bootstrap request rejected - database requires authentication"
+            );
+            return SyncResponse::Error(
+                "Authentication required: This database requires authenticated access. \
+                 Please provide credentials (requesting_key, requesting_key_name, requested_permission) \
+                 to bootstrap sync.".to_string()
+            );
+        }
 
         // Handle key approval for bootstrap requests FIRST
         let (key_approved, granted_permission) = if let (

@@ -343,3 +343,120 @@ async fn test_iroh_address_detection() {
 
     println!("✅ Iroh JSON address detection verified");
 }
+
+/// **SECURITY TEST**: Verify that unauthenticated clients cannot read authenticated databases.
+///
+/// This test verifies that the sync system properly rejects unauthenticated bootstrap requests
+/// when the database has authentication configured.
+///
+/// Expected behavior:
+/// - Server has database with auth configured (only server key authorized)
+/// - Client has NO authorized key
+/// - Client attempts sync WITHOUT providing authentication
+/// - Server should REJECT the request and NOT send any data
+///
+/// This test ensures that databases with authentication cannot be accessed without credentials.
+#[tokio::test]
+async fn test_unauthenticated_sync_should_fail() {
+    println!("\n🔒 SECURITY TEST: Unauthenticated client should not access authenticated database");
+
+    // Setup server with authenticated database
+    let server_instance = setup_instance_with_initialized();
+    server_instance.add_private_key("server_key").unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set_string("name", "Secure Database");
+
+    // Create database - this will auto-configure auth with server_key as Admin
+    let database = server_instance
+        .new_database(settings, "server_key")
+        .unwrap();
+    let tree_id = database.root_id().clone();
+
+    // Verify auth is configured by checking if server_key exists
+    let db_settings = database.get_settings().unwrap();
+    let auth_settings = db_settings.get_auth_settings().unwrap();
+    let server_key_auth = auth_settings.get_key("server_key");
+    assert!(
+        server_key_auth.is_ok(),
+        "Database should have auth configured with server_key"
+    );
+    println!("✅ Database has auth configured with server_key");
+
+    // Add some sensitive data to the database using a store
+    use eidetica::store::DocStore;
+    let tx = database.new_transaction().unwrap();
+    let secrets_store = tx.get_store::<DocStore>("secrets").unwrap();
+    let mut secret_doc = eidetica::crdt::Doc::new();
+    secret_doc.set_string("password", "super_secret_123");
+    secrets_store.set("admin", secret_doc).unwrap();
+    tx.commit().unwrap();
+    println!("✅ Added sensitive data to database");
+
+    // Start sync server (sync already initialized by setup_instance_with_initialized)
+    let server_sync = server_instance.sync().unwrap();
+    let server_addr = start_sync_server(&server_sync).await;
+    println!("✅ Server started at {}", server_addr);
+
+    // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
+    let client_instance = setup_instance_with_initialized();
+    client_instance
+        .add_private_key("unauthorized_client_key")
+        .unwrap();
+
+    // Verify client key is NOT in server's auth settings
+    let client_pubkey = client_instance
+        .get_formatted_public_key("unauthorized_client_key")
+        .unwrap();
+    let sigkeys =
+        eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_pubkey).unwrap();
+    assert!(
+        sigkeys.is_empty(),
+        "Client key should NOT be authorized in database"
+    );
+    println!("✅ Confirmed client has no authorized keys");
+
+    // CLIENT ATTEMPTS UNAUTHENTICATED SYNC
+    // This is the vulnerability: sync_with_peer() sends no auth credentials
+    let client_sync = client_instance.sync().unwrap();
+    client_sync.enable_http_transport().unwrap();
+
+    println!("🔓 Attempting unauthenticated sync (NO credentials provided)...");
+    let result = client_sync
+        .sync_with_peer(&server_addr, Some(&tree_id))
+        .await;
+
+    match result {
+        Ok(_) => {
+            // Sync should NOT succeed without authentication!
+            // Check if client actually received the data
+            let can_read_data = client_instance.backend().get(&tree_id).is_ok();
+
+            if can_read_data {
+                panic!(
+                    "❌ SECURITY VULNERABILITY: Unauthenticated client successfully synced authenticated database!"
+                );
+            } else {
+                // If sync succeeded but client has no data, that's acceptable
+                // (e.g., server might send metadata without actual entries)
+                println!("⚠️  Sync completed but client has no data (edge case)");
+            }
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+
+            // Verify error is due to authentication requirement
+            assert!(
+                err_str.contains("Authentication required")
+                    || err_str.contains("Unauthorized")
+                    || err_str.contains("Access denied"),
+                "Expected authentication error, got: {}",
+                e
+            );
+
+            println!("✅ Server correctly rejected unauthenticated sync: {}", e);
+        }
+    }
+
+    println!("✅ Security test passed: Unauthenticated access properly blocked");
+}

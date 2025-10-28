@@ -136,6 +136,10 @@ pub enum SyncError {
     /// Instance has been dropped and is no longer available.
     #[error("Instance has been dropped")]
     InstanceDropped,
+
+    /// Bootstrap request is pending manual approval.
+    #[error("Bootstrap request pending approval (request_id: {request_id}): {message}")]
+    BootstrapPending { request_id: String, message: String },
 }
 
 impl SyncError {
