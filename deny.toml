@@ -36,5 +36,6 @@ exceptions = [
     # Eidetica's own libraries
     { allow = ["AGPL-3.0-or-later"], crate = "eidetica" },
     { allow = ["AGPL-3.0-or-later"], crate = "eidetica-bin" },
+    { allow = ["AGPL-3.0-or-later"], crate = "example-chat" },
     { allow = ["AGPL-3.0-or-later"], crate = "example-todo" },
 ]
