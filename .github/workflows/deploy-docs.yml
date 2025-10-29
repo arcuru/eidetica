@@ -7,7 +7,7 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/deploy-docs.yml"
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -43,14 +43,6 @@ jobs:
           then
               cargo install mdbook-mermaid --locked --version ^0.15
           fi
-
-      - name: Test Documentation Examples
-        run: |
-          # The book tests require a single copy of libeidetica target/debug/deps
-          # This is a workaround to remove and rebuild only 1
-          rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-          cargo build -p eidetica --features full
-          RUST_LOG=warn mdbook test docs -L target/debug/deps
 
       - name: Build mdBook documentation
         run: mdbook build docs

@@ -1,10 +1,8 @@
 name: Coverage (Nix)
 
 on:
-  # Run on main branch pushes
   push:
     branches: ["main"]
-  # Allow manual triggering
   workflow_dispatch:
 
 jobs:
