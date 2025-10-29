@@ -360,20 +360,30 @@ When joining a new database, the authenticated bootstrap protocol handles permis
 5. **Database Transfer**: Complete database state transferred to the client
 6. **Access Granted**: Client can immediately make authenticated operations
 
-<!-- Code block ignored: Complex authentication flow requiring policy setup -->
+<!-- Code block ignored: Complex authentication flow requiring global permissions setup -->
 
 ```rust,ignore
-// Configure database with bootstrap policy (server side)
+// Configure database with global wildcard permission (server side)
 let mut settings = Doc::new();
 settings.set_string("name", "Team Database");
 
 let mut auth_doc = Doc::new();
-let mut policy_doc = Doc::new();
-// Enable auto-approval for team collaboration
-policy_doc.set_json("bootstrap_auto_approve", true)?;
-auth_doc.set_doc("policy", policy_doc);
-settings.set_doc("auth", auth_doc);
 
+// Add admin key
+auth_doc.set_json("admin_key", serde_json::json!({
+    "pubkey": admin_pubkey,
+    "permissions": {"Admin": 1},
+    "status": "Active"
+}))?;
+
+// Add global wildcard permission for team collaboration
+auth_doc.set_json("*", serde_json::json!({
+    "pubkey": "*",
+    "permissions": {"Write": 10},
+    "status": "Active"
+}))?;
+
+settings.set_doc("auth", auth_doc);
 let database = instance.new_database(settings, "admin_key")?;
 
 // Bootstrap authentication example (client side)
@@ -381,8 +391,8 @@ sync.sync_with_peer_for_bootstrap(
     "peer_address",
     &tree_id,
     "my_device_key",
-    Permission::Write  // Request write access
-).await?;  // Will succeed if policy allows
+    Permission::Write(15)  // Request write access
+).await?;  // Will succeed via global permission
 
 // After successful bootstrap, the device can write to the database
 let op = database.new_authenticated_operation("my_device_key")?;
@@ -393,9 +403,9 @@ op.commit()?;
 **Security Considerations**:
 
 - Bootstrap requests are **rejected by default** for security
-- Auto-approval must be explicitly enabled via policy configuration
-- Policy setting: `_settings.auth.policy.bootstrap_auto_approve: bool`
-- All key additions are recorded in the immutable database history
+- Global wildcard permissions enable automatic approval without per-device key management
+- Manual approval queues bootstrap requests for administrator review
+- All key additions (in manual approval) are recorded in the immutable database history
 - Permission levels are enforced (Read/Write/Admin)
 
 ### Peer Verification

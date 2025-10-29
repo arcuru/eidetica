@@ -20,7 +20,7 @@ const SYNC_PROPAGATION_DELAY_LONG: Duration = Duration::from_millis(200);
 #[tokio::test]
 async fn test_bootstrap_with_provided_key() {
     // Setup server with a database
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     // Add some content to the server database
     let root_entry = Entry::root_builder()
@@ -99,7 +99,7 @@ async fn test_bootstrap_with_provided_key() {
 #[tokio::test]
 async fn test_bootstrap_key_not_stored_in_backend() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     server_sync
         .backend()
@@ -170,7 +170,7 @@ async fn test_bootstrap_key_not_stored_in_backend() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_key_fails() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, _tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, _tree_id) = setup_global_wildcard_server();
 
     server_sync
         .backend()
@@ -215,7 +215,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
 #[tokio::test]
 async fn test_multiple_clients_with_different_keys() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     let root_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"value": "shared data"}"#)
@@ -300,7 +300,7 @@ async fn test_multiple_clients_with_different_keys() {
 #[tokio::test]
 async fn test_bootstrap_with_different_permissions() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     server_sync
         .backend()
@@ -362,7 +362,7 @@ async fn test_bootstrap_with_different_permissions() {
 #[tokio::test]
 async fn test_with_key_equivalent_to_backend_key() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "data"}"#)
@@ -449,7 +449,7 @@ async fn test_with_key_equivalent_to_backend_key() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_keys() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     server_sync
         .backend()
@@ -559,7 +559,7 @@ async fn test_bootstrap_with_invalid_keys() {
 #[tokio::test]
 async fn test_full_e2e_bootstrap_with_database_instances() {
     // Setup server with a proper Database instance
-    let (_server_instance, server_database, server_sync, _tree_id) = setup_auto_approval_server();
+    let (_server_instance, server_database, server_sync, _tree_id) = setup_global_wildcard_server();
 
     let tree_id = server_database.root_id().clone();
 
@@ -632,21 +632,30 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     println!("✅ Client: Successfully retrieved data from synced database");
 
-    // Verify the client's key was added to the server database auth settings
+    // Verify the server has global wildcard permission (not individual client key)
     let server_tx = server_database.new_transaction().unwrap();
     let settings_store = server_tx.get_settings().unwrap();
 
-    let client_auth_key = settings_store
-        .get_auth_key(&client_key_id)
-        .expect("Client key should be in server auth settings");
+    // Client key should NOT be added individually - access is via global wildcard
+    let client_key_result = settings_store.get_auth_key(&client_key_id);
+    assert!(
+        client_key_result.is_err(),
+        "Client key should not be added individually when global wildcard permission exists"
+    );
 
-    assert_eq!(client_auth_key.permissions(), &Permission::Read);
+    // Verify global wildcard permission exists
+    let global_auth_key = settings_store
+        .get_auth_key("*")
+        .expect("Global wildcard permission should exist");
+
     assert_eq!(
-        client_auth_key.status(),
+        global_auth_key.status(),
         &eidetica::auth::types::KeyStatus::Active
     );
 
-    println!("✅ Server: Client key properly added to database auth settings");
+    println!(
+        "✅ Server: Global wildcard permission grants access (no individual client key added)"
+    );
 
     // Verify the key is NOT in the client backend
     assert!(
@@ -669,7 +678,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap_with_key() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_auto_approval_server();
+    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server();
 
     let root_entry = create_test_tree_entry();
     server_sync

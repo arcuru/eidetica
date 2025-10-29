@@ -12,7 +12,7 @@ Secure key management and access control for distributed Eidetica databases thro
 - Structure: `Table<BootstrapRequest>` with UUID keys
 - Persistence: Indefinite for audit trail purposes
 
-**Policy Configuration**: Each database stores bootstrap policy in `_settings.auth.policy.bootstrap_auto_approve: bool` (default: `false`)
+**Global Wildcard Permissions**: Databases can enable automatic approval via global `*` permissions in `_settings.auth.*`
 
 ### Core Components
 
@@ -28,9 +28,9 @@ The `BootstrapRequestManager` handles storage and lifecycle of bootstrap request
 
 The `SyncHandlerImpl` processes bootstrap requests during sync operations:
 
-- **Policy Evaluation**: Checks `_settings.auth.policy.bootstrap_auto_approve` flag
-- **Auto-Approval**: Automatically adds keys when policy allows
-- **Manual Queue**: Stores requests for manual review when auto-approval is disabled
+- **Global Permission Check**: Checks if global `*` wildcard permission satisfies the request
+- **Automatic Approval**: Grants access immediately via global permission (no key addition)
+- **Manual Queue**: Stores requests for manual review when no global permission exists
 - **Response Generation**: Returns appropriate sync responses (BootstrapPending, BootstrapResponse)
 
 #### 3. Sync Module Public API (`sync/mod.rs`)
@@ -66,18 +66,9 @@ sequenceDiagram
         SyncHandler-->>Client: BootstrapResponse<br/>(approved=true, no key added)
     else Global Permission Insufficient
         GlobalPermCheck-->>SyncHandler: insufficient/missing
-        SyncHandler->>PolicyCheck: Check auto_approve policy
-
-        alt Auto-Approval Enabled
-            PolicyCheck-->>SyncHandler: true
-            SyncHandler->>Database: Add key directly
-            Database-->>SyncHandler: Success
-            SyncHandler-->>Client: BootstrapResponse<br/>(approved=true)
-        else Manual Approval Required
-            PolicyCheck-->>SyncHandler: false
-            SyncHandler->>BootstrapManager: Store request
-            BootstrapManager-->>SyncHandler: Request ID
-            SyncHandler-->>Client: BootstrapPending<br/>(request_id)
+        SyncHandler->>BootstrapManager: Store request
+        BootstrapManager-->>SyncHandler: Request ID
+        SyncHandler-->>Client: BootstrapPending<br/>(request_id)
 
             Note over Client: Waits for approval
 
@@ -121,10 +112,10 @@ When a bootstrap request is received, the sync handler first checks if the reque
 
 ### Precedence Rules
 
-1. **Global permissions checked first** - Before auto-approval policy check
-2. **Global permissions override manual policy** - Even if `bootstrap_auto_approve: false`
+1. **Global permissions checked first** - Before manual approval queue
+2. **Global permissions provide immediate access** - No admin approval required
 3. **No key storage** - Global permission grants don't add keys to auth settings
-4. **Insufficient global permission** - Falls back to normal policy check
+4. **Insufficient global permission** - Falls back to manual approval queue
 
 ### Global Permissions for Ongoing Operations
 
@@ -246,11 +237,11 @@ When rejecting a request:
 5. Call `settings_store.set_auth_key()`
 6. Commit transaction
 
-**Policy Check** (`handler.rs:is_bootstrap_auto_approve_allowed`):
+**Global Permission Check** (`handler.rs:check_existing_auth_permission`):
 
 1. Load database settings via `SettingsStore`
-2. Navigate to `auth.policy.bootstrap_auto_approve`
-3. Read as JSON bool (defaults to `false`)
+2. Check if global `*` key exists with sufficient permissions
+3. Approve immediately if global permission satisfies request
 
 ### Audit Trail
 

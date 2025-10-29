@@ -74,13 +74,8 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Create a database (like creating a chat room)
     let mut settings = Doc::new();
     settings.set_string("name", "Test Chat Room");
-    // Enable bootstrap auto-approval via policy AND include admin/global entries so creation succeeds
+    // Enable automatic bootstrap approval via global wildcard permission
     let mut auth_doc = Doc::new();
-    let mut policy_doc = Doc::new();
-    policy_doc
-        .set_json("bootstrap_auto_approve", true)
-        .expect("set policy json");
-    auth_doc.set_doc("policy", policy_doc);
     // Include server admin key for initial database creation
     auth_doc
         .set_json(
@@ -692,13 +687,8 @@ async fn test_multiple_databases_sync() {
         let mut settings = Doc::new();
         settings.set_string("name", format!("Room {}", i));
 
-        // Set up auth configuration with bootstrap policy
+        // Set up auth configuration with global wildcard permission
         let mut auth_doc = Doc::new();
-        let mut policy_doc = Doc::new();
-        policy_doc
-            .set_json("bootstrap_auto_approve", true)
-            .expect("set policy json");
-        auth_doc.set_doc("policy", policy_doc);
 
         // Include server admin key for initial database creation
         auth_doc
@@ -711,6 +701,18 @@ async fn test_multiple_databases_sync() {
                 }),
             )
             .expect("Failed to set admin auth");
+
+        // Add global wildcard permission for automatic bootstrap approval
+        auth_doc
+            .set_json(
+                "*",
+                serde_json::json!({
+                    "pubkey": "*",
+                    "permissions": {"Write": 0},
+                    "status": "Active"
+                }),
+            )
+            .expect("Failed to set global wildcard permission");
 
         settings.set_doc("auth", auth_doc);
 

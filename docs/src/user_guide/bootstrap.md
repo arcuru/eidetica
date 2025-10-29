@@ -2,11 +2,10 @@
 
 ## Overview
 
-The Bootstrap system provides secure key management for Eidetica databases by controlling how new devices gain access to synchronized databases. It supports three approval methods:
+The Bootstrap system provides secure key management for Eidetica databases by controlling how new devices gain access to synchronized databases. It supports two approval methods:
 
-1. **Global Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests without adding new keys
-2. **Auto-Approval Policy** - When `bootstrap_auto_approve: true`, devices are automatically approved and keys added
-3. **Manual Approval** - When auto-approval is disabled, admin must explicitly approve each request
+1. **Global Wildcard Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests without adding new keys
+2. **Manual Approval** - Bootstrap requests are queued for administrator review and explicit approval
 
 ## Global Permission Bootstrap
 
@@ -22,7 +21,7 @@ Devices use the global permission for both bootstrap approval and subsequent ope
 
 - **No key management**: Devices don't need individual keys added to database
 - **Immediate access**: Bootstrap approval happens instantly
-- **Overrides manual policy**: Works even if `bootstrap_auto_approve: false`
+- **Simple configuration**: One permission setting controls all devices
 - **Flexible permissions**: Set exactly the permission level you want to allow
 
 ### Configuration Example
@@ -88,16 +87,10 @@ client_sync.sync_with_peer_for_bootstrap(
 
 The client must handle different response scenarios:
 
-- **Global Permission Approved** (with global '\*' permissions):
+- **Global Wildcard Permission Approved**:
   - Request succeeds immediately
   - Client gains access via global permission
   - No individual key added to database
-  - Can proceed with normal operations
-
-- **Auto-Approval Enabled** (with `bootstrap_auto_approve: true`):
-  - Request succeeds immediately
-  - Client key is added to database
-  - Client gains access to the database
   - Can proceed with normal operations
 
 - **Manual Approval Required** (default):
@@ -164,28 +157,6 @@ async fn bootstrap_with_retry(
 
 ## Usage Examples
 
-### Enable Auto-Approval
-
-<!-- Code block ignored: Example configuration code for enabling auto-approval -->
-
-```rust,ignore
-use eidetica::store::SettingsStore;
-
-// Enable auto-approval in database settings
-let transaction = database.new_transaction()?;
-let settings_store = transaction.get_settings()?;
-
-// Configure bootstrap auto-approval policy
-settings_store.update_auth_settings(|auth| {
-    let mut policy_doc = eidetica::crdt::Doc::new();
-    policy_doc.set_json("bootstrap_auto_approve", true)?;
-    auth.as_doc().set_doc("policy", policy_doc)?;
-    Ok(())
-})?;
-
-transaction.commit()?;
-```
-
 ### Manual Approval Workflow
 
 For administrators managing bootstrap requests:
@@ -230,14 +201,14 @@ let bootstrap_result = client_sync.sync_with_peer_for_bootstrap(
     Permission::Write(5)
 ).await;
 
-// Step 2: Handle the response based on approval policy
+// Step 2: Handle the response based on approval method
 match bootstrap_result {
     Ok(_) => {
-        // Rare case: Auto-approval was enabled
-        println!("Bootstrap auto-approved! Access granted immediately.");
+        // Global wildcard permission granted immediate access
+        println!("Bootstrap approved via global permission! Access granted immediately.");
     },
     Err(e) => {
-        // Common case: Manual approval required
+        // Manual approval required
         // The error indicates the request is pending
         println!("Bootstrap request submitted, awaiting admin approval...");
 
@@ -272,25 +243,17 @@ match bootstrap_result {
 
 ## Security Considerations
 
-### Policy Configuration
-
-The bootstrap auto-approval policy is stored at:
-
-```text
-_settings.auth.policy.bootstrap_auto_approve: bool
-```
-
-**Default**: `false` (manual approval required)
-
 ### Trust Model
 
-- **Auto-Approval**: Trusts any device that can reach the sync endpoint
-  - Suitable for: Development, private networks, low-security scenarios
-  - Risk: Any device can gain specified permissions automatically
+- **Global Wildcard Permissions**: Trusts any device that can reach the sync endpoint
+  - Suitable for: Development, collaborative projects, public databases
+  - Risk: Any device can gain the configured global permissions
+  - Benefit: Simple, immediate access for authorized scenarios
 
-- **Manual Approval**: Requires explicit admin action
-  - Suitable for: Production, public networks, high-security scenarios
-  - Benefit: Complete control over database access
+- **Manual Approval**: Requires explicit admin action for each device
+  - Suitable for: Production, sensitive data, controlled access scenarios
+  - Benefit: Complete control over which devices gain access
+  - Risk: Administrative overhead for each new device
 
 ## Troubleshooting
 

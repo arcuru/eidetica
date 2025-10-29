@@ -88,8 +88,7 @@ async fn test_bootstrap_pending_error_propagation() {
         .unwrap();
     let tree_id = database.root_id().clone();
 
-    // Set manual approval policy
-    set_bootstrap_auto_approve(&database, false).unwrap();
+    // Database already has manual approval (no global wildcard permission)
 
     // Start sync server (sync already initialized by setup_instance_with_initialized)
     let server_sync = server_instance.sync().unwrap();
@@ -267,7 +266,7 @@ async fn test_iroh_transport_concurrent_access() {
 async fn test_http_address_with_http_transport() {
     println!("\n🧪 TEST: HTTP address auto-detection with HTTP transport");
 
-    let (instance, database, _sync, _tree_id) = setup_auto_approval_server();
+    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server();
     let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
 
     // Enable HTTP transport on client
@@ -310,7 +309,7 @@ async fn test_http_address_with_http_transport() {
 async fn test_iroh_address_detection() {
     println!("\n🧪 TEST: Iroh JSON address detection");
 
-    let (instance, database, _sync, _tree_id) = setup_auto_approval_server();
+    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server();
     let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
 
     // Enable Iroh transport on client

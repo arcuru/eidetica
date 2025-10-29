@@ -56,39 +56,6 @@ async fn test_manual_approval_stores_pending_request() {
 }
 
 #[tokio::test]
-async fn test_auto_approve_still_works() {
-    let (_instance, _database, sync, tree_id) = setup_auto_approval_server();
-    let sync_handler = create_test_sync_handler(&sync);
-
-    // Create a bootstrap request that should be auto-approved
-    let test_key = generate_public_key();
-    let sync_request =
-        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
-
-    // Handle the request
-    let response = sync_handler.handle_request(&sync_request).await;
-
-    // Should return Bootstrap (auto-approved)
-    match response {
-        SyncResponse::Bootstrap(bootstrap_response) => {
-            assert_eq!(bootstrap_response.tree_id, tree_id);
-            assert!(bootstrap_response.key_approved);
-            assert_eq!(
-                bootstrap_response.granted_permission,
-                Some(AuthPermission::Write(5))
-            );
-            println!("✅ Bootstrap request auto-approved successfully");
-        }
-        other => panic!("Expected Bootstrap, got: {:?}", other),
-    }
-
-    // Should have no pending requests since it was auto-approved
-    assert_request_stored(&sync, 0);
-
-    println!("✅ Auto-approval still works when policy allows it");
-}
-
-#[tokio::test]
 async fn test_approve_bootstrap_request() {
     let (_instance, database, sync, tree_id) = setup_manual_approval_server();
 

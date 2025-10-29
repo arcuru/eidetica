@@ -661,15 +661,14 @@ This allows:
 
 ## Bootstrap Security Policy
 
-When new devices join existing databases through bootstrap synchronization, Eidetica provides multiple approval methods to balance security and convenience.
+When new devices join existing databases through bootstrap synchronization, Eidetica provides two approval methods to balance security and convenience.
 
 ### Bootstrap Approval Methods
 
-Eidetica supports three bootstrap approval approaches, checked in this order:
+Eidetica supports two bootstrap approval approaches, checked in this order:
 
-1. **Global Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests if the requested permission is satisfied
-2. **Auto-Approval Policy** - When `bootstrap_auto_approve: true`, devices are automatically approved and keys added
-3. **Manual Approval** - Default secure behavior requiring admin approval for each device
+1. **Global Wildcard Permissions** - Databases with global '\*' permissions automatically approve bootstrap requests if the requested permission is satisfied
+2. **Manual Approval** - Default secure behavior requiring admin approval for each device
 
 ### Default Security Behavior
 
@@ -687,9 +686,9 @@ client_sync.sync_with_peer_for_bootstrap(
 ).await; // Returns PermissionDenied error
 ```
 
-### Option 1: Global Permissions (Recommended for Collaboration)
+### Global Wildcard Permissions (Recommended for Collaboration)
 
-The simplest approach for collaborative databases is to use global permissions:
+The simplest approach for collaborative databases is to use global wildcard permissions:
 
 ```rust,ignore
 let mut settings = Doc::new();
@@ -702,7 +701,7 @@ auth_doc.set_json("admin", serde_json::json!({
     "status": "Active"
 }))?;
 
-// Add global permission for automatic bootstrap
+// Add global wildcard permission for automatic bootstrap
 auth_doc.set_json("*", serde_json::json!({
     "pubkey": "*",
     "permissions": {"Write": 10},  // Allows Read and Write(11+) requests
@@ -716,59 +715,27 @@ settings.set_doc("auth", auth_doc);
 
 - No per-device key management required
 - Immediate bootstrap approval
-- Works even if `bootstrap_auto_approve: false`
+- Simple configuration - one permission setting controls all devices
 - See [Bootstrap Guide](bootstrap.md#global-permission-bootstrap) for details
 
-### Option 2: Auto-Approval Policy
+### Manual Approval Process
 
-To allow automatic key approval with per-device keys, configure the bootstrap policy:
-
-<!-- Code block ignored: Complex authentication flow requiring policy setup -->
-
-```rust,ignore
-let mut settings = Doc::new();
-settings.set_string("name", "Team Chat Room");
-
-// Set up authentication with policy
-let mut auth_doc = Doc::new();
-let mut policy_doc = Doc::new();
-policy_doc.set_json("bootstrap_auto_approve", true)?;
-auth_doc.set_doc("policy", policy_doc);
-
-// Include initial admin key
-auth_doc.set_json("admin_device", serde_json::json!({
-    "pubkey": admin_public_key,
-    "permissions": {"Admin": 10},
-    "status": "Active"
-}))?;
-
-settings.set_doc("auth", auth_doc);
-
-let database = instance.new_database(settings, "admin_device")?;
-```
-
-### Policy Configuration
-
-The bootstrap policy is stored in database settings at:
-
-```text
-_settings.auth.policy.bootstrap_auto_approve: bool (default: false)
-```
+For controlled access scenarios, use manual approval to review each bootstrap request:
 
 **Security Recommendations**:
 
-- **Development/Testing**: Enable auto-approval for convenience
-- **Production**: Keep disabled, use manual key management
-- **Team Collaboration**: Enable with proper access controls
-- **Public Databases**: Always disabled for security
+- **Development/Testing**: Use global wildcard permissions for convenience
+- **Production**: Use manual approval for controlled access
+- **Team Collaboration**: Use global wildcard permissions with appropriate permission levels
+- **Public Databases**: Use global wildcard permissions for open access, or manual approval for controlled access
 
 ### Bootstrap Flow
 
 1. **Client Request**: Device requests access with public key and permission level
 2. **Global Permission Check**: Server checks if global '\*' permission satisfies request
-3. **Policy Check**: If no global permission, server evaluates `bootstrap_auto_approve` setting
-4. **Auto-Approval**: If policy enabled, key is automatically added to database auth settings
-5. **Rejection**: If disabled, request requires manual admin approval
+3. **Global Permission Approval**: If global permission exists and satisfies request, access is granted immediately
+4. **Manual Approval Queue**: If no global permission, request is queued for admin review
+5. **Admin Decision**: Admin explicitly approves or rejects the request
 6. **Database Access**: Approved devices can read/write according to granted permissions
 
 ## See Also

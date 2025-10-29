@@ -194,17 +194,11 @@ use eidetica::{
     sync::protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
 };
 
-/// Create a server instance configured for bootstrap testing
-///
-/// # Arguments
-/// * `auto_approve` - Whether to enable bootstrap auto-approval
+/// Create a server instance configured for manual bootstrap approval
 ///
 /// # Returns
 /// (Instance, Database, Sync, tree_id)
-#[allow(deprecated)]
-pub fn setup_bootstrap_server(
-    auto_approve: bool,
-) -> (Instance, Database, Sync, eidetica::entry::ID) {
+pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
     let instance = crate::helpers::test_instance();
 
     // Add server admin key
@@ -212,17 +206,11 @@ pub fn setup_bootstrap_server(
         .add_private_key("server_admin")
         .expect("Failed to add server admin key");
 
-    // Create database with appropriate bootstrap policy
+    // Create database with manual approval (no global wildcard permission)
     let mut settings = Doc::new();
     settings.set_string("name", "Bootstrap Test Database");
 
-    // Configure auth policy
     let mut auth_doc = Doc::new();
-    let mut policy_doc = Doc::new();
-    policy_doc
-        .set_json("bootstrap_auto_approve", auto_approve)
-        .expect("Failed to set policy");
-    auth_doc.set_doc("policy", policy_doc);
 
     // Add server admin key to auth settings
     let server_pubkey = instance
@@ -241,7 +229,6 @@ pub fn setup_bootstrap_server(
         .expect("Failed to set server admin auth");
 
     // Add device key to auth settings for sync handler operations
-    // The sync handler needs this key to authenticate when operating on the database
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
         .expect("Failed to get device public key");
@@ -270,14 +257,79 @@ pub fn setup_bootstrap_server(
     (instance, database, sync, tree_id)
 }
 
-/// Create a server with manual approval (auto_approve = false)
-pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    setup_bootstrap_server(false)
-}
+/// Create a server with global wildcard permission for automatic bootstrap approval
+///
+/// # Returns
+/// (Instance, Database, Sync, tree_id)
+pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
+    let instance = crate::helpers::test_instance();
 
-/// Create a server with auto approval (auto_approve = true)
-pub fn setup_auto_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    setup_bootstrap_server(true)
+    // Add server admin key
+    instance
+        .add_private_key("server_admin")
+        .expect("Failed to add server admin key");
+
+    // Create database with global wildcard permission
+    let mut settings = Doc::new();
+    settings.set_string("name", "Bootstrap Test Database");
+
+    let mut auth_doc = Doc::new();
+
+    // Add server admin key to auth settings
+    let server_pubkey = instance
+        .get_formatted_public_key("server_admin")
+        .expect("Failed to get server public key");
+
+    auth_doc
+        .set_json(
+            "server_admin",
+            serde_json::json!({
+                "pubkey": server_pubkey,
+                "permissions": {"Admin": 0},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set server admin auth");
+
+    // Add device key to auth settings for sync handler operations
+    let device_pubkey = instance
+        .get_formatted_public_key("_device_key")
+        .expect("Failed to get device public key");
+
+    auth_doc
+        .set_json(
+            "_device_key",
+            serde_json::json!({
+                "pubkey": device_pubkey,
+                "permissions": {"Admin": 0},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set device key auth");
+
+    // Add global wildcard permission for automatic bootstrap approval
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Admin": 0},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set global wildcard permission");
+
+    settings.set_doc("auth", auth_doc);
+
+    let database = instance
+        .new_database(settings, "server_admin")
+        .expect("Failed to create database");
+    let tree_id = database.root_id().clone();
+
+    // Create sync instance
+    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+
+    (instance, database, sync, tree_id)
 }
 
 /// Start a sync server with common settings
@@ -402,6 +454,8 @@ use eidetica::user::User;
 
 /// Creates a server instance with a user, key, and bootstrap-enabled database
 ///
+/// Uses global wildcard permission for automatic bootstrap approval.
+///
 /// Returns (Instance, User, key_id: String, Database, TreeId)
 pub fn setup_server_with_bootstrap_database(
     username: &str,
@@ -421,8 +475,8 @@ pub fn setup_server_with_bootstrap_database(
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
-    // Add bootstrap auto-approval policy
-    set_bootstrap_auto_approve(&server_database, true).unwrap();
+    // Add global wildcard permission for automatic bootstrap approval
+    set_global_wildcard_permission(&server_database).unwrap();
 
     (
         server_instance,
@@ -505,42 +559,40 @@ pub async fn request_database_access_default(
     .await
 }
 
-/// Creates a user with a key and an empty database
+/// Sets global wildcard permission on a database for automatic bootstrap approval
 ///
-/// Returns (User, key_id: String, Database, TreeId)
-pub fn setup_user_with_database(
-    instance: &Instance,
-    username: &str,
-    key_name: &str,
-) -> (User, String, Database, eidetica::entry::ID) {
-    instance.create_user(username, None).unwrap();
-    let mut user = instance.login_user(username, None).unwrap();
-    let key_id = user.add_private_key(Some(key_name)).unwrap();
-
-    let database = user.create_database(Doc::new(), &key_id).unwrap();
-    let tree_id = database.root_id().clone();
-
-    (user, key_id, database, tree_id)
-}
-
-/// Creates a sync handler for testing bootstrap policy resolution
+/// # Arguments
+/// * `database` - The database to configure
+/// * `permission` - The permission level to grant (e.g., Write(0) allows all Write/Read requests)
 ///
-/// Uses a temporary sync instance to get the sync tree root ID.
-pub fn create_database_sync_handler(_database: &Database, instance: &Instance) -> SyncHandlerImpl {
-    let temp_sync = Sync::new(instance.clone()).unwrap();
-    SyncHandlerImpl::new(instance.clone(), temp_sync.sync_tree_root_id().clone())
-}
-
-/// Sets the bootstrap auto-approval policy on a database
-pub fn set_bootstrap_auto_approve(database: &Database, enabled: bool) -> Result<()> {
+/// # Examples
+/// ```ignore
+/// // Allow all Write and Read requests (but not Admin)
+/// set_global_wildcard_permission_with_level(&db, Permission::Write(0))?;
+///
+/// // Allow only Read requests
+/// set_global_wildcard_permission_with_level(&db, Permission::Read)?;
+/// ```
+pub fn set_global_wildcard_permission_with_level(
+    database: &Database,
+    permission: eidetica::auth::Permission,
+) -> Result<()> {
     let tx = database.new_transaction()?;
     let db_settings = tx.get_settings()?;
-    db_settings.update_auth_settings(|auth| {
-        let mut policy_doc = Doc::new();
-        policy_doc.set_json("bootstrap_auto_approve", enabled)?;
-        auth.as_doc_mut().set_doc("policy", policy_doc);
-        Ok(())
-    })?;
+    db_settings.set_auth_key(
+        "*",
+        eidetica::auth::types::AuthKey::active("*".to_string(), permission).unwrap(),
+    )?;
     tx.commit()?;
     Ok(())
+}
+
+/// Sets global wildcard permission with Write(0) - allows all Write and Read requests
+///
+/// This is a convenience wrapper that sets Write(0) permission, which allows:
+/// - All Write requests (Write(1), Write(5), Write(100), etc.)
+/// - All Read requests
+/// - But denies Admin requests.
+pub fn set_global_wildcard_permission(database: &Database) -> Result<()> {
+    set_global_wildcard_permission_with_level(database, eidetica::auth::Permission::Write(0))
 }

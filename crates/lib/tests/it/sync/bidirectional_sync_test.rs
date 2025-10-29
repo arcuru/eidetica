@@ -64,13 +64,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Create database with simple settings like the chat app
     let mut settings = Doc::new();
     settings.set_string("name", "Bidirectional Test Room");
-    // Enable bootstrap auto-approval for this test via policy
+    // Enable automatic bootstrap approval via global wildcard permission
     let mut auth_doc = Doc::new();
-    let mut policy_doc = Doc::new();
-    policy_doc
-        .set_json("bootstrap_auto_approve", true)
-        .expect("set policy json");
-    auth_doc.set_doc("policy", policy_doc);
     // Include device1 admin key for initial database creation
     let device1_admin_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
@@ -85,6 +80,17 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             }),
         )
         .expect("Failed to set admin auth");
+    // Add global wildcard permission for automatic bootstrap approval
+    auth_doc
+        .set_json(
+            "*",
+            serde_json::json!({
+                "pubkey": "*",
+                "permissions": {"Admin": 10},
+                "status": "Active"
+            }),
+        )
+        .expect("Failed to set global wildcard permission");
     settings.set_doc("auth", auth_doc);
 
     let device1_database = device1_instance

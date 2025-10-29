@@ -23,7 +23,6 @@ use crate::{
     auth::{
         KeyStatus, Permission,
         crypto::{create_challenge_response, format_public_key, generate_challenge},
-        types::AuthKey,
     },
     entry::ID,
     store::SettingsStore,
@@ -299,62 +298,6 @@ impl SyncHandlerImpl {
         Ok(true) // Auth required
     }
 
-    /// Returns whether bootstrap key auto-approval is allowed by policy for this tree.
-    ///
-    /// This method checks the bootstrap approval policy stored in the target database's
-    /// settings. The policy determines whether new devices can automatically gain access
-    /// or require manual approval from an administrator.
-    ///
-    /// # Policy Location
-    /// `_settings.auth.policy.bootstrap_auto_approve: bool` (default: false)
-    ///
-    /// # Security Implications
-    /// - `true`: Any device that can reach this sync endpoint can automatically gain
-    ///   the permissions they request (up to the maximum allowed by other policies).
-    ///   Suitable for development or trusted private networks.
-    /// - `false`: All bootstrap requests are queued for manual review by an administrator.
-    ///   Recommended for production and public-facing deployments.
-    ///
-    /// # Arguments
-    /// * `tree_id` - The ID of the database/tree to check policy for
-    ///
-    /// # Returns
-    /// - `Ok(true)` if auto-approval is enabled
-    /// - `Ok(false)` if manual approval is required (default)
-    /// - `Err` if the policy cannot be read
-    pub async fn is_bootstrap_auto_approve_allowed(
-        &self,
-        tree_id: &crate::entry::ID,
-    ) -> crate::Result<bool> {
-        // Load database with device key for accessing settings
-        let instance = self.instance()?;
-        let signing_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)?
-            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
-
-        let database = Database::open(
-            self.instance()?,
-            tree_id,
-            signing_key,
-            DEVICE_KEY_NAME.to_string(),
-        )?;
-        let transaction = database.new_transaction()?;
-        let settings_store = SettingsStore::new(&transaction)?;
-
-        let auth_settings = settings_store.get_auth_settings()?;
-
-        if let Some(policy_doc) = auth_settings.as_doc().get_as::<crate::crdt::Doc>("policy") {
-            // Read as JSON-encoded bool to match set_json storage
-            if let Ok(flag) = policy_doc.get_json::<bool>("bootstrap_auto_approve") {
-                return Ok(flag);
-            }
-        }
-        Ok(false)
-    }
-
     /// Handle a handshake request from a peer.
     async fn handle_handshake(&self, request: &HandshakeRequest) -> SyncResponse {
         async move {
@@ -577,69 +520,34 @@ impl SyncHandlerImpl {
                     (true, Some(permission))
                 }
                 Ok(false) => {
-                    // No existing permission, check policy to determine if auto-approval is allowed
-                    match self.is_bootstrap_auto_approve_allowed(tree_id).await {
-                        Ok(true) => {
-                            // Proceed with auto-approval under policy
-                            match self
-                                .add_key_to_database(tree_id, key_name, key, permission.clone())
-                                .await
-                            {
-                                Ok(_) => {
-                                    info!(
-                                        tree_id = %tree_id,
-                                        key = %key,
-                                        permission = ?permission,
-                                        "Successfully approved and added key to database under policy"
-                                    );
-                                    (true, Some(permission))
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        tree_id = %tree_id,
-                                        key = %key,
-                                        error = %e,
-                                        "Failed to add key to database"
-                                    );
-                                    (false, None)
-                                }
-                            }
-                        }
-                        Ok(false) => {
-                            info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
+                    // No existing permission, store request for manual approval
+                    info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
 
-                            // Store the bootstrap request in sync database for manual approval
-                            match self
-                                .store_bootstrap_request(tree_id, key, key_name, &permission)
-                                .await
-                            {
-                                Ok(request_id) => {
-                                    info!(
-                                        tree_id = %tree_id,
-                                        request_id = %request_id,
-                                        "Bootstrap request stored for manual approval"
-                                    );
-                                    return SyncResponse::BootstrapPending {
-                                        request_id,
-                                        message: "Bootstrap request pending manual approval"
-                                            .to_string(),
-                                    };
-                                }
-                                Err(e) => {
-                                    error!(
-                                        tree_id = %tree_id,
-                                        error = %e,
-                                        "Failed to store bootstrap request"
-                                    );
-                                    return SyncResponse::Error(format!(
-                                        "Failed to store bootstrap request: {e}"
-                                    ));
-                                }
-                            }
+                    // Store the bootstrap request in sync database for manual approval
+                    match self
+                        .store_bootstrap_request(tree_id, key, key_name, &permission)
+                        .await
+                    {
+                        Ok(request_id) => {
+                            info!(
+                                tree_id = %tree_id,
+                                request_id = %request_id,
+                                "Bootstrap request stored for manual approval"
+                            );
+                            return SyncResponse::BootstrapPending {
+                                request_id,
+                                message: "Bootstrap request pending manual approval".to_string(),
+                            };
                         }
                         Err(e) => {
-                            error!(tree_id = %tree_id, error = %e, "Failed to evaluate bootstrap approval policy");
-                            return SyncResponse::Error(format!("Policy evaluation failed: {e}"));
+                            error!(
+                                tree_id = %tree_id,
+                                error = %e,
+                                "Failed to store bootstrap request"
+                            );
+                            return SyncResponse::Error(format!(
+                                "Failed to store bootstrap request: {e}"
+                            ));
                         }
                     }
                 }
@@ -927,100 +835,5 @@ impl SyncHandlerImpl {
         }
 
         Ok(count)
-    }
-
-    /// Add a key to the database's authentication settings.
-    ///
-    /// This method is used during bootstrap auto-approval to add a requesting device's
-    /// public key to the target database. It operates with elevated privileges as part
-    /// of the sync infrastructure.
-    ///
-    /// # Authentication Challenge
-    /// This method needs to authenticate with the target database to add keys. However,
-    /// the sync handler doesn't inherently know which key to use for each database.
-    /// Current implementation attempts to operate without authentication, which fails
-    /// for databases that require authenticated operations.
-    ///
-    /// # TODO: Authentication Strategy
-    /// Need to implement one of:
-    /// 1. Database-to-key mapping in sync configuration
-    /// 2. Discovery of admin keys from the database
-    /// 3. Special bootstrap authentication mode
-    ///
-    /// # Arguments
-    /// * `tree_id` - The database to add the key to
-    /// * `key_name` - Name identifier for the new key
-    /// * `public_key` - Ed25519 public key in "ed25519:..." format
-    /// * `permission` - Permission level to grant (Admin, Write, Read)
-    ///
-    /// # Returns
-    /// - `Ok(())` if key was successfully added
-    /// - `Err` if authentication fails or key cannot be added
-    async fn add_key_to_database(
-        &self,
-        tree_id: &crate::entry::ID,
-        key_name: &str,
-        public_key: &str,
-        permission: crate::auth::Permission,
-    ) -> crate::Result<()> {
-        debug!(
-            tree_id = %tree_id,
-            key_name = %key_name,
-            public_key = %public_key,
-            permission = ?permission,
-            "Adding key to database authentication settings"
-        );
-
-        // Load database with device key to access settings through proper Transaction
-        let instance = self.instance()?;
-        let signing_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)?
-            .ok_or_else(|| crate::sync::error::SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
-
-        let database = Database::open(
-            self.instance()?,
-            tree_id,
-            signing_key,
-            DEVICE_KEY_NAME.to_string(),
-        )?;
-        let transaction = database.new_transaction()?;
-        let settings_store = SettingsStore::new(&transaction)?;
-
-        // Create the new auth key with validation
-        let auth_key = AuthKey::active(public_key.to_string(), permission).unwrap();
-
-        // Set the key using SettingsStore (handles upsert logic)
-        match settings_store.set_auth_key(key_name, auth_key.clone()) {
-            Ok(_) => {
-                debug!(
-                    key_name = %key_name,
-                    public_key = %public_key,
-                    "Successfully set key in auth settings"
-                );
-            }
-            Err(crate::Error::Auth(auth_err)) if auth_err.is_key_name_conflict() => {
-                warn!(
-                    key_name = %key_name,
-                    error = %auth_err,
-                    "Key name conflict: different devices using same key name"
-                );
-                return Err(crate::Error::Auth(auth_err));
-            }
-            Err(e) => return Err(e),
-        }
-
-        // Commit the transaction to persist the changes
-        transaction.commit()?;
-
-        info!(
-            tree_id = %tree_id,
-            key_name = %key_name,
-            "Successfully added key to database"
-        );
-
-        Ok(())
     }
 }

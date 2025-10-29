@@ -802,24 +802,25 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 
 1. **Bootstrap Detection**: Empty tips in SyncTreeRequest signals bootstrap needed
 2. **Auth Request**: Client includes requesting key, key name, and requested permission
-3. **Policy Evaluation**: Server checks `_settings.auth.policy.bootstrap_auto_approve` setting
-4. **Conditional Approval**: Key approved only if policy allows (defaults to false for security)
-5. **Key Addition**: On approval, server adds requesting key to database's authentication settings
-6. **Database Transfer**: Complete database state sent with key approval confirmation
+3. **Global Permission Check**: Server checks if global `*` wildcard permission satisfies request
+4. **Immediate Approval**: If global permission exists and satisfies, access granted immediately
+5. **Manual Approval Queue**: If no global permission, request stored for admin review
+6. **Database Transfer**: Complete database state sent with approval confirmation
 7. **Access Granted**: Client receives database and can make authenticated operations
 
 **Protocol Extensions**:
 
 - `SyncTreeRequest` includes: `requesting_key`, `requesting_key_name`, `requested_permission`
 - `BootstrapResponse` includes: `key_approved`, `granted_permission`
+- `BootstrapPending` response for manual approval scenarios
 - New sync API: `sync_with_peer_for_bootstrap()` for authenticated bootstrap scenarios
 
 **Security**:
 
 - Ed25519 key cryptography for secure identity
 - Permission levels maintained (Read/Write/Admin)
-- Policy-controlled bootstrap approval (secure by default)
-- Configurable auto-approval via `_settings.auth.policy.bootstrap_auto_approve`
+- Global wildcard permissions for automatic approval (secure by configuration)
+- Manual approval queue for controlled access (secure by default)
 - Immutable audit trail of all key additions in database history
 
 ### CRDT Metadata Considerations
