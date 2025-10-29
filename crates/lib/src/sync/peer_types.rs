@@ -83,9 +83,10 @@ pub struct PeerInfo {
 }
 
 /// Status of a remote peer in the sync network.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum PeerStatus {
     /// Peer is active and available for sync
+    #[default]
     Active,
     /// Peer is inactive (not currently reachable)
     Inactive,
@@ -148,11 +149,5 @@ impl PeerInfo {
         self.addresses
             .iter()
             .any(|a| a.transport_type == transport_type.as_ref())
-    }
-}
-
-impl Default for PeerStatus {
-    fn default() -> Self {
-        Self::Active
     }
 }
