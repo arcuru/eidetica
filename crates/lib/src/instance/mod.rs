@@ -843,7 +843,6 @@ mod tests {
     use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};
 
     #[test]
-    #[allow(deprecated)]
     fn test_create_user() -> Result<(), Error> {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend))?;
@@ -861,7 +860,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_login_user() -> Result<(), Error> {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend))?;
@@ -880,7 +878,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_new_database() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
@@ -894,7 +891,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_new_database_default() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
@@ -908,7 +904,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_new_database_without_key_fails() -> Result<(), Error> {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend))?;
@@ -924,7 +919,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_load_database() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
@@ -941,7 +935,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_all_databases() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
@@ -961,7 +954,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_find_database() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");

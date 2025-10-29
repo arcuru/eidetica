@@ -378,7 +378,6 @@ pub async fn start_sync_server(sync: &Sync) -> String {
 ///
 /// # Returns
 /// (Instance, Arc<Sync>)
-#[allow(deprecated)]
 pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Arc<Sync>) {
     let instance = crate::helpers::test_instance();
 
