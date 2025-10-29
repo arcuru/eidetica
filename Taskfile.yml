@@ -80,6 +80,9 @@ tasks:
       - cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
   doc:
     desc: Build the documentation
+    cmd: cargo doc --workspace --all-features --no-deps --quiet
+  doc:full:
+    desc: Build the documentation with all dependencies
     cmd: cargo doc --workspace --all-features --quiet
   audit:
     desc: Run security and license checks (advisories, licenses, bans, sources)
