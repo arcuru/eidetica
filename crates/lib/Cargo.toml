@@ -26,7 +26,6 @@ hex = { workspace = true }
 blake3 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-typetag = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }
 yrs = { workspace = true, optional = true }
 tokio = { workspace = true }
@@ -43,7 +42,7 @@ handle_trait = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-ctor = "0.5"
+ctor = "0.6"
 
 [[bench]]
 name = "benchmarks"
