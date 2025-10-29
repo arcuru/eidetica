@@ -41,9 +41,7 @@
       ];
 
       systems = [
-        "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
 
@@ -75,16 +73,9 @@
           nativeBuildInputs = with pkgs; [
             pkg-config # Required for OpenSSL linking
           ];
-          buildInputs = with pkgs;
-            [
-              openssl
-            ]
-            ++ lib.optionals stdenv.isDarwin [
-              # Darwin-specific frameworks required for networking and crypto
-              # Not actually tested
-              darwin.apple_sdk.frameworks.Security
-              darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
+          buildInputs = with pkgs; [
+            openssl
+          ];
         };
 
         # Build cargo dependencies for release builds
