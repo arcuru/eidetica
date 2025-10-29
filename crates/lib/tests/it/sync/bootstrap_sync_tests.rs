@@ -3,63 +3,45 @@
 //! This module tests the new bootstrap-first sync protocol where one peer
 //! can join and bootstrap a database from another peer without any prior setup.
 
+use eidetica::store::DocStore;
+
 use super::helpers::*;
-use eidetica::Entry;
 use std::time::Duration;
 
 /// Test the new unified sync API for bootstrapping a database from scratch
 #[tokio::test]
 async fn test_bootstrap_sync_from_zero_state() {
-    // Setup server (has the database)
-    let (_server_instance, server_sync) = setup();
+    // Setup server with public sync-enabled database (allows unauthenticated access)
+    let (
+        server_instance,
+        mut _server_user,
+        _server_key_id,
+        server_database,
+        test_tree_id,
+        server_sync,
+    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database");
 
-    // Setup client (starts with no database)
-    let (client_instance, client_sync) = setup();
-
-    // Create some entries directly in the server's backend to simulate a tree with content
-    // First create a proper root entry
-    let root_entry = Entry::root_builder()
-        .set_subtree_data(
-            "messages",
-            r#"{"msg1": {"text": "Hello from server!", "timestamp": 1234567890}}"#,
-        )
-        .build()
-        .expect("Entry should build successfully");
-    let test_tree_id = root_entry.id().clone();
-
-    // Now create a child entry referencing the root
-    let child_entry = Entry::builder(test_tree_id.clone())
-        .set_parents(vec![test_tree_id.clone()])
-        .set_subtree_data(
-            "messages",
-            r#"{"msg2": {"text": "Second message", "timestamp": 1234567891}}"#,
-        )
-        .build()
-        .expect("Entry should build successfully");
-    let child_entry_id = child_entry.id().clone();
-
-    // Store entries in server backend
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(root_entry)
-        .unwrap();
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(child_entry)
-        .unwrap();
+    // Add some test data to the database
+    let test_entry_id = {
+        let tx = server_database.new_transaction().unwrap();
+        let store = tx
+            .get_store::<eidetica::store::DocStore>("messages")
+            .unwrap();
+        store.set_string("msg1", "Hello from server!").unwrap();
+        store.set_string("msg2", "Second message").unwrap();
+        tx.commit().unwrap()
+    };
 
     // Debug server state
-    let server_tips = server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get_tips(&test_tree_id)
-        .unwrap();
+    let server_tips = server_instance.backend().get_tips(&test_tree_id).unwrap();
     println!("🧪 DEBUG: Server tips: {:?}", server_tips);
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
+
+    // Setup client
+    let (client_instance, _client_user, _client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key");
 
     // Verify client doesn't have the database initially
     assert!(
@@ -80,28 +62,21 @@ async fn test_bootstrap_sync_from_zero_state() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify client now has the entries
-    let root_client = client_sync
+    let root_client = client_instance
         .backend()
-        .expect("Failed to get backend")
         .get(&test_tree_id)
         .expect("Client should have the root entry");
     assert_eq!(root_client.id(), test_tree_id, "Root entry should match");
 
-    // Check if client also has child entry
-    let child_result = client_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get(&child_entry_id);
+    // Check if client also has test entry
+    let entry_result = client_instance.backend().get(&test_entry_id);
     println!(
-        "🧪 DEBUG: Client has child entry: {:?}",
-        child_result.is_ok()
+        "🧪 DEBUG: Client has test entry: {:?}",
+        entry_result.is_ok()
     );
 
     // Verify client has tips
-    let tips = client_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get_tips(&test_tree_id);
+    let tips = client_instance.backend().get_tips(&test_tree_id);
     println!("🧪 DEBUG: Client tips result: {:?}", tips);
     match tips {
         Ok(tip_vec) => {
@@ -129,22 +104,22 @@ async fn test_bootstrap_sync_from_zero_state() {
 /// Test incremental sync after bootstrap (both peers now have the database)
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap() {
-    // Setup server and client
-    let (_server_instance, server_sync) = setup();
-    let (_client_instance, client_sync) = setup();
-
-    // Create some entries on server
-    let root_entry = create_test_tree_entry();
-    let test_tree_id = root_entry.id().clone();
-
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(root_entry)
-        .unwrap();
+    // Setup server with public sync-enabled database (allows unauthenticated access)
+    let (
+        _server_instance,
+        _server_user,
+        _server_key_id,
+        server_database,
+        test_tree_id,
+        server_sync,
+    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database");
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
+
+    // Setup client
+    let (client_instance, _client_user, _client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key");
 
     // Bootstrap client
     client_sync.enable_http_transport().unwrap();
@@ -157,29 +132,19 @@ async fn test_incremental_sync_after_bootstrap() {
 
     // Verify client has bootstrapped tree
     assert!(
-        client_sync
-            .backend()
-            .expect("Failed to get backend")
-            .get(&test_tree_id)
-            .is_ok(),
+        client_instance.backend().get(&test_tree_id).is_ok(),
         "Client should have the tree"
     );
 
     // Add new content to server AFTER bootstrap
-    let entry2 = Entry::builder(test_tree_id.clone())
-        .set_parents(vec![test_tree_id.clone()])
-        .set_subtree_data(
-            "messages",
-            r#"{"post_bootstrap": {"text": "After bootstrap message"}}"#,
-        )
-        .build()
-        .expect("Entry should build successfully");
-
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(entry2.clone())
-        .unwrap();
+    let entry2_id = {
+        let tx = server_database.new_transaction().unwrap();
+        let store = tx.get_store::<DocStore>("messages").unwrap();
+        store
+            .set_string("post_bootstrap", "After bootstrap message")
+            .unwrap();
+        tx.commit().unwrap()
+    };
 
     // Now do incremental sync (client already has the tree)
     println!("🧪 TEST: Attempting incremental sync...");
@@ -191,23 +156,16 @@ async fn test_incremental_sync_after_bootstrap() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify client received the new entry
-    let entry2_client_result = client_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get(&entry2.id());
+    let entry2_client_result = client_instance.backend().get(&entry2_id);
     assert!(
         entry2_client_result.is_ok(),
         "Client should have received the new entry"
     );
 
     // Verify tips have been updated
-    let tips = client_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get_tips(&test_tree_id)
-        .unwrap();
+    let tips = client_instance.backend().get_tips(&test_tree_id).unwrap();
     assert!(
-        tips.contains(&entry2.id()),
+        tips.contains(&entry2_id),
         "Client tips should include the new entry"
     );
 

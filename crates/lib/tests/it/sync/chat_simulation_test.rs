@@ -3,6 +3,7 @@
 //! These tests reproduce the exact sync patterns used by the chat example
 //! to debug authentication and sync issues.
 
+use super::helpers::enable_sync_for_instance_database;
 use eidetica::{
     Instance,
     backend::database::InMemory,
@@ -106,6 +107,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     let room_id = server_database.root_id().clone();
     println!("🏠 Created room with ID: {}", room_id);
 
+    // Enable sync for this database
+    let server_sync = server_instance.sync().expect("Server should have sync");
+    enable_sync_for_instance_database(&server_sync, &room_id)
+        .expect("Failed to enable sync for database");
+
     // Add some initial messages to the server's database
     {
         let op = server_database
@@ -126,7 +132,6 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Setup sync on server and get address
     let server_addr = {
-        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -566,9 +571,13 @@ async fn test_global_key_bootstrap() {
     let room_id = server_database.root_id().clone();
     println!("🏠 Created public room with ID: {}", room_id);
 
+    // Enable sync for this database
+    let server_sync = server_instance.sync().expect("Server should have sync");
+    enable_sync_for_instance_database(&server_sync, &room_id)
+        .expect("Failed to enable sync for database");
+
     // Setup sync on server
     let server_addr = {
-        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");
@@ -723,9 +732,15 @@ async fn test_multiple_databases_sync() {
         println!("🏠 Created room {} with ID: {}", i, database.root_id());
     }
 
+    // Enable sync for all databases
+    let server_sync = server_instance.sync().expect("Server should have sync");
+    for room_id in &room_ids {
+        enable_sync_for_instance_database(&server_sync, room_id)
+            .expect("Failed to enable sync for database");
+    }
+
     // Setup sync on server
     let server_addr = {
-        let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
             .enable_http_transport()
             .expect("Failed to enable HTTP transport");

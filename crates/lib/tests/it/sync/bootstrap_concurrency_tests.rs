@@ -27,6 +27,9 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
         .put_verified(root_entry)
         .unwrap();
 
+    // Enable sync for this tree
+    enable_sync_for_instance_database(&server_sync, &test_tree_id).unwrap();
+
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 

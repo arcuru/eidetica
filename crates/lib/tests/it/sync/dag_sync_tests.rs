@@ -6,7 +6,6 @@
 use std::{collections::HashSet, time::Duration};
 
 use eidetica::{
-    Database,
     entry::{Entry, ID},
     store::DocStore,
     sync::Address,
@@ -485,8 +484,13 @@ async fn test_sync_protocol_implementation() {
     // This test verifies that the sync protocol methods (GetTips, GetEntries, SendEntries)
     // are properly implemented with the SyncHandler architecture and that data actually syncs
 
-    let (base_db1, sync1) = helpers::setup();
-    let (base_db2, sync2) = helpers::setup();
+    // Setup server with public sync-enabled database
+    let (base_db1, _user1, _key_id1, tree1, tree_root_id, sync1) =
+        helpers::setup_public_sync_enabled_server("server_user", "server_key", "test_tree");
+
+    // Setup client
+    let (base_db2, _user2, _key_id2, sync2) =
+        helpers::setup_sync_enabled_client("client_user", "client_key");
 
     // Enable HTTP transport for both
     sync1.enable_http_transport().unwrap();
@@ -496,47 +500,6 @@ async fn test_sync_protocol_implementation() {
     sync1.start_server_async("127.0.0.1:0").await.unwrap();
     let server_addr = sync1.get_server_address_async().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let device_key = base_db1
-        .backend()
-        .get_private_key("_device_key")
-        .unwrap()
-        .unwrap();
-
-    // Create a tree with data in database 1
-    // Configure with wildcard "*" permission to allow unauthenticated sync
-    let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "test_tree");
-
-    // Add auth config with wildcard permission for unauthenticated access
-    let mut auth_settings = eidetica::auth::AuthSettings::new();
-    let device_pubkey = base_db1.get_formatted_public_key("_device_key").unwrap();
-
-    // Add device key for database operations
-    auth_settings
-        .add_key(
-            "_device_key",
-            eidetica::auth::AuthKey::active(&device_pubkey, eidetica::auth::Permission::Admin(0))
-                .unwrap(),
-        )
-        .unwrap();
-
-    // Add wildcard "*" permission to allow unauthenticated sync access
-    auth_settings
-        .add_key(
-            "*",
-            eidetica::auth::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap(),
-        )
-        .unwrap();
-
-    settings.set_doc("auth", auth_settings.as_doc().clone());
-
-    let tree1 =
-        Database::create(settings, &base_db1, device_key, "_device_key".to_string()).unwrap();
-    let tree_root_id = tree1.root_id().clone();
-
-    // Get the root entry to verify it exists
-    let _root_entry = base_db1.backend().get(&tree_root_id).unwrap();
 
     // Add test data to tree1
     let test_entry_id = {

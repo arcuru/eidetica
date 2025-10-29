@@ -80,9 +80,7 @@ async fn test_client_retry_after_pending() {
     assert_eq!(pending_requests.len(), 1);
     let (request_id, _) = &pending_requests[0];
 
-    server_sync
-        .approve_bootstrap_request(request_id, "server_admin")
-        .expect("Failed to approve request");
+    approve_request(&server_sync, request_id, "server_admin").expect("Failed to approve request");
 
     // Client retries - should now succeed
     tokio::time::sleep(Duration::from_millis(100)).await;

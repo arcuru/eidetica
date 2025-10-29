@@ -6,7 +6,7 @@
 use eidetica::{
     Instance,
     auth::{
-        Permission,
+        AuthKey, Permission,
         crypto::{format_public_key, generate_keypair},
         settings::AuthSettings,
     },
@@ -57,8 +57,44 @@ fn setup_user_with_database() -> eidetica::Result<(
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
+    // Add _device_key to the database's auth configuration so sync handler can modify the database
+    let device_key_name = "_device_key";
+    let device_pubkey = instance
+        .get_formatted_public_key(device_key_name)
+        .expect("Failed to get device public key");
+
+    // Add _device_key as Admin to the database
+    let tx = database
+        .new_transaction()
+        .expect("Failed to create transaction");
+    let settings_store = tx.get_settings().expect("Failed to get settings store");
+    let device_auth_key = AuthKey::active(device_pubkey, Permission::Admin(0))
+        .expect("Failed to create device auth key");
+    settings_store
+        .set_auth_key(device_key_name, device_auth_key)
+        .expect("Failed to set device key");
+    tx.commit().expect("Failed to commit device key");
+
     // Create sync instance
     let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+
+    // Enable sync for this database
+    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    user.add_database(DatabasePreferences {
+        database_id: tree_id.clone(),
+        key_id: user_key_id.clone(),
+        sync_settings: SyncSettings {
+            sync_enabled: true,
+            sync_on_commit: false,
+            interval_seconds: None,
+            properties: Default::default(),
+        },
+    })
+    .expect("Failed to add database to user preferences");
+
+    // Sync the user database to update combined settings
+    sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .expect("Failed to sync user database");
 
     Ok((instance, user, database, sync, tree_id, user_key_id))
 }
@@ -443,8 +479,76 @@ async fn test_multiple_users() {
         .expect("Failed to create Bob's database");
     let bob_tree_id = bob_db.root_id().clone();
 
+    // Add _device_key to Alice's database for sync
+    let device_key_name = "_device_key";
+    let device_pubkey = instance
+        .get_formatted_public_key(device_key_name)
+        .expect("Failed to get device public key");
+    let alice_tx = alice_db
+        .new_transaction()
+        .expect("Failed to create Alice transaction");
+    let alice_settings = alice_tx
+        .get_settings()
+        .expect("Failed to get Alice's settings");
+    let device_auth_key = eidetica::auth::types::AuthKey::active(
+        device_pubkey.clone(),
+        eidetica::auth::Permission::Admin(0),
+    )
+    .expect("Failed to create device auth key");
+    alice_settings
+        .set_auth_key(device_key_name, device_auth_key)
+        .expect("Failed to set Alice device key");
+    alice_tx.commit().expect("Failed to commit Alice auth");
+
+    // Add _device_key to Bob's database for sync
+    let bob_tx = bob_db
+        .new_transaction()
+        .expect("Failed to create Bob transaction");
+    let bob_settings = bob_tx.get_settings().expect("Failed to get Bob's settings");
+    let device_auth_key =
+        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
+            .expect("Failed to create device auth key");
+    bob_settings
+        .set_auth_key(device_key_name, device_auth_key)
+        .expect("Failed to set Bob device key");
+    bob_tx.commit().expect("Failed to commit Bob auth");
+
+    // Enable sync for Alice's database
+    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    alice
+        .add_database(DatabasePreferences {
+            database_id: alice_tree_id.clone(),
+            key_id: alice_key.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .expect("Failed to add Alice's database preferences");
+
+    // Enable sync for Bob's database
+    bob.add_database(DatabasePreferences {
+        database_id: bob_tree_id.clone(),
+        key_id: bob_key.clone(),
+        sync_settings: SyncSettings {
+            sync_enabled: true,
+            sync_on_commit: false,
+            interval_seconds: None,
+            properties: Default::default(),
+        },
+    })
+    .expect("Failed to add Bob's database preferences");
+
     // Create sync instance
     let sync = Sync::new(instance.clone()).expect("Failed to create sync object");
+
+    // Sync both users to propagate combined settings
+    sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .expect("Failed to sync Alice's user data");
+    sync.sync_user(bob.user_uuid(), bob.user_database().root_id())
+        .expect("Failed to sync Bob's user data");
 
     // Client requests access to Alice's database
     let (_client_key, client_pubkey) = create_client_key();
@@ -567,6 +671,39 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to create Alice's database");
     let tree_id = alice_db.root_id().clone();
 
+    // Add _device_key to Alice's database for sync
+    let device_key_name = "_device_key";
+    let device_pubkey = instance
+        .get_formatted_public_key(device_key_name)
+        .expect("Failed to get device public key");
+    let alice_tx = alice_db
+        .new_transaction()
+        .expect("Failed to create Alice transaction");
+    let alice_settings = alice_tx
+        .get_settings()
+        .expect("Failed to get Alice's settings");
+    let device_auth_key = AuthKey::active(device_pubkey, Permission::Admin(0))
+        .expect("Failed to create device auth key");
+    alice_settings
+        .set_auth_key(device_key_name, device_auth_key)
+        .expect("Failed to set Alice device key");
+    alice_tx.commit().expect("Failed to commit Alice auth");
+
+    // Enable sync for Alice's database
+    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    alice
+        .add_database(DatabasePreferences {
+            database_id: tree_id.clone(),
+            key_id: alice_key.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .expect("Failed to add Alice's database preferences");
+
     // Create Bob and add a key for him
     instance
         .create_user("bob", None)
@@ -588,6 +725,11 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Create a sync instance and bootstrap request
     let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+
+    // Sync Alice's user data to propagate combined settings
+    sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .expect("Failed to sync Alice's user data");
+
     let (_client_key, client_pubkey) = create_client_key();
     let request_id =
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;

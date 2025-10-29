@@ -394,6 +394,10 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Start sync server (sync already initialized by setup_instance_with_initialized)
     let server_sync = server_instance.sync().unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&server_sync, &tree_id).unwrap();
+
     let server_addr = start_sync_server(&server_sync).await;
     println!("✅ Server started at {}", server_addr);
 

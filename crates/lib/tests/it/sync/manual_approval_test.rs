@@ -10,6 +10,7 @@ fn generate_public_key() -> String {
     let (_, verifying_key) = generate_keypair();
     format_public_key(&verifying_key)
 }
+
 use eidetica::{
     auth::{
         Permission as AuthPermission,
@@ -56,10 +57,43 @@ async fn test_manual_approval_stores_pending_request() {
 }
 
 #[tokio::test]
+async fn test_auto_approve_still_works() {
+    let (_instance, _user, _key_id, _database, sync, tree_id) = setup_auto_approval_server();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // Create a bootstrap request that should be auto-approved
+    let test_key = generate_public_key();
+    let sync_request =
+        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
+
+    // Handle the request
+    let response = sync_handler.handle_request(&sync_request).await;
+
+    // Should return Bootstrap (auto-approved)
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert_eq!(bootstrap_response.tree_id, tree_id);
+            assert!(bootstrap_response.key_approved);
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(5))
+            );
+            println!("✅ Bootstrap request auto-approved successfully");
+        }
+        other => panic!("Expected Bootstrap, got: {:?}", other),
+    }
+
+    // Should have no pending requests since it was auto-approved
+    assert_request_stored(&sync, 0);
+
+    println!("✅ Auto-approval still works when policy allows it");
+}
+
+#[tokio::test]
 async fn test_approve_bootstrap_request() {
     let (_instance, database, sync, tree_id) = setup_manual_approval_server();
 
-    // Server already has admin key "server_admin" from setup_manual_approval_server
+    // Server already has admin key from setup_manual_approval_server
 
     // Create sync handler and submit bootstrap request
     let sync_handler = create_test_sync_handler(&sync);
@@ -76,7 +110,7 @@ async fn test_approve_bootstrap_request() {
     // Verify request is pending
     assert_request_stored(&sync, 1);
 
-    // Approve the request using server admin key
+    // Approve the request using User API
     approve_request(&sync, &request_id, "server_admin")
         .expect("Failed to approve bootstrap request");
 
@@ -202,7 +236,7 @@ async fn test_list_bootstrap_requests_by_status() {
     let (_instance, database, sync, _tree_id) = setup_manual_approval_server();
     let tree_id = database.root_id().clone();
 
-    // Server already has admin key "server_admin" from setup_manual_approval_server
+    // Server already has admin key from setup_manual_approval_server
 
     // Create sync handler
     let sync_handler = SyncHandlerImpl::new(
@@ -226,12 +260,11 @@ async fn test_list_bootstrap_requests_by_status() {
         other => panic!("Expected BootstrapPending, got: {:?}", other),
     };
 
-    // Approve the request
-    sync.approve_bootstrap_request(&request_id, "server_admin")
-        .expect("Failed to approve request");
+    // Approve the request using User API
+    approve_request(&sync, &request_id, "server_admin").expect("Failed to approve request");
 
     // Try to approve again - should fail
-    let result = sync.approve_bootstrap_request(&request_id, "server_admin");
+    let result = approve_request(&sync, &request_id, "server_admin");
     assert!(result.is_err());
     assert!(
         result
@@ -333,7 +366,7 @@ async fn test_approval_with_nonexistent_request_id() {
     let (_instance, _database, sync, _tree_id) = setup_manual_approval_server();
 
     // Try to approve a request that doesn't exist
-    let result = sync.approve_bootstrap_request("nonexistent_request_id", "_device_key");
+    let result = approve_request(&sync, "nonexistent_request_id", "server_admin");
 
     assert!(
         result.is_err(),
@@ -348,7 +381,7 @@ async fn test_approval_with_nonexistent_request_id() {
     );
 
     // Try to reject a request that doesn't exist
-    let result = sync.reject_bootstrap_request("nonexistent_request_id", "_device_key");
+    let result = sync.reject_bootstrap_request("nonexistent_request_id", "server_admin");
 
     assert!(
         result.is_err(),
@@ -479,6 +512,10 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Setup sync
     let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+
     let sync_handler = create_test_sync_handler(&sync);
 
     // Test 1: Request Write(15) permission - should be auto-approved via global permission
@@ -627,6 +664,10 @@ async fn test_global_permission_overrides_manual_policy() {
 
     // Setup sync
     let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+
     let sync_handler = create_test_sync_handler(&sync);
 
     // Test 1: Request Read permission - should be auto-approved despite manual policy
@@ -751,6 +792,10 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
 
     // Set up sync system
     let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+
     let sync_handler = create_test_sync_handler(&sync);
 
     // Now try to bootstrap with the same key requesting Write(10) permission (should succeed)
@@ -849,6 +894,10 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 
     // Set up sync system
     let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+
     let sync_handler = create_test_sync_handler(&sync);
 
     // Try to bootstrap with any key requesting Write(10) permission (should succeed via global)
@@ -1079,6 +1128,10 @@ async fn test_global_permission_enables_transactions() {
 
     // Setup sync
     let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+
     let sync_handler = create_test_sync_handler(&sync);
 
     // Setup client instance

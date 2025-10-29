@@ -17,6 +17,7 @@ use super::{
         BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse,
         PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
     },
+    user_sync_manager::UserSyncManager,
 };
 use crate::{
     Database, Instance, Result,
@@ -298,6 +299,58 @@ impl SyncHandlerImpl {
         Ok(true) // Auth required
     }
 
+    /// Check if a database has sync enabled by at least one user.
+    ///
+    /// This is a security-critical check that determines if a database should accept
+    /// any sync requests at all. A database is only eligible for sync if at least one
+    /// user has it in their preferences with `sync_enabled: true`.
+    ///
+    /// # Security
+    /// This method implements fail-closed behavior:
+    /// - Returns `false` on any error (no information leakage)
+    /// - Returns `false` if no users have the database in preferences
+    /// - Returns `false` if combined_settings.sync_enabled is false
+    /// - Only returns `true` if explicitly enabled
+    ///
+    /// # Arguments
+    /// * `tree_id` - The ID of the database to check
+    ///
+    /// # Returns
+    /// `true` if the database has sync enabled, `false` otherwise (including errors)
+    async fn is_database_sync_enabled(&self, tree_id: &ID) -> bool {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(_) => return false, // Fail closed
+        };
+
+        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME) {
+            Ok(Some(key)) => key,
+            _ => return false, // Fail closed
+        };
+
+        let sync_database = match Database::open(
+            instance.clone(),
+            &self.sync_tree_id,
+            signing_key,
+            DEVICE_KEY_NAME.to_string(),
+        ) {
+            Ok(db) => db,
+            Err(_) => return false, // Fail closed
+        };
+
+        let transaction = match sync_database.new_transaction() {
+            Ok(tx) => tx,
+            Err(_) => return false, // Fail closed
+        };
+
+        // Use UserSyncManager to get combined settings
+        let user_mgr = UserSyncManager::new(&transaction);
+        match user_mgr.get_combined_settings(tree_id) {
+            Ok(Some(settings)) => settings.sync_enabled,
+            _ => false, // Fail closed: no settings or error
+        }
+    }
+
     /// Handle a handshake request from a peer.
     async fn handle_handshake(&self, request: &HandshakeRequest) -> SyncResponse {
         async move {
@@ -449,6 +502,16 @@ impl SyncHandlerImpl {
         requesting_key_name: Option<&str>,
         requested_permission: Option<crate::auth::Permission>,
     ) -> SyncResponse {
+        // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
+        // This prevents information leakage about database existence
+        if !self.is_database_sync_enabled(tree_id).await {
+            warn!(
+                tree_id = %tree_id,
+                "Sync request for non-sync-enabled database - rejecting as not found"
+            );
+            return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+        }
+
         // Get the root entry (to verify tree exists)
         let instance = match self.instance() {
             Ok(i) => i,
@@ -614,6 +677,16 @@ impl SyncHandlerImpl {
         tree_id: &crate::entry::ID,
         peer_tips: &[crate::entry::ID],
     ) -> SyncResponse {
+        // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
+        // This prevents information leakage about database existence
+        if !self.is_database_sync_enabled(tree_id).await {
+            warn!(
+                tree_id = %tree_id,
+                "Incremental sync request for non-sync-enabled database - rejecting as not found"
+            );
+            return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+        }
+
         // Get our current tips
         let instance = match self.instance() {
             Ok(i) => i,

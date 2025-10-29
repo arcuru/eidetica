@@ -438,6 +438,27 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         db_id
     );
 
+    // Enable sync for this database
+    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    alice
+        .add_database(DatabasePreferences {
+            database_id: db_id.clone(),
+            key_id: alice_key.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .expect("Failed to add database to Alice's preferences");
+
+    // Sync the user database to update combined settings
+    let alice_sync = alice_instance.sync().expect("Alice should have sync");
+    alice_sync
+        .sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .expect("Failed to sync Alice's user database");
+
     // Alice starts sync server
     let server_addr = {
         let alice_sync = alice_instance.sync().expect("Alice should have sync");

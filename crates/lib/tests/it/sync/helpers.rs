@@ -254,6 +254,9 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
     // Create sync instance
     let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).expect("Failed to enable sync for database");
+
     (instance, database, sync, tree_id)
 }
 
@@ -329,7 +332,27 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
     // Create sync instance
     let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
+    // Enable sync for this database
+    enable_sync_for_instance_database(&sync, &tree_id).expect("Failed to enable sync for database");
+
     (instance, database, sync, tree_id)
+}
+
+/// Create a server with auto approval (auto_approve = true)
+///
+/// Returns (Instance, User, key_id, Database, Arc<Sync>, tree_id)
+pub fn setup_auto_approval_server() -> (
+    Instance,
+    User,
+    String,
+    Database,
+    Arc<Sync>,
+    eidetica::entry::ID,
+) {
+    let (instance, user, key_id, database, tree_id, sync) =
+        setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database");
+
+    (instance, user, key_id, database, sync, tree_id)
 }
 
 /// Start a sync server with common settings
@@ -346,26 +369,32 @@ pub async fn start_sync_server(sync: &Sync) -> String {
 
 /// Create a client instance for bootstrap testing
 ///
+/// This creates a client with a directly-managed private key (not through User API)
+/// which is needed for bootstrap tests that reference keys by name.
+///
 /// # Arguments
 /// * `key_name` - Name for the client's private key
 ///
 /// # Returns
-/// (Instance, Sync)
+/// (Instance, Arc<Sync>)
 #[allow(deprecated)]
-pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Sync) {
+pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Arc<Sync>) {
     let instance = crate::helpers::test_instance();
 
+    // Add the key directly to the instance (not through User API)
     instance
         .add_private_key(key_name)
         .expect("Failed to add client key");
 
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+    // Initialize sync
+    instance.enable_sync().expect("Failed to enable sync");
+    let sync = instance.sync().expect("Sync should be initialized");
 
     (instance, sync)
 }
 
 /// Create a simple client with default key name
-pub fn setup_simple_client() -> (Instance, Sync) {
+pub fn setup_simple_client() -> (Instance, Arc<Sync>) {
     setup_bootstrap_client("client_key")
 }
 
@@ -402,7 +431,7 @@ pub async fn create_pending_bootstrap_request(
     }
 }
 
-/// Approve a bootstrap request with error handling
+/// Approve a bootstrap request using a specific approver key
 pub fn approve_request(sync: &Sync, request_id: &str, approver_key: &str) -> Result<()> {
     sync.approve_bootstrap_request(request_id, approver_key)
 }
@@ -477,6 +506,47 @@ pub fn setup_server_with_bootstrap_database(
 
     // Add global wildcard permission for automatic bootstrap approval
     set_global_wildcard_permission(&server_database).unwrap();
+    // Add _device_key to the database's auth configuration so sync handler can modify the database
+    let device_key_name = "_device_key";
+    let device_pubkey = server_instance
+        .get_formatted_public_key(device_key_name)
+        .unwrap();
+
+    // Add _device_key as Admin to the database
+    let tx = server_database.new_transaction().unwrap();
+    let settings_store = tx.get_settings().unwrap();
+    let device_auth_key =
+        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
+            .unwrap();
+    settings_store
+        .set_auth_key(device_key_name, device_auth_key)
+        .unwrap();
+    tx.commit().unwrap();
+
+    // Add bootstrap auto-approval policy
+    set_global_wildcard_permission(&server_database).unwrap();
+
+    // Enable sync for this database
+    let sync = server_instance.sync().expect("Sync should be initialized");
+    server_user
+        .add_database(DatabasePreferences {
+            database_id: tree_id.clone(),
+            key_id: server_key_id.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .unwrap();
+
+    // Sync the user database to update combined settings
+    sync.sync_user(
+        server_user.user_uuid(),
+        server_user.user_database().root_id(),
+    )
+    .unwrap();
 
     (
         server_instance,
@@ -595,4 +665,297 @@ pub fn set_global_wildcard_permission_with_level(
 /// - But denies Admin requests.
 pub fn set_global_wildcard_permission(database: &Database) -> Result<()> {
     set_global_wildcard_permission_with_level(database, eidetica::auth::Permission::Write(0))
+}
+
+// ===== SYNC-ENABLED DATABASE HELPERS =====
+
+use eidetica::user::types::{DatabasePreferences, SyncSettings};
+
+/// Creates a server with a sync-enabled database ready to serve sync requests.
+///
+/// This helper sets up the complete workflow:
+/// - Creates instance with sync initialized
+/// - Creates user with a private key
+/// - Creates database
+/// - Enables sync for the database in user preferences
+/// - Syncs the user database to update combined settings
+///
+/// # Returns
+/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+pub fn setup_sync_enabled_server(
+    username: &str,
+    key_name: &str,
+    db_name: &str,
+) -> (
+    Instance,
+    User,
+    String,
+    Database,
+    eidetica::entry::ID,
+    Arc<Sync>,
+) {
+    let server_instance = setup_instance_with_initialized();
+    server_instance.create_user(username, None).unwrap();
+    let mut server_user = server_instance.login_user(username, None).unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+
+    let mut settings = Doc::new();
+    settings.set_string("name", db_name);
+
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
+        .unwrap();
+    let tree_id = server_database.root_id().clone();
+
+    // Add _device_key to the database's auth configuration so sync handler can modify the database
+    // Get the device key from instance
+    let device_key_name = "_device_key";
+    let device_pubkey = server_instance
+        .get_formatted_public_key(device_key_name)
+        .unwrap();
+
+    // Add _device_key as Admin to the database
+    let tx = server_database.new_transaction().unwrap();
+    let settings_store = tx.get_settings().unwrap();
+    let device_auth_key =
+        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
+            .unwrap();
+    settings_store
+        .set_auth_key(device_key_name, device_auth_key)
+        .unwrap();
+    tx.commit().unwrap();
+
+    // Enable sync for this database
+    let sync = server_instance.sync().expect("Sync should be initialized");
+    server_user
+        .add_database(DatabasePreferences {
+            database_id: tree_id.clone(),
+            key_id: server_key_id.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .unwrap();
+
+    // Sync the user database to update combined settings
+    sync.sync_user(
+        server_user.user_uuid(),
+        server_user.user_database().root_id(),
+    )
+    .unwrap();
+
+    (
+        server_instance,
+        server_user,
+        server_key_id,
+        server_database,
+        tree_id,
+        sync,
+    )
+}
+
+/// Creates a server with sync-enabled database AND bootstrap auto-approval.
+///
+/// Combines sync enablement with bootstrap auto-approval for bootstrap tests.
+///
+/// # Returns
+/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+pub fn setup_sync_enabled_server_with_auto_approve(
+    username: &str,
+    key_name: &str,
+    db_name: &str,
+) -> (
+    Instance,
+    User,
+    String,
+    Database,
+    eidetica::entry::ID,
+    Arc<Sync>,
+) {
+    let (instance, user, key_id, database, tree_id, sync) =
+        setup_sync_enabled_server(username, key_name, db_name);
+
+    // Add bootstrap auto-approval policy
+    set_global_wildcard_permission(&database).unwrap();
+
+    (instance, user, key_id, database, tree_id, sync)
+}
+
+/// Creates a client with sync initialized, ready to request database access.
+///
+/// # Returns
+/// (Instance, User, key_id, Arc<Sync>)
+pub fn setup_sync_enabled_client(
+    username: &str,
+    key_name: &str,
+) -> (Instance, User, String, Arc<Sync>) {
+    let client_instance = setup_instance_with_initialized();
+    client_instance.create_user(username, None).unwrap();
+    let mut client_user = client_instance.login_user(username, None).unwrap();
+    let client_key_id = client_user.add_private_key(Some(key_name)).unwrap();
+
+    let sync = client_instance.sync().expect("Sync should be initialized");
+
+    (client_instance, client_user, client_key_id, sync)
+}
+
+/// Enable sync for a database created without the User API.
+///
+/// This directly updates the sync tree for databases created via instance.new_database()
+/// instead of user.create_database().
+///
+/// TODO: This should go away eventually or be replaced by the User API
+pub fn enable_sync_for_instance_database(
+    sync: &Sync,
+    database_id: &eidetica::entry::ID,
+) -> Result<()> {
+    use eidetica::store::DocStore;
+    use eidetica::user::types::SyncSettings;
+
+    // Open the sync tree to set combined settings
+    let instance = sync.instance()?;
+    let signing_key = instance
+        .backend()
+        .get_private_key("_device_key")?
+        .ok_or_else(|| {
+            eidetica::Error::Sync(eidetica::sync::error::SyncError::DeviceKeyNotFound {
+                key_name: "_device_key".to_string(),
+            })
+        })?;
+
+    let sync_database = eidetica::Database::open(
+        instance.clone(),
+        sync.sync_tree_root_id(),
+        signing_key,
+        "_device_key".to_string(),
+    )?;
+
+    let tx = sync_database.new_transaction()?;
+    let database_users = tx.get_store::<DocStore>("database_users")?;
+
+    // Create enabled sync settings
+    let settings = SyncSettings {
+        sync_enabled: true,
+        sync_on_commit: false,
+        interval_seconds: None,
+        properties: Default::default(),
+    };
+
+    let db_id_str = database_id.to_string();
+    let settings_json = serde_json::to_string(&settings).map_err(|e| {
+        eidetica::Error::Sync(eidetica::sync::error::SyncError::SerializationError(
+            e.to_string(),
+        ))
+    })?;
+
+    database_users.set_path(
+        eidetica::path!(&db_id_str, "combined_settings"),
+        settings_json,
+    )?;
+
+    tx.commit()?;
+
+    Ok(())
+}
+
+/// Creates a public (unauthenticated) sync-enabled database with wildcard "*" permissions.
+///
+/// This is useful for testing unauthenticated sync scenarios where clients can
+/// access the database without providing credentials.
+///
+/// # Returns
+/// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+pub fn setup_public_sync_enabled_server(
+    username: &str,
+    key_name: &str,
+    db_name: &str,
+) -> (
+    Instance,
+    User,
+    String,
+    Database,
+    eidetica::entry::ID,
+    Arc<Sync>,
+) {
+    let server_instance = setup_instance_with_initialized();
+    server_instance.create_user(username, None).unwrap();
+    let mut server_user = server_instance.login_user(username, None).unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+
+    // Create database settings with wildcard "*" permission for public access
+    let mut settings = Doc::new();
+    settings.set_string("name", db_name);
+
+    // Add auth config with wildcard permission for unauthenticated access
+    let mut auth_settings = eidetica::auth::AuthSettings::new();
+    let device_pubkey = server_instance
+        .get_formatted_public_key("_device_key")
+        .unwrap();
+
+    // Add device key for database operations
+    auth_settings
+        .add_key(
+            "_device_key",
+            eidetica::auth::AuthKey::active(&device_pubkey, eidetica::auth::Permission::Admin(0))
+                .unwrap(),
+        )
+        .unwrap();
+
+    // Add user's key (server_key_id is already the formatted public key)
+    auth_settings
+        .add_key(
+            &server_key_id,
+            eidetica::auth::AuthKey::active(&server_key_id, eidetica::auth::Permission::Admin(0))
+                .unwrap(),
+        )
+        .unwrap();
+
+    // Add wildcard "*" permission to allow unauthenticated read access
+    auth_settings
+        .add_key(
+            "*",
+            eidetica::auth::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap(),
+        )
+        .unwrap();
+
+    settings.set_doc("auth", auth_settings.as_doc().clone());
+
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
+        .unwrap();
+    let tree_id = server_database.root_id().clone();
+
+    // Enable sync for this database
+    let sync = server_instance.sync().expect("Sync should be initialized");
+    server_user
+        .add_database(DatabasePreferences {
+            database_id: tree_id.clone(),
+            key_id: server_key_id.clone(),
+            sync_settings: SyncSettings {
+                sync_enabled: true,
+                sync_on_commit: false,
+                interval_seconds: None,
+                properties: Default::default(),
+            },
+        })
+        .unwrap();
+
+    // Sync the user database to update combined settings
+    sync.sync_user(
+        server_user.user_uuid(),
+        server_user.user_database().root_id(),
+    )
+    .unwrap();
+
+    (
+        server_instance,
+        server_user,
+        server_key_id,
+        server_database,
+        tree_id,
+        sync,
+    )
 }
