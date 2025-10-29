@@ -81,15 +81,17 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 #
 # fn main() -> eidetica::Result<()> {
 let backend = Box::new(InMemory::new());
-let db = Instance::open(backend)?;
+let instance = Instance::open(backend)?;
 
-// Add private key first
-db.add_private_key("my_key")?;
+// Create and login user - this will log at INFO level
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
 
 // Create a database - this will log at INFO level
 let mut settings = Doc::new();
 settings.set("name", "my_database");
-let database = db.new_database(settings, "my_key")?;
+let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 
 // Operations will emit logs at appropriate levels
 // Use RUST_LOG to control what you see

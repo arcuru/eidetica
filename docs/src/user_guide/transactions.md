@@ -29,11 +29,13 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let db = Instance::open(Box::new(backend))?;
-    # db.add_private_key("key")?;
+    # let instance = Instance::open(Box::new(backend))?;
+    # instance.create_user("alice", None)?;
+    # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
-    # let database = db.new_database(settings, "key")?;
+    # let default_key = user.get_default_key()?;
+    # let database = user.create_database(settings, &default_key)?;
     #
     let _txn = database.new_transaction()?; // Automatically uses the database's default signing key
     # Ok(())
@@ -56,11 +58,13 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let db = Instance::open(Box::new(backend))?;
-    # db.add_private_key("key")?;
+    # let instance = Instance::open(Box::new(backend))?;
+    # instance.create_user("alice", None)?;
+    # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
-    # let database = db.new_database(settings, "key")?;
+    # let default_key = user.get_default_key()?;
+    # let database = user.create_database(settings, &default_key)?;
     let txn = database.new_transaction()?;
 
     // Get handles within a scope or manage their lifetime
@@ -89,11 +93,13 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let db = Instance::open(Box::new(backend))?;
-    # db.add_private_key("key")?;
+    # let instance = Instance::open(Box::new(backend))?;
+    # instance.create_user("alice", None)?;
+    # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
-    # let database = db.new_database(settings, "key")?;
+    # let default_key = user.get_default_key()?;
+    # let database = user.create_database(settings, &default_key)?;
     # let txn = database.new_transaction()?;
     # let users_store = txn.get_store::<Table<User>>("users")?;
     # let config_store = txn.get_store::<DocStore>("config")?;
@@ -121,11 +127,13 @@ Using a `Transaction` follows a distinct lifecycle:
     # fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let db = Instance::open(Box::new(backend))?;
-    # db.add_private_key("key")?;
+    # let instance = Instance::open(Box::new(backend))?;
+    # instance.create_user("alice", None)?;
+    # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
     # settings.set_string("name", "test");
-    # let database = db.new_database(settings, "key")?;
+    # let default_key = user.get_default_key()?;
+    # let database = user.create_database(settings, &default_key)?;
     #
     // Create transaction and commit
     let txn = database.new_transaction()?;
@@ -149,11 +157,13 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "settings_example");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # // Generate keypairs for old user and add it first so we can revoke it
 # let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
 # let old_user_public_key = format_public_key(&old_user_verifying_key);
@@ -214,11 +224,13 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # fn main() -> eidetica::Result<()> {
 # // Setup database with some data
 # let backend = InMemory::new();
-# let db = Instance::open(Box::new(backend))?;
-# db.add_private_key("key")?;
+# let instance = Instance::open(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "test");
-# let database = db.new_database(settings, "key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # // Insert test data
 # let txn = database.new_transaction()?;
 # let users_store = txn.get_store::<Table<User>>("users")?;

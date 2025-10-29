@@ -46,11 +46,13 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 // Get a DocStore store
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("app_data")?;
@@ -83,11 +85,13 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # let op = database.new_transaction()?;
 # let store = op.get_store::<DocStore>("app_data")?;
 // This code:
@@ -128,11 +132,13 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 // Define a struct for your data
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
@@ -199,11 +205,13 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 // Get a SettingsStore for the current transaction
 let transaction = database.new_transaction()?;
 let settings_store = transaction.get_settings()?;
@@ -232,11 +240,13 @@ transaction.commit()?;
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "stores_auth_example");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # // Generate a keypair for the new user
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
 # let alice_public_key = format_public_key(&alice_verifying_key);
@@ -274,11 +284,13 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "complex_auth_example");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # // Generate keypairs for multiple users
 # let (_bob_signing_key, bob_verifying_key) = generate_keypair();
 # let bob_public_key = format_public_key(&bob_verifying_key);
@@ -353,11 +365,13 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let db = Instance::open(Box::new(backend))?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "y_crdt_stores");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 #
 // Get a YDoc store
 let op = database.new_transaction()?;

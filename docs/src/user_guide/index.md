@@ -39,7 +39,7 @@ Eidetica revolves around a few key components working together:
 
 ## Basic Usage Pattern
 
-Here's a quick examplee showing loading a database and writing new data.
+Here's a quick example showing creating a user, database, and writing new data.
 
 ```rust
 # extern crate eidetica;
@@ -54,19 +54,17 @@ Here's a quick examplee showing loading a database and writing new data.
 #
 # fn main() -> eidetica::Result<()> {
 let backend = InMemory::new();
-let db = Instance::open(Box::new(backend))?;
-db.add_private_key("my_private_key")?;
+let instance = Instance::open(Box::new(backend))?;
 
-// Create/Load Database
-let database = match db.find_database("my_database") {
-    Ok(mut databases) => databases.pop().unwrap(), // Found existing
-    Err(e) if e.is_not_found() => {
-        let mut doc = Doc::new();
-        doc.set_string("name", "my_database");
-        db.new_database(doc, "my_private_key")?
-    }
-    Err(e) => return Err(e),
-};
+// Create and login a passwordless user
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
+
+// Create a database
+let mut settings = Doc::new();
+settings.set_string("name", "my_database");
+let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 
 // --- Writing Data ---
 // Start a Transaction

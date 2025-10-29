@@ -25,11 +25,12 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
 // Create a database with sync enabled
-let db = Instance::open(backend)?;
-db.enable_sync()?;
+let instance = Instance::open(backend)?;
+instance.enable_sync()?;
 
-// Add a private key for authentication
-db.add_private_key("device_key")?;
+// Create and login a user (generates authentication key automatically)
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
 # Ok(())
 # }
 ```
@@ -327,20 +328,22 @@ All sync operations use Ed25519 digital signatures:
 # fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.enable_sync()?;
+# let instance = Instance::open(backend)?;
+# instance.enable_sync()?;
 #
-// The sync system automatically uses your device key for authentication
-// First add the primary key
-db.add_private_key("main_device_key")?;
+// The sync system automatically uses your user's key for authentication
+// Create and login a user (generates the primary key)
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
 
-// Add additional keys if needed for backup or multiple devices
-db.add_private_key("backup_key")?;
+// User can add additional keys if needed for backup or multiple devices
+user.add_private_key(Some("backup_key"))?;
 
 // Create a database with default authentication
 let mut settings = Doc::new();
 settings.set_string("name", "my_sync_database");
-let database = db.new_database(settings, "main_device_key")?;
+let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 
 // Set a specific key as default for a database (configuration pattern)
 // In production: database.set_default_auth_key("backup_key");
@@ -369,13 +372,6 @@ settings.set_string("name", "Team Database");
 
 let mut auth_doc = Doc::new();
 
-// Add admin key
-auth_doc.set_json("admin_key", serde_json::json!({
-    "pubkey": admin_pubkey,
-    "permissions": {"Admin": 1},
-    "status": "Active"
-}))?;
-
 // Add global wildcard permission for team collaboration
 auth_doc.set_json("*", serde_json::json!({
     "pubkey": "*",
@@ -384,7 +380,11 @@ auth_doc.set_json("*", serde_json::json!({
 }))?;
 
 settings.set_doc("auth", auth_doc);
-let database = instance.new_database(settings, "admin_key")?;
+
+// Create the database owned by the admin, with anyone able to write
+let admin = instance.login_user("admin", Some("admin_password"))
+let admin_key = admin.get_default_key()?;
+let database = admin.create_database(settings, &admin_key)?;
 
 // Bootstrap authentication example (client side)
 sync.sync_with_peer_for_bootstrap(

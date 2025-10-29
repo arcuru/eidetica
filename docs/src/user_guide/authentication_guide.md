@@ -12,16 +12,18 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let database = InMemory::new();
-# let db = Instance::open(Box::new(database))?;
+# let backend = InMemory::new();
+# let instance = Instance::open(Box::new(backend))?;
 #
-// Add an authentication key (generates Ed25519 keypair)
-db.add_private_key("my_key")?;
+// Create and login a passwordless user (generates Ed25519 keypair automatically)
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
 
-// Create a database using that key
+// Create a database using the user's default key
 let mut settings = Doc::new();
 settings.set("name", "my_database");
-let database = db.new_database(settings, "my_key")?;
+let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 
 // All operations are now authenticated
 let op = database.new_transaction()?;
@@ -57,11 +59,13 @@ Give other users access to your database:
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "auth_example");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # let transaction = database.new_transaction()?;
 # // Generate a keypair for the new user
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
@@ -92,11 +96,13 @@ Allow anyone to read your database:
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # let transaction = database.new_transaction()?;
 let settings_store = transaction.get_settings()?;
 
@@ -124,11 +130,13 @@ Create a collaborative database where anyone can read and write without individu
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "collaborative_notes");
-let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 
 // Set up global write permissions
 let transaction = database.new_transaction()?;
@@ -213,11 +221,13 @@ Remove a user's access:
 # use eidetica::crdt::Doc;
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 // First add alice key so we can revoke it
 let transaction_setup = database.new_transaction()?;
 let settings_setup = transaction_setup.get_settings()?;
@@ -247,11 +257,13 @@ Note: Historical entries created by revoked keys remain valid.
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("admin")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "multi_user_example");
-# let database = db.new_database(settings, "admin")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # let transaction = database.new_transaction()?;
 # let settings_store = transaction.get_settings()?;
 #
@@ -331,13 +343,15 @@ When you delegate to another database:
 #
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.add_private_key("admin")?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key = user.get_default_key()?;
 #
 # // Create user's personal database
-# let alice_database = instance.new_database(Doc::new(), "admin")?;
+# let alice_database = user.create_database(Doc::new(), &default_key)?;
 #
 # // Create main project database
-# let project_database = instance.new_database(Doc::new(), "admin")?;
+# let project_database = user.create_database(Doc::new(), &default_key)?;
 // Get the user's database root and current tips
 let user_root = alice_database.root_id().clone();
 let user_tips = alice_database.get_tips()?;
@@ -386,11 +400,13 @@ These are names in the **delegating database's** auth settings that point to **o
 #
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.add_private_key("admin")?;
-# let alice_db = instance.new_database(Doc::new(), "admin")?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key = user.get_default_key()?;
+# let alice_db = user.create_database(Doc::new(), &default_key)?;
 # let alice_root = alice_db.root_id().clone();
 # let alice_tips = alice_db.get_tips()?;
-# let project_db = instance.new_database(Doc::new(), "admin")?;
+# let project_db = user.create_database(Doc::new(), &default_key)?;
 # let transaction = project_db.new_transaction()?;
 # let settings = transaction.get_settings()?;
 // In project database: "alice@example.com" points to Alice's database
@@ -432,9 +448,12 @@ These are names in the **delegated database's** auth settings that point to **pu
 #
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(InMemory::new()))?;
-# let pubkey = instance.add_private_key("alice_laptop")?;
-# let alice_db = instance.new_database(Doc::new(), "alice_laptop")?;
-# let alice_pubkey_str = eidetica::auth::crypto::format_public_key(&pubkey);
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key_id = user.get_default_key()?;
+# let alice_db = user.create_database(Doc::new(), &default_key_id)?;
+# let signing_key = user.get_signing_key(&default_key_id)?;
+# let alice_pubkey_str = eidetica::auth::crypto::format_public_key(&signing_key.verifying_key());
 # let transaction = alice_db.new_transaction()?;
 # let settings = transaction.get_settings()?;
 // In Alice's database: "alice_laptop" points to a public key
@@ -471,9 +490,11 @@ A delegation path is a sequence of steps that traverses from the delegating data
 #
 # fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.add_private_key("admin")?;
-# let project_db = instance.new_database(Doc::new(), "admin")?;
-# let user_db = instance.new_database(Doc::new(), "admin")?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key = user.get_default_key()?;
+# let project_db = user.create_database(Doc::new(), &default_key)?;
+# let user_db = user.create_database(Doc::new(), &default_key)?;
 # let user_tips = user_db.get_tips()?;
 // Create a delegation path with TWO steps:
 let delegation_path = SigKey::DelegationPath(vec![

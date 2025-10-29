@@ -18,12 +18,14 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 #
 # // First create and save a test database to demonstrate loading
 # let backend = InMemory::new();
-# let test_db = Instance::open(Box::new(backend))?;
-# test_db.add_private_key("test_key")?;
+# let test_instance = Instance::open(Box::new(backend))?;
+# test_instance.create_user("alice", None)?;
+# let mut test_user = test_instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "example_db");
-# let _database = test_db.new_database(settings, "test_key")?;
-# let database_guard = test_db.backend();
+# let test_key = test_user.get_default_key()?;
+# let _database = test_user.create_database(settings, &test_key)?;
+# let database_guard = test_instance.backend();
 # if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
 #     in_memory.save_to_file(&db_path)?;
 # }
@@ -65,12 +67,12 @@ if db_path.exists() {
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("my_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 let tree_name = "my_app_data";
-let auth_key = "my_key"; // Must match a key added to the database
 
-let database = match db.find_database(tree_name) {
+let database = match instance.find_database(tree_name) {
     Ok(mut databases) => {
         println!("Found existing database: {}", tree_name);
         databases.pop().unwrap() // Assume first one is correct
@@ -79,7 +81,8 @@ let database = match db.find_database(tree_name) {
         println!("Creating new database: {}", tree_name);
         let mut doc = Doc::new();
         doc.set("name", tree_name);
-        db.new_database(doc, auth_key)? // All databases require authentication
+        let default_key = user.get_default_key()?;
+        user.create_database(doc, &default_key)?
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };
@@ -96,11 +99,13 @@ println!("Using Database with root ID: {}", database.root_id());
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("my_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
@@ -142,11 +147,13 @@ struct Task {
 }
 
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("my_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
@@ -192,11 +199,13 @@ println!("Table changes committed in entry: {}", entry_id);
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("my_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 #
 // Get a read-only viewer for the latest state
 let config_viewer = database.get_store_viewer::<DocStore>("configuration")?;
@@ -237,11 +246,13 @@ match config_viewer.get("retry_count") {
 # }
 #
 # fn main() -> eidetica::Result<()> {
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("my_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "my_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 # let op = database.new_transaction()?;
 # let tasks_store = op.get_store::<Table<Task>>("tasks")?;
 # let id_to_find = tasks_store.insert(Task { description: "Test task".to_string(), completed: false })?;
@@ -279,11 +290,13 @@ match tasks_viewer.search(|_| true) {
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 // Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
 
@@ -345,11 +358,13 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let db = Instance::open(Box::new(backend))?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "y_crdt_example");
-# let database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
 let op = database.new_transaction()?;
@@ -464,18 +479,20 @@ prefs_read_store.with_doc(|doc| {
 # fn main() -> eidetica::Result<()> {
 # // Create a test database
 # let backend = InMemory::new();
-# let db = Instance::open(Box::new(backend))?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(Box::new(backend))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
 # settings.set_string("name", "save_example");
-# let _database = db.new_database(settings, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let _database = user.create_database(settings, &default_key)?;
 #
 # // Use a temporary file for testing
 # let temp_dir = std::env::temp_dir();
 # let db_path = temp_dir.join("eidetica_save_example.json");
 #
 // Save the database to a file
-let database_guard = db.backend();
+let database_guard = instance.backend();
 
 // Downcast to the concrete InMemory type
 if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemory>() {

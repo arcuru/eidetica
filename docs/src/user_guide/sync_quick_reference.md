@@ -13,10 +13,11 @@ use eidetica::{Instance, backend::InMemory};
 
 // Create database with sync enabled
 let backend = Box::new(InMemory::new());
-let db = Instance::open(backend)?.enable_sync()?;
+let instance = Instance::open(backend)?.enable_sync()?;
 
-// Add authentication key
-db.add_private_key("device_key")?;
+// Create and login user (generates authentication key)
+instance.create_user("alice", None)?;
+let mut user = instance.login_user("alice", None)?;
 
 // Enable transport
 let sync = db.sync().unwrap();
@@ -162,15 +163,17 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let db = Instance::open(backend)?;
-# db.enable_sync()?;
-# db.add_private_key("device_key")?;
+# let instance = Instance::open(backend)?;
+# instance.enable_sync()?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 // Create a database to share
 let mut settings = Doc::new();
 settings.set_string("name", "My Chat Room");
 settings.set_string("description", "A room for team discussions");
 
-let database = db.new_database(settings, "device_key")?;
+let default_key = user.get_default_key()?;
+let database = user.create_database(settings, &default_key)?;
 let tree_id = database.root_id();
 
 // Add some initial data
@@ -520,26 +523,30 @@ async fn test_iroh_sync_local() -> Result<()> {
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
-    let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
-    db1.add_private_key("peer1")?;
-    db1.sync()?.enable_http_transport()?;
-    db1.sync()?.start_server("127.0.0.1:0")?; // Random port
+    let instance1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+    instance1.create_user("peer1", None)?;
+    let mut user1 = instance1.login_user("peer1", None)?;
+    instance1.sync()?.enable_http_transport()?;
+    instance1.sync()?.start_server("127.0.0.1:0")?; // Random port
 
-    let addr1 = db1.sync()?.get_server_address()?;
+    let addr1 = instance1.sync()?.get_server_address()?;
 
     // Setup second peer
-    let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
-    db2.add_private_key("peer2")?;
-    db2.sync()?.enable_http_transport()?;
+    let instance2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
+    instance2.create_user("peer2", None)?;
+    let mut user2 = instance2.login_user("peer2", None)?;
+    instance2.sync()?.enable_http_transport()?;
 
     // Connect peers
     let addr = Address::http(&addr1)?;
-    let peer1_key = db2.sync()?.connect_to_peer(&addr).await?;
-    db2.sync()?.update_peer_status(&peer1_key, PeerStatus::Active)?;
+    let peer1_key = instance2.sync()?.connect_to_peer(&addr).await?;
+    instance2.sync()?.update_peer_status(&peer1_key, PeerStatus::Active)?;
 
     // Setup sync relationship
-    let tree1 = db1.new_database(Doc::new(), "peer1")?;
-    let tree2 = db2.new_database(Doc::new(), "peer2")?;
+    let key1 = user1.get_default_key()?;
+    let tree1 = user1.create_database(Doc::new(), &key1)?;
+    let key2 = user2.get_default_key()?;
+    let tree2 = user2.create_database(Doc::new(), &key2)?;
 
     db2.sync()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
 

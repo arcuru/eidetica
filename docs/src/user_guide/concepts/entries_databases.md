@@ -56,11 +56,13 @@ You interact with Databases through Transactions:
 #
 # fn main() -> Result<()> {
 #     let backend = InMemory::new();
-#     let db = Instance::open(Box::new(backend))?;
-#     db.add_private_key("key")?;
+#     let instance = Instance::open(Box::new(backend))?;
+#     instance.create_user("alice", None)?;
+#     let mut user = instance.login_user("alice", None)?;
 #     let mut settings = Doc::new();
 #     settings.set_string("name", "test");
-#     let database = db.new_database(settings, "key")?;
+#     let default_key = user.get_default_key()?;
+#     let database = user.create_database(settings, &default_key)?;
 #     example(database)?;
 #     Ok(())
 # }
@@ -83,12 +85,14 @@ Each Database maintains its settings as a key-value store in a special "settings
 #
 # fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let db = Instance::open(Box::new(InMemory::new()))?;
-# db.add_private_key("test_key")?;
+# let instance = Instance::open(Box::new(InMemory::new()))?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");
 # settings_doc.set("version", "1.0.0");
-# let database = db.new_database(settings_doc, "test_key")?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings_doc, &default_key)?;
 // Access database settings through a transaction
 let transaction = database.new_transaction()?;
 let settings_store = transaction.get_settings()?;
