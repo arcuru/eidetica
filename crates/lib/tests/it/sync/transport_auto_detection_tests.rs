@@ -36,7 +36,8 @@ async fn test_bootstrap_pending_error_structure() {
     );
 
     // Handle the request - should return BootstrapPending
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify the response is BootstrapPending with the expected structure
     match response {

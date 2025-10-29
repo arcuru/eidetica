@@ -23,7 +23,7 @@ use crate::{
         error::SyncError,
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{SyncRequest, SyncResponse},
+        protocol::{RequestContext, SyncRequest, SyncResponse},
     },
 };
 
@@ -340,10 +340,29 @@ impl IrohTransport {
 
     /// Handle an incoming connection.
     async fn handle_connection(conn: Connection, handler: Arc<dyn SyncHandler>) {
+        // Get the remote peer node ID for context
+        let remote_node_id = match conn.remote_node_id() {
+            Ok(node_id) => node_id,
+            Err(e) => {
+                tracing::error!("Failed to get remote node ID: {e}");
+                return;
+            }
+        };
+        let remote_address = Address {
+            transport_type: Self::TRANSPORT_TYPE.to_string(),
+            address: remote_node_id.to_string(),
+        };
+
         // Accept incoming streams
         while let Ok((send_stream, recv_stream)) = conn.accept_bi().await {
             let handler_clone = handler.clone();
-            tokio::spawn(Self::handle_stream(send_stream, recv_stream, handler_clone));
+            let remote_addr_clone = remote_address.clone();
+            tokio::spawn(Self::handle_stream(
+                send_stream,
+                recv_stream,
+                handler_clone,
+                remote_addr_clone,
+            ));
         }
     }
 
@@ -352,6 +371,7 @@ impl IrohTransport {
         mut send_stream: SendStream,
         mut recv_stream: RecvStream,
         handler: Arc<dyn SyncHandler>,
+        remote_address: Address,
     ) {
         // Read the request with size limit (1MB)
         let buffer: Vec<u8> = match recv_stream.read_to_end(1024 * 1024).await {
@@ -371,8 +391,14 @@ impl IrohTransport {
             }
         };
 
+        // Create request context with remote address
+        let context = RequestContext {
+            remote_address: Some(remote_address),
+            peer_pubkey: None, // Will be populated from handshake if needed
+        };
+
         // Handle the request using the SyncHandler
-        let response = handler.handle_request(&request).await;
+        let response = handler.handle_request(&request, &context).await;
 
         // Serialize and send response using JsonHandler
         match JsonHandler::serialize_response(&response) {

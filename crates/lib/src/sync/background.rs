@@ -759,6 +759,16 @@ impl BackgroundSync {
                 .into());
             };
 
+        // Build listen addresses from our server address if available
+        let listen_addresses = if let Some(ref server_addr) = self.server_address {
+            vec![Address {
+                transport_type: address.transport_type.clone(),
+                address: server_addr.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+
         // Create handshake request
         let handshake_request = HandshakeRequest {
             device_id,
@@ -766,6 +776,7 @@ impl BackgroundSync {
             display_name: Some("BackgroundSync".to_string()),
             protocol_version: PROTOCOL_VERSION,
             challenge: challenge.clone(),
+            listen_addresses,
         };
 
         // Send handshake request

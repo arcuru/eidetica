@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::peer_types::Address;
 use crate::entry::{Entry, ID};
 
 /// Handshake request sent when establishing a peer connection.
@@ -20,6 +21,8 @@ pub struct HandshakeRequest {
     pub protocol_version: u32,
     /// Random challenge bytes for signature verification
     pub challenge: Vec<u8>,
+    /// Addresses where this peer can be reached for sync
+    pub listen_addresses: Vec<Address>,
 }
 
 /// Information about a tree available for sync
@@ -132,3 +135,17 @@ pub enum SyncResponse {
 
 /// Current protocol version - 0 indicates unstable
 pub const PROTOCOL_VERSION: u32 = 0;
+
+/// Context information about the incoming request.
+///
+/// This struct captures metadata about the connection that initiated
+/// the request, allowing the handler to know where the request came from.
+#[derive(Debug, Clone, Default)]
+pub struct RequestContext {
+    /// The remote address from which this request originated.
+    /// Extracted from the transport layer's connection metadata.
+    pub remote_address: Option<Address>,
+    /// The public key of the peer making this request.
+    /// Set after successful handshake to identify the authenticated peer.
+    pub peer_pubkey: Option<String>,
+}

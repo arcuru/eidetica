@@ -1,8 +1,8 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     Form, Router,
-    extract::{Json as ExtractJson, Query, State},
+    extract::{ConnectInfo, Json as ExtractJson, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -13,7 +13,8 @@ use eidetica::{
     backend::database::InMemory,
     sync::{
         handler::SyncHandlerImpl,
-        protocol::{SyncRequest, SyncResponse},
+        peer_types::Address,
+        protocol::{RequestContext, SyncRequest, SyncResponse},
     },
 };
 use serde::Deserialize;
@@ -197,34 +198,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let term_signal_for_shutdown = term_signal.clone();
 
     // Start server with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            // Wait for shutdown signal
-            while !term_signal_for_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
+    // Convert app to service with ConnectInfo support
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        // Wait for shutdown signal
+        while !term_signal_for_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
 
-            tracing::info!("Shutdown signal received, saving database...");
+        tracing::info!("Shutdown signal received, saving database...");
 
-            // Save database on shutdown
-            if let Some(in_memory_backend) = instance_for_shutdown
-                .backend()
-                .as_any()
-                .downcast_ref::<InMemory>()
-            {
-                match in_memory_backend.save_to_file(DB_FILE) {
-                    Ok(_) => {
-                        tracing::info!("Database saved successfully");
-                        println!("\nDatabase saved successfully");
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to save database: {e:?}");
-                        eprintln!("Failed to save database: {e:?}");
-                    }
+        // Save database on shutdown
+        if let Some(in_memory_backend) = instance_for_shutdown
+            .backend()
+            .as_any()
+            .downcast_ref::<InMemory>()
+        {
+            match in_memory_backend.save_to_file(DB_FILE) {
+                Ok(_) => {
+                    tracing::info!("Database saved successfully");
+                    println!("\nDatabase saved successfully");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to save database: {e:?}");
+                    eprintln!("Failed to save database: {e:?}");
                 }
             }
-        })
-        .await?;
+        }
+    })
+    .await?;
 
     println!("Server shut down");
     Ok(())
@@ -707,8 +712,18 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
 /// Handler for POST /api/v0 - Eidetica sync endpoint
 async fn handle_sync_request(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ExtractJson(request): ExtractJson<SyncRequest>,
 ) -> axum::Json<SyncResponse> {
-    let response = state.sync_handler.handle_request(&request).await;
+    // Create request context with remote address
+    let context = RequestContext {
+        remote_address: Some(Address {
+            transport_type: "http".to_string(),
+            address: addr.to_string(),
+        }),
+        peer_pubkey: None,
+    };
+
+    let response = state.sync_handler.handle_request(&request, &context).await;
     axum::Json(response)
 }

@@ -3,6 +3,7 @@
 //! This module tests Sync functionality including creation, loading,
 //! and settings management.
 
+mod auto_peer_registration_tests;
 mod auto_sync_e2e_test;
 mod auto_sync_tests;
 mod basic_operations;
@@ -14,6 +15,7 @@ mod bootstrap_sync_tests;
 mod bootstrap_with_key_tests;
 mod chat_simulation_test;
 mod dag_sync_tests;
+mod declarative_api_tests;
 mod device_id_tests;
 pub mod helpers;
 mod http_transport_tests;

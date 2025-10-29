@@ -229,7 +229,8 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         requested_permission: None,
     });
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify the request was rejected
     match response {

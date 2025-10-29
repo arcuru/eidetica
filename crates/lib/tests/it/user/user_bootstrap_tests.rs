@@ -127,7 +127,8 @@ async fn create_pending_request(
         requested_permission: Some(permission),
     });
 
-    let response = handler.handle_request(&request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = handler.handle_request(&request, &context).await;
 
     match response {
         eidetica::sync::protocol::SyncResponse::BootstrapPending { request_id, .. } => request_id,

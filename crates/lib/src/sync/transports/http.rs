@@ -8,7 +8,7 @@ use std::{net::SocketAddr, sync::Arc};
 use async_trait::async_trait;
 use axum::{
     Router,
-    extract::{Json as ExtractJson, State},
+    extract::{ConnectInfo, Json as ExtractJson, State},
     response::Json,
     routing::post,
 };
@@ -21,7 +21,7 @@ use crate::{
         error::SyncError,
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{SyncRequest, SyncResponse},
+        protocol::{RequestContext, SyncRequest, SyncResponse},
     },
 };
 
@@ -95,12 +95,16 @@ impl SyncTransport for HttpTransport {
             let _ = ready_tx.send(());
 
             // Run server with graceful shutdown
-            axum::serve(listener, router)
-                .with_graceful_shutdown(async move {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-                .expect("Server failed");
+            // Convert router to service with ConnectInfo support
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("Server failed");
         });
 
         // Get the actual bound address
@@ -179,9 +183,19 @@ impl SyncTransport for HttpTransport {
 /// Handler for the /api/v0 endpoint - accepts JSON SyncRequest and returns JSON SyncResponse.
 async fn handle_sync_request(
     State(handler): State<Arc<dyn SyncHandler>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ExtractJson(request): ExtractJson<SyncRequest>,
 ) -> Json<SyncResponse> {
+    // Create request context with remote address
+    let context = RequestContext {
+        remote_address: Some(Address {
+            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
+            address: addr.to_string(),
+        }),
+        peer_pubkey: None, // Will be set by transport layer if connection is authenticated
+    };
+
     // Use the SyncHandler to process the request
-    let response = handler.handle_request(&request).await;
+    let response = handler.handle_request(&request, &context).await;
     Json(response)
 }

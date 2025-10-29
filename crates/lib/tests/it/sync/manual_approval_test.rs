@@ -36,7 +36,8 @@ async fn test_manual_approval_stores_pending_request() {
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = assert_bootstrap_pending(&response);
     println!("✅ Bootstrap request stored as pending: {}", request_id);
 
@@ -68,7 +69,8 @@ async fn test_auto_approve_still_works() {
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Should return Bootstrap (auto-approved)
     match response {
@@ -179,7 +181,8 @@ async fn test_reject_bootstrap_request() {
     });
 
     // Handle the request to store it as pending
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {:?}", other),
@@ -255,7 +258,8 @@ async fn test_list_bootstrap_requests_by_status() {
         requested_permission: Some(AuthPermission::Write(5)),
     });
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {:?}", other),
@@ -309,7 +313,8 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     });
 
     // Handle first request
-    let response1 = sync_handler.handle_request(&sync_request1).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response1 = sync_handler.handle_request(&sync_request1, &context).await;
     let request_id1 = match response1 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {:?}", other),
@@ -325,7 +330,8 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     });
 
     // Handle second identical request
-    let response2 = sync_handler.handle_request(&sync_request2).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response2 = sync_handler.handle_request(&sync_request2, &context).await;
     let request_id2 = match response2 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {:?}", other),
@@ -437,7 +443,8 @@ async fn test_malformed_permission_requests() {
             requested_permission: Some(permission.clone()),
         });
 
-        let response = sync_handler.handle_request(&sync_request).await;
+        let context = eidetica::sync::protocol::RequestContext::default();
+        let response = sync_handler.handle_request(&sync_request, &context).await;
 
         match response {
             SyncResponse::BootstrapPending { .. } => {
@@ -529,7 +536,8 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Write(15),
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
             assert_eq!(bootstrap_response.tree_id, tree_id);
@@ -560,7 +568,8 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Read,
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
             assert!(bootstrap_response.key_approved);
@@ -582,7 +591,8 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Admin(5),
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
             println!(
@@ -680,7 +690,8 @@ async fn test_global_permission_overrides_manual_policy() {
         AuthPermission::Read,
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
             assert_eq!(bootstrap_response.tree_id, tree_id);
@@ -714,7 +725,8 @@ async fn test_global_permission_overrides_manual_policy() {
         AuthPermission::Write(5),
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
             println!(
@@ -803,7 +815,8 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let sync_request =
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
@@ -905,7 +918,8 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let sync_request =
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
@@ -1032,7 +1046,8 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         client_key,
         AuthPermission::Write(10),
     );
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify bootstrap succeeded
     match response {
@@ -1154,7 +1169,8 @@ async fn test_global_permission_enables_transactions() {
         eidetica::auth::Permission::Write(15),
     );
 
-    let response = sync_handler.handle_request(&sync_request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         eidetica::sync::protocol::SyncResponse::Bootstrap(bootstrap_response) => {
             assert_eq!(bootstrap_response.tree_id, tree_id);

@@ -38,6 +38,7 @@ pub use error::SyncError;
 use peer_manager::PeerManager;
 pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use protocol::{SyncRequest, SyncResponse, SyncTreeRequest};
+use std::time::SystemTime;
 use tokio::sync::{mpsc, oneshot};
 use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
 use user_sync_manager::UserSyncManager;
@@ -48,6 +49,91 @@ const SETTINGS_SUBTREE: &str = "settings_map";
 /// Constant for the device identity key name
 /// This is the name of the Device Key used as the shared identifier for this Device.
 pub(crate) const DEVICE_KEY_NAME: &str = "_device_key";
+
+/// Authentication parameters for sync operations.
+#[derive(Debug, Clone)]
+pub struct AuthParams {
+    /// The public key making the request
+    pub requesting_key: String,
+    /// The name/ID of the requesting key
+    pub requesting_key_name: String,
+    /// The permission level being requested
+    pub requested_permission: crate::auth::Permission,
+}
+
+/// Information needed to register a peer for syncing.
+///
+/// This is used with [`Sync::register_sync_peer()`] to declare sync intent.
+#[derive(Debug, Clone)]
+pub struct SyncPeerInfo {
+    /// The peer's public key
+    pub peer_pubkey: String,
+    /// The tree/database to sync
+    pub tree_id: ID,
+    /// Initial address hints where the peer might be found
+    pub addresses: Vec<Address>,
+    /// Optional authentication parameters for bootstrap
+    pub auth: Option<AuthParams>,
+    /// Optional display name for the peer
+    pub display_name: Option<String>,
+}
+
+/// Handle for tracking sync status with a specific peer.
+///
+/// Returned by [`Sync::register_sync_peer()`].
+#[derive(Debug, Clone)]
+pub struct SyncHandle {
+    tree_id: ID,
+    peer_pubkey: String,
+    sync: Sync,
+}
+
+impl SyncHandle {
+    /// Get the current sync status.
+    pub fn status(&self) -> Result<SyncStatus> {
+        self.sync.get_sync_status(&self.tree_id, &self.peer_pubkey)
+    }
+
+    /// Add another address hint for this peer.
+    pub fn add_address(&self, address: Address) -> Result<()> {
+        self.sync.add_peer_address(&self.peer_pubkey, address)
+    }
+
+    /// Block until initial sync completes (has local data).
+    ///
+    /// This is a convenience method for backwards compatibility.
+    /// The sync happens in the background, this just polls until data arrives.
+    pub async fn wait_for_initial_sync(&self) -> Result<()> {
+        loop {
+            let status = self.status()?;
+            if status.has_local_data {
+                return Ok(());
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Get the tree ID being synced.
+    pub fn tree_id(&self) -> &ID {
+        &self.tree_id
+    }
+
+    /// Get the peer public key.
+    pub fn peer_pubkey(&self) -> &str {
+        &self.peer_pubkey
+    }
+}
+
+/// Current sync status for a tree/peer pair.
+#[derive(Debug, Clone)]
+pub struct SyncStatus {
+    /// Whether we have local data for this tree
+    pub has_local_data: bool,
+    /// Last time sync succeeded (if ever)
+    pub last_sync: Option<SystemTime>,
+    /// Last error encountered (if any)
+    pub last_error: Option<String>,
+}
 
 /// Synchronization manager for the database.
 ///
@@ -328,6 +414,104 @@ impl Sync {
         PeerManager::new(&op).remove_peer(pubkey)?;
         op.commit()?;
         Ok(())
+    }
+
+    // === Declarative Sync API ===
+
+    /// Register a peer for syncing (declarative API).
+    ///
+    /// This is the recommended way to set up syncing. It immediately registers
+    /// the peer and tree/peer relationship, then the background sync engine
+    /// handles the actual data synchronization.
+    ///
+    /// # Arguments
+    /// * `info` - Information about the peer and sync configuration
+    ///
+    /// # Returns
+    /// A handle for tracking sync status and adding more address hints.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use eidetica::*;
+    /// # use eidetica::sync::{SyncPeerInfo, Address, AuthParams};
+    /// # async fn example(sync: sync::Sync, peer_pubkey: String, tree_id: entry::ID) -> Result<()> {
+    /// // Register peer for syncing
+    /// let handle = sync.register_sync_peer(SyncPeerInfo {
+    ///     peer_pubkey,
+    ///     tree_id,
+    ///     addresses: vec![Address {
+    ///         transport_type: "http".to_string(),
+    ///         address: "http://localhost:8080".to_string(),
+    ///     }],
+    ///     auth: None,
+    ///     display_name: Some("My Peer".to_string()),
+    /// })?;
+    ///
+    /// // Optionally wait for initial sync
+    /// handle.wait_for_initial_sync().await?;
+    ///
+    /// // Check status anytime
+    /// let status = handle.status()?;
+    /// println!("Has local data: {}", status.has_local_data);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn register_sync_peer(&self, info: SyncPeerInfo) -> Result<SyncHandle> {
+        let op = self.sync_tree.new_transaction()?;
+        let peer_mgr = PeerManager::new(&op);
+
+        // Register peer if it doesn't exist
+        if peer_mgr.get_peer_info(&info.peer_pubkey)?.is_none() {
+            peer_mgr.register_peer(&info.peer_pubkey, info.display_name.as_deref())?;
+        }
+
+        // Add all address hints
+        for addr in &info.addresses {
+            peer_mgr.add_address(&info.peer_pubkey, addr.clone())?;
+        }
+
+        // Register the tree/peer relationship
+        peer_mgr.add_tree_sync(&info.peer_pubkey, &info.tree_id)?;
+
+        // TODO: Store auth params if provided for bootstrap
+        // For now, auth is passed during the actual sync handshake via on_local_write callback
+
+        op.commit()?;
+
+        info!(
+            peer = %info.peer_pubkey,
+            tree = %info.tree_id,
+            address_count = info.addresses.len(),
+            "Registered peer for syncing"
+        );
+
+        Ok(SyncHandle {
+            tree_id: info.tree_id,
+            peer_pubkey: info.peer_pubkey,
+            sync: self.clone(),
+        })
+    }
+
+    /// Get the current sync status for a tree/peer pair.
+    ///
+    /// # Arguments
+    /// * `tree_id` - The tree to check
+    /// * `peer_pubkey` - The peer public key
+    ///
+    /// # Returns
+    /// Current sync status including whether we have local data.
+    pub fn get_sync_status(&self, tree_id: &ID, _peer_pubkey: &str) -> Result<SyncStatus> {
+        // Check if we have local data for this tree
+        let backend = self.backend()?;
+        let our_tips = backend.get_tips(tree_id).unwrap_or_default();
+
+        // TODO: Track last_sync time and last_error in sync tree
+        // For now, just report if we have data
+        Ok(SyncStatus {
+            has_local_data: !our_tips.is_empty(),
+            last_sync: None,
+            last_error: None,
+        })
     }
 
     // === Database Sync Relationship Methods ===
@@ -1018,6 +1202,10 @@ impl Sync {
             }
         }
 
+        // Track tree/peer relationship for sync_on_commit to work
+        // This allows on_local_write() to find this peer when queueing entries
+        self.add_tree_sync(peer_pubkey, tree_id)?;
+
         Ok(())
     }
 
@@ -1488,18 +1676,22 @@ impl Sync {
         Ok(vec![])
     }
 
-    /// Sync with a peer using simplified one-shot API.
+    /// Sync with a peer at a given address.
     ///
-    /// This method automatically handles bootstrap vs incremental sync and doesn't require
-    /// pre-configured sync relationships. If the tree doesn't exist locally, it will be
-    /// bootstrapped from the peer.
+    /// This is a blocking convenience method that:
+    /// 1. Connects to discover the peer's public key
+    /// 2. Registers the peer and performs immediate sync
+    /// 3. Returns after sync completes
+    ///
+    /// For new code, prefer using [`register_sync_peer()`](Self::register_sync_peer)
+    /// directly, which registers intent and lets background sync handle it.
     ///
     /// # Arguments
     /// * `peer_address` - The address of the peer (format: "host:port")
-    /// * `tree_id` - Optional tree ID to sync. If None, sync all available trees.
+    /// * `tree_id` - Optional tree ID to sync (None = discover available trees)
     ///
     /// # Returns
-    /// A Result indicating success or failure.
+    /// Result indicating success or failure.
     pub async fn sync_with_peer(
         &self,
         peer_address: &str,
@@ -1657,6 +1849,10 @@ impl Sync {
                 .into());
             }
         }
+
+        // Track tree/peer relationship for sync_on_commit to work
+        // This allows on_local_write() to find this peer when queueing entries
+        self.add_tree_sync(peer_pubkey, tree_id)?;
 
         Ok(())
     }

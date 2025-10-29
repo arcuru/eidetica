@@ -71,8 +71,7 @@ impl App {
         settings_store.set_auth_key("*", global_key)?;
         tx.commit()?;
 
-        // Enable sync for this database
-        // TODO: Make enabling sync more user-friendly
+        // Enable sync for this database with periodic sync every 2 seconds
         let database_id = database.root_id().clone();
         self.user
             .add_database(eidetica::user::types::DatabasePreferences {
@@ -81,7 +80,7 @@ impl App {
                 sync_settings: eidetica::user::types::SyncSettings {
                     sync_enabled: true,
                     sync_on_commit: true,
-                    interval_seconds: None,
+                    interval_seconds: Some(2), // Sync every 2 seconds
                     properties: std::collections::HashMap::new(),
                 },
             })?;
@@ -275,7 +274,7 @@ impl App {
                                 sync_settings: eidetica::user::types::SyncSettings {
                                     sync_enabled: true,
                                     sync_on_commit: true,
-                                    interval_seconds: None,
+                                    interval_seconds: Some(2), // Sync every 2 seconds
                                     properties: std::collections::HashMap::new(),
                                 },
                             }) {
@@ -423,38 +422,8 @@ impl App {
     }
 
     pub fn refresh_messages(&mut self) -> Result<()> {
-        // Trigger background sync (non-blocking)
-        if let Some(current_room) = &self.current_room {
-            let room_id = current_room.root_id().clone();
-
-            // Spawn background sync tasks - don't wait for completion
-            if let Some(sync) = self.instance.sync()
-                && let Ok(peers) = sync.list_peers()
-            {
-                for peer in peers {
-                    if let Some(address) = peer.addresses.first() {
-                        let addr_str = address.address.clone();
-                        let sync_clone = sync.clone();
-                        let room_id_clone = room_id.clone();
-
-                        // Spawn background task with timeout
-                        tokio::spawn(async move {
-                            // Use timeout to prevent indefinite blocking
-                            let sync_future =
-                                sync_clone.sync_with_peer(&addr_str, Some(&room_id_clone));
-                            let _ = tokio::time::timeout(
-                                tokio::time::Duration::from_secs(5),
-                                sync_future,
-                            )
-                            .await;
-                            // Ignore errors - sync failures are common when peers are offline
-                        });
-                    }
-                }
-            }
-        }
-
         // Reload messages from database (picks up any new synced messages)
+        // The library handles all syncing automatically based on interval_seconds
         let current_count = self.messages.len();
         self.load_messages()?;
 

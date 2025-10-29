@@ -63,7 +63,9 @@ pub async fn handle_request(
         sync.instance().expect("Failed to get instance").clone(),
         sync.sync_tree_root_id().clone(),
     );
-    handler.handle_request(request).await
+    // Create empty context for tests
+    let context = eidetica::sync::protocol::RequestContext::default();
+    handler.handle_request(request, &context).await
 }
 
 // ===== ASSERTION HELPERS =====
@@ -423,7 +425,8 @@ pub async fn create_pending_bootstrap_request(
     permission: AuthPermission,
 ) -> String {
     let request = create_bootstrap_request(tree_id, requesting_key, key_name, permission);
-    let response = handler.handle_request(&request).await;
+    let context = eidetica::sync::protocol::RequestContext::default();
+    let response = handler.handle_request(&request, &context).await;
 
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,

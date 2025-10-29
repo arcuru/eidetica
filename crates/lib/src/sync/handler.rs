@@ -12,10 +12,11 @@ use super::{
     bootstrap_request_manager::{
         BootstrapRequest, BootstrapRequestManager, RequestStatus, current_timestamp,
     },
+    peer_manager::PeerManager,
     peer_types::Address,
     protocol::{
         BootstrapResponse, HandshakeRequest, HandshakeResponse, IncrementalResponse,
-        PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
+        PROTOCOL_VERSION, RequestContext, SyncRequest, SyncResponse, SyncTreeRequest, TreeInfo,
     },
     user_sync_manager::UserSyncManager,
 };
@@ -44,10 +45,12 @@ pub trait SyncHandler: Send + std::marker::Sync {
     ///
     /// # Arguments
     /// * `request` - The sync request to process
+    /// * `context` - Context about the request (remote address, etc.)
     ///
     /// # Returns
     /// The appropriate response for the given request.
-    async fn handle_request(&self, request: &SyncRequest) -> SyncResponse;
+    async fn handle_request(&self, request: &SyncRequest, context: &RequestContext)
+    -> SyncResponse;
 }
 
 /// Default implementation of SyncHandler with database backend access.
@@ -143,15 +146,19 @@ impl SyncHandlerImpl {
 
 #[async_trait]
 impl SyncHandler for SyncHandlerImpl {
-    async fn handle_request(&self, request: &SyncRequest) -> SyncResponse {
+    async fn handle_request(
+        &self,
+        request: &SyncRequest,
+        context: &RequestContext,
+    ) -> SyncResponse {
         match request {
             SyncRequest::Handshake(handshake_req) => {
                 debug!("Received handshake request");
-                self.handle_handshake(handshake_req).await
+                self.handle_handshake(handshake_req, context).await
             }
             SyncRequest::SyncTree(sync_req) => {
                 debug!(tree_id = %sync_req.tree_id, tips_count = sync_req.our_tips.len(), "Received sync tree request");
-                self.handle_sync_tree(sync_req).await
+                self.handle_sync_tree(sync_req, context).await
             }
             SyncRequest::SendEntries(entries) => {
                 // Process and store the received entries
@@ -351,8 +358,90 @@ impl SyncHandlerImpl {
         }
     }
 
+    /// Register an incoming peer and add their addresses to the peer list.
+    ///
+    /// This method registers a peer that initiated a connection to us during handshake.
+    /// It adds both the peer-advertised addresses and the transport-provided remote address.
+    ///
+    /// # Arguments
+    /// * `peer_pubkey` - The peer's public key
+    /// * `display_name` - Optional display name for the peer
+    /// * `advertised_addresses` - Addresses the peer advertised in their handshake
+    /// * `remote_address` - The actual address from which the connection originated
+    ///
+    /// # Returns
+    /// Result indicating success or failure of registration
+    fn register_incoming_peer(
+        &self,
+        peer_pubkey: &str,
+        display_name: Option<&str>,
+        advertised_addresses: &[Address],
+        remote_address: &Option<Address>,
+    ) -> Result<()> {
+        let sync_tree = self.get_sync_tree()?;
+        let op = sync_tree.new_transaction()?;
+        let peer_manager = PeerManager::new(&op);
+
+        // Try to register the peer (ignore if already exists)
+        match peer_manager.register_peer(peer_pubkey, display_name) {
+            Ok(()) => {
+                info!(peer_pubkey = %peer_pubkey, "Registered new incoming peer");
+            }
+            Err(crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(_))) => {
+                debug!(peer_pubkey = %peer_pubkey, "Peer already registered, updating addresses");
+            }
+            Err(e) => return Err(e),
+        }
+
+        // Add all advertised addresses
+        for addr in advertised_addresses {
+            if let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()) {
+                warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add advertised address");
+            }
+        }
+
+        // Add the remote address from transport if available
+        if let Some(addr) = remote_address
+            && let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone())
+        {
+            warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
+        }
+
+        op.commit()?;
+        Ok(())
+    }
+
+    /// Track tree/peer sync relationship when a peer requests a tree.
+    ///
+    /// This method adds the tree to the peer's sync list, enabling bidirectional
+    /// sync for the requested tree. This is critical for `sync_on_commit` to work
+    /// in both directions.
+    ///
+    /// # Arguments
+    /// * `tree_id` - The ID of the tree being requested
+    /// * `peer_pubkey` - The public key of the peer requesting the tree (device key, not auth key)
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    fn track_tree_sync_relationship(&self, tree_id: &ID, peer_pubkey: &str) -> Result<()> {
+        let sync_tree = self.get_sync_tree()?;
+        let op = sync_tree.new_transaction()?;
+        let peer_manager = PeerManager::new(&op);
+
+        // Add the tree sync relationship
+        peer_manager.add_tree_sync(peer_pubkey, tree_id)?;
+        op.commit()?;
+
+        debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
+        Ok(())
+    }
+
     /// Handle a handshake request from a peer.
-    async fn handle_handshake(&self, request: &HandshakeRequest) -> SyncResponse {
+    async fn handle_handshake(
+        &self,
+        request: &HandshakeRequest,
+        context: &RequestContext,
+    ) -> SyncResponse {
         async move {
             debug!(
                 peer_device_id = %request.device_id,
@@ -412,6 +501,17 @@ impl SyncHandlerImpl {
             // Get available trees for discovery
             let available_trees = self.get_available_trees().await;
 
+            // Register the peer and add their addresses to our peer list
+            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address) {
+                Ok(()) => {
+                    debug!(peer_pubkey = %request.public_key, "Successfully registered incoming peer");
+                }
+                Err(e) => {
+                    // Log the error but don't fail the handshake - peer registration is best-effort
+                    warn!(peer_pubkey = %request.public_key, error = %e, "Failed to register incoming peer");
+                }
+            }
+
             info!(
                 our_device_id = %device_id,
                 peer_device_id = %request.device_id,
@@ -449,9 +549,25 @@ impl SyncHandlerImpl {
     /// - Auto-approve and add the key immediately
     /// - Store request for manual approval
     /// - Proceed without authentication (anonymous bootstrap)
-    async fn handle_sync_tree(&self, request: &SyncTreeRequest) -> SyncResponse {
+    async fn handle_sync_tree(
+        &self,
+        request: &SyncTreeRequest,
+        context: &RequestContext,
+    ) -> SyncResponse {
         async move {
             trace!(tree_id = %request.tree_id, "Processing sync tree request");
+
+            // Track tree/peer sync relationship for bidirectional sync
+            // IMPORTANT: Only use context.peer_pubkey (device key from handshake)
+            // Do NOT use request.requesting_key (that's an auth key for database access)
+            if let Some(peer_pubkey) = &context.peer_pubkey {
+                if let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey) {
+                    // Log the error but don't fail the sync - relationship tracking is best-effort
+                    warn!(tree_id = %request.tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
+                }
+            } else {
+                debug!(tree_id = %request.tree_id, "No peer pubkey in context, skipping relationship tracking");
+            }
 
             // Check if peer needs bootstrap (empty tips indicates no local data)
             if request.our_tips.is_empty() {
@@ -620,6 +736,12 @@ impl SyncHandlerImpl {
                 }
             }
         } else {
+            // FIXME: Security gap - if auth is configured and requesting_key is provided
+            // but requested_permission is None, we allow bootstrap without checking
+            // if the requesting_key is authorized. This means an unauthorized key can
+            // bootstrap the database if they omit the requested_permission field.
+            // Should either: (1) reject if auth_configured && requesting_key.is_some() && requested_permission.is_none()
+            // or (2) check if requesting_key already has permissions before proceeding
             // No key approval requested
             (false, None)
         };
