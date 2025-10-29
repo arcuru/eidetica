@@ -2246,37 +2246,4 @@ impl Sync {
 
 impl Sync {
     // === Test Helpers ===
-
-    /// Get users tracking a database (for testing).
-    ///
-    /// This is a test helper that exposes internal UserSyncManager functionality.
-    #[cfg(test)]
-    pub fn test_get_linked_users(&self, database_id: &crate::entry::ID) -> Result<Vec<String>> {
-        let tx = self.sync_tree.new_transaction()?;
-        UserSyncManager::new(&tx).get_linked_users(database_id)
-    }
-
-    /// Get combined settings for a database (for testing).
-    ///
-    /// This is a test helper that exposes internal UserSyncManager functionality.
-    #[cfg(test)]
-    pub fn test_get_combined_settings(
-        &self,
-        database_id: &crate::entry::ID,
-    ) -> Result<Option<crate::user::types::SyncSettings>> {
-        let tx = self.sync_tree.new_transaction()?;
-        UserSyncManager::new(&tx).get_combined_settings(database_id)
-    }
-
-    /// Get user preferences state (for testing).
-    ///
-    /// This is a test helper that exposes internal UserSyncManager functionality.
-    #[cfg(test)]
-    pub fn test_get_tracked_user_state(
-        &self,
-        user_uuid: &str,
-    ) -> Result<Option<(crate::entry::ID, Vec<crate::entry::ID>)>> {
-        let tx = self.sync_tree.new_transaction()?;
-        UserSyncManager::new(&tx).get_tracked_user_state(user_uuid)
-    }
 }

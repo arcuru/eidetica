@@ -84,13 +84,33 @@ pub struct SyncSettings {
     /// Sync on commit
     pub sync_on_commit: bool,
 
-    /// Sync interval (if periodic)
+    /// Sync interval in seconds (if periodic)
     pub interval_seconds: Option<u64>,
 
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
 }
 ```
+
+**Field Behavior:**
+
+- `sync_enabled`: Master switch for syncing this database
+- `sync_on_commit`: Trigger sync immediately when committing changes
+- `interval_seconds`: Periodic sync interval in seconds
+  - `Some(n)`: Sync automatically every n seconds
+  - `None`: No periodic sync
+- `properties`: Extensible key-value pairs for future features
+
+**Multi-User Merging:**
+
+When multiple users track the same database, their settings are merged using the "most aggressive" strategy:
+
+- `sync_enabled`: OR (true if any user enables sync)
+- `sync_on_commit`: OR (true if any user wants commit-sync)
+- `interval_seconds`: MIN (most frequent sync wins)
+- `properties`: UNION (combine all properties, later values override)
+
+This ensures the database syncs as frequently and aggressively as any user prefers.
 
 ## Storage Architecture
 

@@ -696,9 +696,17 @@ sequenceDiagram
 
 **Background timers:**
 
-- Periodic sync: Every 5 minutes (configurable)
+- Periodic sync: User-configurable per database via `interval_seconds` (default: 5 minutes)
 - Retry processing: Every 30 seconds
 - Connection checks: Every 60 seconds
+
+**Periodic sync interval merging:**
+
+When multiple users track the same database, their `interval_seconds` preferences are merged using the **minimum interval** strategy. This ensures databases stay as up-to-date as the most active user wants. The merging happens in `UserSyncManager::get_combined_settings()` which uses `instance::settings_merge::merge_sync_settings()`:
+
+- `interval_seconds: Some(a), Some(b)` → `Some(min(a, b))`
+- `interval_seconds: Some(a), None` → `Some(a)`
+- `interval_seconds: None, None` → `None`
 
 ### Concurrency
 

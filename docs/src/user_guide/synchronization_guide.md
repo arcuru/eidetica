@@ -141,9 +141,81 @@ The sync system automatically starts a background thread when transport is enabl
 
 - **When you commit changes**, they're sent immediately via sync callbacks
 - **Failed sends** are retried with exponential backoff (2^attempts seconds, max 64 seconds)
-- **Periodic sync** runs every 5 minutes
+- **Periodic sync** runs based on user-configured intervals (default: every 5 minutes)
 - **Connection checks** every 60 seconds
 - **No manual queue management** needed
+
+### Periodic Sync Intervals
+
+Each user can configure how frequently their databases sync automatically using the `interval_seconds` setting:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::user::types::{DatabasePreferences, SyncSettings};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let instance = Instance::open(backend)?;
+# instance.enable_sync()?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let mut settings = Doc::new();
+# settings.set_string("name", "my_db");
+# let key = user.get_default_key()?;
+# let db = user.create_database(settings, &key)?;
+# let db_id = db.root_id().clone();
+// Configure periodic sync every 60 seconds
+let prefs = DatabasePreferences {
+    database_id: db_id,
+    key_id: user.get_default_key()?,
+    sync_settings: SyncSettings {
+        sync_enabled: true,
+        sync_on_commit: false,
+        interval_seconds: Some(60),  // Sync every 60 seconds
+        properties: Default::default(),
+    },
+};
+
+user.add_database(prefs)?;
+# Ok(())
+# }
+```
+
+**Interval Options:**
+
+- `Some(seconds)`: Sync automatically every N seconds
+- `None`: No periodic sync (only sync on commit or manual trigger)
+
+**Multi-User Behavior:**
+
+When multiple users track the same database with different intervals, the system uses the **minimum interval** (most aggressive sync):
+
+```rust,ignore
+// Alice syncs every 300 seconds
+alice.add_database(DatabasePreferences {
+    database_id: shared_db_id.clone(),
+    sync_settings: SyncSettings {
+        interval_seconds: Some(300),
+        ..Default::default()
+    },
+    ..prefs
+})?;
+
+// Bob syncs every 60 seconds
+bob.add_database(DatabasePreferences {
+    database_id: shared_db_id.clone(),
+    sync_settings: SyncSettings {
+        interval_seconds: Some(60),
+        ..Default::default()
+    },
+    ..prefs
+})?;
+
+// Database will sync every 60 seconds (minimum of 300 and 60)
+```
+
+This ensures the database stays as up-to-date as the most active user wants.
 
 ## Peer Management
 

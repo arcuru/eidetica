@@ -160,19 +160,72 @@ impl BackgroundSync {
         )
     }
 
+    /// Get the minimum sync interval from all tracked databases
+    /// Returns None if no databases are tracked or no intervals are set
+    fn get_min_sync_interval(&self) -> Option<u64> {
+        let sync_tree = match self.get_sync_tree() {
+            Ok(tree) => tree,
+            Err(_) => return None,
+        };
+
+        let op = match sync_tree.new_transaction() {
+            Ok(op) => op,
+            Err(_) => return None,
+        };
+
+        let user_mgr = super::user_sync_manager::UserSyncManager::new(&op);
+
+        // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
+        let database_users = match op
+            .get_store::<crate::store::DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
+        {
+            Ok(store) => store,
+            Err(_) => return None,
+        };
+
+        let all_dbs = match database_users.get_all() {
+            Ok(doc) => doc,
+            Err(_) => return None,
+        };
+
+        // Find the minimum interval across all databases
+        let mut min_interval: Option<u64> = None;
+        for db_id_str in all_dbs.keys() {
+            if let Ok(db_id) = crate::entry::ID::parse(db_id_str)
+                && let Ok(Some(settings)) = user_mgr.get_combined_settings(&db_id)
+                && let Some(interval) = settings.interval_seconds
+            {
+                min_interval = Some(match min_interval {
+                    Some(current_min) => current_min.min(interval),
+                    None => interval,
+                });
+            }
+        }
+
+        min_interval
+    }
+
     /// Main event loop that handles all sync operations
     async fn run(mut self) {
         async move {
             info!("Starting background sync engine");
+
+            // Get initial sync interval from settings (default to 300 seconds if none set)
+            let mut current_interval_secs = self.get_min_sync_interval().unwrap_or(300);
+            info!("Initial periodic sync interval: {} seconds", current_interval_secs);
+
             // Set up timers
-            let mut periodic_sync = interval(Duration::from_secs(300)); // 5 minutes
+            // TODO: Make the background sync handle batching of requests to peers
+            let mut periodic_sync = interval(Duration::from_secs(current_interval_secs));
             let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
             let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
+            let mut settings_check = interval(Duration::from_secs(60)); // Check for settings changes every minute
 
             // Skip initial tick to avoid immediate execution
             periodic_sync.tick().await;
             retry_check.tick().await;
             connection_check.tick().await;
+            settings_check.tick().await;
 
             loop {
                 tokio::select! {
@@ -197,6 +250,18 @@ impl BackgroundSync {
                     // Check and reconnect disconnected peers
                     _ = connection_check.tick() => {
                         self.check_peer_connections().await;
+                    }
+
+                    // Check if sync interval settings have changed
+                    _ = settings_check.tick() => {
+                        if let Some(new_interval) = self.get_min_sync_interval()
+                            && new_interval != current_interval_secs {
+                                info!("Sync interval changed from {} to {} seconds", current_interval_secs, new_interval);
+                                current_interval_secs = new_interval;
+                                // Recreate the periodic sync timer with new interval
+                                periodic_sync = interval(Duration::from_secs(new_interval));
+                                periodic_sync.tick().await; // Skip initial tick
+                            }
                     }
 
                     // Channel closed, shutdown
