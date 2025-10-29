@@ -4,6 +4,7 @@ use eidetica::{
         types::{Permission, SigKey},
     },
     crdt::Doc,
+    instance::LegacyInstanceOps,
 };
 
 use crate::helpers::*;
@@ -250,18 +251,4 @@ fn test_overwrite_existing_key() {
     );
 
     // Note: Cannot verify with specific keys using new API - removed key-specific verification
-}
-
-#[test]
-fn test_remove_nonexistent_key() {
-    let db = setup_empty_db();
-
-    // Remove a key that doesn't exist - should fail (not yet implemented)
-    let result = db.remove_private_key("NONEXISTENT_KEY");
-    assert!(result.is_err());
-
-    // List should still have _device_key only
-    let keys = db.list_private_keys().expect("Failed to list keys");
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], "_device_key");
 }

@@ -17,6 +17,7 @@ use eidetica::{
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
     entry::ID,
+    instance::LegacyInstanceOps,
 };
 
 use super::helpers::*;

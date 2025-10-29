@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use eidetica::{
     entry::Entry,
+    instance::LegacyInstanceOps,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;

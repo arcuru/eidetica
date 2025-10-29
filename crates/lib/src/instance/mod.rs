@@ -11,20 +11,21 @@ use std::{
 
 use ed25519_dalek::VerifyingKey;
 use handle_trait::Handle;
-use rand::Rng;
 
 use crate::{
-    Database, Entry, Result, auth::crypto::format_public_key, backend::BackendImpl, crdt::Doc,
-    entry::ID, sync::Sync, user::User,
+    Database, Entry, Result, auth::crypto::format_public_key, backend::BackendImpl, entry::ID,
+    sync::Sync, user::User,
 };
 
 pub mod backend;
 pub mod errors;
+pub mod legacy_ops;
 pub mod settings_merge;
 
 // Re-export main types for easier access
 use backend::Backend;
 pub use errors::InstanceError;
+pub use legacy_ops::LegacyInstanceOps;
 
 /// Private constants for device identity management
 const DEVICE_KEY_NAME: &str = "_device_key";
@@ -517,81 +518,6 @@ impl Instance {
         Ok(format_public_key(&device_key))
     }
 
-    /// Create a new database in the instance.
-    ///
-    /// **DEPRECATED**: Use `User::create_database()` instead. This method will be removed in a future version.
-    ///
-    /// # Arguments
-    /// * `settings` - The initial settings for the database
-    /// * `signing_key_name` - The name of the signing key to use
-    ///
-    /// # Returns
-    /// A `Result` containing the newly created `Database` or an error.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::create_database() instead for proper user context"
-    )]
-    pub fn new_database(
-        &self,
-        settings: Doc,
-        signing_key_name: impl AsRef<str>,
-    ) -> Result<Database> {
-        use crate::auth::AuthError;
-        let signing_key = match self
-            .inner
-            .backend
-            .get_private_key(signing_key_name.as_ref())?
-        {
-            Some(key) => key,
-            None => {
-                return Err(AuthError::KeyNotFound {
-                    key_name: signing_key_name.as_ref().to_string(),
-                }
-                .into());
-            }
-        };
-        let database = Database::create(
-            settings,
-            self,
-            signing_key,
-            signing_key_name.as_ref().to_string(),
-        )?;
-        Ok(database)
-    }
-
-    /// Create a new database with default empty settings.
-    ///
-    /// **DEPRECATED**: Use `User::create_database()` instead. This method will be removed in a future version.
-    ///
-    /// # Arguments
-    /// * `signing_key_name` - The name of the signing key to use
-    ///
-    /// # Returns
-    /// A `Result` containing the newly created `Database` or an error.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::create_database() instead for proper user context"
-    )]
-    #[allow(deprecated)]
-    pub fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
-        let mut settings = Doc::new();
-
-        // Add a unique database identifier to ensure each database gets a unique root ID
-        // This prevents content-addressable collision when creating multiple databases
-        // with identical settings
-        let unique_id = format!(
-            "database_{}",
-            rand::thread_rng()
-                .sample_iter(&rand::distributions::Alphanumeric)
-                .take(16)
-                .map(char::from)
-                .collect::<String>()
-        );
-        settings.set_string("database_id", unique_id);
-
-        self.new_database(settings, signing_key_name)
-    }
-
     /// Load an existing database from the backend by its root ID.
     ///
     /// # Arguments
@@ -667,36 +593,7 @@ impl Instance {
         }
     }
 
-    // === Authentication Key Management (Deprecated Convenience) ===
-    //
-    // These methods provide deprecated convenience wrappers for key management.
-    // Use the explicit User API for key management instead.
-
-    /// Generate a new Ed25519 keypair (deprecated).
-    ///
-    /// **DEPRECATED**: Use `User::add_private_key()` instead. This method will be removed in a future version.
-    ///
-    /// # Arguments
-    /// * `display_name` - Optional display name for the key
-    ///
-    /// # Returns
-    /// A `Result` containing the key ID (public key string) or an error.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::add_private_key() instead for proper user context"
-    )]
-    pub fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey> {
-        // Generate keypair using backend-stored keys (legacy path)
-        use crate::auth::crypto::generate_keypair;
-        let (signing_key, verifying_key) = generate_keypair();
-
-        // Store in backend with display_name as the key name (legacy storage)
-        self.inner
-            .backend
-            .store_private_key(display_name, signing_key)?;
-
-        Ok(verifying_key)
-    }
+    // === Authentication Key Management ===
 
     /// List all private key IDs.
     ///
@@ -705,91 +602,6 @@ impl Instance {
     pub fn list_private_keys(&self) -> Result<Vec<String>> {
         // List keys from backend storage
         self.inner.backend.list_private_keys()
-    }
-
-    /// Import an existing Ed25519 keypair (deprecated).
-    ///
-    /// **DEPRECATED**: Use `User::add_private_key()` with generated keys instead.
-    ///
-    /// # Arguments
-    /// * `key_id` - Key identifier (usually the public key string)
-    /// * `signing_key` - The Ed25519 signing key to import
-    ///
-    /// # Returns
-    /// A `Result` containing the key ID or an error.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::add_private_key() instead for proper user context"
-    )]
-    pub fn import_private_key(
-        &self,
-        key_id: &str,
-        signing_key: ed25519_dalek::SigningKey,
-    ) -> Result<String> {
-        // Import key into backend storage (legacy path)
-        self.inner.backend.store_private_key(key_id, signing_key)?;
-
-        Ok(key_id.to_string())
-    }
-
-    /// Get the public key for a stored private key (deprecated).
-    ///
-    /// **DEPRECATED**: Use `User::get_signing_key()` instead.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key identifier
-    ///
-    /// # Returns
-    /// A `Result` containing the public key or an error.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::get_signing_key() instead for proper user context"
-    )]
-    pub fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey> {
-        // Get signing key from backend storage (legacy path)
-        let signing_key = self.inner.backend.get_private_key(key_id)?.ok_or_else(|| {
-            InstanceError::SigningKeyNotFound {
-                key_name: key_id.to_string(),
-            }
-        })?;
-
-        Ok(signing_key.verifying_key())
-    }
-
-    /// Get the formatted public key string for a stored private key (deprecated).
-    ///
-    /// **DEPRECATED**: Use `User::get_signing_key()` instead and format manually if needed.
-    ///
-    /// # Arguments
-    /// * `key_name` - The key identifier
-    ///
-    /// # Returns
-    /// A `Result` containing the formatted public key string.
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use User::get_signing_key() and format_public_key() instead"
-    )]
-    #[allow(deprecated)]
-    pub fn get_formatted_public_key(&self, key_name: impl AsRef<str>) -> Result<String> {
-        let public_key = self.get_public_key(key_name.as_ref())?;
-        Ok(format_public_key(&public_key))
-    }
-
-    /// Remove a private key (deprecated).
-    ///
-    /// **DEPRECATED**: Key removal not yet implemented through User API.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key identifier to remove
-    ///
-    /// # Returns
-    /// A `Result` indicating success or failure.
-    #[deprecated(since = "0.1.0", note = "Deprecated API, will be removed")]
-    pub fn remove_private_key(&self, key_id: &str) -> Result<()> {
-        Err(InstanceError::OperationNotSupported {
-            operation: format!("remove_private_key('{key_id}') not yet implemented"),
-        }
-        .into())
     }
 
     // === Synchronization Management ===
@@ -1028,7 +840,7 @@ impl WeakInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Error, backend::database::InMemory};
+    use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};
 
     #[test]
     #[allow(deprecated)]

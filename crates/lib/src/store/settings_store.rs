@@ -269,6 +269,7 @@ mod tests {
             types::{KeyStatus, Permission},
         },
         backend::database::InMemory,
+        instance::LegacyInstanceOps,
     };
 
     fn create_test_database() -> (Instance, Database) {

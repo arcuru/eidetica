@@ -1,11 +1,11 @@
-use std::{sync::Arc, time::Duration};
-
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     entry::{Entry, ID},
+    instance::LegacyInstanceOps,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
+use std::{hint::black_box, sync::Arc, time::Duration};
 
 // Helper function to create test entries
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {

@@ -8,7 +8,8 @@
 //! 5. Device 1 tries to add message C -> "no common ancestor found" error
 
 use eidetica::{
-    Instance, Result, auth::Permission, backend::database::InMemory, crdt::Doc, store::Table,
+    Instance, Result, auth::Permission, backend::database::InMemory, crdt::Doc,
+    instance::LegacyInstanceOps, store::Table,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

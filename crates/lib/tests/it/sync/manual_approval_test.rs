@@ -17,6 +17,7 @@ use eidetica::{
         crypto::{format_public_key, generate_keypair},
     },
     crdt::Doc,
+    instance::LegacyInstanceOps,
     sync::{
         RequestStatus,
         handler::{SyncHandler, SyncHandlerImpl},

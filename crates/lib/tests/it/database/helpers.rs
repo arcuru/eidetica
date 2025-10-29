@@ -11,6 +11,7 @@ use eidetica::{
     },
     crdt::{Doc, doc::Value},
     entry::ID,
+    instance::LegacyInstanceOps,
     store::DocStore,
 };
 

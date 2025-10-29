@@ -8,6 +8,7 @@
 use super::helpers::*;
 use eidetica::{
     auth::Permission as AuthPermission,
+    instance::LegacyInstanceOps,
     sync::{handler::SyncHandler, protocol::SyncResponse},
 };
 

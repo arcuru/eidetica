@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use eidetica::{Instance, Result, backend::database::InMemory};
+use eidetica::{Instance, Result, backend::database::InMemory, instance::LegacyInstanceOps};
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};

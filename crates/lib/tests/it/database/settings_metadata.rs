@@ -7,6 +7,7 @@ use eidetica::{
     Instance,
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
+    instance::LegacyInstanceOps,
 };
 
 #[test]

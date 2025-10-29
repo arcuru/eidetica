@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use eidetica::{
-    Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value, store::DocStore,
-    user::User,
+    Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value,
+    instance::LegacyInstanceOps, store::DocStore, user::User,
 };
 
 // ==========================
@@ -45,8 +45,6 @@ pub fn test_instance_with_user(username: &str) -> (Instance, User) {
 ///
 /// **DEPRECATED**: This helper exists only for migrating old tests. New tests should
 /// use `test_instance_with_user()` and the User API for key management.
-#[deprecated(note = "Use test_instance_with_user() and User API instead")]
-#[allow(deprecated)]
 pub fn test_instance_with_legacy_key(key_name: &str) -> Instance {
     let instance = test_instance();
     instance
@@ -78,8 +76,6 @@ pub fn setup_empty_db() -> Instance {
 ///
 /// **DEPRECATED**: New tests should use `test_instance_with_user()` and User API.
 /// This helper maintains compatibility with tests not yet migrated to User API.
-#[deprecated(note = "Use test_instance_with_user() and User API instead")]
-#[allow(deprecated)]
 pub fn setup_db_with_key(key_name: &str) -> Instance {
     test_instance_with_legacy_key(key_name)
 }
@@ -107,8 +103,6 @@ pub fn setup_tree() -> (Instance, eidetica::Database) {
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-#[deprecated(note = "Use test_instance_with_user() and User API instead")]
-#[allow(deprecated)]
 pub fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name);
     let tree = db
@@ -120,8 +114,6 @@ pub fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
 /// Creates a tree and database with a specific key (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use User API for key management.
-#[deprecated(note = "Use test_instance_with_user() and User API instead")]
-#[allow(deprecated)]
 pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name);
     let tree = db

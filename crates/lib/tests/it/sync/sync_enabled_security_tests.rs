@@ -8,6 +8,7 @@ use eidetica::{
     Database,
     auth::{AuthKey, AuthSettings, Permission},
     crdt::Doc,
+    instance::LegacyInstanceOps,
     store::DocStore,
     sync::handler::SyncHandler,
     user::types::{DatabasePreferences, SyncSettings},

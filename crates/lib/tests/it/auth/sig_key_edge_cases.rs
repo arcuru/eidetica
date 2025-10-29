@@ -14,6 +14,7 @@ use eidetica::{
     backend::database::InMemory,
     crdt::Doc,
     entry::ID,
+    instance::LegacyInstanceOps,
 };
 
 /// Test SigKey with empty delegation path

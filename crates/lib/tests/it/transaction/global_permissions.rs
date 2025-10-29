@@ -11,6 +11,7 @@ use eidetica::{
     },
     backend::database::InMemory,
     crdt::Doc,
+    instance::LegacyInstanceOps,
     store::DocStore,
 };
 

@@ -5,6 +5,7 @@ use eidetica::{
         types::{AuthKey, KeyStatus, Permission},
     },
     crdt::{Doc, doc::Value},
+    instance::LegacyInstanceOps,
     store::DocStore,
 };
 

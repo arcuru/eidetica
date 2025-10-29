@@ -7,6 +7,7 @@ use std::{sync::Arc, time::Duration};
 
 use eidetica::{
     Instance, Result,
+    instance::LegacyInstanceOps,
     sync::{
         Sync,
         handler::{SyncHandler, SyncHandlerImpl},

@@ -13,6 +13,7 @@ use eidetica::{
     backend::database::InMemory,
     constants::SETTINGS,
     crdt::Doc,
+    instance::LegacyInstanceOps,
     store::DocStore,
     sync::{
         RequestStatus, Sync,

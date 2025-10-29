@@ -9,6 +9,7 @@ use eidetica::{
     backend::database::InMemory,
     constants::GLOBAL_PERMISSION_KEY,
     crdt::{Doc, doc::Value},
+    instance::LegacyInstanceOps,
     store::{SettingsStore, Table},
 };
 use serde::{Deserialize, Serialize};

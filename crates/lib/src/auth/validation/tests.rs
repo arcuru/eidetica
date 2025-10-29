@@ -9,6 +9,7 @@ use crate::{
         types::{AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey},
     },
     crdt::Doc,
+    instance::LegacyInstanceOps,
 };
 
 fn create_test_auth_with_key(key_name: &str, auth_key: &AuthKey) -> AuthSettings {

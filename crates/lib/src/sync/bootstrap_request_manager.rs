@@ -189,7 +189,7 @@ mod tests {
     use super::*;
     use crate::{
         Database, Instance, auth::types::Permission, backend::database::InMemory,
-        sync::DEVICE_KEY_NAME,
+        instance::LegacyInstanceOps, sync::DEVICE_KEY_NAME,
     };
 
     fn create_test_sync_tree() -> (Instance, Database) {

@@ -12,6 +12,7 @@ use eidetica::{
     },
     crdt::Doc,
     entry::ID,
+    instance::LegacyInstanceOps,
     store::DocStore,
     user::User,
 };

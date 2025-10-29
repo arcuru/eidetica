@@ -633,6 +633,7 @@ impl Database {
     /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
+    /// # use eidetica::instance::LegacyInstanceOps;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::open(backend)?;
@@ -685,6 +686,7 @@ impl Database {
     /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
+    /// # use eidetica::instance::LegacyInstanceOps;
     /// # fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let db = Instance::open(backend)?;

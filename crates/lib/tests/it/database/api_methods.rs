@@ -3,7 +3,7 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
-use eidetica::{auth::types::SigKey, crdt::Doc, store::DocStore};
+use eidetica::{auth::types::SigKey, crdt::Doc, instance::LegacyInstanceOps, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;

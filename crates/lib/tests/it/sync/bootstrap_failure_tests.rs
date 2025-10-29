@@ -10,6 +10,7 @@ use eidetica::{
     auth::Permission,
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
+    instance::LegacyInstanceOps,
 };
 use std::time::Duration;
 

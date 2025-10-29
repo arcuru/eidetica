@@ -409,7 +409,10 @@ impl<'a> SyncStateManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Entry, Instance, backend::database::InMemory, sync::DEVICE_KEY_NAME};
+    use crate::{
+        Entry, Instance, backend::database::InMemory, instance::LegacyInstanceOps,
+        sync::DEVICE_KEY_NAME,
+    };
 
     #[test]
     fn test_sync_cursor() {
