@@ -205,13 +205,20 @@ pub fn decrypt_private_key(
             reason: format!("Failed to create cipher: {e}"),
         })?;
 
-    // Create nonce
-    let nonce = Nonce::from_slice(nonce_bytes);
+    // Create nonce - convert from fixed-size array
+    let nonce_array: [u8; NONCE_LENGTH] =
+        nonce_bytes
+            .try_into()
+            .map_err(|_| UserError::InvalidNonceLength {
+                expected: NONCE_LENGTH,
+                actual: nonce_bytes.len(),
+            })?;
+    let nonce = Nonce::from(nonce_array);
 
     // Decrypt
     let mut plaintext =
         cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|e| UserError::DecryptionFailed {
                 reason: format!("Decryption failed: {e}"),
             })?;
