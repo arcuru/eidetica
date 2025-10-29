@@ -71,6 +71,21 @@ impl App {
         settings_store.set_auth_key("*", global_key)?;
         tx.commit()?;
 
+        // Enable sync for this database
+        // TODO: Make enabling sync more user-friendly
+        let database_id = database.root_id().clone();
+        self.user
+            .add_database(eidetica::user::types::DatabasePreferences {
+                database_id,
+                key_id: key_id.clone(),
+                sync_settings: eidetica::user::types::SyncSettings {
+                    sync_enabled: true,
+                    sync_on_commit: true,
+                    interval_seconds: None,
+                    properties: std::collections::HashMap::new(),
+                },
+            })?;
+
         // Open the new room
         self.enter_room(database).await?;
 
