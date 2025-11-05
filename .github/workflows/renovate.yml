@@ -27,8 +27,8 @@ jobs:
       - name: Renovate
         uses: renovatebot/github-action@v43.0.20
         with:
+          configurationFile: .github/renovate.json
           token: ${{ secrets.RENOVATE_TOKEN }}
         env:
-          RENOVATE_ENABLED_MANAGERS: "cargo,github-actions,nix"
           # Use the log level from manual trigger, or info by default
           LOG_LEVEL: ${{ github.event.inputs.logLevel || 'info' }}
