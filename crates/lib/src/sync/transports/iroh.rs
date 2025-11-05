@@ -391,10 +391,16 @@ impl IrohTransport {
             }
         };
 
-        // Create request context with remote address
+        // Extract peer_pubkey from SyncTreeRequest if present
+        let peer_pubkey = match &request {
+            SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
+            _ => None,
+        };
+
+        // Create request context with remote address and peer pubkey
         let context = RequestContext {
             remote_address: Some(remote_address),
-            peer_pubkey: None, // Will be populated from handshake if needed
+            peer_pubkey,
         };
 
         // Handle the request using the SyncHandler

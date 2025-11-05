@@ -222,6 +222,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap
+        peer_pubkey: None,
         requesting_key: Some(peer_pubkey.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
@@ -307,6 +308,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: tips, // Non-empty tips = incremental
+        peer_pubkey: None,
         requesting_key: Some(peer_pubkey.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
@@ -369,6 +371,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
+        peer_pubkey: None,
         requesting_key: Some(peer_pubkey.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
@@ -461,6 +464,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id1.clone(),
         our_tips: vec![],
+        peer_pubkey: None,
         requesting_key: Some(peer_pubkey.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
@@ -471,6 +475,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id2.clone(),
         our_tips: vec![],
+        peer_pubkey: None,
         requesting_key: Some(peer_pubkey.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
@@ -580,6 +585,7 @@ async fn test_sync_without_peer_identifier_works() {
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
+        peer_pubkey: None,
         requesting_key: None,
         requesting_key_name: None,
         requested_permission: None,

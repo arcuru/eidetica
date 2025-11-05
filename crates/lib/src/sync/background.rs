@@ -582,12 +582,21 @@ impl BackgroundSync {
                 .get_tips(tree_id)
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
+            // Get our device public key for automatic peer tracking
+            let our_device_pubkey = if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME)? {
+                let verifying_key = signing_key.verifying_key();
+                Some(format_public_key(&verifying_key))
+            } else {
+                None
+            };
+
             debug!(peer = %peer_pubkey, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 
             // Send unified sync request
             let request = SyncRequest::SyncTree(SyncTreeRequest {
                 tree_id: tree_id.clone(),
                 our_tips,
+                peer_pubkey: our_device_pubkey,
                 requesting_key: None, // TODO: Add auth support for background sync
                 requesting_key_name: None,
                 requested_permission: None,

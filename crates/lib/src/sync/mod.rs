@@ -1155,10 +1155,14 @@ impl Sync {
             .get_tips(tree_id)
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
+        // Get our device public key for automatic peer tracking
+        let our_device_pubkey = self.get_device_public_key().ok();
+
         // Send unified sync request
         let request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
+            peer_pubkey: our_device_pubkey,
             requesting_key: None, // TODO: Add auth support for direct sync
             requesting_key_name: None,
             requested_permission: None,
@@ -1771,10 +1775,14 @@ impl Sync {
             .get_tips(tree_id)
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
+        // Get our device public key for automatic peer tracking
+        let our_device_pubkey = self.get_device_public_key().ok();
+
         // Send unified sync request with auth parameters
         let request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
+            peer_pubkey: our_device_pubkey,
             requesting_key: requesting_key.map(|k| k.to_string()),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,

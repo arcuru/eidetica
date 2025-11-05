@@ -224,6 +224,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: client_tips, // Non-empty tips = incremental sync
+        peer_pubkey: None,
         requesting_key: None,
         requesting_key_name: None,
         requested_permission: None,

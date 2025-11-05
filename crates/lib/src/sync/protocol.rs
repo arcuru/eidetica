@@ -64,6 +64,8 @@ pub struct SyncTreeRequest {
     pub tree_id: ID,
     /// Our current tips (empty vec signals bootstrap needed)
     pub our_tips: Vec<ID>,
+    /// Device public key of the requesting peer (used for automatic tree/peer relationship tracking)
+    pub peer_pubkey: Option<String>,
     /// Authentication key requesting access (for bootstrap)
     pub requesting_key: Option<String>,
     /// Key name/identifier for the requesting key

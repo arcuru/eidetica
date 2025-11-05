@@ -186,13 +186,19 @@ async fn handle_sync_request(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ExtractJson(request): ExtractJson<SyncRequest>,
 ) -> Json<SyncResponse> {
-    // Create request context with remote address
+    // Extract peer_pubkey from SyncTreeRequest if present
+    let peer_pubkey = match &request {
+        SyncRequest::SyncTree(sync_tree_request) => sync_tree_request.peer_pubkey.clone(),
+        _ => None,
+    };
+
+    // Create request context with remote address and peer pubkey
     let context = RequestContext {
         remote_address: Some(Address {
             transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
             address: addr.to_string(),
         }),
-        peer_pubkey: None, // Will be set by transport layer if connection is authenticated
+        peer_pubkey,
     };
 
     // Use the SyncHandler to process the request

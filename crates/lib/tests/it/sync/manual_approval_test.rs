@@ -175,6 +175,7 @@ async fn test_reject_bootstrap_request() {
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
+        peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
@@ -253,6 +254,7 @@ async fn test_list_bootstrap_requests_by_status() {
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
+        peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
@@ -307,6 +309,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let sync_request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
+        peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
@@ -324,6 +327,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let sync_request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
+        peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
@@ -438,6 +442,7 @@ async fn test_malformed_permission_requests() {
         let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips: vec![],
+            peer_pubkey: None,
             requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(permission.clone()),
