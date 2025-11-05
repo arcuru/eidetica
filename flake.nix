@@ -32,6 +32,12 @@
     };
   };
 
+  # Cachix binary cache configuration
+  nixConfig = {
+    extra-substituters = ["https://eidetica.cachix.org"];
+    extra-trusted-public-keys = ["eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="];
+  };
+
   outputs = inputs @ {flake-parts, ...}:
     flake-parts.lib.mkFlake {inherit inputs;} {
       # Import flakes that have a flake-parts module
