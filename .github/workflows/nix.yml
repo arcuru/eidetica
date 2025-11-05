@@ -17,11 +17,6 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v19
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
-        with:
-          name: eidetica
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
       - name: Build all packages with nix-fast-build
         run: |
@@ -29,6 +24,9 @@ jobs:
             --skip-cached \
             --no-nom \
             --no-link \
+            --cachix-cache eidetica \
             --flake ".#checks.x86_64-linux" \
             --flake ".#packages.x86_64-linux.eidetica-lib" \
             --flake ".#packages.x86_64-linux.eidetica-bin"
+        env:
+          CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
