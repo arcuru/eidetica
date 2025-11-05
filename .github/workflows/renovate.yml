@@ -1,0 +1,35 @@
+name: Renovate
+on:
+  # Run on a schedule
+  schedule:
+    # Run every Monday at 1am UTC
+    - cron: "0 1 * * 1"
+  # Allow manual triggers
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: "Log level"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - info
+          - debug
+          - trace
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Renovate
+        uses: renovatebot/github-action@v43.0.20
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          # Use the log level from manual trigger, or info by default
+          log-level: ${{ github.event.inputs.logLevel || 'info' }}
+        env:
+          RENOVATE_ENABLED_MANAGERS: "cargo,github-actions,nix"
+          LOG_LEVEL: ${{ github.event.inputs.logLevel || 'info' }}

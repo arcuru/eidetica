@@ -1,0 +1,65 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["cargo", "github-actions", "nix"],
+  "schedule": ["every weekend"],
+  "prConcurrentLimit": 5,
+  "semanticCommits": "enabled",
+  "commitMessagePrefix": "chore(deps):",
+  "commitMessageAction": "update",
+  "commitMessageTopic": "{{depName}}",
+  "packageRules": [
+    {
+      "description": "Group all patch updates to reduce PR noise",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch updates",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Separate security updates for immediate attention",
+      "matchUpdateTypes": ["pin", "digest", "patch", "minor", "major"],
+      "matchDatasources": ["crate", "github-tags"],
+      "vulnerabilityAlerts": {
+        "enabled": true
+      },
+      "labels": ["security"],
+      "groupName": null
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "schedule": ["every 2 weeks"]
+    },
+    {
+      "description": "Group Nix flake lock file updates",
+      "matchManagers": ["nix"],
+      "matchUpdateTypes": ["lockFileMaintenance"],
+      "groupName": "Nix flake lock",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Group Nix flake input updates",
+      "matchManagers": ["nix"],
+      "matchUpdateTypes": ["digest", "pin"],
+      "groupName": "Nix flake inputs",
+      "schedule": ["every weekend"]
+    },
+    {
+      "description": "Group Cargo workspace dependencies",
+      "matchManagers": ["cargo"],
+      "matchFiles": ["Cargo.toml"],
+      "groupName": "Cargo workspace dependencies"
+    }
+  ],
+  "cargo": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"]
+  },
+  "labels": ["dependencies"],
+  "assigneesFromCodeOwners": true,
+  "reviewersFromCodeOwners": true
+}

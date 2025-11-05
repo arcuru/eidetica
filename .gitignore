@@ -23,6 +23,8 @@ target
 
 # Ignore the saved in-memory database files
 **/*.json
+# But allow configuration files
+!.github/renovate.json
 
 # mdbook files
 docs/book
