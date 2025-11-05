@@ -28,8 +28,7 @@ jobs:
         uses: renovatebot/github-action@v43.0.20
         with:
           token: ${{ secrets.RENOVATE_TOKEN }}
-          # Use the log level from manual trigger, or info by default
-          log-level: ${{ github.event.inputs.logLevel || 'info' }}
         env:
           RENOVATE_ENABLED_MANAGERS: "cargo,github-actions,nix"
+          # Use the log level from manual trigger, or info by default
           LOG_LEVEL: ${{ github.event.inputs.logLevel || 'info' }}
