@@ -4,7 +4,7 @@
 [![coverage](https://img.shields.io/codecov/c/github/arcuru/eidetica)](https://codecov.io/gh/arcuru/eidetica)
 ![license](https://img.shields.io/github/license/arcuru/eidetica)
 
-Remember Everything.
+Remember Everything. Everywhere. All at once.
 
 I wanted to search my email, so I started by building a decentralized database.
 
@@ -15,7 +15,9 @@ An app developer does not need to deal with anything else, just use the database
 
 It's not _quite_ all there yet, but I'm working on it. Peer-to-Peer connectivity is only minimal at the moment.
 
-[Extensive (largely LLM Generated/Human Curated) docs are maintained under docs/, linked here.](https://arcuru.github.io/eidetica)
+Extensive, but largely LLM Generated/Human Curated documentation is maintained under docs/ and [hosted on github.io.](https://arcuru.github.io/eidetica)
+
+Blog posts that I've written about Eidetica: [https://jackson.dev/tags/eidetica/](https://jackson.dev/tags/eidetica/)
 
 Discuss on Matrix:
 
