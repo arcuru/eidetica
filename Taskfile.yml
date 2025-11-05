@@ -38,7 +38,7 @@ tasks:
   nix:check:
     desc: Run Nix CI checks
     cmds:
-      - nix flake check
+      - nix-fast-build --no-link
   nix:build:
     desc: Run Nix Build
     cmds:

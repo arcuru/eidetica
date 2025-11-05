@@ -327,6 +327,7 @@
             # CI/CD tools
             act # Run GitHub Actions locally
             go-task # Task runner
+            nix-fast-build # Fast parallel Nix builds
 
             # Nix development tools
             deadnix # Find dead Nix code

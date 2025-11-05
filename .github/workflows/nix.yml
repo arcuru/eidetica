@@ -23,32 +23,12 @@ jobs:
           name: eidetica
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
-      # Run individual checks for better visibility
-      - name: Build eidetica-lib
-        run: nix build .#eidetica-lib --print-build-logs
-        continue-on-error: true
-      - name: Build eidetica-bin
-        run: nix build .#eidetica-bin --print-build-logs
-        continue-on-error: true
-
-      - name: Run tests
-        run: nix build .#test --print-build-logs
-        continue-on-error: true
-      - name: Run clippy
-        run: nix build .#clippy --print-build-logs
-        continue-on-error: true
-      - name: Check formatting
-        run: nix build .#fmt --print-build-logs
-        continue-on-error: true
-      - name: Build documentation
-        run: nix build .#doc --print-build-logs
-        continue-on-error: true
-      - name: Check licenses
-        run: nix build .#deny --print-build-logs
-        continue-on-error: true
-      - name: Run security audit
-        run: nix build .#audit --print-build-logs
-        continue-on-error: true
-      - name: Test documentation examples
-        run: nix build .#book-test --print-build-logs
-        continue-on-error: true
+      - name: Build all packages with nix-fast-build
+        run: |
+          nix run nixpkgs#nix-fast-build -- \
+            --skip-cached \
+            --no-nom \
+            --no-link \
+            --flake ".#checks.x86_64-linux" \
+            --flake ".#packages.x86_64-linux.eidetica-lib" \
+            --flake ".#packages.x86_64-linux.eidetica-bin"
