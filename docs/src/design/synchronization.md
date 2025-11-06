@@ -154,7 +154,7 @@ pub trait SyncHandler: Send + Sync {
 pub struct RequestContext {
     /// Remote address from which the request originated
     pub remote_address: Option<Address>,
-    /// Peer public key (set after handshake)
+    /// Peer public key from the sync request
     pub peer_pubkey: Option<String>,
 }
 ```
@@ -239,7 +239,7 @@ pub struct IrohTransport {
 
 **Peer Registration:** Captures advertised addresses from handshake plus actual remote address from transport connection for NAT traversal.
 
-**Relationship Tracking:** When peers request trees, the sync relationship is automatically added, enabling bidirectional `sync_on_commit`.
+**Relationship Tracking:** Each sync request includes the peer's device public key, enabling automatic tracking of tree/peer relationships. This enables bidirectional `sync_on_commit` without manual setup.
 
 ### 6. Declarative Sync API
 
@@ -502,7 +502,8 @@ The sync protocol supports zero-state joining through automatic bootstrap detect
 # Bootstrap Scenario (client has no local database)
 A -> B: SyncTreeRequest {
     tree_id: ID,
-    our_tips: [] // Empty = bootstrap needed
+    our_tips: [], // Empty = bootstrap needed
+    peer_pubkey: Some(device_pubkey) // For automatic peer tracking
 }
 
 B -> A: BootstrapResponse {
@@ -514,7 +515,8 @@ B -> A: BootstrapResponse {
 # Incremental Scenario (client has database)
 A -> B: SyncTreeRequest {
     tree_id: ID,
-    our_tips: [tip1, tip2, ...] // Current tips
+    our_tips: [tip1, tip2, ...], // Current tips
+    peer_pubkey: Some(device_pubkey) // For automatic peer tracking
 }
 
 B -> A: IncrementalResponse {

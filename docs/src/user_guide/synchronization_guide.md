@@ -134,7 +134,7 @@ println!("Has local data: {}", status.has_local_data);
 handle.wait_for_initial_sync().await?;
 ```
 
-**Automatic Peer Discovery:** Incoming peers are automatically registered during handshake, including their advertised addresses and actual connection address. When peers request trees, the sync relationship is tracked automatically.
+**Automatic Peer Discovery:** Incoming peers are automatically registered during handshake, including their advertised addresses and actual connection address. Each sync request includes the peer's device public key, enabling automatic tracking of tree/peer relationships.
 
 **When to use:** Persistent sync relationships, background sync
 **When to use legacy `sync_with_peer()`:** One-off sync operations, migration scripts
