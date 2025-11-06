@@ -1,0 +1,103 @@
+# Forgejo CI workflow for Rust checks, build, and tests
+# Note: Uses full GitHub URLs for actions not in Forgejo's registry
+name: Rust
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Using actions/cache instead of Swatinem/rust-cache for Forgejo compatibility
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Format
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build
+        run: cargo build --workspace --all-targets --all-features
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install mdbook
+        run: |
+          if ! command -v mdbook &> /dev/null
+          then
+              cargo install mdbook --locked --version ^0.4
+          fi
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      - name: Test Documentation Examples
+        run: |
+          # The book tests require a single copy of libeidetica target/debug/deps
+          # This is a workaround to remove and rebuild only 1
+          rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
+          cargo build -p eidetica --features full
+          RUST_LOG=warn mdbook test docs -L target/debug/deps

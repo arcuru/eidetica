@@ -1,0 +1,115 @@
+# Forgejo CI workflow for Nix builds
+#
+# Optional Repository Secrets (configure in Forgejo Settings → Secrets → Actions):
+#   NIX_EXTRA_SUBSTITUTERS: Space-separated list of additional binary caches
+#   NIX_EXTRA_TRUSTED_PUBLIC_KEYS: Space-separated public keys for extra substituters
+#   ATTIC_SERVER_URL: Attic server URL for login (required if using ATTIC_AUTH_TOKEN)
+#   ATTIC_AUTH_TOKEN: Token for pushing to Attic (eidetica cache)
+#   CACHIX_AUTH_TOKEN: Token for pushing to Cachix (eidetica cache)
+#
+name: Nix
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          # Enable flakes and configure substituters
+          mkdir -p ~/.config/nix
+
+          # Build substituters list with explicit priorities (lower number = higher priority)
+          # Default: cache.nixos.org (priority 40), eidetica.cachix.org (priority 50)
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          # Add extra substituters if configured (for private caches like Attic)
+          # Tip: Add ?priority=10 to your private cache URLs to check them first
+          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
+            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
+            echo "Added extra substituters: $NIX_EXTRA_SUBSTITUTERS"
+          fi
+
+          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
+            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+            echo "Added extra trusted public keys"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+
+          echo "Nix configuration:"
+          cat ~/.config/nix/nix.conf
+
+          # Verify Nix is available
+          nix --version
+        env:
+          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
+          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+
+      # Configure Attic login if token is available
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != ''  && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          # Install attic client
+          nix profile add nixpkgs#attic-client
+
+          echo "Logging in to Attic at $ATTIC_SERVER_URL"
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+
+          echo "Attic login successful"
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Install Actions Deps
+        run: |
+          nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build all packages with nix-fast-build
+      # Attic and Cachix integration are optional via auth token secrets
+      - name: Build all packages with nix-fast-build
+        run: |
+          # Build command
+          BUILD_CMD="nix run nixpkgs#nix-fast-build -- \
+            --skip-cached \
+            --no-nom \
+            --no-link \
+            --flake \".#checks.x86_64-linux\" \
+            --flake \".#packages.x86_64-linux.eidetica-lib\" \
+            --flake \".#packages.x86_64-linux.eidetica-bin\""
+
+          # Add Attic if client is available and logged in
+          if command -v attic &> /dev/null; then
+            echo "Attic client found, using Attic cache: eidetica"
+            BUILD_CMD="$BUILD_CMD --attic-cache eidetica"
+          else
+            echo "Attic client not available, skipping Attic push"
+          fi
+
+          # Add Cachix if token is available
+          if [ -n "$CACHIX_AUTH_TOKEN" ]; then
+            echo "Using Cachix cache: eidetica"
+            BUILD_CMD="$BUILD_CMD --cachix-cache eidetica"
+          else
+            echo "CACHIX_AUTH_TOKEN not set, skipping Cachix push"
+          fi
+
+          # Execute build
+          eval "$BUILD_CMD"
+        env:
+          CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
