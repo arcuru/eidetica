@@ -1,0 +1,42 @@
+# release-plz configuration
+# https://release-plz.dev/docs/config
+
+[workspace]
+# Use the existing git-cliff configuration
+changelog_config = ".config/cliff.toml"
+
+# Customize the pull request
+pr_name = "chore: release {{ package }} v{{ version }}"
+pr_body = """
+## Release {{ package }} v{{ version }}
+
+This PR prepares the next release. The changelog has been automatically generated from commit messages.
+
+**Before merging:**
+- Review the version bump (currently: {{ version }})
+- Edit `CHANGELOG.md` to add any custom commentary, context, or highlights
+- Ensure all changes are documented appropriately
+
+After merging, the package will be automatically published to crates.io and a GitHub release will be created.
+"""
+
+# Add labels to release PRs for easier filtering
+pr_labels = ["release"]
+
+# Customize GitHub release
+git_release_type = "auto"  # Automatically determine if it's a pre-release based on version
+git_release_body = """
+{{ changelog }}
+
+---
+📦 **Installation:**
+```bash
+cargo add {{ package }}@{{ version }}
+```
+
+📚 **Documentation:** https://docs.rs/{{ package }}/{{ version }}
+🏠 **Homepage:** https://eidetica.dev
+"""
+
+# Enable release draft mode if you want to review GitHub releases before publishing
+# git_release_draft = true
