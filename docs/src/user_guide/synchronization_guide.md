@@ -86,6 +86,59 @@ That's it! The sync system handles everything automatically:
 - Incremental sync if you already have it
 - Bidirectional data transfer
 
+## Declarative Sync API (Recommended)
+
+For persistent sync relationships, declare your intent and let the background engine handle synchronization:
+
+```rust
+# extern crate eidetica;
+# use eidetica::sync::{SyncPeerInfo, Address};
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let instance = Instance::open(backend)?;
+# instance.enable_sync()?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key = user.get_default_key()?;
+# let db = user.create_database(Doc::new(), &default_key)?;
+# let tree_id = db.root_id().clone();
+# let sync = instance.sync().expect("Sync enabled");
+# let peer_pubkey = "ed25519:abc123".to_string();
+// Register a peer for automatic background sync
+let handle = sync.register_sync_peer(SyncPeerInfo {
+    peer_pubkey,
+    tree_id,
+    addresses: vec![Address {
+        transport_type: "http".to_string(),
+        address: "http://peer.example.com:8080".to_string(),
+    }],
+    auth: None,
+    display_name: Some("Peer Device".to_string()),
+})?;
+
+// Monitor status and wait for initial sync if needed
+# Ok(())
+# }
+```
+
+<!-- Code block ignored: Requires active sync operations -->
+
+```rust,ignore
+// Check status
+let status = handle.status()?;
+println!("Has local data: {}", status.has_local_data);
+
+// Wait for initial sync
+handle.wait_for_initial_sync().await?;
+```
+
+**Automatic Peer Discovery:** Incoming peers are automatically registered during handshake, including their advertised addresses and actual connection address. When peers request trees, the sync relationship is tracked automatically.
+
+**When to use:** Persistent sync relationships, background sync
+**When to use legacy `sync_with_peer()`:** One-off sync operations, migration scripts
+
 ## Transport Protocols
 
 ### HTTP Transport
@@ -219,26 +272,16 @@ This ensures the database stays as up-to-date as the most active user wants.
 
 ## Peer Management
 
-### Simplified Sync API (Recommended)
-
-The new `sync_with_peer()` method handles peer management automatically:
+Peers are automatically registered when they connect during handshake, capturing both their advertised addresses and actual connection address.
 
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-// Automatic peer connection, handshake, and sync in one call
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+// Declarative: register once, sync continuously
+let handle = sync.register_sync_peer(SyncPeerInfo { /* ... */ })?;
 
-// This automatically:
-// 1. Performs handshake with the peer
-// 2. Registers the peer if not already known
-// 3. Bootstraps the database if it doesn't exist locally
-// 4. Performs incremental sync if database exists locally
-// 5. Stores peer information for future sync operations
-
-// For subsequent sync operations with the same peer
+// Legacy: one-shot sync (auto-registers peer, adds tree relationship)
 sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
-// Reuses existing peer registration and performs incremental sync
 ```
 
 ### Manual Peer Management (Advanced)
@@ -604,21 +647,11 @@ sync.sync_with_peer("my-server.com", Some(&app_data_id)).await?;
 
 ## Best Practices
 
-### 1. **Use the New Simplified API**
+### 1. **Choose the Right Sync API**
 
-Prefer `sync_with_peer()` over manual peer management:
-
-<!-- Code block ignored: Shows API comparison requiring network connections -->
-
-```rust,ignore
-// ✅ Recommended: Automatic connection and sync
-sync.sync_with_peer("peer.example.com", Some(&tree_id)).await?;
-
-// ❌ Avoid: Manual peer setup (unless you need fine control)
-sync.register_peer(&pubkey, Some("Alice"))?;
-sync.add_peer_address(&pubkey, addr)?;
-sync.sync_tree_with_peer(&pubkey, &tree_id).await?;
-```
+- **Declarative (`register_sync_peer`)**: Persistent relationships, automatic background sync
+- **Legacy (`sync_with_peer`)**: One-off operations, migration scripts
+- **Manual peer management**: Only when you need fine-grained control
 
 ### 2. **Use Iroh Transport for Production**
 

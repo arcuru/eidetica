@@ -132,7 +132,7 @@ database.on_local_write(move |entry, db, _instance| {
 
 ### 4. Modular Transport Layer with SyncHandler Architecture
 
-**Decision:** Abstract transport layer with handler-based request processing
+**Decision:** Abstract transport layer with handler-based request processing and transport metadata
 
 **Core Interface:**
 
@@ -146,10 +146,20 @@ pub trait SyncTransport: Send + Sync {
 }
 
 pub trait SyncHandler: Send + Sync {
-    /// Process incoming sync requests with database access
-    async fn handle_request(&self, request: &SyncRequest) -> SyncResponse;
+    /// Process incoming sync requests with request context
+    async fn handle_request(&self, request: &SyncRequest, context: &RequestContext) -> SyncResponse;
+}
+
+/// Context information about incoming requests
+pub struct RequestContext {
+    /// Remote address from which the request originated
+    pub remote_address: Option<Address>,
+    /// Peer public key (set after handshake)
+    pub peer_pubkey: Option<String>,
 }
 ```
+
+**RequestContext** captures transport metadata (remote address, peer pubkey after handshake) for automatic peer registration and address discovery.
 
 **Rationale:**
 
@@ -223,7 +233,21 @@ pub struct IrohTransport {
 - ❌ More complex setup and debugging
 - ❌ Additional dependency
 
-### 5. Persistent State Management
+### 5. Automatic Peer and Relationship Management
+
+**Decision:** Automatically register peers during handshake and track tree/peer relationships when peers request trees
+
+**Peer Registration:** Captures advertised addresses from handshake plus actual remote address from transport connection for NAT traversal.
+
+**Relationship Tracking:** When peers request trees, the sync relationship is automatically added, enabling bidirectional `sync_on_commit`.
+
+### 6. Declarative Sync API
+
+**Decision:** Provide `register_sync_peer()` for declaring sync intent with `SyncHandle` for status tracking
+
+Applications register sync relationships once; the background engine handles synchronization automatically. Status tracking via polling (async events planned for future).
+
+### 7. Persistent State Management
 
 **Decision:** All peer and relationship state stored persistently in sync database
 
@@ -459,21 +483,15 @@ This allows the same `get_server_address()` interface to work for both HTTP (ret
 
 ```text
 A -> B: HandshakeRequest {
-    device_id: string,
-    public_key: ed25519_pubkey,
-    challenge: random_bytes(32),
-    signature: sign(private_key, challenge)
+    device_id, public_key, challenge, signature,
+    listen_addresses: [Address]  // Advertised addresses for A
 }
 
 B -> A: HandshakeResponse {
-    device_id: string,
-    public_key: ed25519_pubkey,
-    challenge_response: sign(private_key, original_challenge),
-    counter_challenge: random_bytes(32)
+    device_id, public_key, challenge_response, counter_challenge
 }
 
-A -> B: verify(B.public_key, challenge_response, challenge)
-B -> A: verify(A.public_key, signature, challenge)
+// B registers A with listen_addresses + remote_address from transport
 ```
 
 **Bootstrap-First Protocol:**
@@ -617,6 +635,11 @@ pub struct SyncFlushConfig {
 - [x] Retry queue with exponential backoff
 - [x] Sync state persistence via DocStore
 - [x] Channel-based communication
+- [x] RequestContext for transport metadata
+- [x] Automatic peer registration
+- [x] Automatic tree/peer relationship tracking
+- [x] Declarative sync API (register_sync_peer)
+- [x] SyncHandle and SyncStatus tracking
 - [x] 78 integration tests passing
 
 ### Phase 3: Advanced Features

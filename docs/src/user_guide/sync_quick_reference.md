@@ -53,7 +53,65 @@ println!("BackgroundSync configured with automatic operation timers");
 # }
 ```
 
-## Peer Management
+## Declarative Sync API (Recommended)
+
+### Register Sync Peer
+
+Declare sync intent with automatic background synchronization:
+
+```rust
+# extern crate eidetica;
+# use eidetica::sync::{SyncPeerInfo, Address};
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let instance = Instance::open(backend)?;
+# instance.enable_sync()?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let default_key = user.get_default_key()?;
+# let db = user.create_database(Doc::new(), &default_key)?;
+# let tree_id = db.root_id().clone();
+# let sync = instance.sync().expect("Sync enabled");
+# let peer_pubkey = "ed25519:abc123".to_string();
+// Register a peer for persistent sync
+let handle = sync.register_sync_peer(SyncPeerInfo {
+    peer_pubkey,
+    tree_id,
+    addresses: vec![Address {
+        transport_type: "http".to_string(),
+        address: "http://peer.example.com:8080".to_string(),
+    }],
+    auth: None,
+    display_name: Some("Peer Device".to_string()),
+})?;
+
+// Background sync engine now handles synchronization automatically
+# Ok(())
+# }
+```
+
+### Monitor Sync Status
+
+<!-- Code block ignored: Requires active sync operations -->
+
+```rust,ignore
+// Check current status
+let status = handle.status()?;
+println!("Has local data: {}", status.has_local_data);
+
+// Wait for initial bootstrap
+handle.wait_for_initial_sync().await?;
+
+// Add more address hints
+handle.add_address(Address {
+    transport_type: "iroh".to_string(),
+    address: "iroh://node_id".to_string(),
+})?;
+```
+
+## Legacy Sync API
 
 ### Authenticated Bootstrap (Recommended for New Databases)
 
@@ -570,30 +628,36 @@ async fn test_sync_between_peers() -> Result<()> {
 
 ### ✅ Do
 
-- **Use `sync_with_peer()`** for most synchronization needs
+- **Use `register_sync_peer()`** for persistent sync relationships (declarative API)
+- **Use `sync_with_peer()`** for one-off sync operations (legacy API)
 - **Enable sync before creating** databases you want to synchronize
 - **Use Iroh transport** for production deployments (better NAT traversal)
-- **Use `discover_peer_trees()`** to find available databases before syncing
+- **Monitor sync status** via `SyncHandle` for declarative sync
 - **Share tree IDs** to allow others to bootstrap from your databases
 - **Handle network failures** gracefully (sync system auto-retries)
 - **Let BackgroundSync** handle retry logic automatically
+- **Leverage automatic peer registration** when peers connect to your server
 
 ### ❌ Don't
 
-- **Manually manage peers** unless you need fine control (use `sync_with_peer()` instead)
+- **Manually manage peers** unless you need fine control (use declarative API instead)
 - **Remove peer relationships** for databases you want to synchronize
 - **Manually manage sync queues** (BackgroundSync handles this)
 - **Ignore sync errors** in production code
 - **Use HTTP transport** for high-volume production (prefer Iroh)
 - **Assume sync is instantaneous** (it's eventually consistent)
+- **Mix APIs unnecessarily** (pick declarative or legacy based on use case)
 
-### 🚀 New Bootstrap-First Features
+### 🚀 Sync Features
 
+- **Declarative sync API**: Register intent, let background engine handle sync
+- **Automatic peer registration**: Incoming connections register automatically
+- **Status tracking**: Monitor sync progress with `SyncHandle`
 - **Zero-state joining**: Join rooms/databases without any local setup
 - **Automatic protocol detection**: Bootstrap vs incremental sync handled automatically
-- **Simplified API**: Single `sync_with_peer()` call handles everything
 - **Database discovery**: Find available databases on peers
 - **Bidirectional sync**: Both devices can share and receive databases
+- **Tree/peer relationship tracking**: Automatic relationship management
 
 ### 🔧 Troubleshooting Checklist
 
