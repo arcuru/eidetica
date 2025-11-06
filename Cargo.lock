@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "eidetica"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "eidetica-bin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "base64ct",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "example-chat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "example-todo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
