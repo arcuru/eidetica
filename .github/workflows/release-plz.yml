@@ -53,7 +53,17 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Check if release PR exists
+        id: check-pr
+        if: github.event_name == 'push'
+        run: |
+          PR_EXISTS=$(gh pr list --repo ${{ github.repository }} --head release-plz --state open --json number --jq 'length')
+          echo "exists=$PR_EXISTS" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run release-plz
+        if: github.event_name == 'workflow_dispatch' || steps.check-pr.outputs.exists != '0'
         uses: release-plz/action@v0.5
         with:
           command: release-pr
