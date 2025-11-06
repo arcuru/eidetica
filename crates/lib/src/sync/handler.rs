@@ -202,6 +202,39 @@ impl SyncHandler for SyncHandlerImpl {
 }
 
 impl SyncHandlerImpl {
+    /// Get the highest permission level a key has in the database's auth settings.
+    ///
+    /// This looks up all permissions the key has (direct + global wildcard) and returns
+    /// the highest one. Used for auto-detecting permissions during bootstrap.
+    ///
+    /// # Arguments
+    /// * `tree_id` - The database/tree ID to check auth settings for
+    /// * `requesting_pubkey` - The public key to look up
+    ///
+    /// # Returns
+    /// - `Ok(Some(Permission))` if key has any permissions
+    /// - `Ok(None)` if key not found in auth settings
+    /// - `Err` if database access fails
+    async fn get_key_highest_permission(
+        &self,
+        tree_id: &ID,
+        requesting_pubkey: &str,
+    ) -> Result<Option<Permission>> {
+        let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
+        let transaction = database.new_transaction()?;
+        let settings_store = SettingsStore::new(&transaction)?;
+        let auth_settings = settings_store.get_auth_settings()?;
+
+        let results = auth_settings.find_all_sigkeys_for_pubkey(requesting_pubkey);
+
+        if results.is_empty() {
+            return Ok(None);
+        }
+
+        // Results are sorted highest first, so take the first one
+        Ok(Some(results[0].1.clone()))
+    }
+
     /// Check if the requesting key already has sufficient permissions through existing auth.
     ///
     /// This uses the AuthSettings.can_access() method to check if the requesting key
@@ -590,27 +623,50 @@ impl SyncHandlerImpl {
     ///
     /// Bootstrap is the initial synchronization when a peer has no local data for a tree.
     /// This method:
-    /// 1. Validates the tree exists
-    /// 2. Processes any authentication request (key approval)
+    /// 1. Validates the tree exists and sync is enabled
+    /// 2. Processes authentication and permission resolution
     /// 3. Sends all entries from the tree to the peer
     ///
     /// # Authentication Flow
-    /// If authentication credentials are provided:
-    /// 1. Check bootstrap auto-approval policy
-    /// 2. If auto-approve enabled: Add key immediately
-    /// 3. If manual approval required: Store request and return BootstrapPending
-    /// 4. Track approval status in response
+    ///
+    /// The bootstrap process handles three authentication scenarios:
+    ///
+    /// ## 1. Explicit Permission Request
+    /// When all three auth parameters are provided (`requesting_key`, `requesting_key_name`, `requested_permission`):
+    /// - Check if key already has sufficient permissions
+    /// - If yes: Approve immediately without adding key
+    /// - If no: Store request for manual approval and return `BootstrapPending`
+    ///
+    /// ## 2. Auto-Detection
+    /// When key is provided but `requested_permission` is `None`:
+    /// - Look up key's existing permissions in database auth settings
+    /// - Uses `find_all_sigkeys_for_pubkey()` to find all permissions (direct + global wildcard)
+    /// - If key found: Use highest available permission and approve immediately
+    /// - If key not found: Reject with authentication error
+    ///
+    /// ## 3. Unauthenticated Access
+    /// When no `requesting_key` is provided:
+    /// - Only allowed if database has no auth configured or has global wildcard permission
+    /// - Otherwise rejected with authentication required error
+    ///
+    /// # SECURITY WARNING
+    ///
+    /// **FIXME: This function does not verify that the peer actually controls the `requesting_key`.**
+    ///
+    /// The `requesting_key` parameter is an unverified string from the client. This function
+    /// does not receive `RequestContext` (which contains the verified `peer_pubkey` from handshake),
+    /// so it cannot verify the peer actually owns the key they claim.
     ///
     /// # Arguments
     /// * `tree_id` - The database/tree to bootstrap
-    /// * `requesting_key` - Optional public key requesting access
-    /// * `requesting_key_name` - Optional name for the key
-    /// * `requested_permission` - Optional permission level requested
+    /// * `requesting_key` - Optional public key requesting access (UNVERIFIED!)
+    /// * `requesting_key_name` - Optional name/identifier for the key (UNVERIFIED!)
+    /// * `requested_permission` - Optional permission level requested (if None, auto-detects from auth settings)
     ///
     /// # Returns
-    /// - `BootstrapResponse`: Contains entries and approval status
+    /// - `BootstrapResponse`: Contains entries and approval status (key_approved, granted_permission)
     /// - `BootstrapPending`: Manual approval required (request queued)
-    /// - `Error`: Tree not found or processing failure
+    /// - `Error`: Tree not found, auth required, key not authorized, or processing failure
     async fn handle_bootstrap_request(
         &self,
         tree_id: &crate::entry::ID,
@@ -668,82 +724,124 @@ impl SyncHandlerImpl {
         }
 
         // Handle key approval for bootstrap requests FIRST
-        let (key_approved, granted_permission) = if let (
-            Some(key),
-            Some(key_name),
-            Some(permission),
-        ) =
-            (requesting_key, requesting_key_name, requested_permission)
-        {
-            info!(
-                tree_id = %tree_id,
-                requesting_key = %key,
-                key_name = %key_name,
-                requested_permission = ?permission,
-                "Processing key approval request for bootstrap"
-            );
+        let (key_approved, granted_permission) = match (
+            requesting_key,
+            requesting_key_name,
+            requested_permission,
+        ) {
+            // Case 1: All three parameters provided - explicit permission request
+            (Some(key), Some(key_name), Some(permission)) => {
+                info!(
+                    tree_id = %tree_id,
+                    requesting_key = %key,
+                    key_name = %key_name,
+                    requested_permission = ?permission,
+                    "Processing key approval request for bootstrap"
+                );
 
-            // Check if the requesting key already has sufficient permissions through existing auth
-            match self
-                .check_existing_auth_permission(tree_id, key, &permission)
-                .await
-            {
-                Ok(true) => {
-                    // Key already has sufficient permission - approve without adding
-                    info!(
-                        tree_id = %tree_id,
-                        key = %key,
-                        permission = ?permission,
-                        "Bootstrap approved via existing auth permission - no key added"
-                    );
-                    (true, Some(permission))
-                }
-                Ok(false) => {
-                    // No existing permission, store request for manual approval
-                    info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
+                // Check if the requesting key already has sufficient permissions through existing auth
+                match self
+                    .check_existing_auth_permission(tree_id, key, &permission)
+                    .await
+                {
+                    Ok(true) => {
+                        // Key already has sufficient permission - approve without adding
+                        info!(
+                            tree_id = %tree_id,
+                            key = %key,
+                            permission = ?permission,
+                            "Bootstrap approved via existing auth permission - no key added"
+                        );
+                        (true, Some(permission))
+                    }
+                    Ok(false) => {
+                        // No existing permission, store request for manual approval
+                        info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
 
-                    // Store the bootstrap request in sync database for manual approval
-                    match self
-                        .store_bootstrap_request(tree_id, key, key_name, &permission)
-                        .await
-                    {
-                        Ok(request_id) => {
-                            info!(
-                                tree_id = %tree_id,
-                                request_id = %request_id,
-                                "Bootstrap request stored for manual approval"
-                            );
-                            return SyncResponse::BootstrapPending {
-                                request_id,
-                                message: "Bootstrap request pending manual approval".to_string(),
-                            };
-                        }
-                        Err(e) => {
-                            error!(
-                                tree_id = %tree_id,
-                                error = %e,
-                                "Failed to store bootstrap request"
-                            );
-                            return SyncResponse::Error(format!(
-                                "Failed to store bootstrap request: {e}"
-                            ));
+                        // Store the bootstrap request in sync database for manual approval
+                        match self
+                            .store_bootstrap_request(tree_id, key, key_name, &permission)
+                            .await
+                        {
+                            Ok(request_id) => {
+                                info!(
+                                    tree_id = %tree_id,
+                                    request_id = %request_id,
+                                    "Bootstrap request stored for manual approval"
+                                );
+                                return SyncResponse::BootstrapPending {
+                                    request_id,
+                                    message: "Bootstrap request pending manual approval"
+                                        .to_string(),
+                                };
+                            }
+                            Err(e) => {
+                                error!(
+                                    tree_id = %tree_id,
+                                    error = %e,
+                                    "Failed to store bootstrap request"
+                                );
+                                return SyncResponse::Error(format!(
+                                    "Failed to store bootstrap request: {e}"
+                                ));
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    error!(tree_id = %tree_id, error = %e, "Failed to check global permission for bootstrap");
-                    return SyncResponse::Error(format!("Global permission check failed: {e}"));
+                    Err(e) => {
+                        error!(tree_id = %tree_id, error = %e, "Failed to check global permission for bootstrap");
+                        return SyncResponse::Error(format!("Global permission check failed: {e}"));
+                    }
                 }
             }
-        } else {
-            // FIXME: Security gap - if auth is configured and requesting_key is provided
-            // but requested_permission is None, we allow bootstrap without checking
-            // if the requesting_key is authorized. This means an unauthorized key can
-            // bootstrap the database if they omit the requested_permission field.
-            // Should either: (1) reject if auth_configured && requesting_key.is_some() && requested_permission.is_none()
-            // or (2) check if requesting_key already has permissions before proceeding
-            // No key approval requested
-            (false, None)
+
+            // Case 2: Key provided but permission not specified - auto-detect from auth settings
+            (Some(key), Some(_key_name), None) => {
+                info!(
+                    tree_id = %tree_id,
+                    requesting_key = %key,
+                    "Auto-detecting permission from auth settings for bootstrap request"
+                );
+
+                match self.get_key_highest_permission(tree_id, key).await {
+                    Ok(Some(permission)) => {
+                        info!(
+                            tree_id = %tree_id,
+                            requesting_key = %key,
+                            detected_permission = ?permission,
+                            "Approved bootstrap using auto-detected permission from auth settings"
+                        );
+                        (true, Some(permission))
+                    }
+                    Ok(None) => {
+                        warn!(
+                            tree_id = %tree_id,
+                            requesting_key = %key,
+                            "Key not found in auth settings - rejecting bootstrap request"
+                        );
+                        return SyncResponse::Error(
+                            "Authentication required: provided key is not authorized for this database".to_string()
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            tree_id = %tree_id,
+                            requesting_key = %key,
+                            error = %e,
+                            "Failed to lookup key permissions"
+                        );
+                        return SyncResponse::Error(format!("Failed to access auth settings: {e}"));
+                    }
+                }
+            }
+
+            // Case 3: No key provided, or key provided without key_name - unauthenticated access
+            _ => {
+                debug!(
+                    tree_id = %tree_id,
+                    "No authentication credentials provided - proceeding with unauthenticated bootstrap"
+                );
+                (false, None)
+            }
         };
 
         // NOW collect all entries after key approval (so we get the updated database state)

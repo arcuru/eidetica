@@ -66,6 +66,23 @@ pub struct SyncTreeRequest {
     pub our_tips: Vec<ID>,
     /// Device public key of the requesting peer (used for automatic tree/peer relationship tracking)
     pub peer_pubkey: Option<String>,
+    // FIXME: SECURITY VULNERABILITY - requesting_key is not cryptographically verified
+    //
+    // The requesting_key is an unverified string sent by the client and used to check database
+    // auth permissions. There is NO verification that the peer actually controls this key.
+    //
+    // Attack scenario:
+    // 1. Malicious peer completes handshake with their device key (peer_pubkey)
+    // 2. Peer sends bootstrap request with requesting_key set to an authorized key they don't own
+    // 3. Server grants database access based on unverified requesting_key
+    // 4. They have effectively achieved Read access to the database
+    //
+    // To fix:
+    // - Pass RequestContext (containing verified peer_pubkey) to handle_bootstrap_request
+    // - Require requesting_key == peer_pubkey, OR
+    // - Require client to sign a challenge with the requesting_key to prove ownership
+    //
+    // This vulnerability affects both explicit permission requests and auto-detection.
     /// Authentication key requesting access (for bootstrap)
     pub requesting_key: Option<String>,
     /// Key name/identifier for the requesting key

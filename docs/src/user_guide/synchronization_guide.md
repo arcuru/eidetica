@@ -471,12 +471,19 @@ println!("Authentication keys configured for sync operations");
 
 When joining a new database, the authenticated bootstrap protocol handles permission requests:
 
-1. **Client Request**: Device requests access with its public key and desired permission level
-2. **Policy Check**: Server evaluates bootstrap auto-approval policy (secure by default)
-3. **Conditional Approval**: Key approved only if policy explicitly allows
-4. **Key Addition**: Server adds the requesting key to the database's authentication settings
-5. **Database Transfer**: Complete database state transferred to the client
-6. **Access Granted**: Client can immediately make authenticated operations
+1. **Client Request**: Device requests access with its public key and optionally a desired permission level
+2. **Permission Resolution**:
+   - If permission level specified → Check against database auth settings
+   - If permission level not specified → Auto-detect from database auth settings
+     - Key found in auth settings → Use highest permission granted to that key
+     - Key not found → Reject with authentication error
+3. **Policy Check**: Server evaluates bootstrap auto-approval policy (secure by default)
+4. **Conditional Approval**: Key approved only if policy explicitly allows
+5. **Key Addition**: For explicit permission requests, server adds the requesting key to the database's authentication settings
+6. **Database Transfer**: Complete database state transferred to the client
+7. **Access Granted**: Client can immediately make authenticated operations
+
+**Permission Auto-Detection**: When a key requests bootstrap without specifying a permission level, the server automatically looks up what permissions that key has in the database's auth settings. This includes both direct key permissions and global wildcard (`*`) permissions. The highest available permission is granted.
 
 <!-- Code block ignored: Complex authentication flow requiring global permissions setup -->
 
