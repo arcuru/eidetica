@@ -6,18 +6,21 @@
 changelog_config = ".config/cliff.toml"
 
 # Customize the pull request
-pr_name = "chore: release {{ package }} v{{ version }}"
+pr_name = "chore: release{% if package and version %} {{ package }} v{{ version }}{% endif %}"
 pr_body = """
-## Release {{ package }} v{{ version }}
+{% for release in releases -%}
+## Release {{ release.package }} v{{ release.next_version }}
 
 This PR prepares the next release. The changelog has been automatically generated from commit messages.
 
 **Before merging:**
-- Review the version bump (currently: {{ version }})
+- Review the version bump ({{ release.previous_version }} → {{ release.next_version }})
+- Review semver compatibility: {{ release.semver_check }}
 - Edit `CHANGELOG.md` to add any custom commentary, context, or highlights
 - Ensure all changes are documented appropriately
 
 After merging, the package will be automatically published to crates.io and a GitHub release will be created.
+{% endfor -%}
 """
 
 # Add labels to release PRs for easier filtering
