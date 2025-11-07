@@ -3,14 +3,14 @@ members = ["crates/lib", "crates/bin", "examples/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Patrick Jackson <patrick@jackson.dev>"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/arcuru/eidetica"
 homepage = "https://eidetica.dev"
 readme = "README.md"
-description = "Remember everything."
+description = "Decentralized DB. Remember Everything. Everywhere. All At Once."
 
 [workspace.metadata.crane]
 name = "eidetica"
