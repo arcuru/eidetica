@@ -1,9 +1,8 @@
 name: Renovate
 on:
-  # Run on a schedule
   schedule:
-    # Run every Monday at 1am UTC
-    - cron: "0 1 * * 1"
+    # Run daily at 1am UTC
+    - cron: "0 1 * * *"
   # Allow manual triggers
   workflow_dispatch:
     inputs:
