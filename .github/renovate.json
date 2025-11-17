@@ -37,6 +37,13 @@
       "matchManagers": ["cargo"],
       "matchFileNames": ["Cargo.toml"],
       "groupName": "Cargo workspace dependencies"
+    },
+    {
+      "description": "Pin actions/checkout to v4 for Forgejo compatibility",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["actions/checkout"],
+      "matchFileNames": [".forgejo/workflows/**"],
+      "allowedVersions": "<5.0.0"
     }
   ],
   "cargo": {
