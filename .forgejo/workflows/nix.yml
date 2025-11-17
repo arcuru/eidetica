@@ -78,7 +78,7 @@ jobs:
           nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Build all packages with nix-fast-build
       # Attic and Cachix integration are optional via auth token secrets
