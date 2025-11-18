@@ -30,8 +30,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-stable-
             ${{ runner.os }}-cargo-
 
       - name: Format
@@ -56,15 +57,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-stable-
             ${{ runner.os }}-cargo-
 
       - name: Build
         run: cargo build --workspace --all-targets --all-features
 
   test:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -80,8 +81,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-stable-
             ${{ runner.os }}-cargo-
 
       - name: Install mdbook

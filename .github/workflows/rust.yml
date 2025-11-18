@@ -12,7 +12,11 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Multi-platform on main branch pushes, Linux-only on PRs for cost optimization
+        os: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -30,7 +34,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Multi-platform on main branch pushes, Linux-only on PRs for cost optimization
+        os: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -43,8 +51,11 @@ jobs:
         run: cargo build --workspace --all-targets --all-features
 
   test:
-    needs: build
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Multi-platform on main branch pushes, Linux-only on PRs for cost optimization
+        os: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
