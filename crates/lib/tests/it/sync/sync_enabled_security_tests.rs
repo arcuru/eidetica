@@ -80,8 +80,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Tree not found") || error_msg.contains("not found"),
-        "Error should indicate tree not found (hiding sync-disabled status): {}",
-        error_msg
+        "Error should indicate tree not found (hiding sync-disabled status): {error_msg}"
     );
 
     // Verify database was NOT synced to client
@@ -238,14 +237,12 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         eidetica::sync::protocol::SyncResponse::Error(msg) => {
             assert!(
                 msg.contains("Tree not found") || msg.contains("not found"),
-                "Error should indicate tree not found: {}",
-                msg
+                "Error should indicate tree not found: {msg}"
             );
         }
-        other => panic!(
-            "Expected Error response for incremental sync when disabled, got: {:?}",
-            other
-        ),
+        other => {
+            panic!("Expected Error response for incremental sync when disabled, got: {other:?}")
+        }
     }
 
     // Clean up

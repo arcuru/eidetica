@@ -71,7 +71,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     let server_pubkey = server_instance
         .get_formatted_public_key(SERVER_KEY_NAME)
         .expect("Failed to get server public key");
-    println!("📍 Server public key: {}", server_pubkey);
+    println!("📍 Server public key: {server_pubkey}");
 
     // Create a database (like creating a chat room)
     let mut settings = Doc::new();
@@ -106,7 +106,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .expect("Failed to create server database");
 
     let room_id = server_database.root_id().clone();
-    println!("🏠 Created room with ID: {}", room_id);
+    println!("🏠 Created room with ID: {room_id}");
 
     // Enable sync for this database
     let server_sync = server_instance.sync().expect("Server should have sync");
@@ -144,7 +144,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             .get_server_address_async()
             .await
             .expect("Failed to get server address");
-        println!("🌐 Server listening at: {}", addr);
+        println!("🌐 Server listening at: {addr}");
         addr
     };
 
@@ -163,7 +163,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     let client_pubkey = client_instance
         .get_formatted_public_key(CLIENT_KEY_NAME)
         .expect("Failed to get client public key");
-    println!("📍 Client public key: {}", client_pubkey);
+    println!("📍 Client public key: {client_pubkey}");
 
     // Verify client doesn't have the database initially
     assert!(
@@ -191,8 +191,8 @@ async fn test_chat_app_authenticated_bootstrap() {
         match bootstrap_result {
             Ok(_) => println!("✅ Bootstrap completed successfully"),
             Err(e) => {
-                println!("❌ Bootstrap failed: {:?}", e);
-                panic!("Bootstrap should succeed but failed: {:?}", e);
+                println!("❌ Bootstrap failed: {e:?}");
+                panic!("Bootstrap should succeed but failed: {e:?}");
             }
         }
     } // Drop guard here
@@ -205,13 +205,13 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Debug: Check tips before loading
     if let Ok(tips) = client_instance.backend().get_tips(&room_id) {
-        println!("🔍 Client tips before loading database: {:?}", tips);
+        println!("🔍 Client tips before loading database: {tips:?}");
 
         // Check each tip to see what settings it has and their parents
         for tip_id in &tips {
             if let Ok(entry) = client_instance.backend().get(tip_id) {
                 let parents = entry.parents().unwrap_or_default();
-                println!("🔍 Tip {} has parents: {:?}", tip_id, parents);
+                println!("🔍 Tip {tip_id} has parents: {parents:?}");
                 println!(
                     "🔍 Tip {} has settings data: {}",
                     tip_id,
@@ -220,9 +220,9 @@ async fn test_chat_app_authenticated_bootstrap() {
                 if let Ok(settings_data) = entry.data("_settings") {
                     // Check if auth section exists
                     if settings_data.contains("\"auth\"") {
-                        println!("✅ Tip {} contains auth section", tip_id);
+                        println!("✅ Tip {tip_id} contains auth section");
                     } else {
-                        println!("❌ Tip {} missing auth section", tip_id);
+                        println!("❌ Tip {tip_id} missing auth section");
                     }
                 }
             }
@@ -244,7 +244,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .backend()
         .get_store_tips(&room_id, "_settings")
     {
-        println!("🔍 Client _settings subtree tips: {:?}", settings_tips);
+        println!("🔍 Client _settings subtree tips: {settings_tips:?}");
 
         for tip_id in &settings_tips {
             if let Ok(entry) = client_instance.backend().get(tip_id)
@@ -277,7 +277,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             db
         }
         Err(e) => {
-            println!("❌ Client failed to load database: {:?}", e);
+            println!("❌ Client failed to load database: {e:?}");
             panic!("Client should be able to load database after bootstrap");
         }
     };
@@ -291,7 +291,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
         // Debug: Print the entire settings
         if let Ok(all_settings) = settings.get_all() {
-            println!("🔍 Database settings: {:?}", all_settings);
+            println!("🔍 Database settings: {all_settings:?}");
         }
 
         // Check if global permissions are configured
@@ -321,7 +321,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             // Without global permissions, check that the client key was added
             match settings.get("auth") {
                 Ok(value) => {
-                    println!("✅ Auth value found - type: {:?}", value);
+                    println!("✅ Auth value found - type: {value:?}");
 
                     // The auth section exists but keys might be stored as JSON strings
                     if let Value::Doc(auth_node) = value {
@@ -329,7 +329,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
                         // Try to get the key entry - it might be JSON string
                         if let Some(key_value) = auth_node.get(CLIENT_KEY_NAME) {
-                            println!("🔍 Key value type: {:?}", key_value);
+                            println!("🔍 Key value type: {key_value:?}");
 
                             // If it's a JSON string, parse it
                             if let Value::Text(json_str) = key_value {
@@ -337,7 +337,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                                     .expect("Failed to parse key JSON");
                                 let stored_pubkey =
                                     key_info["pubkey"].as_str().expect("Missing pubkey in JSON");
-                                println!("✅ Client key found with pubkey: {}", stored_pubkey);
+                                println!("✅ Client key found with pubkey: {stored_pubkey}");
                                 assert_eq!(
                                     stored_pubkey, client_pubkey,
                                     "Stored pubkey should match client's pubkey"
@@ -345,7 +345,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                             } else if let Value::Doc(key_node) = key_value {
                                 // It's a proper doc
                                 if let Some(stored_pubkey) = key_node.get_as::<String>("pubkey") {
-                                    println!("✅ Client key found with pubkey: {}", stored_pubkey);
+                                    println!("✅ Client key found with pubkey: {stored_pubkey}");
                                     assert_eq!(
                                         stored_pubkey, client_pubkey,
                                         "Stored pubkey should match client's pubkey"
@@ -354,17 +354,17 @@ async fn test_chat_app_authenticated_bootstrap() {
                                     panic!("Client key exists but missing pubkey field");
                                 }
                             } else {
-                                panic!("Key value is neither JSON string nor Doc: {:?}", key_value);
+                                panic!("Key value is neither JSON string nor Doc: {key_value:?}");
                             }
                         } else {
                             panic!("Client key NOT found in auth Doc");
                         }
                     } else {
-                        panic!("Auth section is not a Doc: {:?}", value);
+                        panic!("Auth section is not a Doc: {value:?}");
                     }
                 }
                 Err(e) => {
-                    panic!("No auth section in database settings: {:?}", e);
+                    panic!("No auth section in database settings: {e:?}");
                 }
             }
         }
@@ -400,7 +400,7 @@ async fn test_chat_app_authenticated_bootstrap() {
                 op
             }
             Err(e) => {
-                println!("❌ Client failed to create transaction: {:?}", e);
+                println!("❌ Client failed to create transaction: {e:?}");
                 panic!("Client should be able to create transactions after bootstrap");
             }
         };
@@ -418,7 +418,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         match store.insert(msg.clone()) {
             Ok(_) => println!("✅ Client successfully inserted message"),
             Err(e) => {
-                println!("❌ Client failed to insert message: {:?}", e);
+                println!("❌ Client failed to insert message: {e:?}");
                 panic!("Client should be able to insert messages");
             }
         }
@@ -426,7 +426,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         match op.commit() {
             Ok(_) => println!("✅ Client successfully committed transaction"),
             Err(e) => {
-                println!("❌ Client failed to commit transaction: {:?}", e);
+                println!("❌ Client failed to commit transaction: {e:?}");
                 panic!("Client should be able to commit transactions with global permissions");
             }
         }
@@ -570,7 +570,7 @@ async fn test_global_key_bootstrap() {
         .expect("Failed to create server database");
 
     let room_id = server_database.root_id().clone();
-    println!("🏠 Created public room with ID: {}", room_id);
+    println!("🏠 Created public room with ID: {room_id}");
 
     // Enable sync for this database
     let server_sync = server_instance.sync().expect("Server should have sync");
@@ -695,7 +695,7 @@ async fn test_multiple_databases_sync() {
     let mut room_ids = Vec::new();
     for i in 1..=3 {
         let mut settings = Doc::new();
-        settings.set_string("name", format!("Room {}", i));
+        settings.set_string("name", format!("Room {i}"));
 
         // Set up auth configuration with global wildcard permission
         let mut auth_doc = Doc::new();
@@ -802,7 +802,7 @@ async fn test_multiple_databases_sync() {
             .get_string("name")
             .expect("Failed to get room name");
         assert_eq!(name, format!("Room {}", i + 1));
-        println!("✅ Successfully loaded {}", name);
+        println!("✅ Successfully loaded {name}");
     }
 
     println!("\n✅ TEST COMPLETED: Multiple databases sync works!");

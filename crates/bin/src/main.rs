@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚════════════════════════════════════════════════════════════════╝");
     println!();
     println!("🌐 Web Interface: http://localhost:{}", local_addr.port());
-    println!("🔗 Iroh Node ID:  {}", iroh_address);
+    println!("🔗 Iroh Node ID:  {iroh_address}");
     println!();
     println!("Available endpoints:");
     println!("  GET  /             - Redirect to login or dashboard");
@@ -305,7 +305,7 @@ async fn handle_login_submit(
         }
         Err(e) => {
             // Show error on login page
-            let error_msg = format!("Login failed: {}", e);
+            let error_msg = format!("Login failed: {e}");
             Html(templates::login_page(Some(&error_msg))).into_response()
         }
     }
@@ -396,7 +396,7 @@ async fn handle_register_submit(
             }
         }
         Err(e) => {
-            let error_msg = format!("Registration failed: {}", e);
+            let error_msg = format!("Registration failed: {e}");
             Html(templates::register_page(Some(&error_msg))).into_response()
         }
     }
@@ -476,7 +476,7 @@ async fn handle_database_detail(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get database preferences: {}", e),
+                format!("Failed to get database preferences: {e}"),
             )
                 .into_response();
         }
@@ -488,7 +488,7 @@ async fn handle_database_detail(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open database: {}", e),
+                format!("Failed to open database: {e}"),
             )
                 .into_response();
         }
@@ -533,7 +533,7 @@ async fn handle_track_database(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("Invalid database ID: {:?}", e),
+                format!("Invalid database ID: {e:?}"),
             )
                 .into_response();
         }
@@ -545,7 +545,7 @@ async fn handle_track_database(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get default key: {}", e),
+                format!("Failed to get default key: {e}"),
             )
                 .into_response();
         }
@@ -627,7 +627,7 @@ async fn handle_track_database(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to request database access: {}", e),
+            format!("Failed to request database access: {e}"),
         )
             .into_response(),
     }
@@ -668,8 +668,7 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
     // Count active sessions
     let session_count = state.sessions.session_count().await;
     html.push_str(&format!(
-        r#"<div class="stat"><span class="label">Active Sessions:</span> <span class="value">{}</span></div>"#,
-        session_count
+        r#"<div class="stat"><span class="label">Active Sessions:</span> <span class="value">{session_count}</span></div>"#
     ));
 
     // Count databases
@@ -679,8 +678,7 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
         .map(|dbs| dbs.len())
         .unwrap_or(0);
     html.push_str(&format!(
-        r#"<div class="stat"><span class="label">Total Databases:</span> <span class="value">{}</span></div>"#,
-        database_count
+        r#"<div class="stat"><span class="label">Total Databases:</span> <span class="value">{database_count}</span></div>"#
     ));
 
     // List databases
@@ -697,8 +695,7 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
                 .unwrap_or(0);
 
             html.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>\n",
-                name, root_id, entry_count
+                "<tr><td>{name}</td><td>{root_id}</td><td>{entry_count}</td></tr>\n"
             ));
         }
 

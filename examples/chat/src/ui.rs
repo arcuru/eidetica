@@ -35,7 +35,7 @@ fn render_chat(f: &mut ratatui::Frame, app: &App) {
         .unwrap_or_else(|| "Unknown Room".to_string());
 
     let address_text = if let Some(addr) = &app.current_room_address {
-        format!("{} | Share this room: {}", room_name, addr)
+        format!("{room_name} | Share this room: {addr}")
     } else {
         room_name
     };
@@ -75,7 +75,7 @@ fn render_chat(f: &mut ratatui::Frame, app: &App) {
             let timestamp = m.timestamp.format("%H:%M:%S");
             let content = Line::from(vec![
                 Span::styled(
-                    format!("[{}] ", timestamp),
+                    format!("[{timestamp}] "),
                     Style::default().fg(Color::Yellow),
                 ),
                 Span::styled(

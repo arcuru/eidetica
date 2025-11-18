@@ -68,7 +68,7 @@ pub fn add_user_key(user: &mut User, display_name: Option<&str>) -> String {
 /// Add multiple keys to a user
 pub fn add_multiple_keys(user: &mut User, count: usize) -> Vec<String> {
     (0..count)
-        .map(|i| add_user_key(user, Some(&format!("key_{}", i))))
+        .map(|i| add_user_key(user, Some(&format!("key_{i}"))))
         .collect()
 }
 
@@ -196,8 +196,7 @@ pub fn assert_user_lacks_key(user: &User, key_id: &str) {
     let result = user.get_signing_key(key_id);
     assert!(
         result.is_err(),
-        "User should NOT have key {}, but found it",
-        key_id
+        "User should NOT have key {key_id}, but found it"
     );
 }
 
@@ -206,8 +205,7 @@ pub fn assert_database_name(database: &Database, expected_name: &str) {
     let actual_name = database.get_name().expect("Failed to get database name");
     assert_eq!(
         actual_name, expected_name,
-        "Expected database name '{}', found '{}'",
-        expected_name, actual_name
+        "Expected database name '{expected_name}', found '{actual_name}'"
     );
 }
 
@@ -233,8 +231,7 @@ pub fn assert_user_can_access_database(user: &User, database_id: &eidetica::entr
         .expect("Failed to find key for database");
     assert!(
         key.is_some(),
-        "User should have a key for database {}",
-        database_id
+        "User should have a key for database {database_id}"
     );
 }
 
@@ -328,7 +325,7 @@ pub fn test_concurrent_database_creation(
     let mut all_databases = Vec::new();
 
     for i in 0..user_count {
-        let username = format!("user_{}", i);
+        let username = format!("user_{i}");
         instance
             .create_user(&username, None)
             .expect("Failed to create user");
@@ -336,7 +333,7 @@ pub fn test_concurrent_database_creation(
 
         let mut user_databases = Vec::new();
         for j in 0..databases_per_user {
-            let db_name = format!("user{}_db{}", i, j);
+            let db_name = format!("user{i}_db{j}");
             let db = create_named_database(&mut user, &db_name);
             user_databases.push(db);
         }

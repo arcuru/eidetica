@@ -10,7 +10,7 @@ pub fn handle_key_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
             // Clear status message when sending a message
             app.clear_status_message();
             if let Err(e) = app.send_message() {
-                eprintln!("Error sending message: {}", e);
+                eprintln!("Error sending message: {e}");
             }
         }
         KeyCode::Char(c) => {

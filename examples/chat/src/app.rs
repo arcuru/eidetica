@@ -90,7 +90,7 @@ impl App {
 
         // Set a status message with the room address for sharing
         if let Some(addr) = &self.current_room_address {
-            self.status_message = Some(format!("Room created! Share this address: {}", addr));
+            self.status_message = Some(format!("Room created! Share this address: {addr}"));
         }
 
         Ok(())
@@ -108,7 +108,7 @@ impl App {
         let room_id = database.root_id().to_string();
         let room_address = if let Some(addr) = &self.server_address {
             // For HTTP, addr is a simple HTTP URL
-            format!("{}@{}", room_id, addr)
+            format!("{room_id}@{addr}")
         } else {
             room_id.clone()
         };
@@ -226,11 +226,8 @@ impl App {
 
                 // Use the User's request_database_access method
                 let key_id = self.user.get_default_key()?;
-                println!(
-                    "DEBUG: Calling request_database_access for room {}",
-                    room_id
-                );
-                println!("DEBUG: Using key_id: {}", key_id);
+                println!("DEBUG: Calling request_database_access for room {room_id}");
+                println!("DEBUG: Using key_id: {key_id}");
 
                 let result = self
                     .user
@@ -243,7 +240,7 @@ impl App {
                     )
                     .await;
 
-                println!("DEBUG: request_database_access result: {:?}", result);
+                println!("DEBUG: request_database_access result: {result:?}");
 
                 match &result {
                     Ok(_) => {
@@ -256,7 +253,7 @@ impl App {
                                 info!(" ✓ Root entry confirmed in backend");
                             }
                             Err(e) => {
-                                println!("DEBUG: ✗ Root entry NOT in backend after sync: {:?}", e);
+                                println!("DEBUG: ✗ Root entry NOT in backend after sync: {e:?}");
                                 error!(" ✗ Root entry NOT in backend after sync: {:?}", e);
                             }
                         }
@@ -283,13 +280,13 @@ impl App {
                                 info!(" ✓ Database registered with User's key manager");
                             }
                             Err(e) => {
-                                println!("DEBUG: ✗ Failed to register database: {:?}", e);
+                                println!("DEBUG: ✗ Failed to register database: {e:?}");
                                 error!(" Failed to register database with User: {:?}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        println!("DEBUG: ✗ Bootstrap sync call failed: {:?}", e);
+                        println!("DEBUG: ✗ Bootstrap sync call failed: {e:?}");
                         error!(" Bootstrap sync failed: {:?}", e);
                     }
                 }
@@ -318,7 +315,7 @@ impl App {
         if connection_success {
             // Try to load the room (no retry loop - don't block UI)
             debug!(" Attempting to load synced room...");
-            println!("DEBUG: Attempting to load database {}", room_id_obj);
+            println!("DEBUG: Attempting to load database {room_id_obj}");
 
             match self.user.open_database(&room_id_obj) {
                 Ok(database) => {
@@ -331,7 +328,7 @@ impl App {
                     return Ok(());
                 }
                 Err(e) => {
-                    println!("DEBUG: ✗ Failed to load database: {:?}", e);
+                    println!("DEBUG: ✗ Failed to load database: {e:?}");
                 }
             }
 
@@ -339,7 +336,7 @@ impl App {
             // The room will sync in the background and messages will appear when ready
             warn!(" Database not yet available, creating placeholder (syncing in background)");
             let mut settings = Doc::new();
-            settings.set_string("name", format!("Room {} (Syncing...)", room_id));
+            settings.set_string("name", format!("Room {room_id} (Syncing...)"));
             let key_id = self.user.get_default_key()?;
             let database = self.user.create_database(settings, &key_id)?;
             info!(" Created placeholder room");

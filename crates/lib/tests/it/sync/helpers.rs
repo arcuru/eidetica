@@ -431,7 +431,7 @@ pub async fn create_pending_bootstrap_request(
 
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     }
 }
 
@@ -455,7 +455,7 @@ pub fn create_test_tree_entry() -> Entry {
 pub fn assert_bootstrap_pending(response: &SyncResponse) -> &str {
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     }
 }
 
@@ -567,11 +567,11 @@ pub fn setup_server_with_bootstrap_database(
 /// Returns (Instance, User, key_id: String)
 pub fn setup_indexed_client(index: usize) -> (Instance, User, String) {
     let client_instance = setup_instance_with_initialized();
-    let client_username = format!("client_user_{}", index);
+    let client_username = format!("client_user_{index}");
     client_instance.create_user(&client_username, None).unwrap();
     let mut client_user = client_instance.login_user(&client_username, None).unwrap();
 
-    let client_key_display_name = format!("client_key_{}", index);
+    let client_key_display_name = format!("client_key_{index}");
     let client_key_id = client_user
         .add_private_key(Some(&client_key_display_name))
         .unwrap();

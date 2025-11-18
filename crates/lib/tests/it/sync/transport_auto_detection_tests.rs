@@ -50,13 +50,10 @@ async fn test_bootstrap_pending_error_structure() {
                 !message.is_empty(),
                 "message should contain information about the pending request"
             );
-            println!(
-                "✅ BootstrapPending response contains request_id: {}",
-                request_id
-            );
-            println!("✅ BootstrapPending response contains message: {}", message);
+            println!("✅ BootstrapPending response contains request_id: {request_id}");
+            println!("✅ BootstrapPending response contains message: {message}");
         }
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     }
 
     // Verify the request was stored in the sync database
@@ -110,16 +107,13 @@ async fn test_bootstrap_pending_error_propagation() {
 
     match result {
         Err(e) => {
-            let err_str = format!("{:?}", e);
+            let err_str = format!("{e:?}");
             // Should contain BootstrapPending error
             if err_str.contains("BootstrapPending") || err_str.contains("pending") {
-                println!("✅ BootstrapPending error properly propagated: {}", e);
+                println!("✅ BootstrapPending error properly propagated: {e}");
             } else {
                 // If we don't get BootstrapPending, the error should at least not be a panic
-                println!(
-                    "⚠️  Got different error (acceptable if auth/sync handling changed): {}",
-                    e
-                );
+                println!("⚠️  Got different error (acceptable if auth/sync handling changed): {e}");
             }
         }
         Ok(_) => {
@@ -171,13 +165,9 @@ fn test_transport_auto_detection_logic() {
 
         assert_eq!(
             detected_type, expected_type,
-            "Address '{}' should be detected as {}",
-            addr, expected_type
+            "Address '{addr}' should be detected as {expected_type}"
         );
-        println!(
-            "✅ Address '{}' correctly detected as {}",
-            addr, expected_type
-        );
+        println!("✅ Address '{addr}' correctly detected as {expected_type}");
     }
 
     println!("✅ Transport auto-detection logic verified");
@@ -224,11 +214,11 @@ async fn test_iroh_transport_concurrent_access() {
             // or cause race conditions during concurrent initialization
             match result {
                 Ok(addr) => {
-                    println!("Task {}: Successfully got server address: {}", i, addr);
+                    println!("Task {i}: Successfully got server address: {addr}");
                     (i, true)
                 }
                 Err(e) => {
-                    println!("Task {}: Failed to get address: {}", i, e);
+                    println!("Task {i}: Failed to get address: {e}");
                     (i, false)
                 }
             }
@@ -242,7 +232,7 @@ async fn test_iroh_transport_concurrent_access() {
             Ok((i, success)) => {
                 results.push((i, success));
             }
-            Err(e) => panic!("Task panicked (race condition detected): {:?}", e),
+            Err(e) => panic!("Task panicked (race condition detected): {e:?}"),
         }
     }
 
@@ -290,8 +280,7 @@ async fn test_http_address_with_http_transport() {
             // NOT with "Unknown transport" or "Invalid transport"
             assert!(
                 !err_str.contains("Unknown transport"),
-                "Should not fail with transport detection error: {}",
-                err_str
+                "Should not fail with transport detection error: {err_str}"
             );
             println!("✅ HTTP address correctly detected (connection error as expected)");
         }
@@ -332,8 +321,7 @@ async fn test_iroh_address_detection() {
             // NOT with "Unknown transport"
             assert!(
                 !err_str.contains("Unknown transport"),
-                "Should not fail with transport detection error: {}",
-                err_str
+                "Should not fail with transport detection error: {err_str}"
             );
             println!("✅ Iroh JSON address correctly detected (connection error as expected)");
         }
@@ -401,7 +389,7 @@ async fn test_unauthenticated_sync_should_fail() {
     enable_sync_for_instance_database(&server_sync, &tree_id).unwrap();
 
     let server_addr = start_sync_server(&server_sync).await;
-    println!("✅ Server started at {}", server_addr);
+    println!("✅ Server started at {server_addr}");
 
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized();
@@ -455,11 +443,10 @@ async fn test_unauthenticated_sync_should_fail() {
                 err_str.contains("Authentication required")
                     || err_str.contains("Unauthorized")
                     || err_str.contains("Access denied"),
-                "Expected authentication error, got: {}",
-                e
+                "Expected authentication error, got: {e}"
             );
 
-            println!("✅ Server correctly rejected unauthenticated sync: {}", e);
+            println!("✅ Server correctly rejected unauthenticated sync: {e}");
         }
     }
 

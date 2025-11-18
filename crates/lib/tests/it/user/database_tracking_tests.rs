@@ -128,17 +128,17 @@ fn test_list_databases() -> eidetica::Result<()> {
         let alice_pubkey_str = format_public_key(&alice_pubkey);
 
         let mut db_settings = Doc::new();
-        db_settings.set_string("name", format!("db_{}", i));
+        db_settings.set_string("name", format!("db_{i}"));
 
         let mut auth_settings = AuthSettings::new();
         auth_settings.add_key(
-            format!("alice_{}", i),
+            format!("alice_{i}"),
             AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
         )?;
         auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
         db_settings.set_doc("auth", auth_settings.as_doc().clone());
 
-        let db = Database::create(db_settings, &instance, alice_key, format!("alice_{}", i))?;
+        let db = Database::create(db_settings, &instance, alice_key, format!("alice_{i}"))?;
 
         let prefs = DatabasePreferences {
             database_id: db.root_id().clone(),

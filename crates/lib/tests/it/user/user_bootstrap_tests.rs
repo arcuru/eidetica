@@ -133,7 +133,7 @@ async fn create_pending_request(
 
     match response {
         eidetica::sync::protocol::SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     }
 }
 
@@ -307,8 +307,7 @@ async fn test_user_approve_with_nonexistent_key() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Key not found") || error_msg.contains("not found"),
-        "Error should indicate key not found: {}",
-        error_msg
+        "Error should indicate key not found: {error_msg}"
     );
     println!("✅ Approval correctly fails with nonexistent key");
 }
@@ -335,8 +334,7 @@ async fn test_user_reject_with_nonexistent_key() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Key not found") || error_msg.contains("not found"),
-        "Error should indicate key not found: {}",
-        error_msg
+        "Error should indicate key not found: {error_msg}"
     );
     println!("✅ Rejection correctly fails with nonexistent key");
 }
@@ -356,8 +354,7 @@ async fn test_user_approve_nonexistent_request() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Request not found") || error_msg.contains("not found"),
-        "Error should indicate request not found: {}",
-        error_msg
+        "Error should indicate request not found: {error_msg}"
     );
     println!("✅ Approval correctly fails for non-existent request");
 }
@@ -377,8 +374,7 @@ async fn test_user_reject_nonexistent_request() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Request not found") || error_msg.contains("not found"),
-        "Error should indicate request not found: {}",
-        error_msg
+        "Error should indicate request not found: {error_msg}"
     );
     println!("✅ Rejection correctly fails for non-existent request");
 }
@@ -406,8 +402,7 @@ async fn test_user_cannot_approve_twice() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Invalid request state") || error_msg.contains("state"),
-        "Error should indicate invalid state: {}",
-        error_msg
+        "Error should indicate invalid state: {error_msg}"
     );
     println!("✅ Double approval correctly prevented");
 }
@@ -435,8 +430,7 @@ async fn test_user_cannot_reject_after_approval() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Invalid request state") || error_msg.contains("state"),
-        "Error should indicate invalid state: {}",
-        error_msg
+        "Error should indicate invalid state: {error_msg}"
     );
     println!("✅ Rejection after approval correctly prevented");
 }
@@ -748,8 +742,7 @@ async fn test_user_without_admin_cannot_modify() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Insufficient permission") || error_msg.contains("permission"),
-        "Error should indicate insufficient permission: {}",
-        error_msg
+        "Error should indicate insufficient permission: {error_msg}"
     );
 
     println!("✅ User without Admin permission correctly cannot reject bootstrap requests");
@@ -765,8 +758,7 @@ async fn test_user_without_admin_cannot_modify() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("Insufficient permission") || error_msg.contains("permission"),
-        "Error should indicate insufficient permission: {}",
-        error_msg
+        "Error should indicate insufficient permission: {error_msg}"
     );
 
     println!("✅ User without Admin permission correctly cannot approve bootstrap requests");

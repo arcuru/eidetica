@@ -89,8 +89,8 @@ async fn main() -> Result<()> {
     if let Some(room_address) = args.room_address {
         // Connect to existing room
         println!("🔗 Connecting to room...");
-        println!("📍 Room Address: {}", room_address);
-        println!("👤 Username: {}", username);
+        println!("📍 Room Address: {room_address}");
+        println!("👤 Username: {username}");
         println!();
 
         app.connect_to_room(&room_address).await?;
@@ -109,8 +109,8 @@ async fn main() -> Result<()> {
         if let Some(addr) = &app.current_room_address {
             println!("🚀 Eidetica Chat Room Created!");
             println!();
-            println!("📍 Room Address: {}", addr);
-            println!("👤 Username: {}", username);
+            println!("📍 Room Address: {addr}");
+            println!("👤 Username: {username}");
             println!();
             println!("Share this address with others to invite them to the chat.");
             println!();
@@ -177,7 +177,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 _ = refresh_interval.tick() => {
                     // Periodically refresh messages from database
                     if let Err(e) = app.refresh_messages() {
-                        eprintln!("Error refreshing messages: {}", e);
+                        eprintln!("Error refreshing messages: {e}");
                     }
                 }
                 _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {

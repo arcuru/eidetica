@@ -90,10 +90,10 @@ fn test_multiple_commits_with_sync_enabled() {
             .get_store::<eidetica::store::DocStore>("data")
             .expect("Get store");
         let mut doc = Doc::new();
-        doc.set_string("message", format!("Message {}", i));
-        store.set(format!("key{}", i), doc).expect("Set doc");
+        doc.set_string("message", format!("Message {i}"));
+        store.set(format!("key{i}"), doc).expect("Set doc");
         tx.commit()
-            .unwrap_or_else(|_| panic!("Commit {} should succeed", i));
+            .unwrap_or_else(|_| panic!("Commit {i} should succeed"));
     }
 }
 

@@ -50,8 +50,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             // Verify client doesn't have the database initially
             assert!(
                 client_instance.load_database(&tree_id).is_err(),
-                "Client {} should not have the database initially",
-                i
+                "Client {i} should not have the database initially"
             );
 
             // Bootstrap from server
@@ -130,8 +129,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
             // Verify client doesn't have the database initially
             assert!(
                 client_user.open_database(&tree_id).is_err(),
-                "Client {} should not have the database initially",
-                i
+                "Client {i} should not have the database initially"
             );
 
             // Request database access with automatic key mapping

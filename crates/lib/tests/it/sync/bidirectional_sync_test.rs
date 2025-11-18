@@ -127,7 +127,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .expect("Failed to get server address")
     };
 
-    println!("🌐 Device 1 server started at: {}", device1_server_addr);
+    println!("🌐 Device 1 server started at: {device1_server_addr}");
 
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
@@ -159,7 +159,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .await
     };
 
-    println!("🔄 Bootstrap result: {:?}", bootstrap_result);
+    println!("🔄 Bootstrap result: {bootstrap_result:?}");
     assert!(bootstrap_result.is_ok(), "Bootstrap should succeed");
 
     // Wait for sync to complete
@@ -227,7 +227,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .sync_with_peer(&device1_server_addr, Some(&room_id))
             .await
     };
-    println!("🔄 Sync back result: {:?}", sync_back_result);
+    println!("🔄 Sync back result: {sync_back_result:?}");
     assert!(sync_back_result.is_ok(), "Sync back should succeed");
 
     // Wait for sync to complete
@@ -262,19 +262,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .expect("Failed to get backend")
         .get_tips(&room_id)
         .expect("Failed to get tips");
-    println!(
-        "🔍 Device 1 current tree tips before adding C: {:?}",
-        current_tips
-    );
+    println!("🔍 Device 1 current tree tips before adding C: {current_tips:?}");
     let current_subtree_tips = device1_database
         .backend()
         .expect("Failed to get backend")
         .get_store_tips(&room_id, "messages")
         .expect("Failed to get store tips");
-    println!(
-        "🔍 Device 1 current messages store tips before adding C: {:?}",
-        current_subtree_tips
-    );
+    println!("🔍 Device 1 current messages store tips before adding C: {current_subtree_tips:?}");
 
     // Debug: Show all entries in the tree to understand the DAG structure
     println!("🔍 All entries in Device 1's tree:");
@@ -298,7 +292,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         if subtrees.contains(&"messages".to_string())
             && let Ok(subtree_parents) = entry.subtree_parents("messages")
         {
-            println!("      └─ messages subtree parents: {:?}", subtree_parents);
+            println!("      └─ messages subtree parents: {subtree_parents:?}");
         }
     }
 
@@ -320,12 +314,12 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
                     Ok(())
                 }
                 Err(e) => {
-                    println!("❌ Error during commit: {:?}", e);
+                    println!("❌ Error during commit: {e:?}");
                     Err(e)
                 }
             },
             Err(e) => {
-                println!("❌ Error during insert: {:?}", e);
+                println!("❌ Error during insert: {e:?}");
                 Err(e)
             }
         }
@@ -357,19 +351,15 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             assert!(contents.contains(&"Hello again from Device 1 (Message C)"));
         }
         Err(e) => {
-            println!("🎯 ERROR STILL REPRODUCED: {:?}", e);
+            println!("🎯 ERROR STILL REPRODUCED: {e:?}");
             let error_str = e.to_string();
 
             if error_str.to_lowercase().contains("ancestor") {
                 panic!(
-                    "SYNC BUG: 'no common ancestor' error still occurs during bidirectional sync - this needs to be fixed: {}",
-                    e
+                    "SYNC BUG: 'no common ancestor' error still occurs during bidirectional sync - this needs to be fixed: {e}"
                 );
             } else {
-                panic!(
-                    "SYNC BUG: Unexpected error during bidirectional sync: {}",
-                    e
-                );
+                panic!("SYNC BUG: Unexpected error during bidirectional sync: {e}");
             }
         }
     }

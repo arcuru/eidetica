@@ -116,11 +116,11 @@ fn test_level_1_transaction_builds_entry_with_pubkey() {
             );
         }
         Err(e) => {
-            println!("❌ LEVEL 1 FAILED: {}", e);
-            println!("Expected pubkey: {}", expected_pubkey);
+            println!("❌ LEVEL 1 FAILED: {e}");
+            println!("Expected pubkey: {expected_pubkey}");
 
             // This will help us understand what went wrong
-            panic!("Level 1 test failed: {}", e);
+            panic!("Level 1 test failed: {e}");
         }
     }
 }

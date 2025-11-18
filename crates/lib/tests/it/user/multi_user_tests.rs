@@ -23,9 +23,9 @@ fn test_many_users_create_databases() {
     let mut databases = Vec::new();
 
     for i in 1..=user_count {
-        let username = format!("user{}", i);
+        let username = format!("user{i}");
         let mut user = login_user(&instance, &username, None);
-        let db = create_named_database(&mut user, &format!("Database {}", i));
+        let db = create_named_database(&mut user, &format!("Database {i}"));
         databases.push(db);
     }
 
@@ -35,9 +35,7 @@ fn test_many_users_create_databases() {
             assert_ne!(
                 databases[i].root_id(),
                 databases[j].root_id(),
-                "Databases {} and {} should have different IDs",
-                i,
-                j
+                "Databases {i} and {j} should have different IDs"
             );
         }
     }

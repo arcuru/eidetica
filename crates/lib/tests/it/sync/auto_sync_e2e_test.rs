@@ -41,8 +41,8 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     let peer1_pubkey = sync1.get_device_public_key()?;
     let peer2_pubkey = sync2.get_device_public_key()?;
 
-    println!("Instance 1 pubkey: {}", peer1_pubkey);
-    println!("Instance 2 pubkey: {}", peer2_pubkey);
+    println!("Instance 1 pubkey: {peer1_pubkey}");
+    println!("Instance 2 pubkey: {peer2_pubkey}");
 
     // Register peers with each other
     let server_address = Address::http(server_addr);
@@ -62,7 +62,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     let db1 = user1.create_database(db_settings, &key_id)?;
     let db_id = db1.root_id().clone();
 
-    println!("Created database with ID: {}", db_id);
+    println!("Created database with ID: {db_id}");
 
     // Configure sync settings for this database with sync_on_commit enabled
     // This automatically registers the user with sync and updates combined settings
@@ -94,7 +94,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     store.set("note1", note)?;
 
     let entry_id = tx.commit()?;
-    println!("Committed entry {} to instance1", entry_id);
+    println!("Committed entry {entry_id} to instance1");
 
     // Wait for sync to propagate
     println!("\n--- Waiting for sync to propagate ---");
@@ -116,10 +116,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
         "Synced entry ID should match original"
     );
 
-    println!(
-        "✅ SUCCESS! Entry {} automatically synced from instance1 to instance2",
-        entry_id
-    );
+    println!("✅ SUCCESS! Entry {entry_id} automatically synced from instance1 to instance2");
     println!("   - No manual hook registration required");
     println!("   - Triggered by Instance::enable_sync() callback");
     println!("   - Controlled by sync_on_commit=true setting");
@@ -223,7 +220,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     msg1.set_string("text", "Hello from instance1!");
     store1.set("alice_msg", msg1)?;
     let entry1_id = tx1.commit()?;
-    println!("Alice committed entry: {}", entry1_id);
+    println!("Alice committed entry: {entry1_id}");
 
     sleep(Duration::from_millis(400)).await;
 
@@ -235,7 +232,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     msg2.set_string("text", "Hello from instance2!");
     store2.set("bob_msg", msg2)?;
     let entry2_id = tx2.commit()?;
-    println!("Bob committed entry: {}", entry2_id);
+    println!("Bob committed entry: {entry2_id}");
 
     sleep(Duration::from_millis(400)).await;
 
@@ -335,7 +332,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     store.set("note1", note)?;
     let entry_id = tx.commit()?;
 
-    println!("Committed entry {} after enabling sync", entry_id);
+    println!("Committed entry {entry_id} after enabling sync");
 
     sleep(Duration::from_millis(300)).await;
 
@@ -447,7 +444,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     store.set("note2", note)?;
     let entry2_id = tx.commit()?;
 
-    println!("Committed entry {} after restart", entry2_id);
+    println!("Committed entry {entry2_id} after restart");
 
     sleep(Duration::from_millis(300)).await;
 

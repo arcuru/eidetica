@@ -39,7 +39,7 @@ async fn test_manual_approval_stores_pending_request() {
     let context = eidetica::sync::protocol::RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = assert_bootstrap_pending(&response);
-    println!("✅ Bootstrap request stored as pending: {}", request_id);
+    println!("✅ Bootstrap request stored as pending: {request_id}");
 
     // Verify the request was stored in sync database
     assert_request_stored(&sync, 1);
@@ -83,7 +83,7 @@ async fn test_auto_approve_still_works() {
             );
             println!("✅ Bootstrap request auto-approved successfully");
         }
-        other => panic!("Expected Bootstrap, got: {:?}", other),
+        other => panic!("Expected Bootstrap, got: {other:?}"),
     }
 
     // Should have no pending requests since it was auto-approved
@@ -129,7 +129,7 @@ async fn test_approve_bootstrap_request() {
         RequestStatus::Approved { approved_by, .. } => {
             assert_eq!(approved_by, "server_admin");
         }
-        other => panic!("Expected Approved status, got: {:?}", other),
+        other => panic!("Expected Approved status, got: {other:?}"),
     }
 
     // Verify the key was added to the target database
@@ -186,7 +186,7 @@ async fn test_reject_bootstrap_request() {
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
     // Verify request is pending
@@ -211,7 +211,7 @@ async fn test_reject_bootstrap_request() {
         RequestStatus::Rejected { rejected_by, .. } => {
             assert_eq!(rejected_by, "_device_key");
         }
-        other => panic!("Expected Rejected status, got: {:?}", other),
+        other => panic!("Expected Rejected status, got: {other:?}"),
     }
 
     // Verify the key was NOT added to the target database
@@ -264,7 +264,7 @@ async fn test_list_bootstrap_requests_by_status() {
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
     // Approve the request using User API
@@ -320,7 +320,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let response1 = sync_handler.handle_request(&sync_request1, &context).await;
     let request_id1 = match response1 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
     // Create identical second bootstrap request
@@ -338,7 +338,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let response2 = sync_handler.handle_request(&sync_request2, &context).await;
     let request_id2 = match response2 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
-        other => panic!("Expected BootstrapPending, got: {:?}", other),
+        other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
     // Check how many pending requests we have
@@ -351,8 +351,8 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         "Number of pending requests after duplicate submission: {}",
         pending_requests.len()
     );
-    println!("First request ID: {}", request_id1);
-    println!("Second request ID: {}", request_id2);
+    println!("First request ID: {request_id1}");
+    println!("Second request ID: {request_id2}");
 
     // Verify at least one request exists
     assert!(
@@ -384,11 +384,10 @@ async fn test_approval_with_nonexistent_request_id() {
         "Approval should fail for non-existent request"
     );
     let error_msg = result.unwrap_err().to_string();
-    println!("Approval error for non-existent request: {}", error_msg);
+    println!("Approval error for non-existent request: {error_msg}");
     assert!(
         error_msg.contains("Request not found") || error_msg.contains("not found"),
-        "Error should indicate request not found: {}",
-        error_msg
+        "Error should indicate request not found: {error_msg}"
     );
 
     // Try to reject a request that doesn't exist
@@ -399,11 +398,10 @@ async fn test_approval_with_nonexistent_request_id() {
         "Rejection should fail for non-existent request"
     );
     let error_msg = result.unwrap_err().to_string();
-    println!("Rejection error for non-existent request: {}", error_msg);
+    println!("Rejection error for non-existent request: {error_msg}");
     assert!(
         error_msg.contains("Request not found") || error_msg.contains("not found"),
-        "Error should indicate request not found: {}",
-        error_msg
+        "Error should indicate request not found: {error_msg}"
     );
 
     println!("✅ Non-existent request ID properly handled");
@@ -453,12 +451,9 @@ async fn test_malformed_permission_requests() {
 
         match response {
             SyncResponse::BootstrapPending { .. } => {
-                println!("✅ {} correctly stored as pending", description);
+                println!("✅ {description} correctly stored as pending");
             }
-            other => panic!(
-                "Expected BootstrapPending for {}, got: {:?}",
-                description, other
-            ),
+            other => panic!("Expected BootstrapPending for {description}, got: {other:?}"),
         }
     }
 
@@ -553,7 +548,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
             );
             println!("✅ Write(15) request auto-approved via global permission");
         }
-        other => panic!("Expected Bootstrap, got: {:?}", other),
+        other => panic!("Expected Bootstrap, got: {other:?}"),
     }
 
     // Verify NO pending requests were created (global permission bypasses storage)
@@ -584,7 +579,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
             );
             println!("✅ Read request auto-approved via global permission");
         }
-        other => panic!("Expected Bootstrap, got: {:?}", other),
+        other => panic!("Expected Bootstrap, got: {other:?}"),
     }
 
     // Test 3: Request Admin(5) permission - should require manual approval (Admin > Write always)
@@ -600,15 +595,11 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
-            println!(
-                "✅ Admin(5) request properly requires manual approval: {}",
-                request_id
-            );
+            println!("✅ Admin(5) request properly requires manual approval: {request_id}");
         }
-        other => panic!(
-            "Expected BootstrapPending for insufficient global permission, got: {:?}",
-            other
-        ),
+        other => {
+            panic!("Expected BootstrapPending for insufficient global permission, got: {other:?}")
+        }
     }
 
     // Verify one pending request was created for the Admin request
@@ -707,10 +698,7 @@ async fn test_global_permission_overrides_manual_policy() {
             );
             println!("✅ Read request auto-approved via global permission despite manual policy");
         }
-        other => panic!(
-            "Expected Bootstrap (global permission override), got: {:?}",
-            other
-        ),
+        other => panic!("Expected Bootstrap (global permission override), got: {other:?}"),
     }
 
     // Verify NO pending requests were created (global permission bypasses manual policy)
@@ -735,14 +723,12 @@ async fn test_global_permission_overrides_manual_policy() {
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
             println!(
-                "✅ Write(5) request properly requires manual approval (exceeds global permission): {}",
-                request_id
+                "✅ Write(5) request properly requires manual approval (exceeds global permission): {request_id}"
             );
         }
-        other => panic!(
-            "Expected BootstrapPending for insufficient global permission, got: {:?}",
-            other
-        ),
+        other => {
+            panic!("Expected BootstrapPending for insufficient global permission, got: {other:?}")
+        }
     }
 
     // Verify one pending request was created for the Write request
@@ -833,7 +819,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
             );
             println!("✅ Bootstrap approved via existing specific key permission");
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 
     // Verify no duplicate key was added by checking auth settings
@@ -936,7 +922,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
             );
             println!("✅ Bootstrap approved via existing global permission");
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 
     // Verify no new key was added - should still only have admin + global key
@@ -1067,7 +1053,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
             );
             println!("✅ Client successfully bootstrapped via global permission");
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 
     // CLIENT-SIDE KEY DISCOVERY ISSUE:
@@ -1182,7 +1168,7 @@ async fn test_global_permission_enables_transactions() {
             assert!(bootstrap_response.key_approved);
             println!("✅ Bootstrap approved via global permission");
         }
-        other => panic!("Expected Bootstrap, got: {:?}", other),
+        other => panic!("Expected Bootstrap, got: {other:?}"),
     }
 
     // Verify NO pending requests were created (global permission bypasses storage)
@@ -1266,7 +1252,7 @@ async fn test_global_permission_enables_transactions() {
     // This should succeed now with global permission fallback
     match transaction.commit() {
         Ok(entry_id) => {
-            println!("✅ Transaction committed successfully: {}", entry_id);
+            println!("✅ Transaction committed successfully: {entry_id}");
 
             // Verify the entry was created with global "*" key in SigInfo
             let entry = client_instance.backend().get(&entry_id).unwrap();
@@ -1274,12 +1260,11 @@ async fn test_global_permission_enables_transactions() {
                 eidetica::auth::types::SigKey::Direct(key_name) => {
                     assert_eq!(
                         key_name, "*",
-                        "Entry should use global '*' key, got: {}",
-                        key_name
+                        "Entry should use global '*' key, got: {key_name}"
                     );
                     println!("✅ Entry correctly uses global '*' key in SigInfo");
                 }
-                other => panic!("Expected Direct SigKey, got: {:?}", other),
+                other => panic!("Expected Direct SigKey, got: {other:?}"),
             }
 
             // Verify pubkey field is present in SigInfo (required for global "*")
@@ -1290,7 +1275,7 @@ async fn test_global_permission_enables_transactions() {
             println!("✅ SigInfo correctly includes pubkey field");
         }
         Err(e) => {
-            panic!("Transaction should succeed with global permission: {:?}", e);
+            panic!("Transaction should succeed with global permission: {e:?}");
         }
     }
 

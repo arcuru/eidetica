@@ -83,8 +83,7 @@ async fn test_handshake_automatically_registers_peer() {
     for addr in &listen_addresses {
         assert!(
             all_addresses.contains(addr),
-            "Missing advertised address: {:?}",
-            addr
+            "Missing advertised address: {addr:?}"
         );
     }
     assert!(
@@ -391,11 +390,10 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
         SyncResponse::Error(msg) => {
             assert!(
                 msg.contains("not authorized"),
-                "Expected authorization error, got: {}",
-                msg
+                "Expected authorization error, got: {msg}"
             );
         }
-        other => panic!("Expected Error response, got: {:?}", other),
+        other => panic!("Expected Error response, got: {other:?}"),
     }
 
     // Relationship should NOT be tracked (rejected before that point)
@@ -680,7 +678,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
                 eidetica::auth::Permission::Admin(0)
             );
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 }
 
@@ -746,11 +744,10 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
         SyncResponse::Error(msg) => {
             assert!(
                 msg.contains("not authorized"),
-                "Expected authorization error, got: {}",
-                msg
+                "Expected authorization error, got: {msg}"
             );
         }
-        other => panic!("Expected Error response, got: {:?}", other),
+        other => panic!("Expected Error response, got: {other:?}"),
     }
 }
 
@@ -831,7 +828,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
                 eidetica::auth::Permission::Read
             );
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 }
 
@@ -925,6 +922,6 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
                 eidetica::auth::Permission::Write(5)
             );
         }
-        other => panic!("Expected Bootstrap response, got: {:?}", other),
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 }

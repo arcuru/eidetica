@@ -135,13 +135,13 @@ pub fn login_page(error: Option<&str>) -> String {
 <head>
     <meta charset="utf-8">
     <title>Eidetica - Login</title>
-    <style>{}</style>
+    <style>{COMMON_STYLES}</style>
 </head>
 <body>
     <div class="container">
         <h1>Eidetica Sync Server</h1>
         <h2>Login</h2>
-        {}
+        {error_html}
         <form method="POST" action="/login">
             <div class="form-group">
                 <label for="username">Username:</label>
@@ -159,8 +159,7 @@ pub fn login_page(error: Option<&str>) -> String {
         </p>
     </div>
 </body>
-</html>"#,
-        COMMON_STYLES, error_html
+</html>"#
     )
 }
 
@@ -176,13 +175,13 @@ pub fn register_page(error: Option<&str>) -> String {
 <head>
     <meta charset="utf-8">
     <title>Eidetica - Register</title>
-    <style>{}</style>
+    <style>{COMMON_STYLES}</style>
 </head>
 <body>
     <div class="container">
         <h1>Eidetica Sync Server</h1>
         <h2>Register New Account</h2>
-        {}
+        {error_html}
         <form method="POST" action="/register">
             <div class="form-group">
                 <label for="username">Username:</label>
@@ -208,8 +207,7 @@ pub fn register_page(error: Option<&str>) -> String {
         </p>
     </div>
 </body>
-</html>"#,
-        COMMON_STYLES, error_html
+</html>"#
     )
 }
 
@@ -256,9 +254,8 @@ pub fn dashboard_page(user: &User, databases: Vec<DatabaseInfo>) -> String {
                 <th>Sync Status</th>
                 <th>Actions</th>
             </tr>
-            {}
-        </table>"#,
-            rows
+            {rows}
+        </table>"#
         )
     };
 
@@ -359,12 +356,11 @@ pub fn database_detail_page(_user: &User, db_info: DatabaseInfo, entries: Vec<St
         };
 
         format!(
-            r#"{}
+            r#"{more_msg}
             <table>
                 <tr><th>Entry ID</th></tr>
-                {}
-            </table>"#,
-            more_msg, entry_rows
+                {entry_rows}
+            </table>"#
         )
     };
 

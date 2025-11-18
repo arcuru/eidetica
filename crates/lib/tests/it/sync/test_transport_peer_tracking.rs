@@ -148,14 +148,11 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     assert!(
         peer_trees.contains(&tree_id.to_string()),
-        "AUTOMATIC TRACKING FAILED: Server did not automatically track that peer {} is syncing tree {}.\n\
+        "AUTOMATIC TRACKING FAILED: Server did not automatically track that peer {client_pubkey} is syncing tree {tree_id}.\n\
          This means the server received a sync request from the client but did not record the relationship.\n\
          Expected: Server tracks the relationship automatically (no manual add_tree_sync needed)\n\
          Actual: Server has no record of this peer syncing this tree.\n\
-         Peer trees found: {:?}",
-        client_pubkey,
-        tree_id,
-        peer_trees
+         Peer trees found: {peer_trees:?}"
     );
 
     // Verify bidirectional: client should also know about this relationship
@@ -163,9 +160,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         client_sync
             .is_tree_synced_with_peer(&server_pubkey, &tree_id)
             .unwrap(),
-        "Client should have tracked that it's syncing tree {} with server {}",
-        tree_id,
-        server_pubkey
+        "Client should have tracked that it's syncing tree {tree_id} with server {server_pubkey}"
     );
 
     // Clean up

@@ -433,10 +433,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             .expect("Write status");
         tx.commit().expect("Alice commits");
     }
-    println!(
-        "✅ Alice created database {} with global Write(10) permission",
-        db_id
-    );
+    println!("✅ Alice created database {db_id} with global Write(10) permission");
 
     // Enable sync for this database
     use eidetica::user::types::{DatabasePreferences, SyncSettings};
@@ -473,7 +470,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             .get_server_address_async()
             .await
             .expect("Failed to get server address");
-        println!("🌐 Alice's server listening at: {}", addr);
+        println!("🌐 Alice's server listening at: {addr}");
         addr
     };
 

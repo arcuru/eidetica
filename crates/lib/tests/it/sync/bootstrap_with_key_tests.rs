@@ -50,8 +50,7 @@ async fn test_bootstrap_with_provided_key() {
     // Verify client doesn't have the database initially
     assert!(
         client_instance.load_database(&tree_id).is_err(),
-        "Client should not have the database initially (tree_id: {})",
-        tree_id
+        "Client should not have the database initially (tree_id: {tree_id})"
     );
 
     // Use the new with_key variant to bootstrap with user-provided public key
@@ -76,10 +75,7 @@ async fn test_bootstrap_with_provided_key() {
         .expect("Failed to get backend")
         .get(&tree_id)
         .unwrap_or_else(|e| {
-            panic!(
-                "Client should have the root entry after bootstrap (tree_id: {}): {:?}",
-                tree_id, e
-            )
+            panic!("Client should have the root entry after bootstrap (tree_id: {tree_id}): {e:?}")
         });
     assert_eq!(
         root_client.id(),
@@ -243,14 +239,12 @@ async fn test_multiple_clients_with_different_keys() {
 
     // Each client bootstraps with their own key
     for (instance, sync, key_id, i) in clients {
-        println!("🧪 Client {} bootstrapping...", i);
+        println!("🧪 Client {i} bootstrapping...");
 
         // Verify client doesn't have database initially
         assert!(
             instance.load_database(&tree_id).is_err(),
-            "Client {} should not have database initially (tree_id: {})",
-            i,
-            tree_id
+            "Client {i} should not have database initially (tree_id: {tree_id})"
         );
 
         // Bootstrap with user-managed public key
@@ -262,7 +256,7 @@ async fn test_multiple_clients_with_different_keys() {
             Permission::Read,
         )
         .await
-        .unwrap_or_else(|e| panic!("Client {} bootstrap should succeed: {:?}", i, e));
+        .unwrap_or_else(|e| panic!("Client {i} bootstrap should succeed: {e:?}"));
 
         tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
 
@@ -270,10 +264,7 @@ async fn test_multiple_clients_with_different_keys() {
         let tree_result = sync.backend().expect("Failed to get backend").get(&tree_id);
         assert!(
             tree_result.is_ok(),
-            "Client {} should have the tree after bootstrap (tree_id: {}). Got: {:?}",
-            i,
-            tree_id,
-            tree_result
+            "Client {i} should have the tree after bootstrap (tree_id: {tree_id}). Got: {tree_result:?}"
         );
 
         // Verify key is not in backend
@@ -283,11 +274,10 @@ async fn test_multiple_clients_with_different_keys() {
                 .get_private_key(&key_id)
                 .unwrap()
                 .is_none(),
-            "Client {} key should not be in backend",
-            i
+            "Client {i} key should not be in backend"
         );
 
-        println!("✅ Client {} bootstrap completed", i);
+        println!("✅ Client {i} bootstrap completed");
     }
 
     println!("✅ TEST: All clients bootstrapped successfully with different keys");
@@ -318,7 +308,7 @@ async fn test_bootstrap_with_different_permissions() {
     ];
 
     for (perm_name, permission) in permissions {
-        println!("🧪 Testing bootstrap with {} permission", perm_name);
+        println!("🧪 Testing bootstrap with {perm_name} permission");
 
         let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
         let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
@@ -335,7 +325,7 @@ async fn test_bootstrap_with_different_permissions() {
             permission.clone(),
         )
         .await
-        .unwrap_or_else(|e| panic!("Bootstrap with {} should succeed: {:?}", perm_name, e));
+        .unwrap_or_else(|e| panic!("Bootstrap with {perm_name} should succeed: {e:?}"));
 
         tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
 
@@ -345,11 +335,10 @@ async fn test_bootstrap_with_different_permissions() {
                 .expect("Failed to get backend")
                 .get(&tree_id)
                 .is_ok(),
-            "Bootstrap with {} should succeed",
-            perm_name
+            "Bootstrap with {perm_name} should succeed"
         );
 
-        println!("✅ Bootstrap with {} permission completed", perm_name);
+        println!("✅ Bootstrap with {perm_name} permission completed");
     }
 
     println!("✅ TEST: All permission levels worked correctly");
@@ -484,8 +473,7 @@ async fn test_bootstrap_with_invalid_keys() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("Public key cannot be empty"),
-        "Error should mention empty public key, got: {}",
-        err
+        "Error should mention empty public key, got: {err}"
     );
     println!("✅ Empty public key correctly rejected");
 
@@ -507,8 +495,7 @@ async fn test_bootstrap_with_invalid_keys() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("Invalid public key format"),
-        "Error should mention invalid format, got: {}",
-        err
+        "Error should mention invalid format, got: {err}"
     );
     println!("✅ Malformed public key correctly rejected");
 
@@ -527,8 +514,7 @@ async fn test_bootstrap_with_invalid_keys() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("Key name cannot be empty"),
-        "Error should mention empty key name, got: {}",
-        err
+        "Error should mention empty key name, got: {err}"
     );
     println!("✅ Empty key name correctly rejected");
 
@@ -591,8 +577,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     // Verify client doesn't have the database initially
     assert!(
         client_instance.load_database(&tree_id).is_err(),
-        "Client should not have database initially (tree_id: {})",
-        tree_id
+        "Client should not have database initially (tree_id: {tree_id})"
     );
 
     println!("🧪 Client: Requesting bootstrap access with user-managed key...");

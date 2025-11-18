@@ -34,7 +34,7 @@ async fn test_bootstrap_sync_from_zero_state() {
 
     // Debug server state
     let server_tips = server_instance.backend().get_tips(&test_tree_id).unwrap();
-    println!("🧪 DEBUG: Server tips: {:?}", server_tips);
+    println!("🧪 DEBUG: Server tips: {server_tips:?}");
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
@@ -77,7 +77,7 @@ async fn test_bootstrap_sync_from_zero_state() {
 
     // Verify client has tips
     let tips = client_instance.backend().get_tips(&test_tree_id);
-    println!("🧪 DEBUG: Client tips result: {:?}", tips);
+    println!("🧪 DEBUG: Client tips result: {tips:?}");
     match tips {
         Ok(tip_vec) => {
             println!(
@@ -91,7 +91,7 @@ async fn test_bootstrap_sync_from_zero_state() {
             );
         }
         Err(e) => {
-            panic!("Failed to get tips: {:?}", e);
+            panic!("Failed to get tips: {e:?}");
         }
     }
 
@@ -326,8 +326,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
     let error_msg = result.unwrap_err().to_string();
     assert!(
         error_msg.contains("not found") || error_msg.contains("exist"),
-        "Error should indicate tree not found: {}",
-        error_msg
+        "Error should indicate tree not found: {error_msg}"
     );
 
     println!("✅ Bootstrap correctly rejected request for non-existent tree");

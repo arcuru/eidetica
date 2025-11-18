@@ -236,7 +236,7 @@ async fn test_client_different_permission_requests() {
     ];
 
     for (i, permission) in permission_levels.iter().enumerate() {
-        let client_key = format!("client_key_{}", i);
+        let client_key = format!("client_key_{i}");
         let (_client_instance, client_sync) = setup_bootstrap_client(&client_key);
 
         client_sync.enable_http_transport().unwrap();
@@ -301,8 +301,7 @@ async fn test_client_connection_error_handling() {
 
     assert!(
         is_connection_error,
-        "Error should indicate connection failure: {}",
-        error_msg
+        "Error should indicate connection failure: {error_msg}"
     );
 
     info!("✅ Client correctly handles connection errors");

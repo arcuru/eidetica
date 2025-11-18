@@ -198,7 +198,7 @@ async fn test_iroh_e2e_resilience() {
 
 /// Test end-to-end Iroh sync with actual relay servers (requires internet)
 ///
-/// ⚠️  **LIVE RELAY SERVER TEST** ⚠️
+///   **LIVE RELAY SERVER TEST** ⚠️
 /// This test connects to n0's production relay servers over the internet.
 /// It will FAIL if:
 /// - No internet connection is available

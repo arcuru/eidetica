@@ -64,10 +64,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         .expect("Failed to create restricted database");
 
     let restricted_tree_id = server_database.root_id().clone();
-    println!(
-        "🔐 Created restricted database with ID: {}",
-        restricted_tree_id
-    );
+    println!("🔐 Created restricted database with ID: {restricted_tree_id}");
 
     // Start server
     let server_addr = {
@@ -90,10 +87,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         .get_formatted_public_key("unauthorized_client")
         .expect("Failed to get client public key");
 
-    println!(
-        "👤 Client attempting bootstrap with unauthorized key: {}",
-        client_pubkey
-    );
+    println!("👤 Client attempting bootstrap with unauthorized key: {client_pubkey}");
 
     // Enable client sync
     let bootstrap_result = {
@@ -117,7 +111,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         result
     };
 
-    println!("🔍 Bootstrap result: {:?}", bootstrap_result);
+    println!("🔍 Bootstrap result: {bootstrap_result:?}");
 
     // EXPECTED SECURE BEHAVIOR: Bootstrap should fail for unauthorized client
     assert!(
@@ -195,10 +189,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
         .expect("Failed to create unprotected database");
 
     let unprotected_tree_id = server_database.root_id().clone();
-    println!(
-        "🔓 Created database with no auth config, ID: {}",
-        unprotected_tree_id
-    );
+    println!("🔓 Created database with no auth config, ID: {unprotected_tree_id}");
 
     // Start server
     let server_addr = {
@@ -241,7 +232,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
         result
     };
 
-    println!("🔍 Bootstrap result: {:?}", bootstrap_result);
+    println!("🔍 Bootstrap result: {bootstrap_result:?}");
 
     // EXPECTED SECURE BEHAVIOR: Bootstrap should have well-defined behavior for no-auth databases
     // For now, we expect it to fail until proper policy is defined
@@ -354,10 +345,7 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    println!(
-        "🔍 Bootstrap result with unusual key name: {:?}",
-        bootstrap_result
-    );
+    println!("🔍 Bootstrap result with unusual key name: {bootstrap_result:?}");
 
     // EXPECTED SECURE BEHAVIOR: Should fail with proper validation
     assert!(
@@ -475,8 +463,7 @@ async fn test_bootstrap_with_revoked_key() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     println!(
-        "🔍 Bootstrap result with new key on database containing revoked keys: {:?}",
-        bootstrap_result
+        "🔍 Bootstrap result with new key on database containing revoked keys: {bootstrap_result:?}"
     );
 
     // EXPECTED SECURE BEHAVIOR: Bootstrap should fail for any attempt with revoked key context
@@ -576,10 +563,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    println!(
-        "🔍 Bootstrap result requesting excessive Admin permissions: {:?}",
-        bootstrap_result
-    );
+    println!("🔍 Bootstrap result requesting excessive Admin permissions: {bootstrap_result:?}");
 
     // EXPECTED SECURE BEHAVIOR: Bootstrap should fail or limit excessive permission requests
     assert!(
