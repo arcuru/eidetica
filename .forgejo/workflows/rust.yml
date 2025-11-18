@@ -104,3 +104,31 @@ jobs:
           rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
           cargo build -p eidetica --features full
           RUST_LOG=warn mdbook test docs -L target/debug/deps
+
+  test-minimal:
+    name: Test Minimal Features
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-stable-minimal-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stable-minimal-
+            ${{ runner.os }}-cargo-stable-
+
+      - name: Build with no default features
+        run: cargo build -p eidetica --no-default-features
+
+      - name: Test with no default features
+        run: cargo test -p eidetica --no-default-features
