@@ -55,8 +55,8 @@ tasks:
     desc: Run all formatters
     cmds:
       - cargo fmt --all
-      - alejandra . &> /dev/null
-      - prettier --write . &> /dev/null
+      - alejandra . --quiet
+      - prettier --write . --log-level warn
   test:
     desc: Run tests
     aliases: [t]
