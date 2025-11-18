@@ -94,6 +94,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      - name: Test Doc Examples
+        run: cargo test --doc --workspace --all-features
+
       - name: Test Documentation Examples
         run: |
           # The book tests require a single copy of libeidetica target/debug/deps
