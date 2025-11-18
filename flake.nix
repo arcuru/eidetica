@@ -149,6 +149,34 @@
 
         # Main package
         eidetica = eidetica-bin;
+
+        # OCI container image
+        eidetica-image = pkgs.dockerTools.buildImage {
+          name = "eidetica";
+          tag = "dev";
+          created = "now";
+
+          copyToRoot = pkgs.buildEnv {
+            name = "image-root";
+            paths = [eidetica-bin];
+            pathsToLink = ["/bin"];
+          };
+
+          config = {
+            Cmd = ["${eidetica-bin}/bin/eidetica"];
+            Env = [
+              "RUST_LOG=info"
+            ];
+            ExposedPorts = {
+              "3000/tcp" = {};
+            };
+            Labels = {
+              "org.opencontainers.image.source" = "https://github.com/arcuru/eidetica";
+              "org.opencontainers.image.description" = "Eidetica: Remember Everything - Decentralized Database";
+              "org.opencontainers.image.licenses" = "AGPL-3.0-or-later";
+            };
+          };
+        };
       in {
         # Package definitions
         packages = {
@@ -156,6 +184,7 @@
           eidetica = eidetica;
           eidetica-lib = eidetica-lib;
           eidetica-bin = eidetica-bin;
+          eidetica-image = eidetica-image;
 
           # Check code coverage with tarpaulin
           coverage = craneLib.cargoTarpaulin (baseArgs

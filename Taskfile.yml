@@ -93,6 +93,10 @@ tasks:
     desc: Run security and license checks (advisories, licenses, bans, sources)
     cmds:
       - cargo deny check
+      - cargo audit
+  udeps:
+    desc: Check for unused dependencies
+    cmd: cargo udeps --workspace --all-targets
   build:debug:
     desc: Build the project
     aliases: [b, build]
@@ -101,6 +105,9 @@ tasks:
     desc: Build the project release
     aliases: [br, release]
     cmd: cargo build --workspace --all-targets --all-features --release --quiet
+  clean:
+    desc: Clean all build artifacts and caches
+    cmd: cargo clean
   coverage:
     desc: Generate coverage data
     aliases: [cov]
@@ -151,3 +158,17 @@ tasks:
     cmds:
       - cargo update -Z minimal-versions && cargo build --workspace --all-targets --all-features --quiet && cargo nextest run --workspace --all-features --status-level fail
       # We do _not_ want to run the clippy check here, because it will fail
+  container:docker:
+    desc: Build Docker container image
+    cmds:
+      - docker build -t eidetica:dev .
+  container:nix:
+    desc: Build Nix OCI container image
+    cmds:
+      - nix build .#eidetica-image
+      - echo "Image built at ./result"
+  container:load:
+    desc: Load Nix OCI image into Docker
+    cmds:
+      - nix build .#eidetica-image
+      - docker load < ./result
