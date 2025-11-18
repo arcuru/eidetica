@@ -1,0 +1,16 @@
+# Include all gitignore patterns
+.gitignore
+
+# Additional Docker-specific exclusions (files tracked in git but not needed in container)
+.git
+.github/
+.forgejo/
+*.md
+!README.md
+*.nix
+flake.lock
+Taskfile.yml
+.envrc
+docs/
+benches/
+tests/
