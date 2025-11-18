@@ -34,11 +34,9 @@ The documentation testing system works as follows:
 ```bash
 task book:test
 ├── rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-├── cargo build -p eidetica --features full    # Builds single eidetica configuration
+├── cargo build -p eidetica                    # Builds single eidetica configuration
 └── mdbook test docs -L target/debug/deps      # Tests examples against built library
 ```
-
-This approach builds the eidetica library with a consistent feature set, avoiding "multiple candidates" errors from workspace builds.
 
 ### Testing Strategy
 

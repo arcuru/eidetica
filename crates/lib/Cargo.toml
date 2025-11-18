@@ -10,7 +10,7 @@ readme.workspace = true
 description.workspace = true
 
 [features]
-default = []
+default = ["full"]
 y-crdt = ["yrs"]
 full = ["y-crdt"]
 

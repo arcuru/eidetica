@@ -231,6 +231,18 @@
               cargoNextestExtraArgs = "--workspace --all-features --no-fail-fast";
             });
 
+          # Test library with minimal features (no defaults)
+          test-minimal = craneLib.cargoNextest (releaseArgs
+            // {
+              cargoNextestExtraArgs = "-p eidetica --no-default-features";
+            });
+
+          # Documentation tests
+          doc-test = craneLib.cargoTest (releaseArgs
+            // {
+              cargoTestExtraArgs = "--doc --workspace --all-features";
+            });
+
           # Benchmark execution
           bench = craneLib.mkCargoDerivation (releaseArgs
             // {
@@ -250,17 +262,18 @@
             });
 
           # Documentation examples testing
-          book-test = craneLib.mkCargoDerivation (baseArgs
+          book-test = craneLib.mkCargoDerivation (debugArgs
             // {
               pname = "book-test";
               src = ./.; # Needs the docs directory (not just cleanCargoSource)
-              # Force empty cargoArtifacts to avoid any cache at all
-              cargoArtifacts = craneLib.mkDummySrc {src = ./.;};
               nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.mdbook];
 
               # Use debug profile for faster builds
-              CARGO_PROFILE = "dev";
-              buildPhaseCargoCommand = "cargo build -p eidetica --features full";
+              # Clean any existing library artifacts to ensure single consistent build
+              buildPhaseCargoCommand = ''
+                rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
+                cargo build -p eidetica
+              '';
 
               doCheck = true;
               checkPhase = ''
@@ -288,15 +301,17 @@
             (config.packages)
             audit # Security vulnerabilities
             clippy # Linting and code quality
+            book-test # Documentation tests in the mdbook
             doc # Documentation builds
+            doc-test # Documentation example tests
             deny # License compliance
             fmt # Code formatting
             test # Test Suite
+            test-minimal # Test library with no default features
             ;
 
           # Note: Excluded from CI for performance reasons:
           # - coverage: tarpaulin can not use cached dependencies and rebuilds everything
-          # - book-test: requires mdbook and can not use cached deps
           # - bench: benchmarks are run separately and take significant time
         };
 
