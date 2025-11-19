@@ -7,5 +7,6 @@ mod docstore_operations;
 pub mod helpers;
 mod index_store;
 mod integration;
+mod password_store;
 mod table_operations;
 mod ydoc_operations;

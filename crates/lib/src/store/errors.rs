@@ -49,6 +49,10 @@ pub enum StoreError {
     #[error("Data corruption detected in store '{store}': {reason}")]
     DataCorruption { store: String, reason: String },
 
+    /// Invalid configuration for the store
+    #[error("Invalid configuration for store '{store}': {reason}")]
+    InvalidConfiguration { store: String, reason: String },
+
     /// Implementation-specific error from a store type
     #[error("Store implementation error in '{store}': {reason}")]
     ImplementationError { store: String, reason: String },
@@ -101,6 +105,7 @@ impl StoreError {
             | StoreError::InvalidOperation { store, .. }
             | StoreError::RequiresTransaction { store, .. }
             | StoreError::DataCorruption { store, .. }
+            | StoreError::InvalidConfiguration { store, .. }
             | StoreError::ImplementationError { store, .. } => store,
         }
     }

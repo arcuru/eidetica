@@ -560,3 +560,167 @@ pub fn test_table_concurrent_modifications(
 
     (key1, merged_record)
 }
+
+// ===== PASSWORD STORE HELPERS =====
+
+use eidetica::{Store, store::PasswordStore};
+
+/// Initialize a PasswordStore with DocStore wrapper
+pub fn init_password_store_docstore(tree: &eidetica::Database, store_name: &str, password: &str) {
+    let tx = tree.new_transaction().unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    encrypted.initialize(password, "docstore:v1", "{}").unwrap();
+    tx.commit().unwrap();
+}
+
+/// Open an existing PasswordStore and return it
+/// Caller must commit the transaction when done
+pub fn open_password_store(
+    tx: &eidetica::Transaction,
+    store_name: &str,
+    password: &str,
+) -> PasswordStore {
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    encrypted.open(password).unwrap();
+    encrypted
+}
+
+/// Create and initialize a PasswordStore wrapping DocStore, add data, and commit
+pub fn create_password_docstore_with_data(
+    tree: &eidetica::Database,
+    store_name: &str,
+    password: &str,
+    data: &[(&str, &str)],
+) -> eidetica::entry::ID {
+    let tx = tree.new_transaction().unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    encrypted.initialize(password, "docstore:v1", "{}").unwrap();
+
+    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    for (key, value) in data {
+        docstore.set(*key, *value).unwrap();
+    }
+
+    tx.commit().unwrap()
+}
+
+/// Open a PasswordStore, add data to the wrapped DocStore, and commit
+pub fn add_data_to_password_docstore(
+    tree: &eidetica::Database,
+    store_name: &str,
+    password: &str,
+    data: &[(&str, &str)],
+) -> eidetica::entry::ID {
+    let tx = tree.new_transaction().unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    encrypted.open(password).unwrap();
+
+    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    for (key, value) in data {
+        docstore.set(*key, *value).unwrap();
+    }
+
+    tx.commit().unwrap()
+}
+
+/// Verify data in an encrypted DocStore
+pub fn assert_password_docstore_data(
+    tree: &eidetica::Database,
+    store_name: &str,
+    password: &str,
+    expected_data: &[(&str, &str)],
+) {
+    let tx = tree.new_transaction().unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    encrypted.open(password).unwrap();
+
+    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    for (key, expected_value) in expected_data {
+        let value = docstore.get(key).unwrap();
+        assert_eq!(value.as_text(), Some(*expected_value));
+    }
+}
+
+/// Set invalid PasswordStore config in the index for error testing
+pub fn set_invalid_password_store_config(
+    tree: &eidetica::Database,
+    store_name: &str,
+    invalid_config: &str,
+) {
+    let tx = tree.new_transaction().unwrap();
+    let index_store = tx.get_index_store().unwrap();
+    index_store
+        .set_subtree_info(store_name, PasswordStore::type_id(), invalid_config)
+        .unwrap();
+    tx.commit().unwrap();
+}
+
+// Common invalid configs for error testing
+pub mod invalid_configs {
+    pub const INVALID_SALT: &str = r#"{
+        "wrapped_config": {
+            "ciphertext": [1, 2, 3],
+            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        },
+        "encryption": {
+            "algorithm": "aes-256-gcm",
+            "kdf": "argon2id",
+            "salt": "not!!!valid!!!base64",
+            "version": "1"
+        }
+    }"#;
+
+    pub const INVALID_NONCE_LENGTH: &str = r#"{
+        "wrapped_config": {
+            "ciphertext": [1, 2, 3],
+            "nonce": [1, 2, 3]
+        },
+        "encryption": {
+            "algorithm": "aes-256-gcm",
+            "kdf": "argon2id",
+            "salt": "abcdefghijklmnop",
+            "version": "1"
+        }
+    }"#;
+
+    pub const CORRUPTED_CIPHERTEXT: &str = r#"{
+        "wrapped_config": {
+            "ciphertext": [255, 255, 255],
+            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        },
+        "encryption": {
+            "algorithm": "aes-256-gcm",
+            "kdf": "argon2id",
+            "salt": "abcdefghijklmnop",
+            "version": "1"
+        }
+    }"#;
+
+    pub const UNSUPPORTED_ALGORITHM: &str = r#"{
+        "wrapped_config": {
+            "ciphertext": [1, 2, 3],
+            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        },
+        "encryption": {
+            "algorithm": "aes-128-gcm",
+            "kdf": "argon2id",
+            "salt": "c29tZXNhbHQ=",
+            "version": "1"
+        }
+    }"#;
+
+    pub const UNSUPPORTED_KDF: &str = r#"{
+        "wrapped_config": {
+            "ciphertext": [1, 2, 3],
+            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        },
+        "encryption": {
+            "algorithm": "aes-256-gcm",
+            "kdf": "pbkdf2",
+            "salt": "c29tZXNhbHQ=",
+            "version": "1"
+        }
+    }"#;
+
+    pub const MALFORMED_JSON: &str = r#"{ this is not valid json! }"#;
+}

@@ -69,7 +69,7 @@ impl IndexStore {
             .as_doc()
             .ok_or_else(|| StoreError::DeserializationFailed {
                 store: INDEX.to_string(),
-                reason: format!("Subtree '{}' metadata is not a Doc", subtree_name),
+                reason: format!("Subtree '{subtree_name}' metadata is not a Doc"),
             })?;
 
         let type_id = doc
@@ -77,7 +77,7 @@ impl IndexStore {
             .and_then(|v: &doc::Value| v.as_text())
             .ok_or_else(|| StoreError::DeserializationFailed {
                 store: INDEX.to_string(),
-                reason: format!("Subtree '{}' missing 'type' field", subtree_name),
+                reason: format!("Subtree '{subtree_name}' missing 'type' field"),
             })?
             .to_string();
 
@@ -86,7 +86,7 @@ impl IndexStore {
             .and_then(|v: &doc::Value| v.as_text())
             .ok_or_else(|| StoreError::DeserializationFailed {
                 store: INDEX.to_string(),
-                reason: format!("Subtree '{}' missing 'config' field", subtree_name),
+                reason: format!("Subtree '{subtree_name}' missing 'config' field"),
             })?
             .to_string();
 

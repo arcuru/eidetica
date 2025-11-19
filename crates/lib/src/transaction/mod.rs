@@ -17,8 +17,9 @@
 
 pub mod errors;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
+use base64ct::{Base64, Encoding};
 pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,62 @@ use crate::{
     entry::{Entry, EntryBuilder, ID},
     store::{IndexStore, SettingsStore, StoreError},
 };
+
+/// Trait for encrypting/decrypting subtree data transparently
+///
+/// Encryptors are registered with a Transaction for specific subtrees, allowing
+/// transparent encryption/decryption at the transaction boundary. When an encryptor
+/// is registered:
+///
+/// - `get_full_state()` decrypts each historical entry before CRDT merging
+/// - `get_local_data()` returns plaintext (cached in EntryBuilder)
+/// - `update_subtree()` stores plaintext in cache, encrypted on commit
+///
+/// This ensures proper CRDT merge semantics while keeping data encrypted at rest.
+///
+/// # Wire Format
+///
+/// The trait operates on raw bytes, allowing implementations to define their own
+/// wire format. For example, AES-GCM implementations typically use `nonce || ciphertext`.
+/// The Transaction handles base64 encoding/decoding for storage.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// struct PasswordEncryptor { /* ... */ }
+///
+/// impl Encryptor for PasswordEncryptor {
+///     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+///         let (nonce, ct) = ciphertext.split_at(12);
+///         // decrypt with nonce and ciphertext...
+///     }
+///
+///     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+///         let nonce = generate_nonce();
+///         let ct = encrypt(plaintext, &nonce);
+///         // return nonce || ciphertext
+///     }
+/// }
+/// ```
+pub(crate) trait Encryptor: Send + Sync {
+    /// Decrypt ciphertext bytes to plaintext bytes
+    ///
+    /// # Arguments
+    /// * `ciphertext` - Encrypted data in implementation-defined format
+    ///
+    /// # Returns
+    /// Plaintext bytes (typically UTF-8 encoded JSON for CRDT data)
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
+
+    /// Encrypt plaintext bytes to ciphertext bytes
+    ///
+    /// # Arguments
+    /// * `plaintext` - Data to encrypt (typically UTF-8 encoded JSON for CRDT data)
+    ///
+    /// # Returns
+    /// Encrypted data in implementation-defined format
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
+}
 
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +119,7 @@ struct EntryMetadata {
 /// 6. Persists the resulting immutable `Entry` to the backend
 ///
 /// `Transaction` instances are typically created via `Database::new_transaction()`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
     entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
@@ -73,6 +130,11 @@ pub struct Transaction {
     /// Optional provided signing key when key is already decrypted
     /// Tuple contains (SigningKey, SigKey identifier)
     provided_signing_key: Option<(ed25519_dalek::SigningKey, String)>,
+    /// Registered encryptors for transparent encryption/decryption of specific subtrees
+    /// Maps subtree name -> encryptor implementation
+    /// When an encryptor is registered, the transaction automatically encrypts writes
+    /// and decrypts reads for that subtree
+    encryptors: Rc<RefCell<HashMap<String, Box<dyn Encryptor>>>>,
 }
 
 impl Transaction {
@@ -129,6 +191,7 @@ impl Transaction {
             db: database.clone(),
             auth_key_name: None,
             provided_signing_key: None,
+            encryptors: Rc::new(RefCell::new(HashMap::new())),
         })
     }
 
@@ -177,6 +240,86 @@ impl Transaction {
     /// Get the current authentication key ID for this transaction.
     pub fn auth_key_name(&self) -> Option<&str> {
         self.auth_key_name.as_deref()
+    }
+
+    /// Register an encryptor for transparent encryption/decryption of a specific subtree.
+    ///
+    /// Once registered, the transaction will automatically:
+    /// - Decrypt each historical entry before CRDT merging in `get_full_state()`
+    /// - Return plaintext data from `get_local_data()` (cached in EntryBuilder)
+    /// - Encrypt plaintext data before persisting in `commit()`
+    ///
+    /// This ensures proper CRDT merge semantics while keeping data encrypted at rest.
+    ///
+    /// # Arguments
+    /// * `subtree` - The name of the subtree to encrypt/decrypt
+    /// * `encryptor` - The encryptor implementation to use
+    ///
+    /// # Example
+    ///
+    /// For password-based encryption, use [`PasswordStore`] which handles
+    /// encryptor registration automatically:
+    ///
+    /// ```rust,ignore
+    /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
+    /// encrypted.initialize("my_password", "docstore:v1", "{}")?;
+    ///
+    /// // PasswordStore registers the encryptor internally
+    /// let docstore = encrypted.unwrap::<DocStore>()?;
+    /// ```
+    ///
+    /// For custom encryption, implement the [`Encryptor`] trait:
+    ///
+    /// ```rust,ignore
+    /// struct MyEncryptor { /* ... */ }
+    /// impl Encryptor for MyEncryptor {
+    ///     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> { /* ... */ }
+    ///     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> { /* ... */ }
+    /// }
+    ///
+    /// transaction.register_encryptor("secrets", Box::new(MyEncryptor::new()))?;
+    /// ```
+    ///
+    /// [`PasswordStore`]: crate::store::PasswordStore
+    /// [`Encryptor`]: crate::Encryptor
+    pub(crate) fn register_encryptor(
+        &self,
+        subtree: impl Into<String>,
+        encryptor: Box<dyn Encryptor>,
+    ) -> Result<()> {
+        self.encryptors
+            .borrow_mut()
+            .insert(subtree.into(), encryptor);
+        Ok(())
+    }
+
+    /// Decrypt data if an encryptor is registered, otherwise return as-is.
+    ///
+    /// This is used throughout Transaction to transparently decrypt encrypted data
+    /// before deserializing into CRDT types. Encrypted data is stored as base64-encoded
+    /// bytes in the entry.
+    fn decrypt_if_needed(&self, subtree: &str, data: &str) -> Result<String> {
+        if let Some(encryptor) = self.encryptors.borrow().get(subtree) {
+            // Decode base64 to get ciphertext bytes
+            let ciphertext =
+                Base64::decode_vec(data).map_err(|e| StoreError::DeserializationFailed {
+                    store: subtree.to_string(),
+                    reason: format!("Failed to decode base64: {e}"),
+                })?;
+            // Decrypt the data
+            let plaintext_bytes = encryptor.decrypt(&ciphertext)?;
+            // Convert to UTF-8 string
+            String::from_utf8(plaintext_bytes).map_err(|e| {
+                StoreError::DeserializationFailed {
+                    store: subtree.to_string(),
+                    reason: format!("Invalid UTF-8 in decrypted data: {e}"),
+                }
+                .into()
+            })
+        } else {
+            // No encryptor, return as-is
+            Ok(data.to_string())
+        }
     }
 
     /// Get a SettingsStore handle for the settings subtree within this transaction.
@@ -688,7 +831,9 @@ impl Transaction {
         let local_data = {
             let entry = self.db.backend()?.get(entry_id)?;
             if let Ok(data) = entry.data(subtree_name) {
-                serde_json::from_str::<T>(data)?
+                // Decrypt before deserializing
+                let plaintext = self.decrypt_if_needed(subtree_name, data)?;
+                serde_json::from_str::<T>(&plaintext)?
             } else {
                 T::default()
             }
@@ -725,7 +870,9 @@ impl Transaction {
 
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
-                serde_json::from_str::<T>(data)?
+                // Decrypt before deserializing
+                let plaintext = self.decrypt_if_needed(subtree_name, data)?;
+                serde_json::from_str::<T>(&plaintext)?
             } else {
                 T::default()
             };
@@ -895,6 +1042,26 @@ impl Transaction {
                 // No authentication key configured - all databases should provide keys via KeySource::Provided
                 return Err(TransactionError::AuthenticationRequired.into());
             };
+        // Encrypt subtree data if encryptors are registered
+        // This must happen before building the entry to ensure encrypted data is persisted
+        {
+            let encryptors = self.encryptors.borrow();
+            for subtree_name in builder.subtrees() {
+                if let Some(encryptor) = encryptors.get(&subtree_name) {
+                    // Get the plaintext data from the builder
+                    if let Ok(plaintext_data) = builder.data(&subtree_name)
+                        && !plaintext_data.trim().is_empty()
+                    {
+                        // Encrypt the plaintext data (as bytes)
+                        let ciphertext = encryptor.encrypt(plaintext_data.as_bytes())?;
+                        // Encode as base64 for storage
+                        let encoded = Base64::encode_string(&ciphertext);
+                        // Update the builder with encrypted data
+                        builder.set_subtree_data_mut(subtree_name.clone(), encoded);
+                    }
+                }
+            }
+        }
 
         // Build the final immutable Entry
         let mut entry = builder.build()?;

@@ -13,7 +13,13 @@ mod settings_store;
 pub use settings_store::SettingsStore;
 
 mod index_store;
-pub use index_store::{IndexStore, SubtreeInfo};
+pub(crate) use index_store::IndexStore;
+
+mod password_store;
+pub use password_store::{
+    DEFAULT_ARGON2_M_COST, DEFAULT_ARGON2_P_COST, DEFAULT_ARGON2_T_COST, EncryptedData,
+    EncryptionInfo, PasswordStore, PasswordStoreConfig,
+};
 
 #[cfg(feature = "y-crdt")]
 mod ydoc;
