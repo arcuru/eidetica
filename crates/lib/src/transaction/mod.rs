@@ -30,10 +30,10 @@ use crate::{
         types::{Operation, SigInfo, SigKey},
         validation::AuthValidator,
     },
-    constants::SETTINGS,
+    constants::{INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
-    store::SettingsStore,
+    store::{IndexStore, SettingsStore, StoreError},
 };
 
 /// Metadata structure for entries
@@ -221,6 +221,24 @@ impl Transaction {
         SettingsStore::new(self)
     }
 
+    /// Gets a handle to the IndexStore for managing subtree registry and metadata.
+    ///
+    /// The IndexStore provides access to the `_index` subtree, which stores metadata
+    /// about all subtrees in the database including their type identifiers and configurations.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<IndexStore>` containing the handle for managing the index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Unable to create the IndexStore for the _index subtree
+    /// - Operation has already been committed
+    pub fn get_index_store(&self) -> Result<IndexStore> {
+        IndexStore::new(self)
+    }
+
     /// Set the tree root field for the entry being built.
     ///
     /// This is primarily used during tree creation to ensure the root entry
@@ -336,45 +354,72 @@ impl Transaction {
         T: Store,
     {
         let subtree_name = subtree_name.into();
-        {
-            let mut builder_ref = self.entry_builder.borrow_mut();
-            let builder = builder_ref
-                .as_mut()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-            // Initialize subtree parents if this is the first time accessing this subtree
-            // in this transaction. This ensures proper parent relationships are established
-            // before any operations on the subtree.
-            let subtrees = builder.subtrees();
+        // Initialize subtree parents before checking _index
+        self.init_subtree_parents(&subtree_name)?;
 
-            if !subtrees.contains(&subtree_name) {
-                // Determine whether this transaction is using custom parent tips or current database tips
-                // This affects how we calculate subtree parents
-                let main_parents = builder.parents().unwrap_or_default();
-                let current_database_tips = self.db.backend()?.get_tips(self.db.root_id())?;
+        // Skip special system subtrees to avoid circular dependencies
+        let is_system_subtree =
+            subtree_name == INDEX || subtree_name == SETTINGS || subtree_name == ROOT;
 
-                // Get subtree tips based on the transaction's parent context
-                let tips = if main_parents == current_database_tips {
-                    // Using current database tips - get all current subtree tips
-                    let backend = self.db.backend()?;
-                    backend.get_store_tips(self.db.root_id(), &subtree_name)?
-                } else {
-                    // Using custom parent tips - get subtree tips reachable from those parents
-                    self.db.backend()?.get_store_tips_up_to_entries(
-                        self.db.root_id(),
-                        &subtree_name,
-                        &main_parents,
-                    )?
-                };
-
-                // Initialize the subtree with proper parent relationships
-                builder.set_subtree_data_mut(subtree_name.clone(), String::new());
-                builder.set_subtree_parents_mut(&subtree_name, tips);
-            }
+        if is_system_subtree {
+            // System subtrees don't use _index registration
+            return T::new(self, subtree_name);
         }
 
-        // Now create the Store referencing this Transaction
-        T::new(self, subtree_name)
+        // Check _index to determine if this is a new or existing subtree
+        let index_store = self.get_index_store()?;
+        if index_store.contains_subtree(&subtree_name) {
+            // Type validation for existing subtree
+            let subtree_info = index_store.get_subtree_info(&subtree_name)?;
+            let expected_type = T::type_id();
+
+            if subtree_info.type_id != expected_type {
+                return Err(StoreError::TypeMismatch {
+                    store: subtree_name,
+                    expected: expected_type.to_string(),
+                    actual: subtree_info.type_id,
+                }
+                .into());
+            }
+
+            // Type matches - create the Store
+            T::new(self, subtree_name)
+        } else {
+            // New subtree - init registers it in _index
+            T::init(self, subtree_name)
+        }
+    }
+
+    /// Get the subtree tips reachable from the given main tree entries.
+    fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
+        self.db.backend()?.get_store_tips_up_to_entries(
+            self.db.root_id(),
+            subtree_name,
+            main_parents,
+        )
+    }
+
+    /// Initialize subtree parents if this is the first time accessing this subtree
+    /// in this transaction.
+    fn init_subtree_parents(&self, subtree_name: &str) -> Result<()> {
+        let mut builder_ref = self.entry_builder.borrow_mut();
+        let builder = builder_ref
+            .as_mut()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+        let subtrees = builder.subtrees();
+
+        if !subtrees.contains(&subtree_name.to_string()) {
+            let main_parents = builder.parents().unwrap_or_default();
+            let tips = self.get_subtree_tips(subtree_name, &main_parents)?;
+
+            // Initialize the subtree with proper parent relationships
+            // set_subtree_parents_mut creates the subtree with data=None if it doesn't exist
+            builder.set_subtree_parents_mut(subtree_name, tips);
+        }
+
+        Ok(())
     }
 
     /// Gets the currently staged data for a specific subtree within this transaction.
@@ -478,7 +523,6 @@ impl Transaction {
                     &main_parents,
                 )?
             };
-            builder.set_subtree_data_mut(subtree_name.to_string(), String::new());
             builder.set_subtree_parents_mut(subtree_name, tips);
         }
 
@@ -764,6 +808,31 @@ impl Transaction {
             // If auth is None (not configured), that's fine - we allow empty auth
         }
 
+        // Ensure _index constraint: subtrees referenced in _index must appear in Entry.
+        // This adds subtrees with None data if they're referenced in _index but not yet in builder.
+        {
+            let mut builder_ref = self.entry_builder.borrow_mut();
+            let builder = builder_ref
+                .as_mut()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+            // Check if _index was modified in this transaction
+            if let Ok(index_data) = builder.data(INDEX)
+                && let Ok(index_doc) = serde_json::from_str::<Doc>(index_data)
+            {
+                let main_parents = builder.parents().unwrap_or_default();
+                for subtree_name in index_doc.keys() {
+                    if !builder.subtrees().contains(&subtree_name.to_string()) {
+                        // Subtree referenced in _index but not in builder - add with None data
+                        let tips = self.get_subtree_tips(subtree_name, &main_parents)?;
+                        builder.set_subtree_parents_mut(subtree_name, tips);
+                    }
+                }
+            }
+
+            builder.remove_empty_subtrees_mut()?;
+        }
+
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
         let builder_from_cell = builder_cell
@@ -827,8 +896,8 @@ impl Transaction {
                 return Err(TransactionError::AuthenticationRequired.into());
             };
 
-        // Remove empty subtrees and build the final immutable Entry
-        let mut entry = builder.remove_empty_subtrees().build()?;
+        // Build the final immutable Entry
+        let mut entry = builder.build()?;
 
         // CRITICAL VALIDATION: Ensure entry structural integrity before commit
         //

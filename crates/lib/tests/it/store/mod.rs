@@ -5,6 +5,7 @@
 
 mod docstore_operations;
 pub mod helpers;
+mod index_store;
 mod integration;
 mod table_operations;
 mod ydoc_operations;

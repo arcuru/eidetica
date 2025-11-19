@@ -36,6 +36,13 @@ pub enum EntryError {
         /// Reason why the entry structure is invalid
         reason: String,
     },
+
+    /// Invalid _index subtree data during entry building
+    #[error("Invalid _index subtree data: {reason}")]
+    InvalidIndexData {
+        /// Reason why the _index data is invalid
+        reason: String,
+    },
 }
 
 impl EntryError {

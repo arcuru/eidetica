@@ -214,6 +214,14 @@ impl Store for YDoc {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn transaction(&self) -> &Transaction {
+        &self.atomic_op
+    }
+
+    fn type_id() -> &'static str {
+        "ydoc:v1"
+    }
 }
 
 impl YDoc {

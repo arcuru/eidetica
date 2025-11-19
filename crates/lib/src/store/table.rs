@@ -51,6 +51,14 @@ where
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn transaction(&self) -> &Transaction {
+        &self.atomic_op
+    }
+
+    fn type_id() -> &'static str {
+        "table:v1"
+    }
 }
 
 impl<T> Table<T>

@@ -56,6 +56,7 @@ fn test_entrybuilder_api_consistency() {
         .add_parent(ID::from_bytes("parent3"))
         .add_subtree_parent("subtree1", ID::from_bytes("sp2"))
         .remove_empty_subtrees()
+        .expect("remove_empty_subtrees should succeed")
         .build()
         .expect("Entry should build successfully");
 
@@ -66,8 +67,10 @@ fn test_entrybuilder_api_consistency() {
         .set_subtree_data_mut("subtree1", "data1")
         .set_subtree_parents_mut("subtree1", vec![ID::from_bytes("sp1")])
         .add_parent_mut(ID::from_bytes("parent3"))
-        .add_subtree_parent_mut("subtree1", ID::from_bytes("sp2"))
-        .remove_empty_subtrees_mut();
+        .add_subtree_parent_mut("subtree1", ID::from_bytes("sp2"));
+    builder2
+        .remove_empty_subtrees_mut()
+        .expect("remove_empty_subtrees_mut should succeed");
     let entry2 = builder2.build().expect("Entry should build successfully");
 
     // IDs should be identical, showing that both APIs produce equivalent results
@@ -88,11 +91,14 @@ fn test_entrybuilder_empty_subtree_removal() {
     let entry1 = builder
         .clone()
         .remove_empty_subtrees()
+        .expect("remove_empty_subtrees should succeed")
         .build()
         .expect("Entry should build successfully");
 
     let mut builder2 = builder.clone();
-    builder2.remove_empty_subtrees_mut();
+    builder2
+        .remove_empty_subtrees_mut()
+        .expect("remove_empty_subtrees_mut should succeed");
     let entry2 = builder2.build().expect("Entry should build successfully");
 
     // Both entries should have only one subtree (the empty one should be removed)

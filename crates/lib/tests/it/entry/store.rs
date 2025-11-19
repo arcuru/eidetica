@@ -111,7 +111,9 @@ fn test_entry_remove_empty_subtrees() {
     builder.set_subtree_data_mut("sub1", "data1");
     builder.set_subtree_data_mut("sub2_empty", "");
     builder.set_subtree_data_mut("sub3", "data3");
-    builder.remove_empty_subtrees_mut();
+    builder
+        .remove_empty_subtrees_mut()
+        .expect("remove_empty_subtrees_mut should succeed");
     let entry = builder
         .build()
         .expect("Entry with empty subtrees removed should build successfully");

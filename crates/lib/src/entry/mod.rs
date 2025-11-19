@@ -8,12 +8,14 @@
 pub mod errors;
 pub mod id;
 
+use std::collections::HashSet;
+
 pub use errors::EntryError;
 pub use id::ID;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, auth::types::SigInfo, constants::ROOT};
+use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc};
 
 /// Represents serialized data, typically JSON, provided by the user.
 ///
@@ -48,7 +50,13 @@ struct SubTreeNode {
     /// The vector is kept sorted alphabetically.
     pub parents: Vec<ID>,
     /// Serialized data specific to this `Entry` within this named subtree.
-    pub data: RawData,
+    ///
+    /// `None` indicates that this Entry participates in the subtree but makes no data changes.
+    /// This is used when there is information needed for this subtree found somewhere else (e.g. the `_index`)
+    ///
+    /// `Some(data)` contains the actual serialized data for this subtree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<RawData>,
 }
 
 /// The fundamental unit of data in Eidetica, representing a finalized, immutable Database Entry.
@@ -194,11 +202,13 @@ impl Entry {
     }
 
     /// Get the `RawData` for a specific named subtree within this entry.
+    ///
+    /// Returns an error if the subtree is not found or if the subtree exists but has no data (`None`).
     pub fn data(&self, subtree_name: impl AsRef<str>) -> Result<&RawData> {
         self.subtrees
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
-            .map(|node| &node.data)
+            .and_then(|node| node.data.as_ref())
             .ok_or_else(|| {
                 crate::store::StoreError::KeyNotFound {
                     store: "entry".to_string(),
@@ -592,11 +602,13 @@ impl EntryBuilder {
     }
 
     /// Get the `RawData` for a specific named subtree within this entry builder.
+    ///
+    /// Returns an error if the subtree is not found or if the subtree exists but has no data (`None`).
     pub fn data(&self, subtree_name: impl AsRef<str>) -> Result<&RawData> {
         self.subtrees
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
-            .map(|node| &node.data)
+            .and_then(|node| node.data.as_ref())
             .ok_or_else(|| {
                 crate::store::StoreError::KeyNotFound {
                     store: "entry".to_string(),
@@ -649,11 +661,11 @@ impl EntryBuilder {
     pub fn set_subtree_data(mut self, name: impl Into<String>, data: impl Into<RawData>) -> Self {
         let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = data.into();
+            node.data = Some(data.into());
         } else {
             self.subtrees.push(SubTreeNode {
                 name,
-                data: data.into(),
+                data: Some(data.into()),
                 parents: vec![],
             });
         }
@@ -674,32 +686,98 @@ impl EntryBuilder {
     ) -> &mut Self {
         let name = name.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = data.into();
+            node.data = Some(data.into());
         } else {
             self.subtrees.push(SubTreeNode {
                 name,
-                data: data.into(),
+                data: Some(data.into()),
                 parents: vec![],
             });
         }
         self
     }
 
-    /// Removes subtrees that do not have any data or have data "{}".
+    /// Removes subtrees that have empty data.
+    ///
+    /// This removes subtrees with `Some("")` (actual empty data) and subtrees with `None`
+    /// (no data changes) UNLESS the subtree is referenced in the `_index` subtree's data.
+    ///
+    /// When `_index` is updated for a subtree, that subtree must appear in the Entry.
+    /// This is marked by having `None` data and being referenced in `_index`.
+    ///
     /// This is useful for cleaning up entries before building.
-    pub fn remove_empty_subtrees(mut self) -> Self {
-        self.subtrees
-            .retain(|subtree| !subtree.data.is_empty() && subtree.data != "{}");
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `_index` subtree data exists but cannot be deserialized.
+    pub fn remove_empty_subtrees(mut self) -> Result<Self> {
+        // Get the set of subtrees referenced in _index
+        let index_subtrees = self.get_index_referenced_subtrees()?;
+
+        self.subtrees.retain(|subtree| match &subtree.data {
+            None => {
+                // Preserve None only if this subtree is referenced in _index
+                index_subtrees.contains(&subtree.name)
+            }
+            Some(d) => !d.is_empty(), // Remove only if Some with empty string
+        });
+        Ok(self)
     }
 
     /// Mutable reference version of remove_empty_subtrees.
-    /// Removes subtrees that do not have any data or have data "{}".
-    /// This is useful for cleaning up entries before building.
-    pub fn remove_empty_subtrees_mut(&mut self) -> &mut Self {
-        self.subtrees
-            .retain(|subtree| !subtree.data.is_empty() && subtree.data != "{}");
-        self
+    ///
+    /// Removes subtrees with `Some("")` and subtrees with `None` unless referenced in `_index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `_index` subtree data exists but cannot be deserialized.
+    pub fn remove_empty_subtrees_mut(&mut self) -> Result<&mut Self> {
+        // Get the set of subtrees referenced in _index
+        let index_subtrees = self.get_index_referenced_subtrees()?;
+
+        self.subtrees.retain(|subtree| match &subtree.data {
+            None => {
+                // Preserve None only if this subtree is referenced in _index
+                index_subtrees.contains(&subtree.name)
+            }
+            Some(d) => !d.is_empty(), // Remove only if Some with empty string
+        });
+        Ok(self)
+    }
+
+    /// Get the set of subtree names that are referenced in the `_index` subtree's local data.
+    ///
+    /// Returns a set of subtree names that have entries in the local `_index` subtree.
+    /// This is used to determine which subtrees with `None` data should be preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `_index` subtree data exists but cannot be deserialized.
+    fn get_index_referenced_subtrees(&self) -> Result<HashSet<String>> {
+        let mut result = HashSet::new();
+
+        // Find the _index subtree's local data
+        if let Some(index_node) = self.subtrees.iter().find(|node| node.name == "_index") {
+            // If _index has data, deserialize it and get all keys
+            if let Some(data) = &index_node.data {
+                // Try to deserialize as a Doc to get the keys
+                let doc = serde_json::from_str::<Doc>(data).map_err(|e| {
+                    EntryError::InvalidIndexData {
+                        reason: format!(
+                            "Failed to deserialize _index subtree data: {} (data preview: {})",
+                            e,
+                            data.chars().take(100).collect::<String>()
+                        ),
+                    }
+                })?;
+
+                for key in doc.keys() {
+                    result.insert(key.to_string());
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Set the root ID for this entry.
@@ -786,7 +864,7 @@ impl EntryBuilder {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_owned(), // Default data if creating subtree just for parents
+                data: None,
                 parents,
             });
         }
@@ -796,7 +874,7 @@ impl EntryBuilder {
     /// Mutable reference version of set_subtree_parents.
     /// Set the parent IDs for a specific named subtree's history.
     /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
-    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// If the subtree does not exist, it will be created with no data (`None`).
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn set_subtree_parents_mut(
         &mut self,
@@ -814,7 +892,7 @@ impl EntryBuilder {
             // Create new SubTreeNode if it doesn't exist, then set parents
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_owned(), // Default data if creating subtree just for parents
+                data: None,
                 parents,
             });
         }
@@ -822,7 +900,7 @@ impl EntryBuilder {
     }
 
     /// Add a single parent ID to a specific named subtree's history.
-    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// If the subtree does not exist, it will be created with no data (`None`).
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn add_subtree_parent(
@@ -841,7 +919,7 @@ impl EntryBuilder {
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_owned(),
+                data: None,
                 parents: vec![parent_id.into()],
             });
         }
@@ -850,7 +928,7 @@ impl EntryBuilder {
 
     /// Mutable reference version of add_subtree_parent.
     /// Add a single parent ID to a specific named subtree's history.
-    /// If the subtree does not exist, it will be created with empty data ("{}").
+    /// If the subtree does not exist, it will be created with no data (`None`).
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn add_subtree_parent_mut(
@@ -869,7 +947,7 @@ impl EntryBuilder {
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
-                data: "{}".to_owned(),
+                data: None,
                 parents: vec![parent_id.into()],
             });
         }
@@ -1228,6 +1306,70 @@ mod tests {
         assert!(
             entry.subtrees().contains(&"_root".to_string()),
             "Root entry should contain _root marker"
+        );
+    }
+
+    #[test]
+    fn test_subtreenode_serde_backwards_compatibility() {
+        // Test that SubTreeNode can deserialize old format (data as direct string)
+        // and new format (data as None/Some)
+
+        // Old format: data field present with direct string value
+        let old_format_with_data = r#"{
+            "name": "test_subtree",
+            "parents": [],
+            "data": "some data"
+        }"#;
+        let node: SubTreeNode =
+            serde_json::from_str(old_format_with_data).expect("Should deserialize old format");
+        assert_eq!(node.name, "test_subtree");
+        assert_eq!(node.data, Some("some data".to_string()));
+
+        // Old format: data field missing entirely
+        let old_format_no_data = r#"{
+            "name": "test_subtree",
+            "parents": []
+        }"#;
+        let node: SubTreeNode =
+            serde_json::from_str(old_format_no_data).expect("Should deserialize with missing data");
+        assert_eq!(node.name, "test_subtree");
+        assert_eq!(node.data, None);
+
+        // New format: data explicitly null
+        let new_format_null_data = r#"{
+            "name": "test_subtree",
+            "parents": [],
+            "data": null
+        }"#;
+        let node: SubTreeNode =
+            serde_json::from_str(new_format_null_data).expect("Should deserialize null data");
+        assert_eq!(node.name, "test_subtree");
+        assert_eq!(node.data, None);
+
+        // Verify serialization: None data should not produce "data" field
+        let node_with_none = SubTreeNode {
+            name: "test".to_string(),
+            parents: vec![],
+            data: None,
+        };
+        let serialized = serde_json::to_string(&node_with_none).unwrap();
+        assert!(
+            !serialized.contains("data"),
+            "None data should be skipped in serialization: {}",
+            serialized
+        );
+
+        // Verify serialization: Some data should produce "data" field
+        let node_with_data = SubTreeNode {
+            name: "test".to_string(),
+            parents: vec![],
+            data: Some("content".to_string()),
+        };
+        let serialized = serde_json::to_string(&node_with_data).unwrap();
+        assert!(
+            serialized.contains(r#""data":"content""#),
+            "Some data should be serialized: {}",
+            serialized
         );
     }
 }

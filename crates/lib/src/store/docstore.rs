@@ -30,6 +30,14 @@ impl Store for DocStore {
     fn name(&self) -> &str {
         &self.name
     }
+
+    fn transaction(&self) -> &Transaction {
+        &self.atomic_op
+    }
+
+    fn type_id() -> &'static str {
+        "docstore:v1"
+    }
 }
 
 impl DocStore {

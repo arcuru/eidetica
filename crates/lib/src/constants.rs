@@ -6,7 +6,11 @@
 /// Reserved subtree name for storing tree settings.
 pub const SETTINGS: &str = "_settings";
 
+/// Reserved subtree name for the subtree index/registry.
+pub const INDEX: &str = "_index";
+
 /// Reserved subtree name for marking root entries.
+/// TODO: Improve root entry marking.
 pub const ROOT: &str = "_root";
 
 /// System database name for Instance configuration and management
