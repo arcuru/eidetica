@@ -6,6 +6,7 @@
   "enabledManagers": ["cargo", "github-actions", "nix"],
   "schedule": ["* 0-3 1 * *"],
   "prConcurrentLimit": 5,
+  "minimumReleaseAge": "14 days",
   "semanticCommits": "enabled",
   "commitMessagePrefix": "chore(deps):",
   "commitMessageAction": "update",
