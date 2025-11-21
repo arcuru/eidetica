@@ -60,6 +60,7 @@
   - [Authentication](design/authentication.md)
   - [Synchronization](design/synchronization.md)
   - [Settings Storage](design/settings_storage.md)
+  - [Subtree Index](design/subtree_index.md)
   - [Users](design/users.md)
   - [Key Management](design/key_management.md)
   - [Bootstrap & Access Control](design/bootstrap.md)

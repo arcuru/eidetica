@@ -4,11 +4,13 @@ Typed data access patterns within databases providing structured interaction wit
 
 ## Core Concepts
 
-**SubTree Trait**: Interface for typed store implementations accessed through Operation handles.
+**SubTree Trait**: Interface for typed store implementations accessed through Transaction handles.
 
-**Reserved Names**: Store names with underscore prefix (e.g., `_settings`) reserved for internal use.
+**Reserved Names**: Store names with underscore prefix (e.g., `_settings`, `_index`, `_root`) reserved for internal use.
 
 **Typed APIs**: Handle serialization/deserialization and provide structured access to raw entry data.
+
+**Type Registration**: All stores have a type identifier (e.g., "docstore:v1") registered in the `_index` subtree.
 
 ## Current Implementations
 
@@ -92,21 +94,32 @@ Real-time collaborative editing with sophisticated conflict resolution.
 
 **Use Cases**: Collaborative documents, real-time editing, complex conflict resolution.
 
-## Custom SubTree Implementation
+### IndexStore
 
-Requirements:
+Registry interface for the `_index` subtree that tracks subtree type metadata.
 
-1. Struct implementing SubTree trait
-2. Handle creation linked to Transaction
-3. Custom API methods using Transaction interaction:
-   - get_local_data for staged state
-   - get_full_state for merged historical state
-   - update_subtree for staging changes
+**Purpose**: Enables type discovery, schema management, and future dynamic Store loading.
+
+**Architectural Constraint**: When `_index` is modified for a subtree, that subtree MUST appear in the same Entry. This ensures the Entry is part of the subtree's DAG, so metadata is verified and always synced along with the subtree data.
+
+System subtrees (\_settings, \_index, \_root) are excluded from the registry.
+
+## Custom Store Implementation
+
+Custom Stores implement the `Store` trait and use Transaction methods for data access:
+
+- `get_local_data` for staged state
+- `get_full_state` for merged historical state
+- `update_subtree` for staging changes
+
+The Store trait includes `type_id()` for registry identification and optional `default_config()` for custom configuration.
 
 ## Integration
 
-**Operation Context**: All stores accessed through atomic operations
+**Transaction Context**: All stores accessed through atomic transactions
 
 **CRDT Support**: Stores can implement CRDT trait for conflict resolution
 
-**Serialization**: Data stored as RawData strings in Entry structure
+**Serialization**: Data stored as Option\<RawData> in Entry structure
+
+**Auto-Registration**: First access via get_store() triggers Store::init() which registers the subtree in `_index` with type_id and default_config

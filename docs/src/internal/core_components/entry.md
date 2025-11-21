@@ -25,7 +25,7 @@ Entry contains two fundamental internal data structures that form the Merkle-DAG
 
 - Subtree name (analogous to store/table names)
 - Parent entry references specific to this subtree's history
-- Serialized CRDT data payload for this subtree
+- Optional serialized CRDT data payload for this subtree
 
 **Authentication Envelope**: Every entry includes signature information that proves authorization and ensures tamper-detection.
 
@@ -97,9 +97,9 @@ struct Entry {
 
     // Named subtree nodes - independent data partitions
     subtrees: Vec<SubTreeNode> {
-        name: String,              // Subtree name (e.g., "users", "posts")
-        parents: Vec<ID>,          // Parent entries specific to this subtree
-        data: RawData,            // Serialized CRDT data for this subtree
+        name: String,                 // Subtree name (e.g., "users", "posts")
+        parents: Vec<ID>,             // Parent entries specific to this subtree
+        data: Option<RawData>,        // Optional serialized CRDT data
     },
 
     // Authentication and signature information
@@ -120,3 +120,16 @@ type ID = String;                // SHA-256 content hash (hex-encoded)
 - **SubTreeNodes**: Enable independent histories for different data partitions within the same entry
 - **Separation**: The tree structure (TreeNode) is separate from the data partitions (SubTreeNodes)
 - **Multiple Histories**: Each entry can participate in one main tree history plus multiple independent subtree histories
+- **Optional Data**: SubTreeNode.data is Option<RawData> containing the data for the underlying CRDT
+
+### SubTreeNode Data Semantics
+
+The `data` field in SubTreeNode is `Option<RawData>` to support different participation modes:
+
+**None (No Data)**: Subtree appears in the Entry without providing data. This is used when:
+
+- The `_index` is updated for a subtree (so that updates for the subtree's config are contained within it's DAG)
+- Establishing parent relationships without modifying data
+- The subtree participates in the Entry purely for structural reasons
+
+**Some(data) (Actual Data)**: Contains the serialized CRDT data for this subtree

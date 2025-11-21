@@ -406,6 +406,136 @@ Use cases for `YDoc`:
 - Conflict-free data synchronization
 - Applications requiring sophisticated merge algorithms
 
+## Subtree Registry and IndexStore
+
+Eidetica automatically maintains a registry of all user-created subtrees in a special `_index` subtree. This registry stores metadata about each subtree, including its Store type and configuration.
+
+### What is the Index?
+
+The `_index` subtree is a system-managed registry that tracks:
+
+- **Subtree names**: Which subtrees exist in the database
+- **Store types**: What type of Store manages each subtree (e.g., "docstore:v1", "table:v1")
+- **Configuration**: Store-specific settings for each subtree
+
+This registry is maintained automatically when you access stores via `get_store()` and is useful for:
+
+- **Discovery**: Finding what subtrees exist in a database
+- **Type information**: Understanding what Store type manages each subtree
+- **Tooling**: Building generic database browsers and inspectors
+
+### Automatic Registration
+
+When you first access a Store using `Transaction::get_store()`, it's automatically registered in the `_index` with its Store type and default configuration:
+
+```rust
+# extern crate eidetica;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
+// First access to "app_config" - automatically registered in _index
+let txn = database.new_transaction()?;
+let config: DocStore = txn.get_store("app_config")?;
+config.set("version", "1.0.0")?;
+txn.commit()?;
+
+// The 'app_config' Store is now registered with type "docstore:v1"
+# Ok(())
+# }
+```
+
+Registration happens immediately when `get_store()` is called for a new subtree.
+
+**System Subtrees**: The special system subtrees (`_settings`, `_index`, `_root`) are excluded from the registry to avoid circular dependencies.
+
+### Querying the Index
+
+Use `IndexStore` to query information about registered subtrees:
+
+```rust
+# extern crate eidetica;
+# extern crate serde;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{DocStore, Table}};
+# use serde::{Serialize, Deserialize};
+#
+# fn main() -> eidetica::Result<()> {
+# let backend = Box::new(InMemory::new());
+# let instance = Instance::open(backend)?;
+# instance.create_user("alice", None)?;
+# let mut user = instance.login_user("alice", None)?;
+# let mut settings = Doc::new();
+# settings.set("name", "test_db");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key)?;
+# // Create some subtrees first
+# #[derive(Serialize, Deserialize, Clone)]
+# struct User { name: String }
+# let setup_txn = database.new_transaction()?;
+# let _config: DocStore = setup_txn.get_store("config")?;
+# let _users: Table<User> = setup_txn.get_store("users")?;
+# setup_txn.commit()?;
+// Query the index to discover subtrees
+let txn = database.new_transaction()?;
+let index = txn.get_index_store()?;
+
+// List all registered subtrees
+let subtrees = index.list_subtrees()?;
+for name in subtrees {
+    println!("Found subtree: {}", name);
+}
+
+// Check if a specific subtree exists
+if index.contains_subtree("config") {
+    // Get metadata about the subtree
+    let info = index.get_subtree_info("config")?;
+    println!("Type: {}", info.type_id);  // e.g., "docstore:v1"
+    println!("Config: {}", info.config);  // Store-specific configuration
+}
+# Ok(())
+# }
+```
+
+### Manual Registration
+
+You can manually register or update subtree metadata using `IndexStore::set_subtree_info()`. This is useful for pre-registering subtrees with custom configuration:
+
+<!-- Code block ignored: Manual registration requires custom config which varies by Store type -->
+
+```rust,ignore
+let txn = database.new_transaction()?;
+let index = txn.get_index_store()?;
+
+// Pre-register a subtree with custom configuration
+index.set_subtree_info(
+    "documents",
+    "ydoc:v1",
+    r#"{"compression":"zstd","cache_size":1024}"#
+)?;
+
+txn.commit()?;
+
+// Future accesses will use the registered configuration
+```
+
+### When to Use IndexStore
+
+Many applications don't need to interact with `IndexStore` directly and can let auto-registration handle registration automatically. Use `IndexStore` when you need to:
+
+- **List subtrees**: Build a database browser or inspector
+- **Query metadata**: Check Store types or configurations
+- **Pre-configure**: Set custom configuration before first use
+- **Build tooling**: Create generic tools that work with any database structure
+
+For more information on how the index system works internally, see the [Subtree Index Design Document](../../design/subtree_index.md).
+
 ## Store Implementation Details
 
 <!-- Code block ignored: Shows trait definition rather than complete implementation -->

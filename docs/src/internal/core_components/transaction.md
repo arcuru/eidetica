@@ -15,6 +15,13 @@ Atomic transaction mechanism for database modifications.
 - Automatic authentication using database's default key
 - Type-safe store access
 - Cryptographic signing and validation
+- Automatic subtree registration in `_index`
+
+## Subtree Auto-Registration
+
+New subtrees are automatically registered in `_index` when first accessed via `get_store()`. System subtrees (\_settings, \_index, \_root) are excluded to avoid circular dependencies.
+
+The index-subtree coupling constraint is enforced at commit time: subtrees referenced in `_index` must appear in the same Entry, ensuring metadata is part of the subtree's DAG.
 
 ## Integration
 
@@ -25,6 +32,8 @@ Atomic transaction mechanism for database modifications.
 **CRDT Support**: Enables store conflict resolution
 
 **Backend Storage**: Stores entries with verification status
+
+**Index Maintenance**: Automatically registers new subtrees in `_index` during commit
 
 ## Authentication Validation
 
