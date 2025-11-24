@@ -54,7 +54,7 @@ jobs:
         run: cargo audit --json > audit-report.json || true
 
       - name: Upload audit report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: security-audit-report
           path: audit-report.json
