@@ -1,4 +1,6 @@
-**Implementation Status**: 🔵 Proposed
+> ✅ **Status: Implemented**
+>
+> This design is fully implemented and functional.
 
 # Bootstrap and Access Control
 
@@ -142,8 +144,14 @@ pub struct BootstrapRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum RequestStatus {
     Pending,
-    Approved,
-    Rejected,
+    Approved {
+        approved_by: String,
+        approval_time: String,
+    },
+    Rejected {
+        rejected_by: String,
+        rejection_time: String,
+    },
 }
 ```
 
@@ -203,39 +211,37 @@ Once approved, the client retries with normal sync after waiting or polling peri
 
 ## Design Decisions
 
-### No Auto-Approval
+### Auto-Approval via Global Permissions
 
-Previous designs included auto-approval based on database policy. This has been removed in favor of:
+Bootstrap requests are auto-approved when the database has a wildcard `"*"` permission that covers the requested permission level:
 
-1. **Global Permissions**: Use wildcard `"*"` key for open access
-2. **Manual Approval**: All bootstrap requests require explicit approval by a user with Admin permission
+1. **Global Permissions**: A database with `"*"` key set to `Write(10)` auto-approves any request for `Write(10)` or lower (including `Read`)
+2. **Manual Approval**: Requests exceeding global permissions require explicit approval by a user with Admin permission
 
 **Rationale:**
 
-- Simpler architecture (no policy evaluation)
-- Clearer security model (explicit user actions)
-- Global permissions handle "open access" use case
-- Bootstrap is for controlled access grants by authorized users
+- Simple model: global permissions define open access boundaries
+- Clear security: requests beyond global permissions need explicit approval
+- No per-request policy evaluation needed
+- Bootstrap combines both open and controlled access patterns
 
-Auto-approval will be removed once the new system is completed.
+**Note:** A legacy `bootstrap_auto_approve` policy setting exists but is discouraged. Use global `"*"` permissions instead for clearer, more predictable access control.
 
 ## API Design
 
 ### Wildcard Permissions API
 
+Wildcard permissions are managed through the standard `AuthSettings` API using `"*"` as the key name:
+
 <!-- Code block ignored: API interface showing function signatures without bodies -->
 
 ```rust,ignore
-impl SettingsStore {
-    /// Set wildcard permissions for database
-    pub fn set_wildcard_permission(&self, permission: Permission) -> Result<()>;
+// Set wildcard permission - use "*" as both key name and pubkey
+let mut auth_settings = AuthSettings::new();
+auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
 
-    /// Remove wildcard permissions
-    pub fn remove_wildcard_permission(&self) -> Result<()>;
-
-    /// Check if database has wildcard permissions
-    pub fn get_wildcard_permission(&self) -> Result<Option<Permission>>;
-}
+// Remove wildcard permission
+auth_settings.remove_key("*")?;
 ```
 
 ### Bootstrap API
@@ -248,7 +254,22 @@ impl Sync {
     pub fn pending_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>>;
 
     /// Get specific bootstrap request
-    pub fn get_bootstrap_request(&self, request_id: &str) -> Result<Option<BootstrapRequest>>;
+    pub fn get_bootstrap_request(&self, request_id: &str) -> Result<Option<(String, BootstrapRequest)>>;
+
+    /// Approve a bootstrap request using a backend-stored key
+    pub fn approve_bootstrap_request(&self, request_id: &str, approving_key_name: &str) -> Result<()>;
+
+    /// Reject a bootstrap request using a backend-stored key
+    pub fn reject_bootstrap_request(&self, request_id: &str, rejecting_key_name: &str) -> Result<()>;
+
+    /// Request bootstrap access to a database (client-side)
+    pub async fn sync_with_peer_for_bootstrap(
+        &self,
+        peer_addr: &str,
+        tree_id: &ID,
+        key_name: &str,
+        requested_permission: Permission,
+    ) -> Result<()>;
 }
 
 impl User {
@@ -262,7 +283,7 @@ impl User {
     /// The approving_key_id must be owned by this user and have Admin permission on the target database
     pub fn approve_bootstrap_request(
         &self,
-        sync: &mut Sync,
+        sync: &Sync,
         request_id: &str,
         approving_key_id: &str,
     ) -> Result<()>;
@@ -271,20 +292,18 @@ impl User {
     /// The rejecting_key_id must be owned by this user and have Admin permission on the target database
     pub fn reject_bootstrap_request(
         &self,
-        sync: &mut Sync,
+        sync: &Sync,
         request_id: &str,
         rejecting_key_id: &str,
     ) -> Result<()>;
-}
 
-// Client-side bootstrap request
-impl Sync {
-    /// Request bootstrap access to a database
-    pub async fn sync_with_peer_for_bootstrap(
+    /// Request database access via bootstrap (client-side with user-managed keys)
+    pub async fn request_database_access(
         &self,
-        peer_addr: &Address,
-        tree_id: &ID,
-        key_name: &str,
+        sync: &Sync,
+        peer_address: &str,
+        database_id: &ID,
+        key_id: &str,
         requested_permission: Permission,
     ) -> Result<()>;
 }

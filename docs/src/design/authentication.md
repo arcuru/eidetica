@@ -1,7 +1,8 @@
-**Implementation Status**:
-
-- ✅ **Direct Keys** - Fully implemented and functional
-- ✅ **Delegated Databases** - Fully implemented and functional with comprehensive test coverage
+> ✅ **Status: Mostly Implemented**
+>
+> Core authentication is fully implemented: direct keys, delegated databases, permission clamping, and bootstrap protocol all have comprehensive test coverage.
+>
+> **Planned enhancements:** Overlay databases, advanced key statuses (Ignore/Banned), performance optimizations.
 
 # Authentication Design
 

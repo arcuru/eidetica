@@ -1,4 +1,6 @@
-**Implementation Status**: ✅ Implemented
+> ✅ **Status: Implemented**
+>
+> This design is fully implemented and functional.
 
 # Subtree Index (\_index)
 

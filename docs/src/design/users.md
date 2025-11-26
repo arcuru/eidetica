@@ -1,4 +1,6 @@
-**Implementation Status**: 🔵 Proposed
+> ✅ **Status: Implemented**
+>
+> This design is fully implemented and functional.
 
 # Users System
 
@@ -103,11 +105,8 @@ pub struct UserInfo {
     /// None for passwordless users (single-user embedded mode)
     pub password_salt: Option<String>,
 
-    /// User account creation timestamp
-    pub created_at: u64,
-
-    /// Last login timestamp
-    pub last_login: Option<u64>,
+    /// User account creation timestamp (Unix timestamp)
+    pub created_at: i64,
 
     /// Account status
     pub status: UserStatus,
@@ -170,11 +169,14 @@ pub struct UserKey {
     /// Display name for this key
     pub display_name: Option<String>,
 
-    /// When this key was created
-    pub created_at: u64,
+    /// When this key was created (Unix timestamp)
+    pub created_at: i64,
 
-    /// Last time this key was used
-    pub last_used: Option<u64>,
+    /// Last time this key was used (Unix timestamp)
+    pub last_used: Option<i64>,
+
+    /// Whether this is the user's default key
+    pub is_default: bool,
 
     /// Database-specific SigKey mappings
     /// Maps: Database ID → SigKey used in that database's auth settings
@@ -268,11 +270,11 @@ pub struct DatabaseTracking {
     /// Users who have this database in their preferences
     pub users: Vec<String>,
 
-    /// Database creation time
-    pub created_at: u64,
+    /// Database creation time (Unix timestamp)
+    pub created_at: i64,
 
-    /// Last modification time
-    pub last_modified: u64,
+    /// Last modification time (Unix timestamp)
+    pub last_modified: i64,
 
     /// Additional metadata
     pub metadata: HashMap<String, String>,
@@ -490,9 +492,6 @@ impl Instance {
 
     /// List all users (returns usernames)
     pub fn list_users(&self) -> Result<Vec<String>>;
-
-    /// Disable a user account
-    pub fn disable_user(&self, username: &str) -> Result<()>;
 }
 ```
 
@@ -660,8 +659,7 @@ See [key_management.md](./key_management.md) for detailed implementation.
 7. Derives encryption key from password
 8. Decrypts all private keys
 9. Creates UserKeyManager with decrypted keys
-10. Updates last_login timestamp in `_users` Table (using UUID)
-11. Returns User session object (contains both user_uuid and username)
+10. Returns User session object (contains both user_uuid and username)
 
 **Passwordless User:**
 
