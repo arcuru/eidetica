@@ -104,6 +104,34 @@ client_sync.sync_with_peer("server.example.com:8080", None).await?;
 6. **Use proper error handling** - Return `eidetica::Result<()>` and handle errors appropriately
 7. **Follow CLAUDE.md guidelines** - See ../CLAUDE.md for detailed documentation standards
 
+## Writing Style
+
+### Describe Current State Only
+
+Documentation should describe what the system does now, not how it got there:
+
+- **Good**: "The sync system uses a command pattern for async operations"
+- **Bad**: "The sync system has been updated to use a simpler command pattern"
+
+### Avoid Change Language
+
+Never use words that imply historical changes:
+
+- ❌ "simplified", "improved", "changed", "updated", "now", "new"
+- ❌ "Before X, the system had no way to..."
+- ❌ "This was added to solve..."
+
+### Be Direct
+
+State what components do and how they work:
+
+- **Good**: "BackgroundSync uses direct sync tree access for peer data"
+- **Bad**: "BackgroundSync now uses simplified direct access instead of commands"
+
+### Focus on Behavior
+
+Document the current architecture, APIs, and behavior patterns without historical context. Readers don't need to know what the system used to do—they need to know what it does.
+
 ### Testing Changes
 
 - Test all examples: `task book:test`
