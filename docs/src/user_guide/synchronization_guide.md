@@ -1,22 +1,10 @@
 # Synchronization Guide
 
-Eidetica's synchronization system enables real-time data synchronization between distributed peers in a decentralized network. This guide covers how to set up, configure, and use the sync features.
-
-## Overview
-
-The sync system uses a **BackgroundSync architecture** with command-pattern communication:
-
-- **Single background thread** handles all sync operations
-- **Command-channel communication** between frontend and backend
-- **Automatic change detection** via hook system
-- **Multiple transport protocols** (HTTP, Iroh P2P)
-- **Database-level sync relationships** for granular control
-- **Authentication and security** using Ed25519 signatures
-- **Persistent state tracking** via DocStore
+Eidetica's sync system enables real-time data synchronization between distributed peers.
 
 ## Quick Start
 
-### 1. Enable Sync on Your Database
+### 1. Enable Sync
 
 ```rust
 # extern crate eidetica;
@@ -24,7 +12,6 @@ The sync system uses a **BackgroundSync architecture** with command-pattern comm
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-// Create a database with sync enabled
 let instance = Instance::open(backend)?;
 instance.enable_sync()?;
 
@@ -35,60 +22,49 @@ let mut user = instance.login_user("alice", None)?;
 # }
 ```
 
-### 2. Enable a Transport Protocol
-
-<!-- Code block ignored: Attempts to bind to network port during testing -->
+### 2. Start a Server
 
 ```rust,ignore
-// Get access to sync module
-let sync = db.sync().unwrap();
-
-// Enable HTTP transport
+let sync = instance.sync().unwrap();
 sync.enable_http_transport()?;
 
 // Start a server to accept connections
 sync.start_server_async("127.0.0.1:8080").await?;
 ```
 
-### 3. Authenticated Bootstrap (Recommended)
-
-For new devices joining existing databases, use authenticated bootstrap to request access:
-
-<!-- Code block ignored: Requires network connectivity and authentication policy setup -->
+### 3. Connect and Sync
 
 ```rust,ignore
-// On another device - connect and bootstrap with authentication
-let client_sync = client_db.sync().unwrap();
-client_sync.enable_http_transport()?;
-
-// Bootstrap with authentication - automatically requests write permission
-client_sync.sync_with_peer_for_bootstrap(
-    "127.0.0.1:8080",
-    &tree_id,
-    "device_key",                          // Your local key name
-    eidetica::auth::Permission::Write      // Requested permission level
-).await?;
+// Single API handles both bootstrap (new) and incremental (existing) sync
+sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
 ```
 
-### 4. Connecting to Peers
+That's it. The system automatically detects whether you need full bootstrap or incremental sync.
 
-<!-- Code block ignored: Requires network connectivity to peer server -->
+## Transport Options
+
+### HTTP
+
+Simple REST-based sync. Good for development and fixed-IP deployments.
 
 ```rust,ignore
-// Connect and sync with a peer - automatically detects bootstrap vs incremental sync
-client_sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
+sync.enable_http_transport()?;
+sync.start_server_async("127.0.0.1:8080").await?;
 ```
 
-That's it! The sync system handles everything automatically:
+### Iroh P2P (Recommended for Production)
 
-- Handshake and peer registration
-- Bootstrap (full sync) if you don't have the database
-- Incremental sync if you already have it
-- Bidirectional data transfer
+QUIC-based with NAT traversal. Works through firewalls.
 
-## Declarative Sync API (Recommended)
+```rust,ignore
+sync.enable_iroh_transport()?;
+sync.start_server_async("ignored").await?;  // Iroh manages addressing
+let my_address = sync.get_server_address_async().await?;  // Share this with peers
+```
 
-For persistent sync relationships, declare your intent and let the background engine handle synchronization:
+## Declarative Sync API
+
+For persistent sync relationships:
 
 ```rust
 # extern crate eidetica;
@@ -117,90 +93,15 @@ let handle = sync.register_sync_peer(SyncPeerInfo {
     auth: None,
     display_name: Some("Peer Device".to_string()),
 })?;
-
-// Monitor status and wait for initial sync if needed
 # Ok(())
 # }
 ```
 
-<!-- Code block ignored: Requires active sync operations -->
+Background sync happens automatically. Check status with `handle.status()?`.
 
-```rust,ignore
-// Check status
-let status = handle.status()?;
-println!("Has local data: {}", status.has_local_data);
+## Sync Settings
 
-// Wait for initial sync
-handle.wait_for_initial_sync().await?;
-```
-
-**Automatic Peer Discovery:** Incoming peers are automatically registered during handshake, including their advertised addresses and actual connection address. Each sync request includes the peer's device public key, enabling automatic tracking of tree/peer relationships.
-
-**When to use:** Persistent sync relationships, background sync
-**When to use legacy `sync_with_peer()`:** One-off sync operations, migration scripts
-
-## Transport Protocols
-
-### HTTP Transport
-
-The HTTP transport uses REST APIs for synchronization. Good for simple deployments with fixed IP addresses:
-
-<!-- Code block ignored: Attempts to bind to network port during testing -->
-
-```rust,ignore
-// Enable HTTP transport
-sync.enable_http_transport()?;
-
-// Start server
-sync.start_server_async("127.0.0.1:8080").await?;
-
-// Connect to peer
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
-```
-
-### Iroh P2P Transport (Recommended)
-
-Iroh provides direct peer-to-peer connectivity with NAT traversal. Best for production deployments:
-
-<!-- Code block ignored: Complex Iroh setup requiring external relay servers -->
-
-```rust,ignore
-// Enable Iroh transport (uses production relay servers by default)
-sync.enable_iroh_transport()?;
-
-// Start server
-sync.start_server_async("ignored").await?; // Iroh manages its own addressing
-
-// Get address to share with peers
-let my_address = sync.get_server_address_async().await?;
-
-// Connect to peer
-sync.sync_with_peer(&peer_address_json, Some(&tree_id)).await?;
-```
-
-**How it works:**
-
-- Attempts direct connection via NAT hole-punching (~90% success)
-- Falls back to relay servers if needed
-- Automatically upgrades to direct when possible
-
-**Advanced configuration:** Iroh supports custom relay servers, staging mode, and relay-disabled mode for local testing. See the [Iroh documentation](https://docs.rs/iroh) for details.
-
-## Sync Configuration
-
-### BackgroundSync Architecture
-
-The sync system automatically starts a background thread when transport is enabled. Once configured, all operations are handled automatically:
-
-- **When you commit changes**, they're sent immediately via sync callbacks
-- **Failed sends** are retried with exponential backoff (2^attempts seconds, max 64 seconds)
-- **Periodic sync** runs based on user-configured intervals (default: every 5 minutes)
-- **Connection checks** every 60 seconds
-- **No manual queue management** needed
-
-### Periodic Sync Intervals
-
-Each user can configure how frequently their databases sync automatically using the `interval_seconds` setting:
+Configure per-database sync behavior:
 
 ```rust
 # extern crate eidetica;
@@ -213,580 +114,58 @@ Each user can configure how frequently their databases sync automatically using 
 # instance.enable_sync()?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
-# let mut settings = Doc::new();
-# settings.set_string("name", "my_db");
 # let key = user.get_default_key()?;
-# let db = user.create_database(settings, &key)?;
+# let db = user.create_database(Doc::new(), &key)?;
 # let db_id = db.root_id().clone();
-// Configure periodic sync every 60 seconds
 let prefs = DatabasePreferences {
     database_id: db_id,
     key_id: user.get_default_key()?,
     sync_settings: SyncSettings {
         sync_enabled: true,
-        sync_on_commit: false,
-        interval_seconds: Some(60),  // Sync every 60 seconds
+        sync_on_commit: true,        // Sync immediately on commit
+        interval_seconds: Some(60),  // Also sync every 60 seconds
         properties: Default::default(),
     },
 };
 
+// Register this database with the User
 user.add_database(prefs)?;
 # Ok(())
 # }
 ```
 
-**Interval Options:**
+## Authenticated Bootstrap
 
-- `Some(seconds)`: Sync automatically every N seconds
-- `None`: No periodic sync (only sync on commit or manual trigger)
-
-**Multi-User Behavior:**
-
-When multiple users track the same database with different intervals, the system uses the **minimum interval** (most aggressive sync):
+For joining databases that require authentication:
 
 ```rust,ignore
-// Alice syncs every 300 seconds
-alice.add_database(DatabasePreferences {
-    database_id: shared_db_id.clone(),
-    sync_settings: SyncSettings {
-        interval_seconds: Some(300),
-        ..Default::default()
-    },
-    ..prefs
-})?;
-
-// Bob syncs every 60 seconds
-bob.add_database(DatabasePreferences {
-    database_id: shared_db_id.clone(),
-    sync_settings: SyncSettings {
-        interval_seconds: Some(60),
-        ..Default::default()
-    },
-    ..prefs
-})?;
-
-// Database will sync every 60 seconds (minimum of 300 and 60)
-```
-
-This ensures the database stays as up-to-date as the most active user wants.
-
-## Peer Management
-
-Peers are automatically registered when they connect during handshake, capturing both their advertised addresses and actual connection address.
-
-<!-- Code block ignored: Requires network connectivity to peer server -->
-
-```rust,ignore
-// Declarative: register once, sync continuously
-let handle = sync.register_sync_peer(SyncPeerInfo { /* ... */ })?;
-
-// Legacy: one-shot sync (auto-registers peer, adds tree relationship)
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
-```
-
-### Manual Peer Management (Advanced)
-
-For advanced use cases, you can manage peers manually:
-
-<!-- Code block ignored: Uses low-level APIs requiring complex peer setup -->
-
-```rust,ignore
-// Register a peer manually
-sync.register_peer("ed25519:abc123...", Some("Alice's Device"))?;
-
-// Add multiple addresses for the same peer
-sync.add_peer_address(&peer_key, Address::http("192.168.1.100:8080")?)?;
-sync.add_peer_address(&peer_key, Address::iroh("iroh://peer_id@relay")?)?;
-
-// Use low-level sync method with registered peers
-sync.sync_tree_with_peer(&peer_key, &tree_id).await?;
-```
-
-### Peer Information and Status
-
-<!-- Code block ignored: Requires established peer connections -->
-
-```rust,ignore
-// Get peer information (after connecting)
-if let Some(peer_info) = sync.get_peer_info(&peer_key)? {
-    println!("Peer: {} ({})",
-             peer_info.display_name.unwrap_or("Unknown".to_string()),
-             peer_info.status);
-}
-
-// List all registered peers
-let peers = sync.list_peers()?;
-for peer in peers {
-    println!("Peer: {} - {}", peer.pubkey, peer.display_name.unwrap_or("Unknown".to_string()));
-}
-```
-
-## Database Tracking and Preferences
-
-When using Eidetica with user accounts, you can track which databases you want to sync and configure individual sync preferences for each database.
-
-### Adding a Database to Track
-
-To add a database to your user's tracked databases:
-
-<!-- Code block ignored: Requires complete database setup with permissions -->
-
-```rust,ignore
-// Configure preferences for a database
-let prefs = DatabasePreferences {
-    database_id: db_id.clone(),
-    key_id: user.get_default_key()?,
-    sync_settings: SyncSettings {
-        sync_enabled: true,
-        sync_on_commit: false,
-        interval_seconds: Some(60),  // Sync every 60 seconds
-        properties: Default::default(),
-    },
-};
-
-// Add to user's tracked databases
-user.add_database(prefs)?;
-```
-
-When you add a database, the system **automatically discovers** which signing key (SigKey) your user key can use to authenticate with that database. This uses the database's permission system to find the best available access level.
-
-### Managing Tracked Databases
-
-<!-- Code block ignored: Demonstrates full workflow requiring database setup -->
-
-```rust,ignore
-// List all tracked databases
-let databases = user.list_database_prefs()?;
-for db_prefs in databases {
-    println!("Database: {}", db_prefs.database_id);
-    println!("  Syncing: {}", db_prefs.sync_settings.sync_enabled);
-}
-
-// Get preferences for a specific database
-let prefs = user.database_prefs(&db_id)?;
-
-// Update sync preferences
-let mut updated_prefs = prefs.clone();
-updated_prefs.sync_settings.sync_enabled = false;
-user.set_prefs(updated_prefs.database_prefs)?;
-
-// Remove a database from tracking
-user.remove_database(&db_id)?;
-```
-
-### Loading Tracked Databases
-
-Once a database is tracked, you can easily load it:
-
-<!-- Code block ignored: Requires complete user and database setup -->
-
-```rust,ignore
-// Load a tracked database
-let database = user.open_database(&db_id)?;
-
-// The user's configured key and SigKey are automatically used
-// You can now work with the database normally
-```
-
-### Sync Preferences vs Sync Status
-
-It's important to understand the distinction:
-
-- **Preferences** (managed by User): What you _want_ to happen (sync enabled, interval, etc.)
-- **Status** (managed by Sync module): What is _actually_ happening (last sync time, success/failure, etc.)
-
-The user tracking system manages your preferences. The sync module reads these preferences to determine which databases to sync and when.
-
-### Multi-User Support
-
-Different users can track the same database with different preferences:
-
-<!-- Code block ignored: Demonstrates multi-user scenario requiring complex setup -->
-
-```rust,ignore
-// Alice wants to sync this database every minute
-alice_user.add_database(DatabasePreferences {
-    database_id: shared_db_id.clone(),
-    key_id: alice_key.clone(),
-    sync_settings: SyncSettings {
-        sync_enabled: true,
-        interval_seconds: Some(60),
-        ..Default::default()
-    },
-})?;
-
-// Bob wants to sync the same database, but only on commit
-bob_user.add_database(DatabasePreferences {
-    database_id: shared_db_id.clone(),
-    key_id: bob_key.clone(),
-    sync_settings: SyncSettings {
-        sync_enabled: true,
-        sync_on_commit: true,
-        interval_seconds: None,
-        ..Default::default()
-    },
-})?;
-```
-
-Each user maintains their own tracking list and preferences independently.
-
-## Security
-
-### Authentication
-
-All sync operations use Ed25519 digital signatures:
-
-```rust
-# extern crate eidetica;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
-#
-# fn main() -> eidetica::Result<()> {
-# // Setup database instance with sync capability
-# let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.enable_sync()?;
-#
-// The sync system automatically uses your user's key for authentication
-// Create and login a user (generates the primary key)
-instance.create_user("alice", None)?;
-let mut user = instance.login_user("alice", None)?;
-
-// User can add additional keys if needed for backup or multiple devices
-user.add_private_key(Some("backup_key"))?;
-
-// Create a database with default authentication
-let mut settings = Doc::new();
-settings.set_string("name", "my_sync_database");
-let default_key = user.get_default_key()?;
-let database = user.create_database(settings, &default_key)?;
-
-// Set a specific key as default for a database (configuration pattern)
-// In production: database.set_default_auth_key("backup_key");
-println!("Authentication keys configured for sync operations");
-# Ok(())
-# }
-```
-
-#### Bootstrap Authentication Flow
-
-When joining a new database, the authenticated bootstrap protocol handles permission requests:
-
-1. **Client Request**: Device requests access with its public key and optionally a desired permission level
-2. **Permission Resolution**:
-   - If permission level specified → Check against database auth settings
-   - If permission level not specified → Auto-detect from database auth settings
-     - Key found in auth settings → Use highest permission granted to that key
-     - Key not found → Reject with authentication error
-3. **Policy Check**: Server evaluates bootstrap auto-approval policy (secure by default)
-4. **Conditional Approval**: Key approved only if policy explicitly allows
-5. **Key Addition**: For explicit permission requests, server adds the requesting key to the database's authentication settings
-6. **Database Transfer**: Complete database state transferred to the client
-7. **Access Granted**: Client can immediately make authenticated operations
-
-**Permission Auto-Detection**: When a key requests bootstrap without specifying a permission level, the server automatically looks up what permissions that key has in the database's auth settings. This includes both direct key permissions and global wildcard (`*`) permissions. The highest available permission is granted.
-
-<!-- Code block ignored: Complex authentication flow requiring global permissions setup -->
-
-```rust,ignore
-// Configure database with global wildcard permission (server side)
-let mut settings = Doc::new();
-settings.set_string("name", "Team Database");
-
-let mut auth_doc = Doc::new();
-
-// Add global wildcard permission for team collaboration
-auth_doc.set_json("*", serde_json::json!({
-    "pubkey": "*",
-    "permissions": {"Write": 10},
-    "status": "Active"
-}))?;
-
-settings.set_doc("auth", auth_doc);
-
-// Create the database owned by the admin, with anyone able to write
-let admin = instance.login_user("admin", Some("admin_password"))
-let admin_key = admin.get_default_key()?;
-let database = admin.create_database(settings, &admin_key)?;
-
-// Bootstrap authentication example (client side)
 sync.sync_with_peer_for_bootstrap(
-    "peer_address",
+    "127.0.0.1:8080",
     &tree_id,
-    "my_device_key",
-    Permission::Write(15)  // Request write access
-).await?;  // Will succeed via global permission
-
-// After successful bootstrap, the device can write to the database
-let op = database.new_authenticated_operation("my_device_key")?;
-// ... make changes ...
-op.commit()?;
+    "device_key",
+    eidetica::auth::Permission::Write,
+).await?;
 ```
 
-**Security Considerations**:
+See [Bootstrap Guide](bootstrap.md) for approval workflows.
 
-- Bootstrap requests are **rejected by default** for security
-- Global wildcard permissions enable automatic approval without per-device key management
-- Manual approval queues bootstrap requests for administrator review
-- All key additions (in manual approval) are recorded in the immutable database history
-- Permission levels are enforced (Read/Write/Admin)
+## Automatic Behavior
 
-### Peer Verification
+Once configured, the sync system handles:
 
-During handshake, peers exchange and verify public keys:
-
-<!-- Code block ignored: Requires network connectivity for handshake process -->
-
-```rust,ignore
-// The connect_to_peer method automatically:
-// 1. Exchanges public keys
-// 2. Verifies signatures
-// 3. Registers the verified peer
-let verified_peer_key = sync.connect_to_peer(&addr).await?;
-```
-
-## Monitoring and Diagnostics
-
-### Sync Operations
-
-The BackgroundSync engine handles all operations automatically:
-
-<!-- Code block ignored: Demonstrates monitoring concepts rather than compilable code -->
-
-```rust,ignore
-// Entries are synced immediately when committed
-// No manual queue management needed
-
-// The background thread handles:
-// - Immediate sending of new entries
-// - Retry queue with exponential backoff
-// - Periodic sync every 5 minutes
-// - Connection health checks every minute
-
-// Server status
-let is_running = sync.is_server_running();
-let server_addr = sync.get_server_address()?;
-```
-
-### Sync State Tracking
-
-<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
-
-```rust,ignore
-use eidetica::sync::state::SyncStateManager;
-
-// Get sync state for a database-peer relationship
-let op = sync.sync_tree().new_operation()?;
-let state_manager = SyncStateManager::new(&op);
-
-let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id)?;
-println!("Last synced: {:?}", cursor.last_synced_entry);
-
-let metadata = state_manager.get_sync_metadata(&peer_key)?;
-println!("Success rate: {:.2}%", metadata.sync_success_rate() * 100.0);
-```
-
-## Bootstrap-First Sync Protocol
-
-Eidetica now supports a **bootstrap-first sync protocol** that enables devices to join existing databases (rooms/channels) without requiring pre-existing local state.
-
-### Key Features
-
-**Unified API:** Single `sync_with_peer()` method handles both bootstrap and incremental sync
-
-<!-- Code block ignored: Requires network connectivity to peer server -->
-
-```rust,ignore
-// Works whether you have the database locally or not
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
-```
-
-**Automatic Detection:** The protocol automatically detects whether bootstrap or incremental sync is needed:
-
-- **Bootstrap sync:** If you don't have the database locally, the peer sends the complete database
-- **Incremental sync:** If you already have the database, only new changes are transferred
-
-**True Bidirectional Sync:** Both peers exchange data in a single sync operation - no separate client/server roles needed
-
-### Protocol Flow
-
-1. **Handshake:** Peers exchange device identities and establish trust
-2. **Tree Discovery:** Client requests information about available trees
-3. **Tip Comparison:** Compare local vs remote database tips to detect missing data
-4. **Bidirectional Transfer:** Both peers send missing entries to each other in a single sync operation
-   - Client receives missing entries from server
-   - Client automatically detects what server is missing and sends those entries back
-   - Uses existing `IncrementalResponse.their_tips` field to enable true bidirectional sync
-5. **Verification:** Validate received entries and update local database
-
-### Use Cases
-
-**Joining Chat Rooms:**
-
-<!-- Code block ignored: Requires network connectivity to chat server -->
-
-```rust,ignore
-// Join a chat room by ID
-let room_id = "abc123...";
-sync.sync_with_peer("chat.example.com", Some(&room_id)).await?;
-// Now you have the full chat history and can participate
-```
-
-**Document Collaboration:**
-
-<!-- Code block ignored: Requires network connectivity to document server -->
-
-```rust,ignore
-// Join a collaborative document
-let doc_id = "def456...";
-sync.sync_with_peer("docs.example.com", Some(&doc_id)).await?;
-// You now have the full document and can make edits
-```
-
-**Data Synchronization:**
-
-<!-- Code block ignored: Requires network connectivity to data server -->
-
-```rust,ignore
-// Sync application data to a new device
-sync.sync_with_peer("my-server.com", Some(&app_data_id)).await?;
-// All your application data is now available locally
-```
-
-## Best Practices
-
-### 1. **Choose the Right Sync API**
-
-- **Declarative (`register_sync_peer`)**: Persistent relationships, automatic background sync
-- **Legacy (`sync_with_peer`)**: One-off operations, migration scripts
-- **Manual peer management**: Only when you need fine-grained control
-
-### 2. **Use Iroh Transport for Production**
-
-Iroh provides better NAT traversal and P2P capabilities than HTTP.
-
-### 3. **Leverage Database Discovery**
-
-Use `discover_peer_trees()` to find available databases before syncing:
-
-<!-- Code block ignored: Makes actual HTTP requests during testing -->
-
-```rust,ignore
-let available = sync.discover_peer_trees("peer.example.com").await?;
-for tree in available {
-    if tree.name == "My Project" {
-        sync.sync_with_peer("peer.example.com", Some(&tree.tree_id)).await?;
-        break;
-    }
-}
-```
-
-### 4. **Handle Network Failures Gracefully**
-
-The sync system automatically retries failed operations, but your application should handle temporary disconnections.
-
-### 5. **Understand Bootstrap vs Incremental Behavior**
-
-- **First sync** with a database = Bootstrap (full data transfer)
-- **Subsequent syncs** = Incremental (only changes)
-- **No manual state management** needed
-
-### 6. **Secure Your Private Keys**
-
-Store device keys securely and use different keys for different purposes when appropriate.
-
-## Advanced Topics
-
-### Custom Write Callbacks for Sync
-
-You can use write callbacks to trigger sync operations when entries are committed:
-
-```rust,ignore
-use std::sync::Arc;
-
-// Get the sync instance
-let sync = instance.sync().expect("Sync not enabled");
-
-// Set up a write callback to trigger sync
-let sync_clone = sync.clone();
-let peer_pubkey = "peer_public_key".to_string();
-database.on_local_write(move |entry, db, _instance| {
-    // Queue the entry for sync when it's committed
-    sync_clone.queue_entry_for_sync(&peer_pubkey, entry.id(), db.root_id())
-})?;
-```
-
-This approach allows you to automatically sync entries when they're created, enabling real-time synchronization between peers.
-
-### Multiple Database Instances
-
-You can run multiple sync-enabled databases in the same process:
-
-<!-- Code block ignored: Complex multi-instance setup requiring multiple network ports -->
-
-```rust,ignore
-// Database 1
-let db1 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
-db1.sync()?.enable_http_transport()?;
-db1.sync()?.start_server("127.0.0.1:8080")?;
-
-// Database 2
-let db2 = Instance::open(Box::new(InMemory::new())?.enable_sync()?;
-db2.sync()?.enable_http_transport()?;
-db2.sync()?.start_server("127.0.0.1:8081")?;
-
-// Connect them
-let addr = Address::http("127.0.0.1:8080")?;
-let peer_key = db2.sync()?.connect_to_peer(&addr).await?;
-```
+- **Immediate sync** on commit (if `sync_on_commit: true`)
+- **Periodic sync** at configured intervals
+- **Retry** with exponential backoff for failed sends
+- **Bidirectional transfer** in each sync operation
 
 ## Troubleshooting
 
-### Common Issues
+| Issue                  | Solution                                                    |
+| ---------------------- | ----------------------------------------------------------- |
+| "No transport enabled" | Call `enable_http_transport()` or `enable_iroh_transport()` |
+| Sync not happening     | Check peer status, network connectivity                     |
+| Auth failures          | Verify keys are configured, protocol versions match         |
 
-**"No transport enabled" error:**
+## Example
 
-- Ensure you've called `enable_http_transport()` or `enable_iroh_transport()`
-
-**Sync not happening:**
-
-- Check peer status is `Active`
-- Verify database sync relationships are configured
-- Check network connectivity between peers
-
-**Performance issues:**
-
-- Consider using Iroh transport for better performance
-- Check retry queue for persistent failures
-- Verify network connectivity is stable
-
-**Authentication failures:**
-
-- Ensure private keys are properly configured
-- Verify peer public keys are correct
-- Check that peers are using compatible protocol versions
-
-## Complete Synchronization Example
-
-For a full working example that demonstrates real-time synchronization between peers, see the **[Chat Example](../../examples/chat/README.md)** in the repository.
-
-The chat application demonstrates:
-
-- **Multi-Transport Sync**: Both HTTP (simple client-server) and Iroh (P2P with NAT traversal)
-- **Bootstrap Protocol**: Automatic access requests when joining existing rooms
-- **User API Integration**: User-based authentication with automatic key management
-- **Sync Hooks**: Real-time message updates via periodic refresh
-- **Peer Discovery**: Server address sharing for easy peer connection
-- **Multiple Databases**: Each chat room is a separate synchronized database
-
-### Quick Start with the Chat Example
-
-```bash
-# Terminal 1 - Create a room with HTTP transport
-cd examples/chat
-cargo run -- --username alice --transport http --create-only --room-name "Demo"
-
-# Terminal 2 - Connect to the room
-cargo run -- --username bob --transport http --connect "room_id@127.0.0.1:PORT"
-```
-
-See the [full chat documentation](../../examples/chat/README.md) for detailed usage, transport options, and troubleshooting.
+See the [Chat Example](../../examples/chat/README.md) for a complete working application demonstrating multi-transport sync, bootstrap, and real-time updates.

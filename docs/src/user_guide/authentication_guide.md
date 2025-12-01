@@ -763,4 +763,4 @@ For controlled access scenarios, use manual approval to review each bootstrap re
 
 - [Core Concepts](core_concepts.md) - Understanding Databases and Entries
 - [Getting Started](getting_started.md) - Basic database setup
-- [Authentication Details](../internal/core_components/authentication.md) - Technical implementation
+- [Authentication Reference](../internal/authentication.md) - Technical reference

@@ -1,4 +1,4 @@
-## Performance Considerations
+# Performance
 
 The architecture provides several performance characteristics:
 

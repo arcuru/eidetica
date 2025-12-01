@@ -1,4 +1,4 @@
-## Error Handling
+# Errors
 
 The database uses a custom `Result` (`crate::Result`) and `Error` (`crate::Error`) type hierarchy defined in [`src/lib.rs`](../../src/lib.rs). Errors are typically propagated up the call stack using `Result`.
 

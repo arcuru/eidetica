@@ -127,7 +127,7 @@ The validation system uses two-layer protection to prevent and detect authentica
 
 **Note**: Corrupted and Deleted states shown in the table are **theoretical** - the system prevents their creation through proactive validation. The fail-safe layer (Layer 2) remains as defense-in-depth against historical corruption or external DAG manipulation.
 
-This defense-in-depth approach ensures that corrupted authentication configuration cannot be created or exploited to bypass security. See [Authentication Behavior Reference](../internal/auth_behavior_reference.md) for detailed implementation information.
+This defense-in-depth approach ensures that corrupted authentication configuration cannot be created or exploited to bypass security. See [Authentication Reference](../internal/authentication.md) for detailed implementation information.
 
 ### Future: Overlay Databases
 
@@ -888,5 +888,5 @@ AuthKey {
 ## References
 
 1. [Eidetica Core Concepts](../user_guide/core_concepts.md)
-2. [CRDT Principles](../internal/crdt_principles.md)
-3. [Entry Structure](../internal/core_components/entry.md)
+2. [CRDT Merging](../internal/crdt.md)
+3. [DAG Structure](../internal/dag.md)
