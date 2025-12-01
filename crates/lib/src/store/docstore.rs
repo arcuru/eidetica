@@ -11,9 +11,18 @@ use crate::{
 
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///
-/// It assumes that the Store data is a Doc CRDT, which allows for nested document structures.
-/// This implementation supports string values, as well as deletions via tombstones.
-/// For more complex data structures, consider using the nested capabilities of Doc directly.
+/// DocStore wraps the [`Doc`](crate::crdt::Doc) CRDT to provide path-based access to nested
+/// document structures. It supports string values and deletions via tombstones.
+///
+/// # API Overview
+///
+/// - **Basic operations**: [`get`](Self::get), [`set`](Self::set), [`delete`](Self::delete),
+///   [`get_all`](Self::get_all), [`contains_key`](Self::contains_key)
+/// - **Path operations**: [`get_path`](Self::get_path), [`set_path`](Self::set_path),
+///   [`contains_path`](Self::contains_path)
+/// - **Path mutation**: [`modify_path`](Self::modify_path),
+///   [`get_or_insert_path`](Self::get_or_insert_path),
+///   [`modify_or_insert_path`](Self::modify_or_insert_path)
 pub struct DocStore {
     name: String,
     atomic_op: Transaction,

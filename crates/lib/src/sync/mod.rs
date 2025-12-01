@@ -1,7 +1,57 @@
 //! Synchronization module for Eidetica database.
 //!
-//! The Sync module manages synchronization settings and state for the database,
-//! storing its configuration in a dedicated tree within the database.
+//! # Architecture
+//!
+//! The sync system uses a Background Sync architecture with command-pattern communication:
+//!
+//! - **[`Sync`]**: Thread-safe frontend using `Arc<Sync>` with interior mutability
+//!   (`AtomicBool`, `OnceLock`). Provides the public API and sends commands to the background.
+//! - **[`background::BackgroundSync`]**: Single background thread handling all sync operations
+//!   via a command loop. Owns the transport and retry queue.
+//! - **Write Callbacks**: Automatically trigger sync when entries are committed via
+//!   database write callbacks.
+//!
+//! # Bootstrap Protocol
+//!
+//! The sync protocol detects whether a client needs bootstrap or incremental sync:
+//!
+//! - **Empty tips** → Full bootstrap (complete database transfer)
+//! - **Has tips** → Incremental sync (only missing entries)
+//!
+//! Use [`Sync::sync_with_peer`] which handles both cases automatically.
+//!
+//! # Duplicate Prevention
+//!
+//! Uses Merkle-DAG tip comparison instead of tracking individual sent entries:
+//!
+//! 1. Exchange tips with peer
+//! 2. Compare DAGs to find missing entries
+//! 3. Send only what peer doesn't have
+//! 4. Receive only what we're missing
+//!
+//! This approach requires no extra storage apart from tracking relevant Merkle-DAG tips.
+//!
+//! # Transport Layer
+//!
+//! Two transport implementations are available:
+//!
+//! - **HTTP** ([`transports::http::HttpTransport`]): REST API at `/api/v0`, JSON serialization
+//! - **Iroh P2P** ([`transports::iroh::IrohTransport`]): QUIC-based with NAT traversal
+//!
+//! Both implement the [`transports::SyncTransport`] trait. Other transport layers can be supported by implementing the trait.
+//!
+//! # Peer and State Management
+//!
+//! Peers and sync relationships are stored in a dedicated sync database (`_sync`):
+//!
+//! - `peer_manager::PeerManager`: Handles peer registration and relationships
+//! - [`state::SyncStateManager`]: Tracks sync cursors, metadata, and history
+//!
+//! # Connection Behavior
+//!
+//! - **Lazy connections**: Established on-demand, not at peer registration
+//! - **Periodic sync**: Configurable interval (default 5 minutes)
+//! - **Retry queue**: Failed sends retried with exponential backoff
 
 use handle_trait::Handle;
 use std::sync::{
