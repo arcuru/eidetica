@@ -81,15 +81,9 @@
           nativeBuildInputs = with pkgs; [
             pkg-config # Required for OpenSSL linking
           ];
-          buildInputs = with pkgs;
-            [
-              openssl
-            ]
-            ++ lib.optionals stdenv.isDarwin [
-              # macOS-specific frameworks
-              darwin.apple_sdk.frameworks.Security
-              darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
+          buildInputs = with pkgs; [
+            openssl
+          ];
         };
 
         # Build cargo dependencies for release builds

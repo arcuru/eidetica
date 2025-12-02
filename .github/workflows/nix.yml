@@ -9,7 +9,12 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Multi-platform on main branch pushes or manual dispatch, Linux-only on PRs for cost optimization
+        include: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && fromJSON('[{"os":"ubuntu-latest","system":"x86_64-linux"},{"os":"macos-latest","system":"aarch64-darwin"}]') || fromJSON('[{"os":"ubuntu-latest","system":"x86_64-linux"}]') }}
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -25,8 +30,8 @@ jobs:
             --no-nom \
             --no-link \
             --cachix-cache eidetica \
-            --flake ".#checks.x86_64-linux" \
-            --flake ".#packages.x86_64-linux.eidetica-lib" \
-            --flake ".#packages.x86_64-linux.eidetica-bin"
+            --flake ".#checks.${{ matrix.system }}" \
+            --flake ".#packages.${{ matrix.system }}.eidetica-lib" \
+            --flake ".#packages.${{ matrix.system }}.eidetica-bin"
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
