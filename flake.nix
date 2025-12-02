@@ -60,8 +60,6 @@
         lib,
         ...
       }: let
-        inherit (pkgs) stdenv;
-
         # Rust toolchain configuration using fenix
         # Using fenix instead of rust-overlay for better llvm-tools support (needed for coverage)
         fenixStable = inputs.fenix.packages.${system}.complete;
