@@ -1,10 +1,16 @@
-# Eidetica Architecture Overview
+# Internal Documentation
 
-Eidetica is a decentralized database designed to "Remember Everything." This document outlines the architecture and how different components interact with each other.
+This section contains documentation for developers and those who want to understand the full system and technology behind Eidetica. It covers architecture, internals, and development practices.
 
-Eidetica is built on a foundation of content-addressable entries organized in databases, with a pluggable backend system for storage. `Entry` objects are immutable and contain Tree/SubTree structures that form the Merkle-DAG, with integrated authentication using Ed25519 digital signatures. The system provides Database and Store abstractions over these internal structures to enable efficient merging and synchronization of distributed data.
+**If you want to contribute**, start with the [Contributing guide](contributing.md) for development environment setup and workflow.
 
-See the [Core Components](core_components/index.md) section for details on the key building blocks.
+## Architecture Overview
+
+Eidetica is a decentralized database designed to "Remember Everything."
+
+The system is built on a foundation of content-addressable entries organized in databases, with a pluggable backend system for storage. `Entry` objects are immutable and contain Tree/SubTree structures that form the Merkle-DAG, with integrated authentication using Ed25519 digital signatures to verify the integrity of the data and its history. Database and Store abstractions over these internal structures help to translate those concepts into something more familiar to developers.
+
+See [Core Components](core_components/index.md) for details on the key building blocks.
 
 ```mermaid
 graph TD

@@ -2,6 +2,8 @@
 
 This guide will walk you through the basics of using Eidetica in your Rust applications. We'll cover the essential steps to set up and interact with the database.
 
+For contributing to Eidetica itself, see the [Contributing guide](../internal/contributing.md).
+
 ## Installation
 
 <!-- TODO: Add proper installation instructions once published -->

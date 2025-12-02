@@ -22,6 +22,7 @@
 # Internal
 
 - [Overview](internal/index.md)
+- [Contributing](internal/contributing.md)
 - [Architectural Terminology](internal/terminology.md)
 - [Core Components](internal/core_components/index.md)
   - [Entry Structure](internal/core_components/entry.md)
@@ -41,6 +42,7 @@
 - [CRDT Principles & Merging](internal/crdt_principles.md)
 - [Subtree Parent Relationships](internal/subtree_parent_relationships.md)
 - [Testing Architecture](internal/testing.md)
+- [CI/Build Infrastructure](internal/ci.md)
 - [Performance Considerations](internal/performance.md)
 - [Error Handling](internal/error_handling.md)
 - [Future Development](internal/future_development.md)
