@@ -12,6 +12,7 @@ publish = false
 [[bin]]
 name = "eidetica"
 path = "src/main.rs"
+# doc = false
 
 [dependencies]
 eidetica = { path = "../lib", features = ["full"] }

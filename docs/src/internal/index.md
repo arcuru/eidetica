@@ -12,6 +12,10 @@ The system is built on a foundation of content-addressable entries organized in 
 
 See [Core Components](core_components/index.md) for details on the key building blocks.
 
+## API Reference
+
+For detailed API documentation, see the [rustdoc API reference](../rustdoc/eidetica/index.html) (development version) or [docs.rs/eidetica](https://docs.rs/eidetica) (stable releases).
+
 ```mermaid
 graph TD
     A[User Application] --> B[Instance]

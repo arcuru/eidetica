@@ -1,0 +1,34 @@
+<style>
+  .dev-warning-banner {
+    background: linear-gradient(90deg, #ff6b35, #f7931e);
+    color: white;
+    padding: 10px 20px;
+    text-align: center;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+      sans-serif;
+    font-size: 14px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10000;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+  .dev-warning-banner a {
+    color: white;
+    text-decoration: underline;
+    font-weight: bold;
+  }
+  .dev-warning-banner a:hover {
+    text-decoration: none;
+  }
+  /* Push content down to account for fixed banner */
+  body {
+    padding-top: 45px !important;
+  }
+</style>
+<div class="dev-warning-banner">
+  Development Documentation (main branch) - For stable release docs, see
+  <a href="https://docs.rs/eidetica">docs.rs/eidetica</a>
+</div>

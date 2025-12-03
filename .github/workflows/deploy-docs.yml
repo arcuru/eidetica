@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "docs/**"
+      - "crates/**"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
 
@@ -46,6 +47,16 @@ jobs:
 
       - name: Build mdBook documentation
         run: mdbook build docs
+
+      - name: Build cargo docs with dev banner
+        env:
+          RUSTDOCFLAGS: "--html-in-header docs/rustdoc-header.html"
+        run: cargo doc --no-deps --workspace
+
+      - name: Copy cargo docs to mdbook output
+        run: |
+          mkdir -p docs/book/rustdoc
+          cp -r target/doc/* docs/book/rustdoc/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
