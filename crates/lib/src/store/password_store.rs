@@ -1,8 +1,25 @@
-//! Password-encrypted store wrapper for transparent encryption of any Store type
+//! Password-encrypted store wrapper for transparent encryption of any Store type.
 //!
-//! This module provides `PasswordStore`, which encrypts both data and metadata
+//! This module provides [`PasswordStore`], which encrypts both data and metadata
 //! using AES-256-GCM with Argon2id-derived keys. The wrapped store's type and
 //! configuration are stored encrypted in the `_index` subtree.
+//!
+//! # Encryption Architecture
+//!
+//! Encryption is transparent to the wrapped store. Data flows as:
+//!
+//! ```text
+//! Write: WrappedStore.put() → JSON → encrypt() → base64 → stored in entry
+//! Read:  entry data → base64 decode → decrypt() → JSON → WrappedStore CRDT merge
+//! ```
+//!
+//! The underlying CRDT (e.g., Doc) handles merging of decrypted data from multiple
+//! entry tips. The encrypted wrapper is purely for storage - it has no CRDT semantics.
+//!
+//! # Relay Node Support
+//!
+//! Relay nodes without the decryption key can store and forward encrypted entries.
+//! It is unnecessary to decrypt the data before forwarding it to other nodes.
 
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
@@ -15,36 +32,29 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     Result, Transaction,
-    crdt::{CRDT, Data},
+    crdt::Data,
     store::{Store, StoreError},
 };
 
-/// CRDT wrapper for encrypted subtree data
+/// Encrypted data fragment containing ciphertext and nonce.
 ///
-/// Stores ciphertext and nonce as opaque binary data. Since encrypted data
-/// cannot be meaningfully merged without decryption, merge uses last-write-wins
-/// based on lexicographic comparison of ciphertext (deterministic but arbitrary).
+/// This is a simple storage container for encrypted data. It has no CRDT semantics -
+/// merging of encrypted data happens at the entry level, where each entry's data is
+/// decrypted independently and then merged using the underlying CRDT's merge logic.
+///
+/// # Fields
+///
+/// * `ciphertext` - AES-256-GCM encrypted data
+/// * `nonce` - 12-byte nonce (must be unique per encryption)
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct EncryptedData {
-    /// AES-256-GCM encrypted ciphertext
+pub struct EncryptedFragment {
+    /// AES-256-GCM encrypted ciphertext.
     pub ciphertext: Vec<u8>,
-    /// 12-byte nonce for AES-GCM
+    /// 12-byte nonce for AES-GCM (must be unique per encryption).
     pub nonce: Vec<u8>,
 }
 
-impl Data for EncryptedData {}
-
-impl CRDT for EncryptedData {
-    fn merge(&self, other: &Self) -> Result<Self> {
-        // Cannot meaningfully merge encrypted data without decryption
-        // Use deterministic last-write-wins based on ciphertext ordering
-        if self.ciphertext <= other.ciphertext {
-            Ok(other.clone())
-        } else {
-            Ok(self.clone())
-        }
-    }
-}
+impl Data for EncryptedFragment {}
 
 /// AES-256-GCM nonce size (96 bits / 12 bytes).
 const AES_GCM_NONCE_SIZE: usize = 12;
@@ -78,14 +88,14 @@ pub struct EncryptionInfo {
     pub argon2_p_cost: Option<u32>,
 }
 
-/// Configuration stored in _index for PasswordStore
+/// Configuration stored in _index for PasswordStore.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PasswordStoreConfig {
-    /// Encryption parameters (stored in plaintext in _index)
+    /// Encryption parameters (stored in plaintext in _index).
     pub encryption: EncryptionInfo,
-    /// Encrypted wrapped store metadata
+    /// Encrypted wrapped store metadata.
     /// Contains the wrapped store's configuration, e.g: {"type": "docstore:v1", "config": "{}"}
-    pub wrapped_config: EncryptedData,
+    pub wrapped_config: EncryptedFragment,
 }
 
 /// Wrapped store metadata (stored encrypted in config)
@@ -621,7 +631,7 @@ impl PasswordStore {
                 argon2_t_cost: Some(argon2_t_cost),
                 argon2_p_cost: Some(argon2_p_cost),
             },
-            wrapped_config: EncryptedData {
+            wrapped_config: EncryptedFragment {
                 ciphertext: wrapped_config_ciphertext,
                 nonce: config_nonce.to_vec(),
             },
