@@ -25,14 +25,15 @@ Stores offer several advantages:
 
 ## Available Store Types
 
-Eidetica provides four main store types, each optimized for different data patterns:
+Eidetica provides several store types, each optimized for different data patterns:
 
-| Type              | Purpose               | Key Features                              | Best For                                     |
-| ----------------- | --------------------- | ----------------------------------------- | -------------------------------------------- |
-| **DocStore**      | Document storage      | Path-based operations, nested structures  | Configuration, metadata, structured docs     |
-| **Table\<T>**     | Record collections    | Auto-generated UUIDs, type safety, search | User lists, products, any structured records |
-| **SettingsStore** | Database settings     | Type-safe settings API, auth management   | Database configuration, authentication       |
-| **YDoc**          | Collaborative editing | Y-CRDT integration, real-time sync        | Shared documents, collaborative text editing |
+| Type              | Purpose               | Key Features                               | Best For                                     |
+| ----------------- | --------------------- | ------------------------------------------ | -------------------------------------------- |
+| **DocStore**      | Document storage      | Path-based operations, nested structures   | Configuration, metadata, structured docs     |
+| **Table\<T>**     | Record collections    | Auto-generated UUIDs, type safety, search  | User lists, products, any structured records |
+| **SettingsStore** | Database settings     | Type-safe settings API, auth management    | Database configuration, authentication       |
+| **YDoc**          | Collaborative editing | Y-CRDT integration, real-time sync         | Shared documents, collaborative text editing |
+| **PasswordStore** | Encrypted wrapper     | Password-based encryption, wraps any store | Sensitive data, secrets, credentials         |
 
 ### DocStore (Document-Oriented Storage)
 
@@ -405,6 +406,12 @@ Use cases for `YDoc`:
 - Shared documents with multiple editors
 - Conflict-free data synchronization
 - Applications requiring sophisticated merge algorithms
+
+### PasswordStore (Encrypted Wrapper)
+
+`PasswordStore` wraps any other store type with transparent password-based encryption. All data is encrypted using AES-256-GCM before being stored, with keys derived from a password using Argon2id.
+
+For detailed usage and examples, see the [Encryption Guide](../encryption_guide.md).
 
 ## Subtree Registry and IndexStore
 

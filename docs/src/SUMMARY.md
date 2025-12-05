@@ -12,6 +12,7 @@
   - [Stores](user_guide/concepts/stores.md)
   - [Transactions](user_guide/transactions.md)
 - [Authentication Guide](user_guide/authentication_guide.md)
+- [Encryption Guide](user_guide/encryption_guide.md)
 - [Synchronization Guide](user_guide/synchronization_guide.md)
 - [Bootstrapping](user_guide/bootstrap.md)
 - [Sync Quick Reference](user_guide/sync_quick_reference.md)
@@ -34,7 +35,6 @@
 - [Testing](internal/testing.md)
 - [Performance](internal/performance.md)
 - [Errors](internal/errors.md)
-- [Roadmap](internal/roadmap.md)
 
 # Design Documents
 

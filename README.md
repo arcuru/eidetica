@@ -47,7 +47,7 @@ There are a few synergies that I am taking advantage of to make each component w
 
 I wanted this for a different project and wasn't able to find something with everything I wanted, so here we are.
 
-Eidetica let's you make a decentralized app, so long as you store your DB (and eventually, Objects), in the storage format here. It manages storage, authentication, sync, and conflict resolution. It will eventually provide encryption, better peer sync and discovery, user management, sparse checkouts, and many more features.
+Eidetica lets you make a decentralized app, so long as you store your DB (and eventually, Objects), in the storage format here. It manages storage, authentication, sync, conflict resolution, and encryption. Future work includes better peer sync and discovery, user management, sparse checkouts, and many more features.
 
 Contained here are both a library suitable for embedding in your own applications and a binary that will be a hostable multi-user synchronization node.
 
@@ -69,7 +69,7 @@ The user facing data model is intentionally designed to match existing Databases
 - **Transaction** - An Atomic Operation across any number of Stores in a Database.
 
 Stores can be any CRDT, even user defined.
-At the moment Eidetica provides a `Doc` type that is a generic nested Document type, and a `Table` that functions as a NoSQL-ish Table for any data you want.
+At the moment Eidetica provides a `Doc` type that is a generic nested Document type, a `Table` that functions as a NoSQL-ish Table for any data you want, and a `PasswordStore` that wraps any store with transparent password-based encryption.
 Behind a feature flag is also a wrapper for the popular Y-Doc CRDT type.
 This can be extended with more custom types to match user patterns.
 
