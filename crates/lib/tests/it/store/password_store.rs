@@ -171,6 +171,56 @@ fn test_password_store_data_is_encrypted_in_backend() {
 }
 
 #[test]
+fn test_password_store_cache_is_encrypted() {
+    use base64ct::{Base64, Encoding};
+
+    let (_instance, database) = setup_tree();
+
+    // Create initial entry with data
+    let _entry_id1 =
+        create_password_docstore_with_data(&database, "secrets", "password", &[("key1", "value1")]);
+
+    // Create second entry to build history (store already initialized, so use add_data)
+    let entry_id2 =
+        add_data_to_password_docstore(&database, "secrets", "password", &[("key2", "value2")]);
+
+    // Force CRDT state computation which populates cache
+    let tx = database.new_transaction().unwrap();
+    let mut store = tx.get_store::<PasswordStore>("secrets").unwrap();
+    store.open("password").unwrap();
+    let docstore = store.unwrap::<DocStore>().unwrap();
+    let _ = docstore.get("key1"); // triggers state computation and caching
+
+    // Check cache contains encrypted data, not plaintext
+    let backend = database.backend().unwrap();
+    if let Some(cached) = backend
+        .get_cached_crdt_state(&entry_id2, "secrets")
+        .unwrap()
+    {
+        // Cache should NOT contain plaintext values
+        assert!(
+            !cached.contains("value1"),
+            "Cache should not contain plaintext 'value1'"
+        );
+        assert!(
+            !cached.contains("value2"),
+            "Cache should not contain plaintext 'value2'"
+        );
+        assert!(
+            !cached.contains("key1"),
+            "Cache should not contain plaintext 'key1'"
+        );
+
+        // Cache should be valid base64 (encrypted data)
+        let decoded = Base64::decode_vec(&cached);
+        assert!(
+            decoded.is_ok(),
+            "Cached data should be valid base64-encoded encrypted data"
+        );
+    }
+}
+
+#[test]
 fn test_password_store_nonce_uniqueness() {
     use base64ct::{Base64, Encoding};
 

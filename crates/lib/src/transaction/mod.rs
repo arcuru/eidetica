@@ -322,6 +322,20 @@ impl Transaction {
         }
     }
 
+    /// Encrypts data if an encryptor is registered for the subtree.
+    /// Returns the original data unchanged if no encryptor is registered.
+    fn encrypt_if_needed(&self, subtree: &str, plaintext: &str) -> Result<String> {
+        if let Some(encryptor) = self.encryptors.borrow().get(subtree) {
+            // Encrypt the data
+            let ciphertext = encryptor.encrypt(plaintext.as_bytes())?;
+            // Encode as base64 for storage
+            Ok(Base64::encode_string(&ciphertext))
+        } else {
+            // No encryptor, return as-is
+            Ok(plaintext.to_string())
+        }
+    }
+
     /// Get a SettingsStore handle for the settings subtree within this transaction.
     ///
     /// This method returns a `SettingsStore` that provides specialized access to the `_settings` subtree,
@@ -773,7 +787,9 @@ impl Transaction {
                 .backend()?
                 .get_cached_crdt_state(entry_id, subtree_name)?
             {
-                let result: T = serde_json::from_str(&cached_state)?;
+                // Decrypt cached state if encryptor is registered
+                let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
+                let result: T = serde_json::from_str(&decrypted)?;
                 return Ok(result);
             }
         }
@@ -841,12 +857,13 @@ impl Transaction {
 
         result = result.merge(&local_data)?;
 
-        // Cache the result
+        // Cache the result (encrypted if encryptor is registered)
         {
             let serialized_state = serde_json::to_string(&result)?;
+            let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db
                 .backend()?
-                .cache_crdt_state(entry_id, subtree_name, serialized_state)?;
+                .cache_crdt_state(entry_id, subtree_name, to_cache)?;
         }
 
         Ok(result)
