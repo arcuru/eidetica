@@ -110,8 +110,39 @@ pub use crate::path;
 /// assert_eq!(merged.get_as::<i64>("age"), Some(30));        // Preserved from doc1
 /// assert_eq!(merged.get_as::<&str>("city"), Some("NYC"));   // Added from doc2
 /// ```
+/// Current CRDT format version for Doc.
+pub const DOC_VERSION: u8 = 0;
+
+/// Helper to check if version is default (0) for serde skip_serializing_if
+fn is_v0(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Validates the Doc version during deserialization.
+fn validate_doc_version<'de, D>(deserializer: D) -> std::result::Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let version = u8::deserialize(deserializer)?;
+    if version != DOC_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported Doc version {version}; only version {DOC_VERSION} is supported"
+        )));
+    }
+    Ok(version)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Doc {
+    /// CRDT format version. v0 indicates unstable format.
+    #[serde(
+        rename = "_v",
+        default,
+        skip_serializing_if = "is_v0",
+        deserialize_with = "validate_doc_version"
+    )]
+    version: u8,
     /// Child nodes indexed by string keys
     children: HashMap<String, Value>,
 }
@@ -120,8 +151,14 @@ impl Doc {
     /// Creates a new empty document
     pub fn new() -> Self {
         Self {
+            version: DOC_VERSION,
             children: HashMap::new(),
         }
+    }
+
+    /// Returns the CRDT format version of this document.
+    pub fn version(&self) -> u8 {
+        self.version
     }
 
     /// Returns true if this document has no data (excluding tombstones)

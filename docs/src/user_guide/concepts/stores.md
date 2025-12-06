@@ -422,7 +422,7 @@ Eidetica automatically maintains a registry of all user-created subtrees in a sp
 The `_index` subtree is a system-managed registry that tracks:
 
 - **Subtree names**: Which subtrees exist in the database
-- **Store types**: What type of Store manages each subtree (e.g., "docstore:v1", "table:v1")
+- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0")
 - **Configuration**: Store-specific settings for each subtree
 
 This registry is maintained automatically when you access stores via `get_store()` and is useful for:
@@ -454,7 +454,7 @@ let config: DocStore = txn.get_store("app_config")?;
 config.set("version", "1.0.0")?;
 txn.commit()?;
 
-// The 'app_config' Store is now registered with type "docstore:v1"
+// The 'app_config' Store is now registered with type "docstore:v0"
 # Ok(())
 # }
 ```
@@ -503,7 +503,7 @@ for name in subtrees {
 if index.contains_subtree("config") {
     // Get metadata about the subtree
     let info = index.get_subtree_info("config")?;
-    println!("Type: {}", info.type_id);  // e.g., "docstore:v1"
+    println!("Type: {}", info.type_id);  // e.g., "docstore:v0"
     println!("Config: {}", info.config);  // Store-specific configuration
 }
 # Ok(())
@@ -523,7 +523,7 @@ let index = txn.get_index_store()?;
 // Pre-register a subtree with custom configuration
 index.set_subtree_info(
     "documents",
-    "ydoc:v1",
+    "ydoc:v0",
     r#"{"compression":"zstd","cache_size":1024}"#
 )?;
 

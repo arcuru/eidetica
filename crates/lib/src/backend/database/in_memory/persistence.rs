@@ -16,9 +16,41 @@ use crate::{
     entry::{Entry, ID},
 };
 
+/// The current persistence file format version.
+/// v0 indicates this is an unstable format subject to breaking changes.
+const PERSISTENCE_VERSION: u8 = 0;
+
+/// Helper to check if version is default (0) for serde skip_serializing_if
+fn is_v0(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Validates the persistence version during deserialization.
+fn validate_persistence_version<'de, D>(deserializer: D) -> std::result::Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let version = u8::deserialize(deserializer)?;
+    if version != PERSISTENCE_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported persistence version {version}; only version {PERSISTENCE_VERSION} is supported"
+        )));
+    }
+    Ok(version)
+}
+
 /// Serializable version of InMemory database for persistence
 #[derive(Serialize, Deserialize)]
 struct SerializableDatabase {
+    /// File format version for compatibility checking
+    #[serde(
+        rename = "_v",
+        default,
+        skip_serializing_if = "is_v0",
+        deserialize_with = "validate_persistence_version"
+    )]
+    version: u8,
     entries: HashMap<ID, Entry>,
     #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
@@ -53,6 +85,7 @@ impl Serialize for InMemory {
         let tips = self.tips.read().unwrap().clone();
 
         let serializable = SerializableDatabase {
+            version: PERSISTENCE_VERSION,
             entries,
             verification_status,
             private_keys_bytes,
@@ -70,6 +103,7 @@ impl<'de> Deserialize<'de> for InMemory {
     where
         D: Deserializer<'de>,
     {
+        // Version validation happens via deserialize_with on SerializableDatabase._v
         let serializable = SerializableDatabase::deserialize(deserializer)?;
 
         let private_keys = serializable

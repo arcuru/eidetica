@@ -262,7 +262,7 @@ impl Transaction {
     ///
     /// ```rust,ignore
     /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-    /// encrypted.initialize("my_password", "docstore:v1", "{}")?;
+    /// encrypted.initialize("my_password", "docstore:v0", "{}")?;
     ///
     /// // PasswordStore registers the encryptor internally
     /// let docstore = encrypted.unwrap::<DocStore>()?;
@@ -529,18 +529,17 @@ impl Transaction {
         if index_store.contains_subtree(&subtree_name) {
             // Type validation for existing subtree
             let subtree_info = index_store.get_subtree_info(&subtree_name)?;
-            let expected_type = T::type_id();
 
-            if subtree_info.type_id != expected_type {
+            if !T::supports_type_id(&subtree_info.type_id) {
                 return Err(StoreError::TypeMismatch {
                     store: subtree_name,
-                    expected: expected_type.to_string(),
+                    expected: T::type_id().to_string(),
                     actual: subtree_info.type_id,
                 }
                 .into());
             }
 
-            // Type matches - create the Store
+            // Type supported - create the Store
             T::new(self, subtree_name)
         } else {
             // New subtree - init registers it in _index

@@ -16,7 +16,7 @@ use crate::{
 /// Metadata for a single subtree stored in the index
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubtreeInfo {
-    /// The Store type identifier (e.g., "docstore:v1", "table:v1")
+    /// The Store type identifier (e.g., "docstore:v0", "table:v0")
     #[serde(rename = "type")]
     pub type_id: String,
 
@@ -112,7 +112,7 @@ impl IndexStore {
     ///
     /// # Arguments
     /// * `subtree_name` - The name of the subtree to register/update
-    /// * `type_id` - The Store type identifier (e.g., "docstore:v1")
+    /// * `type_id` - The Store type identifier (e.g., "docstore:v0")
     /// * `config` - Store-specific configuration as a JSON string
     ///
     /// # Returns

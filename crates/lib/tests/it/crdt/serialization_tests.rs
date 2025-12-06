@@ -620,3 +620,31 @@ fn test_large_structure_serialization() {
         Some("value_99".to_string())
     );
 }
+
+// ===== VERSION VALIDATION TESTS =====
+
+#[test]
+fn doc_deserialize_wrong_version_fails() {
+    // Doc with unsupported version should fail deserialization
+    let json = r#"{"_v": 99, "children": {}}"#;
+    let result: Result<Doc, _> = serde_json::from_str(json);
+    assert!(result.is_err(), "Should fail to deserialize wrong version");
+}
+
+#[test]
+fn doc_deserialize_missing_version_defaults_to_v0() {
+    let json = r#"{"children": {"key": {"Text": "value"}}}"#;
+    let result: Result<Doc, _> = serde_json::from_str(json);
+    assert!(result.is_ok(), "Missing version should default to v0");
+}
+
+#[test]
+fn doc_roundtrip() {
+    let mut doc = Doc::new();
+    doc.set("test", "value");
+
+    let json = serde_json::to_string(&doc).unwrap();
+    let deserialized: Doc = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(doc, deserialized);
+}

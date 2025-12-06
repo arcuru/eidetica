@@ -113,8 +113,40 @@ struct SubTreeNode {
 /// // For a new top-level tree root:
 /// let root_builder = Entry::root_builder();
 /// ```
+/// The current entry format version.
+/// v0 indicates this is an unstable protocol subject to breaking changes.
+pub const ENTRY_VERSION: u8 = 0;
+
+/// Helper to check if version is default (0) for serde skip_serializing_if
+fn is_v0(v: &u8) -> bool {
+    *v == 0
+}
+
+/// Validates the entry version during deserialization.
+fn validate_entry_version<'de, D>(deserializer: D) -> std::result::Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let version = u8::deserialize(deserializer)?;
+    if version != ENTRY_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported Entry version {version}; only version {ENTRY_VERSION} is supported"
+        )));
+    }
+    Ok(version)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
+    /// Protocol version for this entry format.
+    /// Used to verify that we support reading this entry.
+    #[serde(
+        rename = "_v",
+        default,
+        skip_serializing_if = "is_v0",
+        deserialize_with = "validate_entry_version"
+    )]
+    version: u8,
     /// The main tree node data, including the root ID, parents in the main tree, and associated data.
     tree: TreeNode,
     /// A collection of named subtrees this entry contains data for.
@@ -1051,6 +1083,7 @@ impl EntryBuilder {
         self.sort_subtrees_list();
 
         let entry = Entry {
+            version: ENTRY_VERSION,
             tree: self.tree,
             subtrees: self.subtrees,
             sig: self.sig,
@@ -1355,8 +1388,7 @@ mod tests {
         let serialized = serde_json::to_string(&node_with_none).unwrap();
         assert!(
             !serialized.contains("data"),
-            "None data should be skipped in serialization: {}",
-            serialized
+            "None data should be skipped in serialization: {serialized}"
         );
 
         // Verify serialization: Some data should produce "data" field
@@ -1368,8 +1400,7 @@ mod tests {
         let serialized = serde_json::to_string(&node_with_data).unwrap();
         assert!(
             serialized.contains(r#""data":"content""#),
-            "Some data should be serialized: {}",
-            serialized
+            "Some data should be serialized: {serialized}"
         );
     }
 }

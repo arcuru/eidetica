@@ -94,7 +94,7 @@ pub struct PasswordStoreConfig {
     /// Encryption parameters (stored in plaintext in _index).
     pub encryption: EncryptionInfo,
     /// Encrypted wrapped store metadata.
-    /// Contains the wrapped store's configuration, e.g: {"type": "docstore:v1", "config": "{}"}
+    /// Contains the wrapped store's configuration, e.g: {"type": "docstore:v0", "config": "{}"}
     pub wrapped_config: EncryptedFragment,
 }
 
@@ -346,7 +346,7 @@ impl crate::transaction::Encryptor for PasswordEncryptor {
 /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
 /// let tx = db.new_transaction()?;
 /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-/// encrypted.initialize("my_password", "docstore:v1", "{}")?;
+/// encrypted.initialize("my_password", "docstore:v0", "{}")?;
 ///
 /// let docstore = encrypted.unwrap::<DocStore>()?;
 /// docstore.set("key", "secret value")?;
@@ -512,7 +512,7 @@ impl PasswordStore {
     ///
     /// # Arguments
     /// * `password` - Password for encryption (will be zeroized after use)
-    /// * `wrapped_type_id` - Type ID of wrapped store (e.g., "docstore:v1")
+    /// * `wrapped_type_id` - Type ID of wrapped store (e.g., "docstore:v0")
     /// * `wrapped_config` - Configuration for wrapped store
     ///
     /// # Returns
@@ -535,7 +535,7 @@ impl PasswordStore {
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
     /// let tx = db.new_transaction()?;
     /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-    /// encrypted.initialize("my_password", "docstore:v1", "{}")?;
+    /// encrypted.initialize("my_password", "docstore:v0", "{}")?;
     ///
     /// let docstore = encrypted.unwrap::<DocStore>()?;
     /// docstore.set("key", "secret value")?;
@@ -873,7 +873,7 @@ impl PasswordStore {
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
     /// # let tx = db.new_transaction()?;
     /// # let mut encrypted = tx.get_store::<PasswordStore>("test")?;
-    /// # encrypted.initialize("pass", "docstore:v1", "{}")?;
+    /// # encrypted.initialize("pass", "docstore:v0", "{}")?;
     /// # tx.commit()?;
     /// # let tx2 = db.new_transaction()?;
     /// let mut encrypted = tx2.get_store::<PasswordStore>("test")?;

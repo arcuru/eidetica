@@ -569,7 +569,9 @@ use eidetica::{Store, store::PasswordStore};
 pub fn init_password_store_docstore(tree: &eidetica::Database, store_name: &str, password: &str) {
     let tx = tree.new_transaction().unwrap();
     let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
-    encrypted.initialize(password, "docstore:v1", "{}").unwrap();
+    encrypted
+        .initialize(password, DocStore::type_id(), "{}")
+        .unwrap();
     tx.commit().unwrap();
 }
 
@@ -594,7 +596,9 @@ pub fn create_password_docstore_with_data(
 ) -> eidetica::entry::ID {
     let tx = tree.new_transaction().unwrap();
     let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
-    encrypted.initialize(password, "docstore:v1", "{}").unwrap();
+    encrypted
+        .initialize(password, DocStore::type_id(), "{}")
+        .unwrap();
 
     let docstore = encrypted.unwrap::<DocStore>().unwrap();
     for (key, value) in data {

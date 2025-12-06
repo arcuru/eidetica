@@ -162,7 +162,7 @@ fn test_index_store_update_existing() {
     store.set("key2", "value2").unwrap();
 
     index
-        .set_subtree_info("my_subtree", "docstore:v1", r#"{"updated":"config"}"#)
+        .set_subtree_info("my_subtree", DocStore::type_id(), r#"{"updated":"config"}"#)
         .unwrap();
     tx.commit().unwrap();
 
@@ -289,7 +289,7 @@ fn test_index_update_includes_target_subtree() {
     store.set("key2", "value2").unwrap();
 
     index
-        .set_subtree_info("my_subtree", "docstore:v1", r#"{"new":"config"}"#)
+        .set_subtree_info("my_subtree", DocStore::type_id(), r#"{"new":"config"}"#)
         .unwrap();
 
     let entry_id = tx.commit().unwrap();
@@ -323,7 +323,7 @@ fn test_auto_dummy_write_on_index_update() {
 
     // This should automatically add a dummy write to "target"
     index
-        .set_subtree_info("target", "docstore:v1", r#"{"modified":"config"}"#)
+        .set_subtree_info("target", DocStore::type_id(), r#"{"modified":"config"}"#)
         .unwrap();
 
     let entry_id = tx.commit().unwrap();
@@ -442,13 +442,13 @@ fn test_multi_store_database_index_complete() {
     let index = tx.get_index_store().unwrap();
 
     let doc_info = index.get_subtree_info("documents").unwrap();
-    assert_eq!(doc_info.type_id, "docstore:v1");
+    assert_eq!(doc_info.type_id, DocStore::type_id());
 
     let table_info = index.get_subtree_info("records").unwrap();
-    assert_eq!(table_info.type_id, "table:v1");
+    assert_eq!(table_info.type_id, Table::<()>::type_id());
 
     let meta_info = index.get_subtree_info("metadata").unwrap();
-    assert_eq!(meta_info.type_id, "docstore:v1");
+    assert_eq!(meta_info.type_id, DocStore::type_id());
 
     // Verify list is complete
     let subtrees = index.list_subtrees().unwrap();
@@ -766,7 +766,7 @@ fn test_accessing_store_registers_in_index() {
 
     // Verify the type is correct
     let info = index.get_subtree_info("my_subtree").unwrap();
-    assert_eq!(info.type_id, "docstore:v1");
+    assert_eq!(info.type_id, DocStore::type_id());
 }
 
 #[test]
@@ -800,15 +800,15 @@ fn test_multiple_stores_registered_on_access() {
     // Verify types are correct
     assert_eq!(
         index.get_subtree_info("store1").unwrap().type_id,
-        "docstore:v1"
+        DocStore::type_id()
     );
     assert_eq!(
         index.get_subtree_info("store2").unwrap().type_id,
-        "table:v1"
+        Table::<()>::type_id()
     );
     assert_eq!(
         index.get_subtree_info("store3").unwrap().type_id,
-        "docstore:v1"
+        DocStore::type_id()
     );
 }
 
@@ -843,18 +843,15 @@ fn test_type_mismatch_docstore_as_table() {
     let err = result.err().unwrap();
     assert!(
         err.to_string().contains("Type mismatch"),
-        "Error should mention type mismatch: {}",
-        err
+        "Error should mention type mismatch: {err}"
     );
     assert!(
-        err.to_string().contains("docstore:v1"),
-        "Error should mention actual type: {}",
-        err
+        err.to_string().contains(DocStore::type_id()),
+        "Error should mention actual type: {err}"
     );
     assert!(
-        err.to_string().contains("table:v1"),
-        "Error should mention expected type: {}",
-        err
+        err.to_string().contains(Table::<()>::type_id()),
+        "Error should mention expected type: {err}"
     );
 }
 
@@ -890,8 +887,7 @@ fn test_type_mismatch_table_as_docstore() {
     let err = result.err().unwrap();
     assert!(
         err.to_string().contains("Type mismatch"),
-        "Error should mention type mismatch: {}",
-        err
+        "Error should mention type mismatch: {err}"
     );
 }
 

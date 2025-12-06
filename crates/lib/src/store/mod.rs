@@ -61,15 +61,42 @@ pub trait Store: Sized {
     ///
     /// This identifier is stored in the `_index` subtree to record what type of Store
     /// manages each subtree's data. The format should be `"storetype:vN"` where N is
-    /// the version number (e.g., "docstore:v1", "table:v1", "ydoc:v1").
+    /// the version number (e.g., "docstore:v0", "table:v0", "ydoc:v0").
+    /// v0 indicates an unstable protocol subject to breaking changes.
     ///
     /// # Examples
     ///
     /// ```
     /// # use eidetica::{Store, store::DocStore};
-    /// assert_eq!(DocStore::type_id(), "docstore:v1");
+    /// assert_eq!(DocStore::type_id(), "docstore:v0");
     /// ```
     fn type_id() -> &'static str;
+
+    /// Returns whether this Store supports reading the given type_id.
+    ///
+    /// This allows Stores to support multiple type_id versions for migration scenarios.
+    /// For example, a `DocStore` v1 implementation could support reading both
+    /// `"docstore:v0"` and `"docstore:v1"` data.
+    ///
+    /// The default implementation only supports the current `type_id()`.
+    /// Override this method to support reading older versions if necessary.
+    ///
+    /// # Arguments
+    /// * `type_id` - The type_id string from `_index` to check
+    ///
+    /// # Returns
+    /// `true` if this Store can read data with the given type_id
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::{Store, store::DocStore};
+    /// assert!(DocStore::supports_type_id("docstore:v0"));
+    /// assert!(!DocStore::supports_type_id("table:v0"));
+    /// ```
+    fn supports_type_id(type_id: &str) -> bool {
+        type_id == Self::type_id()
+    }
 
     /// Returns the default configuration for this Store type as a JSON string.
     ///

@@ -22,7 +22,7 @@ The `_index` subtree is a special system subtree that serves as a registry for a
 **Key Features**:
 
 - **Automatic Registration**: Subtrees are automatically registered when first accessed via `get_store()`
-- **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v1", "table:v1")
+- **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0")
 - **Configuration Storage**: Stores Store-specific configuration as JSON
 - **Query API**: Provides IndexStore for querying registered subtrees
 
@@ -31,7 +31,7 @@ The `_index` subtree is a special system subtree that serves as a registry for a
 The `_index` subtree provides essential metadata capabilities for Eidetica databases:
 
 1. **Type Discovery**: Every subtree has an associated type identifier in `_index`, enabling generic tooling to understand what Store type manages each subtree
-2. **Versioning**: Type identifiers include arbitrary version information (e.g., "docstore:v1"), supporting schema migrations and format evolution
+2. **Versioning**: Type identifiers include arbitrary version information (e.g., "docstore:v0"), supporting schema migrations and format evolution
 3. **Configuration**: Store-specific settings are stored alongside type information, enabling per-subtree customization
 4. **Discoverability**: The IndexStore API enables querying all registered subtrees, supporting database browsers and tooling
 
@@ -72,11 +72,11 @@ Each registered subtree has an entry in `_index` with the following structure:
 {
   "_index": {
     "users": {
-      "type": "table:v1",
+      "type": "table:v0",
       "config": "{}"
     },
     "documents": {
-      "type": "ydoc:v1",
+      "type": "ydoc:v0",
       "config": "{\"compression\":\"zstd\"}"
     }
   }
@@ -85,7 +85,7 @@ Each registered subtree has an entry in `_index` with the following structure:
 
 **Fields**:
 
-- `type`: The Store type identifier from `Store::type_id()` (e.g., "docstore:v1")
+- `type`: The Store type identifier from `Store::type_id()` (e.g., "docstore:v0")
 - `config`: Store-specific configuration as a JSON string
 
 ### Auto-Registration
@@ -118,7 +118,7 @@ This allows subtrees to appear in Entries purely to satisfy the constraint witho
 
 The `Store` trait provides methods for registry integration:
 
-- **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v1", "table:v1")
+- **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v0", "table:v0")
 - **`default_config()`**: Returns default configuration as JSON string
 - **`init()`**: Creates store and registers it in `_index`
 - **`get_config()` / `set_config()`**: Read/write configuration in `_index`
@@ -166,7 +166,7 @@ let index = txn.get_index_store()?;
 assert!(index.contains_subtree("config"));
 
 let info = index.get_subtree_info("config")?;
-assert_eq!(info.type_id, "docstore:v1");
+assert_eq!(info.type_id, "docstore:v0");
 assert_eq!(info.config, "{}");
 # Ok(())
 # }
@@ -196,7 +196,7 @@ let index = txn.get_index_store()?;
 
 index.set_subtree_info(
     "documents",
-    "ydoc:v1",
+    "ydoc:v0",
     r#"{"compression":"zstd","cache_size":1024}"#
 )?;
 
@@ -206,7 +206,7 @@ txn.commit()?;
 let txn = db.new_transaction()?;
 let index = txn.get_index_store()?;
 let info = index.get_subtree_info("documents")?;
-assert_eq!(info.type_id, "ydoc:v1");
+assert_eq!(info.type_id, "ydoc:v0");
 assert!(info.config.contains("compression"));
 # Ok(())
 # }

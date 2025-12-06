@@ -57,7 +57,7 @@ where
     }
 
     fn type_id() -> &'static str {
-        "table:v1"
+        "table:v0"
     }
 }
 

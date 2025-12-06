@@ -45,7 +45,7 @@ impl Store for DocStore {
     }
 
     fn type_id() -> &'static str {
-        "docstore:v1"
+        "docstore:v0"
     }
 }
 

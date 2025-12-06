@@ -220,7 +220,7 @@ impl Store for YDoc {
     }
 
     fn type_id() -> &'static str {
-        "ydoc:v1"
+        "ydoc:v0"
     }
 }
 

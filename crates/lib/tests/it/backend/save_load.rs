@@ -1,5 +1,7 @@
 use std::{fs, io::Write, path::PathBuf};
 
+use tempfile::TempDir;
+
 use eidetica::{
     Entry,
     backend::{BackendImpl, database::InMemory},
@@ -174,4 +176,49 @@ fn test_save_load_with_various_entries() {
 
     // Cleanup
     fs::remove_file(file_path).unwrap();
+}
+
+#[test]
+fn test_load_wrong_version_fails() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("wrong_version.json");
+
+    // Write a valid JSON structure but with wrong version
+    {
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"_v":99,"entries":{{}},"verification_status":{{}},"private_keys_bytes":{{}},"tips":{{}}}}"#
+        )
+        .unwrap();
+    }
+
+    let result = InMemory::load_from_file(&path);
+    assert!(
+        result.is_err(),
+        "Should fail to load file with wrong version"
+    );
+}
+
+#[test]
+fn test_load_missing_version_defaults_to_v0() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("missing_version.json");
+
+    // Write JSON without version field - should default to v0
+    {
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"entries":{{}},"verification_status":{{}},"private_keys_bytes":{{}},"tips":{{}}}}"#
+        )
+        .unwrap();
+    }
+
+    let result = InMemory::load_from_file(&path);
+    assert!(
+        result.is_ok(),
+        "Should load file without version (defaults to v0): {:?}",
+        result.err()
+    );
 }
