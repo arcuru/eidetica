@@ -136,7 +136,7 @@ tasks:
       # This is a workaround to remove and rebuild only 1
       - rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
       - cargo build -p eidetica
-      - RUST_LOG=warn mdbook test docs -L target/debug/deps
+      - mdbook test docs -L target/debug/deps
   book:clean:
     desc: Clean the mdbook build directory
     cmds:

@@ -40,9 +40,6 @@ RUN chown eidetica:eidetica /usr/local/bin/eidetica
 USER eidetica
 WORKDIR /home/eidetica
 
-# Environment variables
-ENV RUST_LOG=info
-
 # Expose default port (adjust if needed)
 EXPOSE 3000
 

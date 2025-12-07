@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
+            EnvFilter::from_default_env().add_directive("eidetica=warn".parse().unwrap()),
         )
         .init();
 

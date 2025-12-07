@@ -156,9 +156,6 @@
 
           config = {
             Cmd = ["${eidetica-bin}/bin/eidetica"];
-            Env = [
-              "RUST_LOG=info"
-            ];
             ExposedPorts = {
               "3000/tcp" = {};
             };
@@ -271,7 +268,7 @@
               checkPhase = ''
                 runHook preCheck
                 cd docs
-                RUST_LOG=warn mdbook test . -L ../target/debug/deps
+                mdbook test . -L ../target/debug/deps
                 runHook postCheck
               '';
 
