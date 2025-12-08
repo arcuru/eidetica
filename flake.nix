@@ -223,6 +223,7 @@
           # Test library with minimal features (no defaults)
           test-minimal = craneLib.cargoNextest (releaseArgs
             // {
+              pname = "eidetica-minimal";
               cargoNextestExtraArgs = "-p eidetica --no-default-features";
             });
 
