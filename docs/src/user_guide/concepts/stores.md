@@ -413,23 +413,25 @@ Use cases for `YDoc`:
 
 For detailed usage and examples, see the [Encryption Guide](../encryption_guide.md).
 
-## Subtree Registry and IndexStore
+## Subtree Index
 
-Eidetica automatically maintains a registry of all user-created subtrees in a special `_index` subtree. This registry stores metadata about each subtree, including its Store type and configuration.
+Eidetica automatically maintains an index of all user-created subtrees in a special `_index` subtree. This index stores metadata about each subtree, including its Store type and configuration.
 
-### What is the Index?
+### What is the Subtree Index?
 
-The `_index` subtree is a system-managed registry that tracks:
+The `_index` subtree tracks:
 
 - **Subtree names**: Which subtrees exist in the database
 - **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0")
 - **Configuration**: Store-specific settings for each subtree
 
-This registry is maintained automatically when you access stores via `get_store()` and is useful for:
+The index is maintained automatically when you access stores via `get_store()` and is useful for:
 
 - **Discovery**: Finding what subtrees exist in a database
 - **Type information**: Understanding what Store type manages each subtree
 - **Tooling**: Building generic database browsers and inspectors
+
+The index is accessed via `Transaction::get_index()`, which returns a `Registry` - a general-purpose type for managing `name → {type, config}` mappings.
 
 ### Automatic Registration
 
@@ -461,11 +463,11 @@ txn.commit()?;
 
 Registration happens immediately when `get_store()` is called for a new subtree.
 
-**System Subtrees**: The special system subtrees (`_settings`, `_index`, `_root`) are excluded from the registry to avoid circular dependencies.
+**System Subtrees**: The special system subtrees (`_settings`, `_index`, `_root`) are excluded from the index to avoid circular dependencies.
 
 ### Querying the Index
 
-Use `IndexStore` to query information about registered subtrees:
+Use `get_index()` to query information about registered subtrees:
 
 ```rust
 # extern crate eidetica;
@@ -491,18 +493,18 @@ Use `IndexStore` to query information about registered subtrees:
 # setup_txn.commit()?;
 // Query the index to discover subtrees
 let txn = database.new_transaction()?;
-let index = txn.get_index_store()?;
+let index = txn.get_index()?;
 
 // List all registered subtrees
-let subtrees = index.list_subtrees()?;
+let subtrees = index.list()?;
 for name in subtrees {
     println!("Found subtree: {}", name);
 }
 
 // Check if a specific subtree exists
-if index.contains_subtree("config") {
+if index.contains("config") {
     // Get metadata about the subtree
-    let info = index.get_subtree_info("config")?;
+    let info = index.get_entry("config")?;
     println!("Type: {}", info.type_id);  // e.g., "docstore:v0"
     println!("Config: {}", info.config);  // Store-specific configuration
 }
@@ -512,16 +514,16 @@ if index.contains_subtree("config") {
 
 ### Manual Registration
 
-You can manually register or update subtree metadata using `IndexStore::set_subtree_info()`. This is useful for pre-registering subtrees with custom configuration:
+You can manually register or update subtree metadata using `set_entry()` on the index. This is useful for pre-registering subtrees with custom configuration:
 
 <!-- Code block ignored: Manual registration requires custom config which varies by Store type -->
 
 ```rust,ignore
 let txn = database.new_transaction()?;
-let index = txn.get_index_store()?;
+let index = txn.get_index()?;
 
 // Pre-register a subtree with custom configuration
-index.set_subtree_info(
+index.set_entry(
     "documents",
     "ydoc:v0",
     r#"{"compression":"zstd","cache_size":1024}"#
@@ -532,9 +534,9 @@ txn.commit()?;
 // Future accesses will use the registered configuration
 ```
 
-### When to Use IndexStore
+### When to Use the Subtree Index
 
-Many applications don't need to interact with `IndexStore` directly and can let auto-registration handle registration automatically. Use `IndexStore` when you need to:
+Many applications don't need to interact with the subtree index directly and can let auto-registration handle everything automatically. Use `get_index()` when you need to:
 
 - **List subtrees**: Build a database browser or inspector
 - **Query metadata**: Check Store types or configurations

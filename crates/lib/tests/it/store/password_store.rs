@@ -4,7 +4,7 @@
 //! encryption/decryption, DocStore integration, and Table integration.
 
 use eidetica::{
-    Store,
+    Registered,
     crdt::{Doc, doc::Value},
     store::{DocStore, PasswordStore, Table},
 };
@@ -106,9 +106,9 @@ fn test_password_store_config_serialization() {
     init_password_store_docstore(&database, "secrets", "my_password");
 
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("secrets").unwrap();
+    let info = index.get_entry("secrets").unwrap();
     assert_eq!(info.type_id, PasswordStore::type_id());
 
     let config_json = serde_json::from_str::<serde_json::Value>(&info.config);

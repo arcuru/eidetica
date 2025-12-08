@@ -140,6 +140,14 @@ pub enum SyncError {
     /// Bootstrap request is pending manual approval.
     #[error("Bootstrap request pending approval (request_id: {request_id}): {message}")]
     BootstrapPending { request_id: String, message: String },
+
+    /// Transport configuration type mismatch.
+    #[error("Transport config type mismatch for '{name}': expected '{expected}', found '{found}'")]
+    TransportTypeMismatch {
+        name: String,
+        expected: String,
+        found: String,
+    },
 }
 
 impl SyncError {

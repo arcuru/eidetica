@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use iroh::{
-    Endpoint, NodeAddr, RelayMode, Watcher,
+    Endpoint, NodeAddr, RelayMode, SecretKey, Watcher,
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, shared::*};
+use super::{SyncTransport, TransportConfig, shared::*};
 use crate::{
     Result,
+    store::Registered,
     sync::{
         error::SyncError,
         handler::SyncHandler,
@@ -58,6 +59,114 @@ impl TryFrom<NodeAddrInfo> for NodeAddr {
             None, // Direct addresses are provided, relay will be used if needed
             info.direct_addresses,
         ))
+    }
+}
+
+/// Serializable relay mode setting for transport configuration.
+///
+/// This is a simplified version of Iroh's `RelayMode` that can be
+/// persisted to storage. Custom relay configurations are not supported
+/// in the persisted config (use the builder API for custom relays).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub enum RelayModeSetting {
+    /// Use n0's production relay servers (recommended for most deployments)
+    #[default]
+    Default,
+    /// Use n0's staging relay infrastructure (for testing)
+    Staging,
+    /// Disable relay servers entirely (local/direct connections only)
+    Disabled,
+}
+
+impl From<RelayModeSetting> for RelayMode {
+    fn from(setting: RelayModeSetting) -> Self {
+        match setting {
+            RelayModeSetting::Default => RelayMode::Default,
+            RelayModeSetting::Staging => RelayMode::Staging,
+            RelayModeSetting::Disabled => RelayMode::Disabled,
+        }
+    }
+}
+
+/// Persistable configuration for the Iroh transport.
+///
+/// This configuration is stored in the `_sync` database's `transport_configs`
+/// subtree and is automatically loaded when `enable_iroh_transport()` is called.
+///
+/// The most important field is `secret_key_hex`, which stores the node's
+/// cryptographic identity. When this is persisted, the node will have the
+/// same address across restarts.
+///
+/// # Example
+///
+/// ```ignore
+/// use eidetica::sync::transports::iroh::IrohTransportConfig;
+///
+/// // Create a default config (secret key will be generated on first use)
+/// let config = IrohTransportConfig::default();
+///
+/// // Or create with specific settings
+/// let config = IrohTransportConfig {
+///     relay_mode: RelayModeSetting::Disabled,
+///     ..Default::default()
+/// };
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrohTransportConfig {
+    /// Secret key bytes (hex encoded for JSON storage).
+    ///
+    /// When `None`, a new secret key will be generated on first use
+    /// and stored back to the config. Once set, this ensures the node
+    /// maintains the same identity (and thus address) across restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_key_hex: Option<String>,
+
+    /// Relay mode setting for NAT traversal.
+    #[serde(default)]
+    pub relay_mode: RelayModeSetting,
+}
+
+impl Default for IrohTransportConfig {
+    fn default() -> Self {
+        Self {
+            secret_key_hex: None,
+            relay_mode: RelayModeSetting::Default,
+        }
+    }
+}
+
+impl Registered for IrohTransportConfig {
+    fn type_id() -> &'static str {
+        "iroh:v0"
+    }
+}
+
+impl TransportConfig for IrohTransportConfig {}
+
+impl IrohTransportConfig {
+    /// Get the secret key from config, or generate a new one.
+    ///
+    /// If a secret key is already stored in the config, it will be decoded
+    /// and returned. Otherwise, a new random secret key is generated,
+    /// stored in the config (as hex), and returned.
+    ///
+    /// This method mutates the config to store the newly generated key,
+    /// so the caller should persist the config after calling this.
+    pub fn get_or_create_secret_key(&mut self) -> SecretKey {
+        if let Some(hex) = &self.secret_key_hex {
+            let bytes = hex::decode(hex).expect("valid hex in stored secret key");
+            let bytes: [u8; 32] = bytes.try_into().expect("secret key should be 32 bytes");
+            SecretKey::from_bytes(&bytes)
+        } else {
+            let key = SecretKey::generate(rand::thread_rng());
+            self.secret_key_hex = Some(hex::encode(key.to_bytes()));
+            key
+        }
+    }
+
+    /// Check if a secret key has been set in this config.
+    pub fn has_secret_key(&self) -> bool {
+        self.secret_key_hex.is_some()
     }
 }
 
@@ -111,6 +220,7 @@ impl TryFrom<NodeAddrInfo> for NodeAddr {
 #[derive(Debug, Clone)]
 pub struct IrohTransportBuilder {
     relay_mode: RelayMode,
+    secret_key: Option<SecretKey>,
 }
 
 impl IrohTransportBuilder {
@@ -121,6 +231,7 @@ impl IrohTransportBuilder {
     pub fn new() -> Self {
         Self {
             relay_mode: RelayMode::Default, // Use n0's production relays by default
+            secret_key: None,
         }
     }
 
@@ -151,6 +262,36 @@ impl IrohTransportBuilder {
         self
     }
 
+    /// Set the secret key for persistent node identity.
+    ///
+    /// When a secret key is provided, the node will have the same
+    /// cryptographic identity (and thus the same address) across restarts.
+    /// This is essential for maintaining stable peer connections.
+    ///
+    /// If not set, a random secret key will be generated on each startup,
+    /// resulting in a different node address each time.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use eidetica::sync::transports::iroh::IrohTransport;
+    /// use iroh::SecretKey;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Load secret key from storage
+    /// let secret_key = SecretKey::generate(rand::thread_rng());
+    ///
+    /// let transport = IrohTransport::builder()
+    ///     .secret_key(secret_key)
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn secret_key(mut self, key: SecretKey) -> Self {
+        self.secret_key = Some(key);
+        self
+    }
+
     /// Build the IrohTransport with the configured options.
     ///
     /// Returns a configured `IrohTransport` ready to be used with
@@ -160,8 +301,9 @@ impl IrohTransportBuilder {
             endpoint: Arc::new(Mutex::new(None)),
             server_state: ServerState::new(),
             handler: None,
-            config: IrohTransportConfig {
+            runtime_config: IrohRuntimeConfig {
                 relay_mode: self.relay_mode,
+                secret_key: self.secret_key,
             },
         })
     }
@@ -173,10 +315,14 @@ impl Default for IrohTransportBuilder {
     }
 }
 
-/// Configuration for IrohTransport
+/// Runtime configuration for IrohTransport (internal, not persisted).
+///
+/// This holds the actual runtime values used by the transport,
+/// including the decoded secret key and relay mode.
 #[derive(Debug, Clone)]
-struct IrohTransportConfig {
+struct IrohRuntimeConfig {
     relay_mode: RelayMode,
+    secret_key: Option<SecretKey>,
 }
 
 /// Iroh transport implementation using QUIC peer-to-peer networking.
@@ -223,8 +369,8 @@ pub struct IrohTransport {
     server_state: ServerState,
     /// Handler for processing sync requests.
     handler: Option<Arc<dyn SyncHandler>>,
-    /// Transport configuration
-    config: IrohTransportConfig,
+    /// Runtime configuration (relay mode, secret key, etc.)
+    runtime_config: IrohRuntimeConfig,
 }
 
 impl IrohTransport {
@@ -280,9 +426,14 @@ impl IrohTransport {
 
         if endpoint_lock.is_none() {
             // Create a new Iroh endpoint with configured relay mode
-            let builder = Endpoint::builder()
+            let mut builder = Endpoint::builder()
                 .alpns(vec![SYNC_ALPN.to_vec()])
-                .relay_mode(self.config.relay_mode.clone());
+                .relay_mode(self.runtime_config.relay_mode.clone());
+
+            // Use the provided secret key for persistent identity
+            if let Some(secret_key) = &self.runtime_config.secret_key {
+                builder = builder.secret_key(secret_key.clone());
+            }
 
             let endpoint = builder.bind().await.map_err(|e| {
                 SyncError::TransportInit(format!("Failed to create Iroh endpoint: {e}"))

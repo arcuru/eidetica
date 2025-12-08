@@ -12,8 +12,9 @@ pub use table::Table;
 mod settings_store;
 pub use settings_store::SettingsStore;
 
-mod index_store;
-pub(crate) use index_store::IndexStore;
+mod registry;
+pub use registry::Registered;
+pub use registry::Registry;
 
 mod password_store;
 pub use password_store::{
@@ -35,7 +36,9 @@ pub use ydoc::{YDoc, YrsBinary};
 /// Users typically interact with `Store` implementations obtained either via:
 /// 1. `Database::get_store_viewer`: For read-only access to the current merged state.
 /// 2. `Transaction::get_store`: For staging modifications within an atomic operation.
-pub trait Store: Sized {
+///
+/// Store types must also implement [`Registered`] to provide their type identifier.
+pub trait Store: Sized + Registered {
     /// Creates a new `Store` handle associated with a specific transaction.
     ///
     /// This constructor is typically called internally by `Transaction::get_store` or
@@ -56,47 +59,6 @@ pub trait Store: Sized {
     /// This is used by the default implementations of `init()`, `get_config()`,
     /// and `set_config()` to access the index store.
     fn transaction(&self) -> &Transaction;
-
-    /// Returns a unique identifier for this Store type, including version information.
-    ///
-    /// This identifier is stored in the `_index` subtree to record what type of Store
-    /// manages each subtree's data. The format should be `"storetype:vN"` where N is
-    /// the version number (e.g., "docstore:v0", "table:v0", "ydoc:v0").
-    /// v0 indicates an unstable protocol subject to breaking changes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use eidetica::{Store, store::DocStore};
-    /// assert_eq!(DocStore::type_id(), "docstore:v0");
-    /// ```
-    fn type_id() -> &'static str;
-
-    /// Returns whether this Store supports reading the given type_id.
-    ///
-    /// This allows Stores to support multiple type_id versions for migration scenarios.
-    /// For example, a `DocStore` v1 implementation could support reading both
-    /// `"docstore:v0"` and `"docstore:v1"` data.
-    ///
-    /// The default implementation only supports the current `type_id()`.
-    /// Override this method to support reading older versions if necessary.
-    ///
-    /// # Arguments
-    /// * `type_id` - The type_id string from `_index` to check
-    ///
-    /// # Returns
-    /// `true` if this Store can read data with the given type_id
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use eidetica::{Store, store::DocStore};
-    /// assert!(DocStore::supports_type_id("docstore:v0"));
-    /// assert!(!DocStore::supports_type_id("table:v0"));
-    /// ```
-    fn supports_type_id(type_id: &str) -> bool {
-        type_id == Self::type_id()
-    }
 
     /// Returns the default configuration for this Store type as a JSON string.
     ///
@@ -151,8 +113,8 @@ pub trait Store: Sized {
     /// # Errors
     /// Returns an error if the subtree is not registered in `_index`.
     fn get_config(&self) -> Result<String> {
-        let index = self.transaction().get_index_store()?;
-        let info = index.get_subtree_info(self.name())?;
+        let index = self.transaction().get_index()?;
+        let info = index.get_entry(self.name())?;
         Ok(info.config)
     }
 
@@ -168,8 +130,8 @@ pub trait Store: Sized {
     /// # Returns
     /// A `Result<()>` indicating success or failure.
     fn set_config(&self, config: impl Into<String>) -> Result<()> {
-        let index = self.transaction().get_index_store()?;
-        index.set_subtree_info(self.name(), Self::type_id(), config.into())?;
+        let index = self.transaction().get_index()?;
+        index.set_entry(self.name(), Self::type_id(), config.into())?;
         Ok(())
     }
 }

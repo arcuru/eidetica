@@ -34,7 +34,7 @@ use crate::{
     constants::{INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
-    store::{IndexStore, SettingsStore, StoreError},
+    store::{Registry, SettingsStore, StoreError},
 };
 
 /// Trait for encrypting/decrypting subtree data transparently
@@ -378,22 +378,22 @@ impl Transaction {
         SettingsStore::new(self)
     }
 
-    /// Gets a handle to the IndexStore for managing subtree registry and metadata.
+    /// Gets a handle to the Index for managing subtree registry and metadata.
     ///
-    /// The IndexStore provides access to the `_index` subtree, which stores metadata
+    /// The Index provides access to the `_index` subtree, which stores metadata
     /// about all subtrees in the database including their type identifiers and configurations.
     ///
     /// # Returns
     ///
-    /// A `Result<IndexStore>` containing the handle for managing the index.
+    /// A `Result<Registry>` containing the handle for managing the index.
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Unable to create the IndexStore for the _index subtree
+    /// - Unable to create the Registry for the _index subtree
     /// - Operation has already been committed
-    pub fn get_index_store(&self) -> Result<IndexStore> {
-        IndexStore::new(self)
+    pub fn get_index(&self) -> Result<Registry> {
+        Registry::new(self, INDEX)
     }
 
     /// Set the tree root field for the entry being built.
@@ -525,10 +525,10 @@ impl Transaction {
         }
 
         // Check _index to determine if this is a new or existing subtree
-        let index_store = self.get_index_store()?;
-        if index_store.contains_subtree(&subtree_name) {
+        let index_store = self.get_index()?;
+        if index_store.contains(&subtree_name) {
             // Type validation for existing subtree
-            let subtree_info = index_store.get_subtree_info(&subtree_name)?;
+            let subtree_info = index_store.get_entry(&subtree_name)?;
 
             if !T::supports_type_id(&subtree_info.type_id) {
                 return Err(StoreError::TypeMismatch {

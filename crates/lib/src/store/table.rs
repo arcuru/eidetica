@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     Result, Store, Transaction,
     crdt::{CRDT, Doc},
-    store::errors::StoreError,
+    store::{Registered, errors::StoreError},
 };
 
 /// A Row-based Store
@@ -36,6 +36,15 @@ where
     phantom: PhantomData<T>,
 }
 
+impl<T> Registered for Table<T>
+where
+    T: Serialize + for<'de> Deserialize<'de> + Clone,
+{
+    fn type_id() -> &'static str {
+        "table:v0"
+    }
+}
+
 impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
@@ -54,10 +63,6 @@ where
 
     fn transaction(&self) -> &Transaction {
         &self.atomic_op
-    }
-
-    fn type_id() -> &'static str {
-        "table:v0"
     }
 }
 

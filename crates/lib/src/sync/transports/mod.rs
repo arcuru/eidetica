@@ -7,9 +7,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     Entry, Result,
+    store::Registered,
     sync::{
         handler::SyncHandler,
         peer_types::Address,
@@ -20,6 +22,39 @@ use crate::{
 pub mod http;
 pub mod iroh;
 pub mod shared;
+
+/// Configuration that can be persisted for a transport.
+///
+/// Each transport implementation can define its own configuration type
+/// that implements this trait. The configuration is stored in the `_sync`
+/// database's `transports` subtree and loaded when the transport is enabled.
+///
+/// Transport configs must also implement [`Registered`] to provide their type identifier.
+///
+/// # Example
+///
+/// ```ignore
+/// use serde::{Serialize, Deserialize};
+/// use eidetica::store::Registered;
+/// use eidetica::sync::transports::TransportConfig;
+///
+/// #[derive(Clone, Serialize, Deserialize, Default)]
+/// pub struct MyTransportConfig {
+///     pub some_setting: String,
+/// }
+///
+/// impl Registered for MyTransportConfig {
+///     fn type_id() -> &'static str {
+///         "my-transport:v0"
+///     }
+/// }
+///
+/// impl TransportConfig for MyTransportConfig {}
+/// ```
+pub trait TransportConfig:
+    Registered + Serialize + DeserializeOwned + Default + Clone + Send + Sync
+{
+}
 
 /// Trait for implementing sync communication over different transports.
 ///

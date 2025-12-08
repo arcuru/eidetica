@@ -6,7 +6,7 @@ use crate::{
         CRDT, Doc,
         doc::{List, Path, PathBuf, PathError, Value},
     },
-    store::errors::StoreError,
+    store::{Registered, errors::StoreError},
 };
 
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
@@ -28,6 +28,12 @@ pub struct DocStore {
     atomic_op: Transaction,
 }
 
+impl Registered for DocStore {
+    fn type_id() -> &'static str {
+        "docstore:v0"
+    }
+}
+
 impl Store for DocStore {
     fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
@@ -42,10 +48,6 @@ impl Store for DocStore {
 
     fn transaction(&self) -> &Transaction {
         &self.atomic_op
-    }
-
-    fn type_id() -> &'static str {
-        "docstore:v0"
     }
 }
 

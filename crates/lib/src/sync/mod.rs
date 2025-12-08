@@ -66,7 +66,7 @@ use crate::{
     crdt::Doc,
     entry::ID,
     instance::backend::Backend,
-    store::{DocStore, SettingsStore},
+    store::{DocStore, Registry, SettingsStore},
 };
 
 pub mod background;
@@ -90,11 +90,18 @@ pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use protocol::{SyncRequest, SyncResponse, SyncTreeRequest};
 use std::time::SystemTime;
 use tokio::sync::{mpsc, oneshot};
-use transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
+use transports::{
+    SyncTransport, TransportConfig,
+    http::HttpTransport,
+    iroh::{IrohTransport, IrohTransportConfig},
+};
 use user_sync_manager::UserSyncManager;
 
 /// Private constant for the sync settings subtree name
 const SETTINGS_SUBTREE: &str = "settings_map";
+
+/// Private constant for the transports registry subtree name
+const TRANSPORTS_SUBTREE: &str = "transports";
 
 /// Constant for the device identity key name
 /// This is the name of the Device Key used as the shared identifier for this Device.
@@ -333,6 +340,92 @@ impl Sync {
             Err(e) if e.is_not_found() => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Load a transport configuration from the `_sync` database.
+    ///
+    /// Transport configurations are stored in the `transports` subtree,
+    /// keyed by their name. If no configuration exists for the transport,
+    /// returns the default configuration.
+    ///
+    /// # Type Parameters
+    /// * `T` - The transport configuration type implementing [`TransportConfig`]
+    ///
+    /// # Arguments
+    /// * `name` - The name of the transport instance (e.g., "iroh", "http")
+    ///
+    /// # Returns
+    /// The loaded configuration, or the default if not found.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use eidetica::sync::transports::iroh::IrohTransportConfig;
+    ///
+    /// let config: IrohTransportConfig = sync.load_transport_config("iroh")?;
+    /// ```
+    pub fn load_transport_config<T: TransportConfig>(&self, name: &str) -> Result<T> {
+        let tx = self.sync_tree.new_transaction()?;
+        let registry = Registry::new(&tx, TRANSPORTS_SUBTREE)?;
+
+        match registry.get_entry(name) {
+            Ok(entry) => {
+                // Verify the type matches
+                if entry.type_id != T::type_id() {
+                    return Err(SyncError::TransportTypeMismatch {
+                        name: name.to_string(),
+                        expected: T::type_id().to_string(),
+                        found: entry.type_id,
+                    }
+                    .into());
+                }
+                serde_json::from_str(&entry.config).map_err(|e| {
+                    SyncError::SerializationError(format!(
+                        "Failed to deserialize transport config '{}': {}",
+                        name, e
+                    ))
+                    .into()
+                })
+            }
+            Err(e) if e.is_not_found() => Ok(T::default()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Save a transport configuration to the `_sync` database.
+    ///
+    /// Transport configurations are stored in the `transports` subtree,
+    /// keyed by their name. This persists the configuration so it can
+    /// be loaded on subsequent startups.
+    ///
+    /// # Type Parameters
+    /// * `T` - The transport configuration type implementing [`TransportConfig`]
+    ///
+    /// # Arguments
+    /// * `name` - The name of the transport instance (e.g., "iroh", "http")
+    /// * `config` - The configuration to save
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use eidetica::sync::transports::iroh::IrohTransportConfig;
+    ///
+    /// let mut config = IrohTransportConfig::default();
+    /// config.get_or_create_secret_key(); // Generate key
+    /// sync.save_transport_config("iroh", &config)?;
+    /// ```
+    pub fn save_transport_config<T: TransportConfig>(&self, name: &str, config: &T) -> Result<()> {
+        let json = serde_json::to_string(config).map_err(|e| {
+            SyncError::SerializationError(format!(
+                "Failed to serialize transport config '{}': {}",
+                name, e
+            ))
+        })?;
+        let tx = self.sync_tree.new_transaction()?;
+        let registry = Registry::new(&tx, TRANSPORTS_SUBTREE)?;
+        registry.set_entry(name, T::type_id(), json)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Upgrade the weak instance reference to a strong reference.
@@ -1031,8 +1124,33 @@ impl Sync {
     ///
     /// This initializes the Iroh transport layer with production defaults (n0's relay servers)
     /// and starts the background sync engine.
+    ///
+    /// The transport's secret key is automatically persisted to the `_sync` database,
+    /// ensuring the node maintains a stable identity (and thus address) across restarts.
+    /// On first call, a new secret key is generated and saved. On subsequent calls,
+    /// the existing key is loaded from storage.
     pub fn enable_iroh_transport(&self) -> Result<()> {
-        let transport = IrohTransport::new()?;
+        // Load existing config or create default
+        let mut config: IrohTransportConfig =
+            self.load_transport_config(IrohTransport::TRANSPORT_TYPE)?;
+
+        // Track if config will change (no key yet means one will be generated)
+        let config_changed = !config.has_secret_key();
+
+        // Get the secret key (generates if not present)
+        let secret_key = config.get_or_create_secret_key();
+
+        // Only save config if it changed (new key was generated)
+        if config_changed {
+            self.save_transport_config(IrohTransport::TRANSPORT_TYPE, &config)?;
+        }
+
+        // Build transport with the persistent secret key
+        let transport = IrohTransport::builder()
+            .secret_key(secret_key)
+            .relay_mode(config.relay_mode.into())
+            .build()?;
+
         self.start_background_sync(Box::new(transport))?;
         self.transport_enabled.store(true, Ordering::Release);
         Ok(())
@@ -1713,7 +1831,7 @@ impl Sync {
         use peer_types::Address;
 
         let address = Address {
-            transport_type: "http".to_string(),
+            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
             address: peer_address.to_string(),
         };
 
@@ -1757,13 +1875,13 @@ impl Sync {
         let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
             // JSON format indicates Iroh NodeAddr
             Address {
-                transport_type: "iroh".to_string(),
+                transport_type: IrohTransport::TRANSPORT_TYPE.to_string(),
                 address: peer_address.to_string(),
             }
         } else {
             // Default to HTTP for traditional host:port format
             Address {
-                transport_type: "http".to_string(),
+                transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
                 address: peer_address.to_string(),
             }
         };
@@ -1990,13 +2108,13 @@ impl Sync {
         let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
             // JSON format indicates Iroh NodeAddr
             Address {
-                transport_type: "iroh".to_string(),
+                transport_type: IrohTransport::TRANSPORT_TYPE.to_string(),
                 address: peer_address.to_string(),
             }
         } else {
             // Default to HTTP for traditional host:port format
             Address {
-                transport_type: "http".to_string(),
+                transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
                 address: peer_address.to_string(),
             }
         };

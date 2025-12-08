@@ -12,11 +12,13 @@ use axum::{
     response::Json,
     routing::post,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, shared::*};
+use super::{SyncTransport, TransportConfig, shared::*};
 use crate::{
     Result,
+    store::Registered,
     sync::{
         error::SyncError,
         handler::SyncHandler,
@@ -24,6 +26,24 @@ use crate::{
         protocol::{RequestContext, SyncRequest, SyncResponse},
     },
 };
+
+/// Persistable configuration for the HTTP transport.
+///
+/// Currently empty, but provides an extension point for future
+/// HTTP-specific configuration options (e.g., TLS settings,
+/// timeouts, authentication).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpTransportConfig {
+    // Reserved for future configuration options
+}
+
+impl Registered for HttpTransportConfig {
+    fn type_id() -> &'static str {
+        "http:v0"
+    }
+}
+
+impl TransportConfig for HttpTransportConfig {}
 
 /// HTTP transport implementation using axum and reqwest.
 pub struct HttpTransport {

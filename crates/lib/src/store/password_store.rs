@@ -33,7 +33,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{
     Result, Transaction,
     crdt::Data,
-    store::{Store, StoreError},
+    store::{Registered, Store, StoreError},
 };
 
 /// Encrypted data fragment containing ciphertext and nonce.
@@ -399,16 +399,23 @@ impl PasswordStore {
     }
 }
 
+impl Registered for PasswordStore {
+    fn type_id() -> &'static str {
+        // Explicitly use v0 to indicate instability
+        "encrypted:password:v0"
+    }
+}
+
 impl Store for PasswordStore {
     fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         let subtree_name = subtree_name.into();
 
         // Try to load config from _index to determine state
-        let index_store = op.get_index_store()?;
-        let info = index_store.get_subtree_info(&subtree_name)?;
+        let index_store = op.get_index()?;
+        let info = index_store.get_entry(&subtree_name)?;
 
         // Type validation
-        if info.type_id != Self::type_id() {
+        if !Self::supports_type_id(&info.type_id) {
             return Err(StoreError::TypeMismatch {
                 store: subtree_name,
                 expected: Self::type_id().to_string(),
@@ -470,8 +477,8 @@ impl Store for PasswordStore {
         let name = subtree_name.into();
 
         // Register in _index with empty config (marks as uninitialized)
-        let index_store = op.get_index_store()?;
-        index_store.set_subtree_info(&name, Self::type_id(), Self::default_config())?;
+        let index_store = op.get_index()?;
+        index_store.set_entry(&name, Self::type_id(), Self::default_config())?;
 
         Ok(Self {
             name,
@@ -488,11 +495,6 @@ impl Store for PasswordStore {
 
     fn transaction(&self) -> &Transaction {
         &self.transaction
-    }
-
-    fn type_id() -> &'static str {
-        // Explicitly use v0 to indicate instability
-        "encrypted:password:v0"
     }
 
     fn default_config() -> String {

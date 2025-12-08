@@ -6,6 +6,7 @@
 #[cfg(feature = "y-crdt")]
 use eidetica::store::YDoc;
 use eidetica::{
+    Registered,
     crdt::{
         Doc,
         doc::{List, Value},
@@ -563,7 +564,7 @@ pub fn test_table_concurrent_modifications(
 
 // ===== PASSWORD STORE HELPERS =====
 
-use eidetica::{Store, store::PasswordStore};
+use eidetica::store::PasswordStore;
 
 /// Initialize a PasswordStore with DocStore wrapper
 pub fn init_password_store_docstore(tree: &eidetica::Database, store_name: &str, password: &str) {
@@ -652,9 +653,9 @@ pub fn set_invalid_password_store_config(
     invalid_config: &str,
 ) {
     let tx = tree.new_transaction().unwrap();
-    let index_store = tx.get_index_store().unwrap();
+    let index_store = tx.get_index().unwrap();
     index_store
-        .set_subtree_info(store_name, PasswordStore::type_id(), invalid_config)
+        .set_entry(store_name, PasswordStore::type_id(), invalid_config)
         .unwrap();
     tx.commit().unwrap();
 }

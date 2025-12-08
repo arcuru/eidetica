@@ -1,7 +1,7 @@
-//! Tests for the IndexStore and _index subtree functionality
+//! Tests for the Registry and _index subtree functionality
 
 use eidetica::{
-    Database, Instance, Store,
+    Database, Instance, Registered,
     auth::crypto::generate_keypair,
     backend::database::InMemory,
     crdt::Doc,
@@ -17,7 +17,7 @@ struct TestRecord {
 }
 
 // ============================================================================
-// Basic IndexStore Functionality
+// Basic Registry Functionality
 // ============================================================================
 
 #[test]
@@ -37,22 +37,22 @@ fn test_index_store_register_subtree() {
 
     // Update the registration to custom values
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
     let store = tx.get_store::<DocStore>("my_subtree").unwrap();
     store.set("key2", "value2").unwrap();
 
     // Now update the index with custom type and config
     index
-        .set_subtree_info("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
         .unwrap();
 
     tx.commit().unwrap();
 
     // Verify updated registration
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").unwrap();
     assert_eq!(info.type_id, "custom:v1");
     assert_eq!(info.config, r#"{"custom":"config"}"#);
 }
@@ -78,12 +78,12 @@ fn test_index_store_get_subtree_info() {
 
     // Retrieve and verify
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info1 = index.get_subtree_info("subtree1").unwrap();
+    let info1 = index.get_entry("subtree1").unwrap();
     assert_eq!(info1.type_id, DocStore::type_id());
 
-    let info2 = index.get_subtree_info("subtree2").unwrap();
+    let info2 = index.get_entry("subtree2").unwrap();
     assert_eq!(info2.type_id, DocStore::type_id());
 }
 
@@ -104,10 +104,10 @@ fn test_index_store_contains_subtree() {
 
     // Check existence
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("test_subtree"));
-    assert!(!index.contains_subtree("nonexistent"));
+    assert!(index.contains("test_subtree"));
+    assert!(!index.contains("nonexistent"));
 }
 
 #[test]
@@ -131,9 +131,9 @@ fn test_index_store_list_subtrees() {
 
     // List and verify
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert!(subtrees.contains(&"alpha".to_string()));
     assert!(subtrees.contains(&"beta".to_string()));
     assert!(subtrees.contains(&"gamma".to_string()));
@@ -157,20 +157,20 @@ fn test_index_store_update_existing() {
 
     // Update config
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
     let store = tx.get_store::<DocStore>("my_subtree").unwrap();
     store.set("key2", "value2").unwrap();
 
     index
-        .set_subtree_info("my_subtree", DocStore::type_id(), r#"{"updated":"config"}"#)
+        .set_entry("my_subtree", DocStore::type_id(), r#"{"updated":"config"}"#)
         .unwrap();
     tx.commit().unwrap();
 
     // Verify update
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").unwrap();
     assert_eq!(info.config, r#"{"updated":"config"}"#);
 }
 
@@ -195,9 +195,9 @@ fn test_auto_register_on_first_access_docstore() {
 
     // Verify _index contains the registration
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("my_data").unwrap();
+    let info = index.get_entry("my_data").unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
     assert_eq!(info.config, "{}");
 }
@@ -220,13 +220,13 @@ fn test_no_auto_register_for_system_subtrees() {
 
     // Verify only user subtree is in index, not system subtrees
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("user_data"));
+    assert!(index.contains("user_data"));
     // System subtrees should NOT be auto-registered
-    assert!(!index.contains_subtree("_settings"));
-    assert!(!index.contains_subtree("_index"));
-    assert!(!index.contains_subtree("_root"));
+    assert!(!index.contains("_settings"));
+    assert!(!index.contains("_index"));
+    assert!(!index.contains("_root"));
 }
 
 #[test]
@@ -252,13 +252,13 @@ fn test_second_access_uses_existing_registration() {
 
     // Verify still only one entry in index
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("my_data").unwrap();
+    let info = index.get_entry("my_data").unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
 
     // No duplicates in list
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     let count = subtrees.iter().filter(|s| *s == "my_data").count();
     assert_eq!(count, 1);
 }
@@ -284,12 +284,12 @@ fn test_index_update_includes_target_subtree() {
 
     // Update index for this subtree
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
     let store = tx.get_store::<DocStore>("my_subtree").unwrap();
     store.set("key2", "value2").unwrap();
 
     index
-        .set_subtree_info("my_subtree", DocStore::type_id(), r#"{"new":"config"}"#)
+        .set_entry("my_subtree", DocStore::type_id(), r#"{"new":"config"}"#)
         .unwrap();
 
     let entry_id = tx.commit().unwrap();
@@ -319,11 +319,11 @@ fn test_auto_dummy_write_on_index_update() {
 
     // Update index without explicitly modifying target subtree
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
     // This should automatically add a dummy write to "target"
     index
-        .set_subtree_info("target", DocStore::type_id(), r#"{"modified":"config"}"#)
+        .set_entry("target", DocStore::type_id(), r#"{"modified":"config"}"#)
         .unwrap();
 
     let entry_id = tx.commit().unwrap();
@@ -380,7 +380,7 @@ fn test_manual_index_update_with_subtree_modification() {
 
     // Manually update both index and subtree in same transaction
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
     let store = tx.get_store::<DocStore>("my_subtree").unwrap();
 
     // Modify subtree
@@ -388,7 +388,7 @@ fn test_manual_index_update_with_subtree_modification() {
 
     // Update index metadata
     index
-        .set_subtree_info("my_subtree", "docstore:v2", r#"{"version":"2"}"#)
+        .set_entry("my_subtree", "docstore:v2", r#"{"version":"2"}"#)
         .unwrap();
 
     let entry_id = tx.commit().unwrap();
@@ -400,8 +400,8 @@ fn test_manual_index_update_with_subtree_modification() {
 
     // Verify updated metadata
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
-    let info = index.get_subtree_info("my_subtree").unwrap();
+    let index = tx.get_index().unwrap();
+    let info = index.get_entry("my_subtree").unwrap();
     assert_eq!(info.type_id, "docstore:v2");
 }
 
@@ -439,19 +439,19 @@ fn test_multi_store_database_index_complete() {
 
     // Verify all are registered with correct types
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let doc_info = index.get_subtree_info("documents").unwrap();
+    let doc_info = index.get_entry("documents").unwrap();
     assert_eq!(doc_info.type_id, DocStore::type_id());
 
-    let table_info = index.get_subtree_info("records").unwrap();
+    let table_info = index.get_entry("records").unwrap();
     assert_eq!(table_info.type_id, Table::<()>::type_id());
 
-    let meta_info = index.get_subtree_info("metadata").unwrap();
+    let meta_info = index.get_entry("metadata").unwrap();
     assert_eq!(meta_info.type_id, DocStore::type_id());
 
     // Verify list is complete
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert_eq!(subtrees.len(), 3);
 }
 
@@ -478,12 +478,12 @@ fn test_index_persists_across_transactions() {
 
     // Transaction 3: Verify both are registered
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("subtree1"));
-    assert!(index.contains_subtree("subtree2"));
+    assert!(index.contains("subtree1"));
+    assert!(index.contains("subtree2"));
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert_eq!(subtrees.len(), 2);
 }
 
@@ -577,10 +577,10 @@ fn test_get_nonexistent_subtree_info() {
         Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
 
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
     // Try to get info for non-existent subtree
-    let result = index.get_subtree_info("nonexistent");
+    let result = index.get_entry("nonexistent");
     assert!(result.is_err());
 }
 
@@ -595,9 +595,9 @@ fn test_index_with_empty_database() {
 
     // Query empty index
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert!(subtrees.is_empty());
 }
 
@@ -631,14 +631,14 @@ fn test_concurrent_index_updates() {
 
     // Verify all are registered
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("subtree1"));
-    assert!(index.contains_subtree("subtree2"));
-    assert!(index.contains_subtree("subtree3"));
-    assert!(index.contains_subtree("subtree4"));
+    assert!(index.contains("subtree1"));
+    assert!(index.contains("subtree2"));
+    assert!(index.contains("subtree3"));
+    assert!(index.contains("subtree4"));
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert_eq!(subtrees.len(), 4);
 }
 
@@ -658,9 +658,9 @@ fn test_empty_config_is_valid() {
 
     // Verify empty config is stored and retrieved correctly
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    let info = index.get_subtree_info("test").unwrap();
+    let info = index.get_entry("test").unwrap();
     assert_eq!(info.config, "{}");
 }
 
@@ -686,9 +686,9 @@ fn test_index_modification_forces_subtree_in_entry() {
 
     // Now update the index for that subtree
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
     index
-        .set_subtree_info("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
         .unwrap();
     let entry_id2 = tx.commit().unwrap();
 
@@ -757,15 +757,15 @@ fn test_accessing_store_registers_in_index() {
 
     // Verify the subtree IS registered in the index
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("my_subtree"));
+    assert!(index.contains("my_subtree"));
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert!(subtrees.contains(&"my_subtree".to_string()));
 
     // Verify the type is correct
-    let info = index.get_subtree_info("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
 }
 
@@ -788,26 +788,26 @@ fn test_multiple_stores_registered_on_access() {
 
     // Verify all are registered with correct types
     let tx = database.new_transaction().unwrap();
-    let index = tx.get_index_store().unwrap();
+    let index = tx.get_index().unwrap();
 
-    assert!(index.contains_subtree("store1"));
-    assert!(index.contains_subtree("store2"));
-    assert!(index.contains_subtree("store3"));
+    assert!(index.contains("store1"));
+    assert!(index.contains("store2"));
+    assert!(index.contains("store3"));
 
-    let subtrees = index.list_subtrees().unwrap();
+    let subtrees = index.list().unwrap();
     assert_eq!(subtrees.len(), 3);
 
     // Verify types are correct
     assert_eq!(
-        index.get_subtree_info("store1").unwrap().type_id,
+        index.get_entry("store1").unwrap().type_id,
         DocStore::type_id()
     );
     assert_eq!(
-        index.get_subtree_info("store2").unwrap().type_id,
+        index.get_entry("store2").unwrap().type_id,
         Table::<()>::type_id()
     );
     assert_eq!(
-        index.get_subtree_info("store3").unwrap().type_id,
+        index.get_entry("store3").unwrap().type_id,
         DocStore::type_id()
     );
 }

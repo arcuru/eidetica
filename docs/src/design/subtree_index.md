@@ -24,7 +24,7 @@ The `_index` subtree is a special system subtree that serves as a registry for a
 - **Automatic Registration**: Subtrees are automatically registered when first accessed via `get_store()`
 - **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0")
 - **Configuration Storage**: Stores Store-specific configuration as JSON
-- **Query API**: Provides IndexStore for querying registered subtrees
+- **Query API**: Provides Registry for querying registered subtrees
 
 ## Design Goals
 
@@ -33,7 +33,7 @@ The `_index` subtree provides essential metadata capabilities for Eidetica datab
 1. **Type Discovery**: Every subtree has an associated type identifier in `_index`, enabling generic tooling to understand what Store type manages each subtree
 2. **Versioning**: Type identifiers include arbitrary version information (e.g., "docstore:v0"), supporting schema migrations and format evolution
 3. **Configuration**: Store-specific settings are stored alongside type information, enabling per-subtree customization
-4. **Discoverability**: The IndexStore API enables querying all registered subtrees, supporting database browsers and tooling
+4. **Discoverability**: The Registry API enables querying all registered subtrees, supporting database browsers and tooling
 
 These capabilities enable:
 
@@ -85,14 +85,14 @@ Each registered subtree has an entry in `_index` with the following structure:
 
 **Fields**:
 
-- `type`: The Store type identifier from `Store::type_id()` (e.g., "docstore:v0")
+- `type`: The Store type identifier from `Registered::type_id()` (e.g., "docstore:v0")
 - `config`: Store-specific configuration as a JSON string
 
 ### Auto-Registration
 
 Subtrees are automatically registered in `_index` when first accessed via `Transaction::get_store()`. The Store's `init()` method handles both creation and registration.
 
-Manual registration via `IndexStore::set_subtree_info()` allows pre-configuring subtrees with custom settings before first access.
+Manual registration via `Registry::set_entry()` allows pre-configuring subtrees with custom settings before first access.
 
 ### The Index-Subtree Coupling Constraint
 
@@ -114,25 +114,31 @@ This allows subtrees to appear in Entries purely to satisfy the constraint witho
 
 ## API Reference
 
-### Store Trait Extensions
+### Registered Trait
 
-The `Store` trait provides methods for registry integration:
+The `Registered` trait provides type identification for registry integration:
 
 - **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v0", "table:v0")
+- **`supports_type_id()`**: Check if this type can load from a stored type_id (for version migration)
+
+### Store Trait Extensions
+
+The `Store` trait extends `Registered` and provides methods for registry integration:
+
 - **`default_config()`**: Returns default configuration as JSON string
 - **`init()`**: Creates store and registers it in `_index`
 - **`get_config()` / `set_config()`**: Read/write configuration in `_index`
 
-### IndexStore API
+### Registry API
 
-`IndexStore` provides query and management operations for the registry:
+`Registry` provides query and management operations for the `_index`:
 
-- `get_subtree_info(name)`: Get type and config for a subtree
-- `contains_subtree(name)`: Check if registered
-- `set_subtree_info(name, type_id, config)`: Register or update
-- `list_subtrees()`: Get all registered subtree names
+- `get_entry(name)`: Get type and config for a subtree
+- `contains(name)`: Check if registered
+- `set_entry(name, type_id, config)`: Register or update
+- `list()`: Get all registered subtree names
 
-Access via `Transaction::get_index_store()`.
+Access via `Transaction::get_index()`.
 
 ## Examples
 
@@ -162,10 +168,10 @@ txn.commit()?;
 
 // After commit, "config" is registered in _index
 let txn = db.new_transaction()?;
-let index = txn.get_index_store()?;
-assert!(index.contains_subtree("config"));
+let index = txn.get_index()?;
+assert!(index.contains("config"));
 
-let info = index.get_subtree_info("config")?;
+let info = index.get_entry("config")?;
 assert_eq!(info.type_id, "docstore:v0");
 assert_eq!(info.config, "{}");
 # Ok(())
@@ -192,9 +198,9 @@ assert_eq!(info.config, "{}");
 #
 // Pre-register subtree with custom configuration
 let txn = db.new_transaction()?;
-let index = txn.get_index_store()?;
+let index = txn.get_index()?;
 
-index.set_subtree_info(
+index.set_entry(
     "documents",
     "ydoc:v0",
     r#"{"compression":"zstd","cache_size":1024}"#
@@ -204,8 +210,8 @@ txn.commit()?;
 
 // Later access uses the registered configuration
 let txn = db.new_transaction()?;
-let index = txn.get_index_store()?;
-let info = index.get_subtree_info("documents")?;
+let index = txn.get_index()?;
+let info = index.get_entry("documents")?;
 assert_eq!(info.type_id, "ydoc:v0");
 assert!(info.config.contains("compression"));
 # Ok(())
@@ -242,8 +248,8 @@ txn.commit()?;
 
 // Query all registered subtrees
 let txn = db.new_transaction()?;
-let index = txn.get_index_store()?;
-let subtrees = index.list_subtrees()?;
+let index = txn.get_index()?;
+let subtrees = index.list()?;
 
 // All three subtrees should be registered
 assert!(subtrees.contains(&"users".to_string()));

@@ -29,7 +29,7 @@ use yrs::{Doc, ReadTxn, Transact, Update, updates::decoder::Decode};
 use crate::{
     Result, Store, Transaction,
     crdt::{CRDT, Data},
-    store::errors::StoreError,
+    store::{Registered, errors::StoreError},
 };
 
 /// Errors specific to Y-CRDT operations
@@ -202,6 +202,12 @@ pub struct YDoc {
     cached_backend_data: RefCell<Option<YrsBinary>>,
 }
 
+impl Registered for YDoc {
+    fn type_id() -> &'static str {
+        "ydoc:v0"
+    }
+}
+
 impl Store for YDoc {
     fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
         Ok(Self {
@@ -217,10 +223,6 @@ impl Store for YDoc {
 
     fn transaction(&self) -> &Transaction {
         &self.atomic_op
-    }
-
-    fn type_id() -> &'static str {
-        "ydoc:v0"
     }
 }
 

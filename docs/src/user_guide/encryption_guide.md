@@ -6,7 +6,7 @@
 
 ```rust
 # extern crate eidetica;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore, Store}};
+# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
@@ -34,7 +34,7 @@ tx.commit()?;
 
 ```rust
 # extern crate eidetica;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore, Store}};
+# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
@@ -67,12 +67,12 @@ tx.commit()?;
 
 ## Wrapping Other Store Types
 
-PasswordStore wraps any store type. Use `Store::type_id()` to get the type identifier:
+PasswordStore wraps any store type. Use `Registered::type_id()` to get the type identifier:
 
 ```rust
 # extern crate eidetica;
 # extern crate serde;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{PasswordStore, Table, Store}};
+# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # fn main() -> eidetica::Result<()> {
