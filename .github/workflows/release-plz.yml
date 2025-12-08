@@ -16,18 +16,18 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@v1
         id: cratesio-auth
 
       - name: Run release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@487eb7b5c085a664d5c5ca05f4159bd9b591182a # v0.5
         with:
           command: release
           config: .config/release-plz.toml
@@ -47,11 +47,11 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Check if release PR exists
         id: check-pr
@@ -64,7 +64,7 @@ jobs:
 
       - name: Run release-plz
         if: github.event_name == 'workflow_dispatch' || steps.check-pr.outputs.exists != '0'
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@487eb7b5c085a664d5c5ca05f4159bd9b591182a # v0.5
         with:
           command: release-pr
           config: .config/release-plz.toml
