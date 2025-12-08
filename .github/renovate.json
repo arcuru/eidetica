@@ -1,13 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:best-practices"],
   "platform": "github",
   "repositories": ["arcuru/eidetica"],
   "enabledManagers": ["cargo", "github-actions", "nix"],
   "schedule": ["* 0-3 1 * *"],
   "prConcurrentLimit": 5,
   "minimumReleaseAge": "14 days",
-  "semanticCommits": "enabled",
   "commitMessagePrefix": "chore(deps):",
   "commitMessageAction": "update",
   "commitMessageTopic": "{{depName}}",
@@ -47,9 +46,6 @@
       "allowedVersions": "<5.0.0"
     }
   ],
-  "cargo": {
-    "enabled": true
-  },
   "lockFileMaintenance": {
     "enabled": true
   },
