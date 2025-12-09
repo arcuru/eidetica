@@ -10,14 +10,4 @@ additional-js = ["mermaid-init.js"]
 git-repository-url = "https://github.com/arcuru/eidetica"
 
 [rust]
-edition = "2021" # linkcheck only supports 2021
-
-[output.linkcheck]
-# Check external URLs (disabled by default, use `task book:linkcheck:web` to check external url links)
-follow-web-links = false
-# Allow links outside docs/ (needed for rustdoc symlink to target/doc)
-traverse-parent-directories = true
-# Suppress warnings like GFM checkboxes being misread as links
-warning-policy = "ignore"
-# Cache web link results for 24 hours (seconds)
-cache-timeout = 86400
+edition = "2024"

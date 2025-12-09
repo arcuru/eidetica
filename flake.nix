@@ -389,7 +389,7 @@
             # Documentation
             mdbook # Book generation
             mdbook-mermaid # Mermaid diagrams
-            mdbook-linkcheck # Link validation
+            lychee # Link validation
           ];
 
           # Environment variables

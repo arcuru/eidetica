@@ -132,9 +132,9 @@ tasks:
       - task: book
       - mdbook serve docs --open
   book:test:
-    desc: Test code examples in the mdbook
+    desc: Test code examples and check links in the mdbook
     aliases: [test:book]
-    deps: [book]
+    deps: [book:links]
     cmds:
       # The book tests require a single copy of libeidetica target/debug/deps
       # This is a workaround to remove and rebuild only 1
@@ -146,12 +146,16 @@ tasks:
     cmds:
       - mdbook clean docs
       - rm -rf docs/src/rustdoc
-  book:linkcheck:web:
-    desc: Check all links including external URLs (slow, run locally)
+  book:links:
+    desc: Check internal links in documentation
+    deps: [book]
     cmds:
-      - sed -i 's/follow-web-links = false/follow-web-links = true/' docs/book.toml
-      - defer: sed -i 's/follow-web-links = true/follow-web-links = false/' docs/book.toml
-      - task: book
+      - lychee --offline --exclude-path 'rustdoc' docs/book
+  book:links:all:
+    desc: Check all links including external URLs (slow, run locally)
+    deps: [book]
+    cmds:
+      - lychee --exclude-path 'rustdoc' --exclude-path 'fonts' docs/book
   book:stats:
     desc: Show code block test coverage statistics
     cmd: |
