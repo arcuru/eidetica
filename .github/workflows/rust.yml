@@ -71,6 +71,13 @@ jobs:
               cargo install mdbook --locked --version ^0.4
           fi
 
+      - name: Install mdbook-linkcheck
+        run: |
+          if ! command -v mdbook-linkcheck &> /dev/null
+          then
+              cargo install mdbook-linkcheck --locked
+          fi
+
       - name: Test
         run: cargo test --workspace --all-features
 

@@ -1,6 +1,6 @@
 # Developer Walkthrough: Building with Eidetica
 
-This guide walks through the [Todo Example](../../examples/todo/) (`examples/todo/src/main.rs`) to explain Eidetica's core concepts. The example is a simple command-line todo app that demonstrates databases, transactions, stores, and Y-CRDT integration.
+This guide walks through the [Todo Example](https://github.com/arcuru/eidetica/tree/main/examples/todo) (`examples/todo/src/main.rs`) to explain Eidetica's core concepts. The example is a simple command-line todo app that demonstrates databases, transactions, stores, and Y-CRDT integration.
 
 ## Core Concepts
 
@@ -233,6 +233,6 @@ cargo run -- complete <id_from_list>
 cargo run -- list
 ```
 
-Refer to the example's [README.md](../../examples/todo/README.md) and [test.sh](../../examples/todo/test.sh) for more usage details.
+Refer to the example's [README.md](https://github.com/arcuru/eidetica/blob/main/examples/todo/README.md) and [test.sh](https://github.com/arcuru/eidetica/blob/main/examples/todo/test.sh) for more usage details.
 
 This walkthrough provides a starting point. Explore the Eidetica documentation and other examples to learn about more advanced features like different store types, history traversal, and distributed capabilities.

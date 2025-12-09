@@ -389,6 +389,7 @@
             # Documentation
             mdbook # Book generation
             mdbook-mermaid # Mermaid diagrams
+            mdbook-linkcheck # Link validation
           ];
 
           # Environment variables

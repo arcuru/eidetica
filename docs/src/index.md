@@ -32,5 +32,5 @@ Eidetica is organized as a Cargo workspace:
 
 ### Examples
 
-- **[Chat Application](../examples/chat/README.md)** - Complete multi-user chat with P2P sync
-- **[Todo Application](../examples/todo/README.md)** - Task management example
+- **[Chat Application](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md)** - Complete multi-user chat with P2P sync
+- **[Todo Application](https://github.com/arcuru/eidetica/blob/main/examples/todo/README.md)** - Task management example

@@ -45,18 +45,26 @@ jobs:
               cargo install mdbook-mermaid --locked --version ^0.15
           fi
 
-      - name: Build mdBook documentation
-        run: mdbook build docs
+      - name: Install mdbook-linkcheck
+        run: |
+          if ! command -v mdbook-linkcheck &> /dev/null
+          then
+              cargo install mdbook-linkcheck --locked
+          fi
 
       - name: Build cargo docs with dev banner
         env:
           RUSTDOCFLAGS: "--html-in-header docs/rustdoc-header.html"
-        run: cargo doc --no-deps --workspace
+        run: cargo doc -p eidetica --all-features --no-deps
 
-      - name: Copy cargo docs to mdbook output
-        run: |
-          mkdir -p docs/book/rustdoc
-          cp -r target/doc/* docs/book/rustdoc/
+      - name: Symlink rustdoc for linkcheck
+        run: ln -s ../../target/doc docs/src/rustdoc
+
+      - name: Build mdBook documentation
+        run: mdbook build docs
+
+      - name: Copy rustdoc to mdbook output
+        run: cp -rl target/doc docs/book/html/rustdoc
 
       - name: Setup Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
@@ -64,8 +72,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          # Upload the contents of the 'docs/book' directory
-          path: "docs/book"
+          # Upload the contents of the 'docs/book/html' directory (linkcheck creates subdirectories)
+          path: "docs/book/html"
 
   deploy:
     environment:

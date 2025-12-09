@@ -1,6 +1,6 @@
 # Errors
 
-The database uses a custom `Result` (`crate::Result`) and `Error` (`crate::Error`) type hierarchy defined in [`src/lib.rs`](../../src/lib.rs). Errors are typically propagated up the call stack using `Result`.
+The database uses a custom `Result` (`crate::Result`) and `Error` (`crate::Error`) type hierarchy defined in [`crates/lib/src/lib.rs`](https://github.com/arcuru/eidetica/blob/main/crates/lib/src/lib.rs). Errors are typically propagated up the call stack using `Result`.
 
 The `Error` enum uses a modular approach with structured error types from each component:
 

@@ -348,13 +348,13 @@ op.commit()?;
 
 For complete working examples, see:
 
-- **[Chat Example](../../examples/chat/README.md)** - Multi-user chat application demonstrating:
+- **[Chat Example](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md)** - Multi-user chat application demonstrating:
   - User accounts and authentication
   - Real-time synchronization with HTTP and Iroh transports
   - Bootstrap protocol for joining rooms
   - TUI interface with Ratatui
 
-- **[Todo Example](../../examples/todo/README.md)** - Task management application
+- **[Todo Example](https://github.com/arcuru/eidetica/blob/main/examples/todo/README.md)** - Task management application
 
 ## Next Steps
 

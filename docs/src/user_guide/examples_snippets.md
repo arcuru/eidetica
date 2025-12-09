@@ -516,7 +516,7 @@ if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemor
 
 ## Complete Example: Chat Application
 
-For a full working example that demonstrates Eidetica in a real application, see the **[Chat Example](../../examples/chat/README.md)** in the repository.
+For a full working example that demonstrates Eidetica in a real application, see the **[Chat Example](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md)** in the repository.
 
 The chat application showcases:
 
@@ -752,4 +752,4 @@ The chat example demonstrates production-ready patterns:
 - **CRDT-based messages**: Eventual consistency with deterministic ordering
 - **Automatic sync**: Background synchronization triggered by commits via callbacks
 
-See the [full chat example documentation](../../examples/chat/README.md) for detailed usage instructions, complete workflow examples, troubleshooting tips, and implementation details.
+See the [full chat example documentation](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md) for detailed usage instructions, complete workflow examples, troubleshooting tips, and implementation details.

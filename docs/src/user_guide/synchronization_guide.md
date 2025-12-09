@@ -168,4 +168,4 @@ Once configured, the sync system handles:
 
 ## Example
 
-See the [Chat Example](../../examples/chat/README.md) for a complete working application demonstrating multi-transport sync, bootstrap, and real-time updates.
+See the [Chat Example](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md) for a complete working application demonstrating multi-transport sync, bootstrap, and real-time updates.

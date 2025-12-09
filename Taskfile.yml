@@ -121,16 +121,20 @@ tasks:
     dir: examples/todo
     cmd: ./test.sh
   book:
-    desc: Build the mdbook documentation
+    desc: Build the mdbook documentation (includes rustdoc and link checking)
     cmds:
+      - cargo doc -p eidetica --all-features --no-deps --quiet
+      - ln -sfn ../../target/doc docs/src/rustdoc
       - mdbook build docs
   book:serve:
     desc: Serve the mdbook documentation locally
     cmds:
+      - task: book
       - mdbook serve docs --open
   book:test:
     desc: Test code examples in the mdbook
     aliases: [test:book]
+    deps: [book]
     cmds:
       # The book tests require a single copy of libeidetica target/debug/deps
       # This is a workaround to remove and rebuild only 1
@@ -141,6 +145,13 @@ tasks:
     desc: Clean the mdbook build directory
     cmds:
       - mdbook clean docs
+      - rm -rf docs/src/rustdoc
+  book:linkcheck:web:
+    desc: Check all links including external URLs (slow, run locally)
+    cmds:
+      - sed -i 's/follow-web-links = false/follow-web-links = true/' docs/book.toml
+      - defer: sed -i 's/follow-web-links = true/follow-web-links = false/' docs/book.toml
+      - task: book
   book:stats:
     desc: Show code block test coverage statistics
     cmd: |
