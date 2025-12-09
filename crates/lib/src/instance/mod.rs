@@ -538,11 +538,12 @@ impl Instance {
     /// Load all databases stored in the backend.
     ///
     /// This retrieves all known root entry IDs from the backend and constructs
-    /// `Database` instances for each.
+    /// `Database` instances for each. Includes system databases.
     ///
-    /// # Returns
-    /// A `Result` containing a vector of all `Database` instances or an error.
-    pub fn all_databases(&self) -> Result<Vec<Database>> {
+    /// For user-facing database discovery, use `User::find_database()` instead.
+    // TODO: Will be used for Admin users
+    #[allow(dead_code)]
+    pub(crate) fn all_databases(&self) -> Result<Vec<Database>> {
         let root_ids = self.inner.backend.all_roots()?;
         let mut databases = Vec::new();
 
@@ -557,18 +558,15 @@ impl Instance {
     /// Find databases by their assigned name.
     ///
     /// Searches through all databases in the backend and returns those whose "name"
-    /// setting matches the provided name.
+    /// setting matches the provided name. Includes system databases.
     ///
-    /// # Arguments
-    /// * `name` - The name to search for.
-    ///
-    /// # Returns
-    /// A `Result` containing a vector of `Database` instances whose name matches,
-    /// or an error.
+    /// For user-facing database discovery, use `User::find_database()` instead.
     ///
     /// # Errors
     /// Returns `InstanceError::DatabaseNotFound` if no databases with the specified name are found.
-    pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
+    // TODO: Will be used for Admin users
+    #[allow(dead_code)]
+    pub(crate) fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
         let all_databases = self.all_databases()?;
         let mut matching_databases = Vec::new();

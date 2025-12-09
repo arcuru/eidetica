@@ -150,6 +150,7 @@ impl Error {
             Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
             Error::Store(store_err) => store_err.is_not_found(),
             Error::Sync(sync_err) => sync_err.is_not_found(),
+            Error::User(user_err) => user_err.is_not_found(),
             _ => false,
         }
     }

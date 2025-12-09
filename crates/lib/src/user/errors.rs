@@ -38,8 +38,8 @@ pub enum UserError {
     #[error("No admin key available for database: {database_id}")]
     NoAdminKey { database_id: String },
 
-    #[error("Database preference not found: {database_id}")]
-    DatabasePreferenceNotFound { database_id: String },
+    #[error("Database not tracked: {database_id}")]
+    DatabaseNotTracked { database_id: String },
 
     #[error("User account disabled: {username}")]
     UserDisabled { username: String },
@@ -73,4 +73,16 @@ pub enum UserError {
 
     #[error("No keys available for user")]
     NoKeysAvailable,
+}
+
+impl UserError {
+    /// Check if this error indicates a resource was not found.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            UserError::UserNotFound { .. }
+                | UserError::KeyNotFound { .. }
+                | UserError::DatabaseNotTracked { .. }
+        )
+    }
 }

@@ -15,7 +15,7 @@ use eidetica::{
         Address,
         transports::{SyncTransport, http::HttpTransport},
     },
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 
 use super::helpers::*;
@@ -69,7 +69,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // Enable sync for this database
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {

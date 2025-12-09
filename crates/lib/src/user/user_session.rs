@@ -8,18 +8,18 @@
 //!
 //! ## Database Lifecycle
 //!
-//! - **`new_database()`** - Create a new database
+//! - **`create_database()`** - Create a new database
 //! - **`open_database()`** - Open an existing database
 //! - **`find_database()`** - Search for databases by name
 //!
-//! ## Database List Management
+//! ## Tracked Databases
 //!
-//! Manage your personal list of databases with preferences:
+//! Manage your personal list of tracked databases:
 //!
-//! - **`add_database()`** / **`set_database()`** - Add or update a database in your list (upsert)
-//! - **`database_prefs()`** - Get preferences for a database
-//! - **`list_database_prefs()`** - List all databases in your list
-//! - **`remove_database()`** - Remove a database from your list
+//! - **`databases()`** - List all tracked databases
+//! - **`database()`** - Get a specific tracked database
+//! - **`track_database()`** - Add or update a tracked database (upsert)
+//! - **`untrack_database()`** - Remove a database from your tracked list
 //!
 //! ## Key-Database Mappings
 //!
@@ -39,13 +39,13 @@ use crate::{
     Database, Instance, Result,
     auth::{self, SigKey},
     store::Table,
-    user::{DatabasePreferences, UserDatabasePreferences, UserError},
+    user::{TrackedDatabase, UserError},
 };
 
 /// User session object, returned after successful login
 ///
 /// Represents an authenticated user with decrypted private keys loaded in memory.
-/// The User struct provides access to key management, database preferences, and
+/// The User struct provides access to key management, tracked databases, and
 /// bootstrap approval operations.
 pub struct User {
     /// Stable internal user UUID (Table primary key)
@@ -54,7 +54,7 @@ pub struct User {
     /// Username (login identifier)
     username: String,
 
-    /// User's private database (contains encrypted keys and preferences)
+    /// User's private database (contains encrypted keys and tracked databases)
     user_database: Database,
 
     /// Instance reference for database operations
@@ -195,7 +195,7 @@ impl User {
         key_id: &str,
     ) -> Result<crate::Database> {
         use crate::store::Table;
-        use crate::user::types::UserKey;
+        use crate::user::types::{SyncSettings, UserKey};
 
         // Get the signing key from UserKeyManager
         let signing_key = self
@@ -209,7 +209,7 @@ impl User {
         // Create the database with the provided key directly
         let database = Database::create(settings, &self.instance, signing_key, key_id.to_string())?;
 
-        // Store the mapping in UserKey so open_database() can find it later
+        // Store the mapping in UserKey and track the database
         let tx = self.user_database.new_transaction()?;
         let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
 
@@ -229,6 +229,16 @@ impl User {
 
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone())?;
+
+        // Also track the database in the databases table
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
+        let tracked = TrackedDatabase {
+            database_id: database.root_id().clone(),
+            key_id: key_id.to_string(),
+            sync_settings: SyncSettings::default(),
+        };
+        databases_table.set(database.root_id(), tracked)?;
+
         tx.commit()?;
 
         // Update the in-memory key manager with the updated metadata
@@ -288,32 +298,32 @@ impl User {
         Database::open(self.instance.handle(), root_id, signing_key.clone(), sigkey)
     }
 
-    /// Find databases by name.
+    /// Find databases by name among the user's tracked databases.
     ///
-    /// Searches all databases accessible in the backend for those matching the given name.
+    /// Searches only the databases this user has tracked for those matching the given name.
     ///
     /// # Arguments
     /// * `name` - Database name to search for
     ///
     /// # Returns
-    /// Vector of matching databases
+    /// Vector of matching databases from the user's tracked list
     pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
         let name = name.as_ref();
-        let all_roots = self.instance.backend().all_roots()?;
+        let tracked = self.databases()?;
         let mut matching = Vec::new();
 
-        for root_id in all_roots {
-            if let Ok(db) = Database::open_readonly(root_id, &self.instance)
-                && let Ok(db_name) = db.get_name()
+        for tracked_db in tracked {
+            if let Ok(database) = self.instance.load_database(&tracked_db.database_id)
+                && let Ok(db_name) = database.get_name()
                 && db_name == name
             {
-                matching.push(db);
+                matching.push(database);
             }
         }
 
         if matching.is_empty() {
-            Err(crate::instance::InstanceError::DatabaseNotFound {
-                name: name.to_string(),
+            Err(crate::user::UserError::DatabaseNotTracked {
+                database_id: format!("name:{}", name),
             }
             .into())
         } else {
@@ -449,7 +459,7 @@ impl User {
     /// Internal helper: Validate key and set up SigKey mapping within an existing transaction
     ///
     /// This validates that a key exists and has access to a database, discovers the appropriate
-    /// SigKey, and creates the mapping. Used by add_database (which has upsert behavior).
+    /// SigKey, and creates the mapping. Used by track_database (which has upsert behavior).
     fn validate_and_map_key_in_txn(
         &mut self,
         tx: &crate::Transaction,
@@ -799,25 +809,24 @@ impl User {
         Ok(())
     }
 
-    // === Database Tracking and Preferences ===
+    // === Tracked Databases ===
 
-    /// Add or update a database in this user's list with auto-discovery of SigKeys.
+    /// Track a database, adding it to this user's list with auto-discovery of SigKeys.
     ///
-    /// This method adds an existing database to your tracked database list with preferences,
-    /// or updates the preferences if already tracked (upsert behavior).
+    /// This method adds an existing database to your tracked list, or updates it if
+    /// already tracked (upsert behavior).
     ///
-    /// When adding or updating:
+    /// When tracking:
     /// 1. Uses Database::find_sigkeys() to discover which SigKey the user can use
     /// 2. Automatically selects the SigKey with highest permission
-    /// 3. Stores the key mapping and preferences
-    /// 4. Preserves the original added_at timestamp if updating
+    /// 3. Stores the key mapping and sync settings
     ///
-    /// The sync_settings in preferences indicate your sync preferences, but do not
-    /// automatically configure sync. Use the Sync module's peer and tree methods to set up
-    /// actual sync relationships.
+    /// The sync_settings indicate your sync preferences, but do not automatically
+    /// configure sync. Use the Sync module's peer and tree methods to set up actual
+    /// sync relationships.
     ///
     /// # Arguments
-    /// * `prefs` - Database preferences including database_id, key_id, and sync_settings
+    /// * `tracked` - The database to track, including database_id, key_id, and sync_settings
     ///
     /// # Returns
     /// Result indicating success or failure
@@ -825,40 +834,28 @@ impl User {
     /// # Errors
     /// - Returns `NoSigKeyFound` if no SigKey can be found for the specified key
     /// - Returns `KeyNotFound` if the specified key_id doesn't exist
-    pub fn add_database(&mut self, prefs: DatabasePreferences) -> Result<()> {
-        use crate::user::crypto::current_timestamp;
-
+    pub fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()> {
         // Single transaction for all operations
         let tx = self.user_database.new_transaction()?;
-        let databases_table = tx.get_store::<Table<UserDatabasePreferences>>("databases")?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
 
         // Use database ID as the key - check if it already exists (O(1))
-        let db_id_key = prefs.database_id.to_string();
-        let existing_prefs = databases_table.get(&db_id_key).ok();
+        let db_id_key = tracked.database_id.to_string();
+        let existing = databases_table.get(&db_id_key).ok();
 
         // Determine if we need to validate and setup key mapping
-        let needs_key_validation = match &existing_prefs {
-            Some(existing) => existing.key_id != prefs.key_id, // Key changed
-            None => true,                                      // New database
+        let needs_key_validation = match &existing {
+            Some(existing) => existing.key_id != tracked.key_id, // Key changed
+            None => true,                                        // New database
         };
 
         // Validate key and set up mapping if needed
         if needs_key_validation {
-            self.validate_and_map_key_in_txn(&tx, &prefs.database_id, &prefs.key_id)?;
+            self.validate_and_map_key_in_txn(&tx, &tracked.database_id, &tracked.key_id)?;
         }
 
-        // Create or update the preferences entry
-        let db_prefs = UserDatabasePreferences {
-            database_id: prefs.database_id.clone(),
-            key_id: prefs.key_id,
-            sync_settings: prefs.sync_settings.clone(),
-            added_at: existing_prefs
-                .map(|p| p.added_at)
-                .unwrap_or_else(|| current_timestamp().unwrap_or(0)),
-        };
-
         // Store using database ID as explicit key (not using insert's auto-generated UUID)
-        databases_table.set(&db_id_key, db_prefs)?;
+        databases_table.set(&db_id_key, tracked)?;
 
         // Single commit for all changes
         tx.commit()?;
@@ -866,7 +863,7 @@ impl User {
         // Update sync system to immediately recompute combined settings
         // This ensures automatic sync works right away, without waiting for background worker
         if let Some(sync) = self.instance.sync() {
-            // Auto-sync user preferences if not already synced
+            // Auto-sync user tracking if not already synced
             // This is idempotent - safe to call multiple times
             sync.sync_user(&self.user_uuid, self.user_database.root_id())?;
         }
@@ -874,93 +871,71 @@ impl User {
         Ok(())
     }
 
-    /// Alias for `add_database()` - add or update a database in your list.
+    /// List all tracked databases.
     ///
-    /// This is a convenience alias that calls `add_database()` with the same upsert behavior.
-    ///
-    /// # Arguments
-    /// * `prefs` - Database preferences including database_id, key_id, and sync_settings
+    /// Returns all databases this user has added to their tracked list.
     ///
     /// # Returns
-    /// Result indicating success or failure
-    ///
-    /// # Errors
-    /// See `add_database()` for error conditions
-    pub fn set_prefs(&mut self, prefs: DatabasePreferences) -> Result<()> {
-        self.add_database(prefs)
-    }
-
-    /// List all databases in this user's list.
-    ///
-    /// Returns the preferences for all databases the user has added to their list.
-    ///
-    /// # Returns
-    /// Vector of UserDatabasePreferences, sorted by added_at timestamp
-    pub fn list_database_prefs(&self) -> Result<Vec<UserDatabasePreferences>> {
+    /// Vector of TrackedDatabase entries
+    pub fn databases(&self) -> Result<Vec<TrackedDatabase>> {
         let databases_table = self
             .user_database
-            .get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")?;
 
         // Get all entries from the table (returns Vec<(key, value)>)
         let all_entries = databases_table.search(|_| true)?;
 
-        // Extract just the values and sort by added_at timestamp
-        let mut all_prefs: Vec<UserDatabasePreferences> =
-            all_entries.into_iter().map(|(_key, prefs)| prefs).collect();
+        // Extract just the values
+        let tracked: Vec<TrackedDatabase> = all_entries.into_iter().map(|(_key, db)| db).collect();
 
-        all_prefs.sort_by_key(|prefs| prefs.added_at);
-
-        Ok(all_prefs)
+        Ok(tracked)
     }
 
-    /// Get the preferences for a specific database in this user's list.
+    /// Get a specific tracked database by ID.
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database
     ///
     /// # Returns
-    /// The UserDatabasePreferences if the database is in the user's list
+    /// The TrackedDatabase if it's in the user's tracked list
     ///
     /// # Errors
-    /// Returns `DatabasePreferenceNotFound` if the database is not in the user's list
-    pub fn database_prefs(
-        &self,
-        database_id: &crate::entry::ID,
-    ) -> Result<crate::user::types::UserDatabasePreferences> {
+    /// Returns `DatabaseNotTracked` if the database is not in the user's list
+    pub fn database(&self, database_id: &crate::entry::ID) -> Result<TrackedDatabase> {
         let databases_table = self
             .user_database()
-            .get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")?;
 
         // Direct O(1) lookup using database ID as key
         let db_id_key = database_id.to_string();
         databases_table.get(&db_id_key).map_err(|_| {
-            crate::user::errors::UserError::DatabasePreferenceNotFound {
+            UserError::DatabaseNotTracked {
                 database_id: database_id.to_string(),
             }
             .into()
         })
     }
 
-    /// Remove a database from this user's list.
+    /// Stop tracking a database.
     ///
-    /// This removes the database from the user's list of tracked databases.
+    /// This removes the database from the user's tracked list.
     /// It does not delete the database itself, remove key mappings, or delete any data.
     ///
     /// # Arguments
-    /// * `database_id` - The ID of the database to remove from the list
+    /// * `database_id` - The ID of the database to stop tracking
     ///
     /// # Errors
-    /// Returns `DatabasePreferenceNotFound` if the database is not in the user's list
-    pub fn remove_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
+    /// Returns `DatabaseNotTracked` if the database is not in the user's list
+    pub fn untrack_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
         let tx = self.user_database.new_transaction()?;
-        let databases_table = tx.get_store::<Table<UserDatabasePreferences>>("databases")?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
 
         // Direct O(1) delete using database ID as key
         let db_id_key = database_id.to_string();
 
         // Verify it exists before deleting
         if databases_table.get(&db_id_key).is_err() {
-            return Err(crate::user::errors::UserError::DatabasePreferenceNotFound {
+            return Err(UserError::DatabaseNotTracked {
                 database_id: database_id.to_string(),
             }
             .into());

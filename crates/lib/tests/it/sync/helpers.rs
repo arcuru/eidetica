@@ -533,7 +533,7 @@ pub fn setup_server_with_bootstrap_database(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {
@@ -673,7 +673,7 @@ pub fn set_global_wildcard_permission(database: &Database) -> Result<()> {
 
 // ===== SYNC-ENABLED DATABASE HELPERS =====
 
-use eidetica::user::types::{DatabasePreferences, SyncSettings};
+use eidetica::user::types::{SyncSettings, TrackedDatabase};
 
 /// Creates a server with a sync-enabled database ready to serve sync requests.
 ///
@@ -732,7 +732,7 @@ pub fn setup_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {
@@ -935,7 +935,7 @@ pub fn setup_public_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {

@@ -106,7 +106,7 @@ Configure per-database sync behavior:
 ```rust
 # extern crate eidetica;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
-# use eidetica::user::types::{DatabasePreferences, SyncSettings};
+# use eidetica::user::types::{SyncSettings, TrackedDatabase};
 #
 # fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
@@ -117,7 +117,7 @@ Configure per-database sync behavior:
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key)?;
 # let db_id = db.root_id().clone();
-let prefs = DatabasePreferences {
+let tracked = TrackedDatabase {
     database_id: db_id,
     key_id: user.get_default_key()?,
     sync_settings: SyncSettings {
@@ -128,8 +128,8 @@ let prefs = DatabasePreferences {
     },
 };
 
-// Register this database with the User
-user.add_database(prefs)?;
+// Track this database with the User
+user.track_database(tracked)?;
 # Ok(())
 # }
 ```

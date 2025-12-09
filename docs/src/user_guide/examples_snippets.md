@@ -72,7 +72,7 @@ if db_path.exists() {
 # let mut user = instance.login_user("alice", None)?;
 let tree_name = "my_app_data";
 
-let database = match instance.find_database(tree_name) {
+let database = match user.find_database(tree_name) {
     Ok(mut databases) => {
         println!("Found existing database: {}", tree_name);
         databases.pop().unwrap() // Assume first one is correct
@@ -649,7 +649,7 @@ if let Some(sync) = instance.sync() {
     ).await?;
 
     // Register the database with User's key manager
-    user.add_database(eidetica::user::types::DatabasePreferences {
+    user.track_database(eidetica::user::types::TrackedDatabase {
         database_id: room_id.clone(),
         key_id: key_id.clone(),
         sync_settings: eidetica::user::types::SyncSettings {

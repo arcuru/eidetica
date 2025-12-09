@@ -421,16 +421,16 @@ async fn handle_dashboard(State(state): State<AppState>, cookies: Cookies) -> Re
 
     let user = user_lock.read().await;
 
-    // Get user's tracked database preferences
-    let database_prefs = user.list_database_prefs().unwrap_or_default();
+    // Get user's tracked databases
+    let tracked_dbs = user.databases().unwrap_or_default();
 
-    // Convert preferences to display info
-    let databases: Vec<DatabaseInfo> = database_prefs
+    // Convert to display info
+    let databases: Vec<DatabaseInfo> = tracked_dbs
         .iter()
-        .map(|prefs| {
+        .map(|tracked| {
             // Try to open the database to get current info
-            let db = user.open_database(&prefs.database_id).ok();
-            DatabaseInfo::from_user_prefs(prefs, db.as_ref())
+            let db = user.open_database(&tracked.database_id).ok();
+            DatabaseInfo::from_tracked(tracked, db.as_ref())
         })
         .collect();
 
@@ -470,13 +470,13 @@ async fn handle_database_detail(
         }
     };
 
-    // Get database preferences
-    let prefs = match user.database_prefs(&database_id) {
-        Ok(p) => p,
+    // Get tracked database info
+    let tracked = match user.database(&database_id) {
+        Ok(t) => t,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get database preferences: {e}"),
+                format!("Failed to get tracked database: {e}"),
             )
                 .into_response();
         }
@@ -495,7 +495,7 @@ async fn handle_database_detail(
     };
 
     // Get database info
-    let db_info = DatabaseInfo::from_user_prefs(&prefs, Some(&db));
+    let db_info = DatabaseInfo::from_tracked(&tracked, Some(&db));
 
     // Get all entries
     let entries: Vec<String> = db
@@ -590,11 +590,11 @@ async fn handle_track_database(
             // Bootstrap succeeded - now add database to user's tracked list
             let mut user = user_lock.write().await;
 
-            // Create database preferences with sync enabled and 13-second polling
+            // Create tracked database with sync enabled and 13-second polling
             let mut properties = std::collections::HashMap::new();
             properties.insert("peer_address".to_string(), form.peer_address.clone());
 
-            let prefs = eidetica::user::DatabasePreferences {
+            let tracked = eidetica::user::TrackedDatabase {
                 database_id: database_id.clone(),
                 key_id: key_id.clone(),
                 sync_settings: eidetica::user::SyncSettings {
@@ -605,7 +605,7 @@ async fn handle_track_database(
                 },
             };
 
-            match user.add_database(prefs) {
+            match user.track_database(tracked) {
                 Ok(_) => {
                     tracing::info!(
                         "Successfully bootstrapped and tracked database {} for user {}",
@@ -671,36 +671,7 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
         r#"<div class="stat"><span class="label">Active Sessions:</span> <span class="value">{session_count}</span></div>"#
     ));
 
-    // Count databases
-    let database_count = state
-        .instance
-        .all_databases()
-        .map(|dbs| dbs.len())
-        .unwrap_or(0);
-    html.push_str(&format!(
-        r#"<div class="stat"><span class="label">Total Databases:</span> <span class="value">{database_count}</span></div>"#
-    ));
-
-    // List databases
-    if let Ok(databases) = state.instance.all_databases() {
-        html.push_str("<h2>Databases</h2>\n<table>\n");
-        html.push_str("<tr><th>Name</th><th>Root ID</th><th>Entry Count</th></tr>\n");
-
-        for db in databases {
-            let name = db.get_name().unwrap_or_else(|_| "Unknown".to_string());
-            let root_id = db.root_id().to_string();
-            let entry_count = db
-                .get_all_entries()
-                .map(|entries| entries.len())
-                .unwrap_or(0);
-
-            html.push_str(&format!(
-                "<tr><td>{name}</td><td>{root_id}</td><td>{entry_count}</td></tr>\n"
-            ));
-        }
-
-        html.push_str("</table>\n");
-    }
+    html.push_str("<p><em>Database details available on authenticated dashboard.</em></p>\n");
 
     html.push_str("</body>\n</html>");
     Html(html)

@@ -1,4 +1,4 @@
-//! Tests for User database tracking and preferences functionality
+//! Tests for User database tracking functionality
 
 use eidetica::{
     Database,
@@ -8,14 +8,14 @@ use eidetica::{
         types::{AuthKey, Permission},
     },
     crdt::Doc,
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 
 use super::helpers::{login_user, setup_instance};
 
-/// Test adding a database to user's tracked databases
+/// Test tracking a database
 #[test]
-fn test_add_database() -> eidetica::Result<()> {
+fn test_track_database() -> eidetica::Result<()> {
     // Create instance with a database that has global permissions
     let instance = setup_instance();
 
@@ -42,8 +42,8 @@ fn test_add_database() -> eidetica::Result<()> {
     let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
-    // Add database to user's preferences
-    let prefs = DatabasePreferences {
+    // Track the database
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key.clone(),
         sync_settings: SyncSettings {
@@ -55,10 +55,10 @@ fn test_add_database() -> eidetica::Result<()> {
     };
 
     // Add a database to the test user, which uses the global permissions
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Verify it was added
-    let tracked_dbs = user.list_database_prefs()?;
+    let tracked_dbs = user.databases()?;
     assert_eq!(tracked_dbs.len(), 1);
     assert_eq!(tracked_dbs[0].database_id, db_id);
     assert_eq!(tracked_dbs[0].key_id, user_key);
@@ -67,9 +67,9 @@ fn test_add_database() -> eidetica::Result<()> {
     Ok(())
 }
 
-/// Test that adding a database with no available SigKey returns an error
+/// Test that tracking a database with no available SigKey returns an error
 #[test]
-fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
+fn test_track_database_no_sigkey_error() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -97,14 +97,14 @@ fn test_add_database_no_sigkey_error() -> eidetica::Result<()> {
     let db = Database::create(db_settings, &instance, alice_key, "alice".to_string())?;
     let db_id = db.root_id().clone();
 
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id,
         key_id: user_key,
         sync_settings: Default::default(),
     };
 
     // Try to add database - should fail because user has no SigKey
-    let result = user.add_database(prefs);
+    let result = user.track_database(prefs);
     assert!(result.is_err());
 
     Ok(())
@@ -120,7 +120,7 @@ fn test_list_databases() -> eidetica::Result<()> {
     let user_key = user.get_default_key()?;
 
     // Initially should be empty
-    assert_eq!(user.list_database_prefs()?.len(), 0);
+    assert_eq!(user.databases()?.len(), 0);
 
     // Create and add multiple databases
     for i in 0..3 {
@@ -140,25 +140,25 @@ fn test_list_databases() -> eidetica::Result<()> {
 
         let db = Database::create(db_settings, &instance, alice_key, format!("alice_{i}"))?;
 
-        let prefs = DatabasePreferences {
+        let prefs = TrackedDatabase {
             database_id: db.root_id().clone(),
             key_id: user_key.clone(),
             sync_settings: Default::default(),
         };
 
-        user.add_database(prefs)?;
+        user.track_database(prefs)?;
     }
 
     // Should now have 3 databases
-    let tracked = user.list_database_prefs()?;
+    let tracked = user.databases()?;
     assert_eq!(tracked.len(), 3);
 
     Ok(())
 }
 
-/// Test getting preferences for a specific database
+/// Test getting a specific tracked database
 #[test]
-fn test_get_database_preferences() -> eidetica::Result<()> {
+fn test_get_tracked_database() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -184,7 +184,7 @@ fn test_get_database_preferences() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key.clone(),
         sync_settings: SyncSettings {
@@ -195,10 +195,10 @@ fn test_get_database_preferences() -> eidetica::Result<()> {
         },
     };
 
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Get preferences
-    let retrieved = user.database_prefs(&db_id)?;
+    let retrieved = user.database(&db_id)?;
     assert_eq!(retrieved.database_id, db_id);
     assert_eq!(retrieved.key_id, user_key);
     assert!(retrieved.sync_settings.sync_enabled);
@@ -208,9 +208,9 @@ fn test_get_database_preferences() -> eidetica::Result<()> {
     Ok(())
 }
 
-/// Test updating database preferences (upsert behavior)
+/// Test updating a tracked database (upsert behavior)
 #[test]
-fn test_update_database_preferences() -> eidetica::Result<()> {
+fn test_update_tracked_database() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -236,7 +236,7 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database with initial settings
-    let initial_prefs = DatabasePreferences {
+    let initial_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key.clone(),
         sync_settings: SyncSettings {
@@ -247,10 +247,10 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
         },
     };
 
-    user.add_database(initial_prefs)?;
+    user.track_database(initial_prefs)?;
 
-    // Update preferences by calling add_database again (upsert)
-    let updated_prefs = DatabasePreferences {
+    // Update by calling track_database again (upsert)
+    let updated_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key.clone(),
         sync_settings: SyncSettings {
@@ -261,10 +261,10 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
         },
     };
 
-    user.add_database(updated_prefs)?;
+    user.track_database(updated_prefs)?;
 
     // Verify updates succeeded
-    let retrieved = user.database_prefs(&db_id)?;
+    let retrieved = user.database(&db_id)?;
     assert!(retrieved.sync_settings.sync_enabled);
     assert!(retrieved.sync_settings.sync_on_commit);
     assert_eq!(retrieved.sync_settings.interval_seconds, Some(60));
@@ -272,9 +272,9 @@ fn test_update_database_preferences() -> eidetica::Result<()> {
     Ok(())
 }
 
-/// Test removing a database from tracking
+/// Test untracking a database
 #[test]
-fn test_remove_database() -> eidetica::Result<()> {
+fn test_untrack_database() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -300,21 +300,21 @@ fn test_remove_database() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key,
         sync_settings: Default::default(),
     };
 
-    user.add_database(prefs)?;
-    assert_eq!(user.list_database_prefs()?.len(), 1);
+    user.track_database(prefs)?;
+    assert_eq!(user.databases()?.len(), 1);
 
     // Remove database
-    user.remove_database(&db_id)?;
-    assert_eq!(user.list_database_prefs()?.len(), 0);
+    user.untrack_database(&db_id)?;
+    assert_eq!(user.databases()?.len(), 0);
 
     // Try to get preferences for removed database - should fail
-    let result = user.database_prefs(&db_id);
+    let result = user.database(&db_id);
     assert!(result.is_err());
 
     Ok(())
@@ -348,13 +348,13 @@ fn test_load_tracked_database() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add to user's tracked databases
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key,
         sync_settings: Default::default(),
     };
 
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Open the database
     let loaded_db = user.open_database(&db_id)?;
@@ -364,9 +364,9 @@ fn test_load_tracked_database() -> eidetica::Result<()> {
     Ok(())
 }
 
-/// Test updating preferences with valid key change (auto-creates mapping)
+/// Test updating tracked database with valid key change (auto-creates mapping)
 #[test]
-fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
+fn test_update_tracked_valid_key_change() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -398,15 +398,15 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database with key1
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key1.clone(),
         sync_settings: Default::default(),
     };
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Update preferences to use key2 - should succeed and auto-create mapping
-    let updated_prefs = DatabasePreferences {
+    let updated_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key2.clone(),
         sync_settings: SyncSettings {
@@ -416,10 +416,10 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
             properties: Default::default(),
         },
     };
-    user.add_database(updated_prefs)?;
+    user.track_database(updated_prefs)?;
 
     // Verify the update
-    let retrieved = user.database_prefs(&db_id)?;
+    let retrieved = user.database(&db_id)?;
     assert_eq!(retrieved.key_id, key2);
     assert!(retrieved.sync_settings.sync_enabled);
     assert!(retrieved.sync_settings.sync_on_commit);
@@ -428,9 +428,9 @@ fn test_update_preferences_valid_key_change() -> eidetica::Result<()> {
     Ok(())
 }
 
-/// Test updating preferences with non-existent key fails
+/// Test updating tracked database with non-existent key fails
 #[test]
-fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
+fn test_update_tracked_nonexistent_key_fails() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -459,31 +459,31 @@ fn test_update_preferences_nonexistent_key_fails() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: user_key,
         sync_settings: Default::default(),
     };
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Try to update with non-existent key - should fail with KeyNotFound
     let fake_key_id = "Ed25519:fake_nonexistent_key_12345".to_string();
-    let invalid_prefs = DatabasePreferences {
+    let invalid_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: fake_key_id,
         sync_settings: Default::default(),
     };
 
-    let result = user.add_database(invalid_prefs);
+    let result = user.track_database(invalid_prefs);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Key not found"));
 
     Ok(())
 }
 
-/// Test updating preferences with key that has no database access fails
+/// Test updating tracked database with key that has no database access fails
 #[test]
-fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
+fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -532,30 +532,30 @@ fn test_update_preferences_no_access_fails() -> eidetica::Result<()> {
     tx.commit()?;
 
     // Add database using key1
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key1,
         sync_settings: Default::default(),
     };
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Try to update to key2 which has NO access to database - should fail
-    let invalid_prefs = DatabasePreferences {
+    let invalid_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key2,
         sync_settings: Default::default(),
     };
 
-    let result = user.add_database(invalid_prefs);
+    let result = user.track_database(invalid_prefs);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No SigKey found"));
 
     Ok(())
 }
 
-/// Test updating preferences auto-creates mapping for key with global access
+/// Test updating tracked database auto-creates mapping for key with global access
 #[test]
-fn test_update_preferences_auto_creates_mapping() -> eidetica::Result<()> {
+fn test_update_tracked_auto_creates_mapping() -> eidetica::Result<()> {
     let instance = setup_instance();
 
     instance.create_user("test_user", None)?;
@@ -584,16 +584,16 @@ fn test_update_preferences_auto_creates_mapping() -> eidetica::Result<()> {
     let db_id = db.root_id().clone();
 
     // Add database with key1 (creates mapping: key1 -> "*")
-    let prefs = DatabasePreferences {
+    let prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key1.clone(),
         sync_settings: Default::default(),
     };
-    user.add_database(prefs)?;
+    user.track_database(prefs)?;
 
     // Update to key2 - should succeed and auto-create mapping
     // key2 CAN access the database (via "*"), mapping will be auto-created
-    let updated_prefs = DatabasePreferences {
+    let updated_prefs = TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key2.clone(),
         sync_settings: SyncSettings {
@@ -605,10 +605,10 @@ fn test_update_preferences_auto_creates_mapping() -> eidetica::Result<()> {
     };
 
     // Should succeed - auto-creates the mapping
-    user.add_database(updated_prefs)?;
+    user.track_database(updated_prefs)?;
 
     // Verify the update succeeded
-    let retrieved = user.database_prefs(&db_id)?;
+    let retrieved = user.database(&db_id)?;
     assert_eq!(retrieved.key_id, key2);
     assert!(retrieved.sync_settings.sync_enabled);
     assert_eq!(retrieved.sync_settings.interval_seconds, Some(90));

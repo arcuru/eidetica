@@ -436,9 +436,9 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("✅ Alice created database {db_id} with global Write(10) permission");
 
     // Enable sync for this database
-    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: db_id.clone(),
             key_id: alice_key.clone(),
             sync_settings: SyncSettings {

@@ -114,7 +114,7 @@ transaction.commit()?;
 
 Common settings include:
 
-- `name`: The identifier for the database (used by `Instance::find_database`). This is the primary standard setting currently used.
+- `name`: The identifier for the database (used by `User::find_database`). This is the primary standard setting currently used.
 - _Other application-specific settings can be stored here._
 
 <!-- TODO: Define more standard database settings if they emerge, e.g., for schema information or access control -->

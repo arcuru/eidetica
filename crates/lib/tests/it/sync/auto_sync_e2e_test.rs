@@ -7,7 +7,7 @@ use crate::helpers::test_instance;
 use eidetica::{
     crdt::Doc,
     sync::peer_types::Address,
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 use std::time::Duration;
 use tokio::time::sleep;
@@ -66,7 +66,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
 
     // Configure sync settings for this database with sync_on_commit enabled
     // This automatically registers the user with sync and updates combined settings
-    user1.add_database(DatabasePreferences {
+    user1.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -185,8 +185,8 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let db2_id = db2.root_id().clone();
 
     // Configure sync on both instances
-    // add_database() automatically registers users with sync and updates combined settings
-    user1.add_database(DatabasePreferences {
+    // track_database() automatically registers users with sync and updates combined settings
+    user1.track_database(TrackedDatabase {
         database_id: db1_id.clone(),
         key_id: key1.clone(),
         sync_settings: SyncSettings {
@@ -197,7 +197,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
         },
     })?;
 
-    user2.add_database(DatabasePreferences {
+    user2.track_database(TrackedDatabase {
         database_id: db2_id.clone(),
         key_id: key2.clone(),
         sync_settings: SyncSettings {
@@ -282,7 +282,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     let db_id = db1.root_id().clone();
 
     // Add database preferences - but sync isn't enabled yet!
-    user1.add_database(DatabasePreferences {
+    user1.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -391,7 +391,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let db_id = db1.root_id().clone();
 
     // Add database preferences (this registers user and updates settings)
-    user1.add_database(DatabasePreferences {
+    user1.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {

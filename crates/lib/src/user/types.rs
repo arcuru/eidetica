@@ -115,23 +115,21 @@ pub struct UserKey {
     pub database_sigkeys: HashMap<ID, String>,
 }
 
-/// User's preferences for a specific database
+/// A database tracked by a user.
 ///
-/// Stored in user's private database "databases" Table.
-/// Tracks which databases the user cares about and their sync preferences.
+/// Stored in the user's private database "databases" Table.
+/// Records which databases the user has added to their list, along with
+/// which key to use and sync preferences.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserDatabasePreferences {
+pub struct TrackedDatabase {
     /// Database ID
     pub database_id: ID,
 
     /// Which user key to use for this database
     pub key_id: String,
 
-    /// User's sync preferences for this database
+    /// Sync preferences for this database
     pub sync_settings: SyncSettings,
-
-    /// When user added this database (Unix timestamp)
-    pub added_at: i64,
 }
 
 /// Synchronization settings for a database
@@ -152,21 +150,6 @@ pub struct SyncSettings {
 
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
-}
-
-/// Database preferences input for adding/updating databases
-///
-/// Used when calling User::add_database() or User::set_database().
-#[derive(Clone, Debug)]
-pub struct DatabasePreferences {
-    /// Database ID to add/update
-    pub database_id: ID,
-
-    /// Which user key to use for this database
-    pub key_id: String,
-
-    /// Sync settings for this database
-    pub sync_settings: SyncSettings,
 }
 
 /// Database tracking information in _databases table
@@ -190,21 +173,4 @@ pub struct DatabaseTracking {
 
     /// Additional metadata
     pub metadata: HashMap<String, String>,
-}
-
-/// Update operation for database tracking
-#[derive(Clone, Debug)]
-pub enum DatabaseTrackingUpdate {
-    AddUser(String),
-    RemoveUser(String),
-    UpdateMetadata(HashMap<String, String>),
-}
-
-/// Update operation for database preferences
-#[derive(Clone, Debug)]
-pub enum DatabasePreferenceUpdate {
-    EnableSync(bool),
-    SetSyncSettings(SyncSettings),
-    SetPreferredSigKey(String),
-    UpdateNotes(String),
 }

@@ -221,17 +221,6 @@ pub fn assert_tree_name(tree: &Database, expected_name: &str) {
     assert_eq!(actual_name, expected_name, "Tree name mismatch");
 }
 
-/// Verify trees collection contains expected IDs
-pub fn assert_databases_contain_ids(trees: &[Database], expected_ids: &[ID]) {
-    let found_ids: Vec<ID> = trees.iter().map(|t| t.root_id().clone()).collect();
-    for expected_id in expected_ids {
-        assert!(
-            found_ids.contains(expected_id),
-            "Expected tree ID not found: {expected_id}"
-        );
-    }
-}
-
 /// Verify trees collection has expected count
 pub fn assert_databases_count(trees: &[Database], expected_count: usize) {
     // Legacy assertion removed - Instance now auto-creates system databases (_users, _databases)
@@ -254,28 +243,34 @@ pub fn assert_tree_names_in_collection(trees: &[Database], expected_names: &[&st
 
 // ===== ERROR TESTING HELPERS =====
 
-/// Test tree not found scenarios
-pub fn test_tree_not_found_error(db: &Instance, non_existent_name: &str) {
-    let result = db.find_database(non_existent_name);
+/// Test tree not found scenarios using User API
+pub fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
+    let result = user.find_database(non_existent_name);
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(eidetica::Error::Instance(eidetica::instance::InstanceError::DatabaseNotFound {
-        name,
+    if let Err(eidetica::Error::User(eidetica::user::UserError::DatabaseNotTracked {
+        database_id,
     })) = result
     {
-        assert_eq!(name, non_existent_name);
+        // The error contains "name:{non_existent_name}" format
+        assert!(
+            database_id.contains(non_existent_name),
+            "Expected database_id to contain '{}', got '{}'",
+            non_existent_name,
+            database_id
+        );
     } else {
-        panic!("Expected DatabaseNotFound error, got an unexpected result");
+        panic!("Expected DatabaseNotTracked error, got an unexpected result");
     }
 }
 
-/// Test database operations with various error conditions
-pub fn test_database_error_conditions(db: &Instance) {
-    // Test that all_databases() works
-    let all_trees_result = db.all_databases();
+/// Test database operations with various error conditions using User API
+pub fn test_database_error_conditions(user: &User) {
+    // Test that find_database returns proper errors for non-existent databases
+    let result = user.find_database("NonExistent");
     assert!(
-        all_trees_result.is_ok(),
-        "all_databases() should work without error"
+        result.is_err(),
+        "find_database() should error for non-existent database"
     );
 }
 

@@ -40,9 +40,6 @@ fn test_database_authentication_scenarios() {
     // Test basic backend operations work
     let backend = simple_db.backend();
     assert!(backend.all_roots().is_ok());
-
-    // Test error conditions with non-authenticated database
-    test_database_error_conditions(&simple_db);
 }
 
 #[test]

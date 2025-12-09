@@ -434,13 +434,10 @@ pub struct DatabaseInfo {
 }
 
 impl DatabaseInfo {
-    /// Create DatabaseInfo from user preferences and database
-    pub fn from_user_prefs(
-        prefs: &eidetica::user::UserDatabasePreferences,
-        db: Option<&Database>,
-    ) -> Self {
+    /// Create DatabaseInfo from tracked database and database
+    pub fn from_tracked(tracked: &eidetica::user::TrackedDatabase, db: Option<&Database>) -> Self {
         Self {
-            root_id: prefs.database_id.to_string(),
+            root_id: tracked.database_id.to_string(),
             name: db
                 .and_then(|d| d.get_name().ok())
                 .unwrap_or_else(|| "Unknown".to_string()),
@@ -448,8 +445,8 @@ impl DatabaseInfo {
                 .and_then(|d| d.get_all_entries().ok())
                 .map(|entries| entries.len())
                 .unwrap_or(0),
-            sync_enabled: prefs.sync_settings.sync_enabled,
-            key_id: prefs.key_id.clone(),
+            sync_enabled: tracked.sync_settings.sync_enabled,
+            key_id: tracked.key_id.clone(),
         }
     }
 }

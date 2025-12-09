@@ -196,26 +196,23 @@ pub enum KeyEncryption {
 }
 ```
 
-#### 4. UserDatabasePreferences (stored in user's private database `databases` Table)
+#### 4. TrackedDatabase (stored in user's private database `databases` Table)
 
-**Purpose**: Tracks which databases a user cares about and their per-user sync preferences. The User tracks _preferences_ (what the user wants), while the Sync module tracks _status_ (what's happening). This separation allows multiple users with different sync preferences to sync the same database in a single Instance.
+**Purpose**: Tracks which databases a user has added to their list, along with sync preferences. The User tracks what they want (sync_enabled, sync_on_commit), while the Sync module tracks actual status (last_synced, connection state). This separation allows multiple users with different sync preferences to sync the same database in a single Instance.
 
 <!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
 
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct UserDatabasePreferences {
+pub struct TrackedDatabase {
     /// Database ID being tracked
     pub database_id: ID,
 
     /// Which user key to use for this database
     pub key_id: String,
 
-    /// User's sync preferences for this database
+    /// Sync preferences for this database
     pub sync_settings: SyncSettings,
-
-    /// When user added this database
-    pub added_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -232,27 +229,15 @@ pub struct SyncSettings {
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
 }
-
-#[derive(Clone, Debug)]
-pub struct DatabasePreferences {
-    /// Database ID to add/update
-    pub database_id: ID,
-
-    /// Which user key to use for this database
-    pub key_id: String,
-
-    /// Sync settings for this database
-    pub sync_settings: SyncSettings,
-}
 ```
 
 **Design Notes**:
 
-- **SigKey Discovery**: When adding a database via `add_database()`, the system automatically discovers which SigKey the user can use via `Database::find_sigkeys()`, selecting the highest-permission SigKey available. The discovered SigKey is stored in `UserKey.database_sigkeys` HashMap.
+- **SigKey Discovery**: When tracking a database via `track_database()`, the system automatically discovers which SigKey the user can use via `Database::find_sigkeys()`, selecting the highest-permission SigKey available. The discovered SigKey is stored in `UserKey.database_sigkeys` HashMap.
 
-- **Separation of Concerns**: The `key_id` in UserDatabasePreferences references the user's key, while the actual SigKey mapping is stored in `UserKey.database_sigkeys`. This allows the same key to use different SigKeys in different databases.
+- **Separation of Concerns**: The `key_id` in TrackedDatabase references the user's key, while the actual SigKey mapping is stored in `UserKey.database_sigkeys`. This allows the same key to use different SigKeys in different databases.
 
-- **Sync Settings vs Sync Status**: User preferences indicate what the user wants (sync_enabled, sync_on_commit), while the Sync module tracks actual sync status (last_synced, connection state). Multiple users can have different preferences for the same database.
+- **Sync Settings vs Sync Status**: User settings indicate what the user wants (sync_enabled, sync_on_commit), while the Sync module tracks actual sync status (last_synced, connection state). Multiple users can have different settings for the same database.
 
 #### 5. DatabaseTracking (stored in `_databases` table)
 
@@ -548,32 +533,19 @@ impl User {
         sigkey: &str,
     ) -> Result<()>;
 
-    // === Database Tracking and Preferences ===
+    // === Tracked Databases ===
 
-    /// Add a database to this user's tracked databases with auto-discovery of SigKeys.
-    pub fn add_database(
-        &mut self,
-        prefs: DatabasePreferences,
-    ) -> Result<()>;
+    /// List all tracked databases.
+    pub fn databases(&self) -> Result<Vec<TrackedDatabase>>;
 
-    /// List all databases this user is tracking.
-    pub fn list_database_prefs(&self) -> Result<Vec<UserDatabasePreferences>>;
+    /// Get a specific tracked database by ID.
+    pub fn database(&self, database_id: &ID) -> Result<TrackedDatabase>;
 
-    /// Get the preferences for a specific database.
-    pub fn database_prefs(
-        &self,
-        database_id: &ID,
-    ) -> Result<UserDatabasePreferences>;
+    /// Track a database with auto-discovery of SigKeys (upsert behavior).
+    pub fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()>;
 
-    /// Set/update preferences for a database (upsert behavior).
-    /// Alias for add_database.
-    pub fn set_database(
-        &mut self,
-        prefs: DatabasePreferences,
-    ) -> Result<()>;
-
-    /// Remove a database from this user's tracked databases.
-    pub fn remove_database(&mut self, database_id: &ID) -> Result<()>;
+    /// Stop tracking a database.
+    pub fn untrack_database(&mut self, database_id: &ID) -> Result<()>;
 
     // === Key Management ===
 

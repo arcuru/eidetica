@@ -15,7 +15,7 @@ use eidetica::{
         },
         transports::{SyncTransport, http::HttpTransport},
     },
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 
 use super::helpers::*;
@@ -191,7 +191,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync for this database
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -266,7 +266,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -342,7 +342,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -425,7 +425,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let tree_id2 = db2.root_id().clone();
 
     // Enable sync for both
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id1.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -437,7 +437,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     })
     .unwrap();
 
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id2.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -569,7 +569,7 @@ async fn test_sync_without_peer_identifier_works() {
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -629,7 +629,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let user_key_pubkey = user.get_public_key(&key_id).unwrap();
 
     // Enable sync
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -698,7 +698,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -777,7 +777,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     }
 
     // Enable sync
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {
@@ -875,7 +875,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     }
 
     // Enable sync
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id,
         sync_settings: SyncSettings {

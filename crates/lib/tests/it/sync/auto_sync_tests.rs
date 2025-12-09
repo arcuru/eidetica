@@ -9,7 +9,7 @@
 use crate::helpers::test_instance;
 use eidetica::{
     crdt::Doc,
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 
 /// Test that commits work correctly when sync is enabled
@@ -32,7 +32,7 @@ fn test_commits_work_with_sync_enabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync enabled
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -115,7 +115,7 @@ fn test_commits_with_sync_disabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync disabled
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {
@@ -156,7 +156,7 @@ fn test_commits_with_sync_on_commit_disabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync_on_commit=false
-    user.add_database(DatabasePreferences {
+    user.track_database(TrackedDatabase {
         database_id: db_id.clone(),
         key_id: key_id.clone(),
         sync_settings: SyncSettings {

@@ -80,8 +80,8 @@ fn setup_user_with_database() -> eidetica::Result<(
     let sync = Sync::new(instance.clone()).expect("Failed to create sync");
 
     // Enable sync for this database
-    use eidetica::user::types::{DatabasePreferences, SyncSettings};
-    user.add_database(DatabasePreferences {
+    use eidetica::user::types::{SyncSettings, TrackedDatabase};
+    user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id: user_key_id.clone(),
         sync_settings: SyncSettings {
@@ -511,9 +511,9 @@ async fn test_multiple_users() {
     bob_tx.commit().expect("Failed to commit Bob auth");
 
     // Enable sync for Alice's database
-    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: alice_tree_id.clone(),
             key_id: alice_key.clone(),
             sync_settings: SyncSettings {
@@ -526,7 +526,7 @@ async fn test_multiple_users() {
         .expect("Failed to add Alice's database preferences");
 
     // Enable sync for Bob's database
-    bob.add_database(DatabasePreferences {
+    bob.track_database(TrackedDatabase {
         database_id: bob_tree_id.clone(),
         key_id: bob_key.clone(),
         sync_settings: SyncSettings {
@@ -687,9 +687,9 @@ async fn test_user_without_admin_cannot_modify() {
     alice_tx.commit().expect("Failed to commit Alice auth");
 
     // Enable sync for Alice's database
-    use eidetica::user::types::{DatabasePreferences, SyncSettings};
+    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: alice_key.clone(),
             sync_settings: SyncSettings {

@@ -895,7 +895,7 @@ impl Sync {
         preferences_db_id: &crate::entry::ID,
     ) -> Result<()> {
         use crate::store::Table;
-        use crate::user::types::UserDatabasePreferences;
+        use crate::user::types::TrackedDatabase;
 
         let user_uuid_str = user_uuid.as_ref();
 
@@ -926,20 +926,19 @@ impl Sync {
 
         debug!(user_uuid = %user_uuid_str, "User preferences changed, updating sync configuration");
 
-        // Read all current preferences
-        let databases_table =
-            prefs_db.get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
-        let all_prefs = databases_table.search(|_| true)?; // Get all entries
+        // Read all tracked databases
+        let databases_table = prefs_db.get_store_viewer::<Table<TrackedDatabase>>("databases")?;
+        let all_tracked = databases_table.search(|_| true)?; // Get all entries
 
         // Get databases user previously tracked
         let old_databases = user_mgr.get_linked_databases(user_uuid_str)?;
 
         // Build set of current database IDs
-        let current_databases: std::collections::HashSet<_> = all_prefs
+        let current_databases: std::collections::HashSet<_> = all_tracked
             .iter()
-            .map(|(_uuid, pref)| pref)
-            .filter(|p| p.sync_settings.sync_enabled)
-            .map(|p| p.database_id.clone())
+            .map(|(_uuid, tracked)| tracked)
+            .filter(|t| t.sync_settings.sync_enabled)
+            .map(|t| t.database_id.clone())
             .collect();
 
         // Track which databases need settings recomputation
@@ -955,10 +954,10 @@ impl Sync {
         }
 
         // Add/update user for current databases
-        for (_uuid, pref) in &all_prefs {
-            if pref.sync_settings.sync_enabled {
-                user_mgr.link_user_to_database(&pref.database_id, user_uuid_str)?;
-                affected_databases.insert(pref.database_id.clone());
+        for (_uuid, tracked) in &all_tracked {
+            if tracked.sync_settings.sync_enabled {
+                user_mgr.link_user_to_database(&tracked.database_id, user_uuid_str)?;
+                affected_databases.insert(tracked.database_id.clone());
             }
         }
 
@@ -980,12 +979,12 @@ impl Sync {
                 if let Some((user_prefs_db_id, _)) = user_mgr.get_tracked_user_state(uuid)? {
                     let user_db = crate::Database::open_readonly(user_prefs_db_id, &instance)?;
                     let user_table =
-                        user_db.get_store_viewer::<Table<UserDatabasePreferences>>("databases")?;
+                        user_db.get_store_viewer::<Table<TrackedDatabase>>("databases")?;
 
-                    // Find this database's preferences
-                    for (_pref_uuid, pref) in user_table.search(|_| true)? {
-                        if pref.database_id == db_id && pref.sync_settings.sync_enabled {
-                            settings_list.push(pref.sync_settings.clone());
+                    // Find this database's settings
+                    for (_key, tracked) in user_table.search(|_| true)? {
+                        if tracked.database_id == db_id && tracked.sync_settings.sync_enabled {
+                            settings_list.push(tracked.sync_settings.clone());
                             break;
                         }
                     }

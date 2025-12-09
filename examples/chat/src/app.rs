@@ -74,7 +74,7 @@ impl App {
         // Enable sync for this database with periodic sync every 2 seconds
         let database_id = database.root_id().clone();
         self.user
-            .add_database(eidetica::user::types::DatabasePreferences {
+            .track_database(eidetica::user::types::TrackedDatabase {
                 database_id,
                 key_id: key_id.clone(),
                 sync_settings: eidetica::user::types::SyncSettings {
@@ -261,11 +261,11 @@ impl App {
                         // IMPORTANT: After bootstrap sync, we must register the database with the User
                         // so it knows which key to use when loading this database.
                         // request_database_access() only syncs the data - it doesn't update the User's
-                        // key mappings. add_database() discovers available SigKeys and creates the mapping.
+                        // key mappings. track_database() discovers available SigKeys and creates the mapping.
                         println!("DEBUG: Registering database with User's key manager...");
                         match self
                             .user
-                            .add_database(eidetica::user::types::DatabasePreferences {
+                            .track_database(eidetica::user::types::TrackedDatabase {
                                 database_id: room_id_obj.clone(),
                                 key_id: key_id.clone(),
                                 sync_settings: eidetica::user::types::SyncSettings {

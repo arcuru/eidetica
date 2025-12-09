@@ -11,7 +11,7 @@ use eidetica::{
     instance::LegacyInstanceOps,
     store::DocStore,
     sync::handler::SyncHandler,
-    user::types::{DatabasePreferences, SyncSettings},
+    user::types::{SyncSettings, TrackedDatabase},
 };
 
 use super::helpers;
@@ -36,7 +36,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 
     // Add database to user preferences but with sync DISABLED
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {
@@ -138,7 +138,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Add database with sync ENABLED initially
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {
@@ -190,7 +190,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // NOW disable sync on the server
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {
@@ -302,7 +302,7 @@ async fn test_sync_succeeds_when_enabled() {
 
     // Add database with sync ENABLED
     server_user
-        .add_database(DatabasePreferences {
+        .track_database(TrackedDatabase {
             database_id: tree_id.clone(),
             key_id: server_key_id.clone(),
             sync_settings: SyncSettings {

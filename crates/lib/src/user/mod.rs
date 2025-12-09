@@ -17,7 +17,7 @@
 //!
 //! Keys are Ed25519 keypairs, encrypted at rest using the user's password (Argon2id).
 //! Each key can authenticate with multiple databases via SigKey mappings, which are
-//! auto-discovered when adding a database.
+//! auto-discovered when tracking a database.
 //!
 //! # Sync Settings
 //!
