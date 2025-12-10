@@ -160,7 +160,7 @@ impl LegacyInstanceOps for Instance {
                 .map(char::from)
                 .collect::<String>()
         );
-        settings.set_string("database_id", unique_id);
+        settings.set("database_id", unique_id);
 
         self.new_database(settings, signing_key_name)
     }

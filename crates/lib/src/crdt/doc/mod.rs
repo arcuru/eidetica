@@ -1,31 +1,22 @@
-//! Document-level CRDT API.
+//! Document CRDT
 //!
-//! This module provides the main public interface for CRDT documents in Eidetica.
-//! The [`Doc`] type serves as the primary entry point for all CRDT operations,
-//! providing a clean separation between document-level operations and internal
-//! node structure management.
-//!
-//! # Design Philosophy
-//!
-//! The `Doc` type addresses the confusion in the original API where `crdt::Map`
-//! served dual purposes as both the main document interface and internal node
-//! representation. This separation provides:
-//!
-//! - **Clear API boundaries**: Users interact only with `Doc` for document operations
-//! - **Better conceptual model**: Document vs internal node separation
-//! - **Future flexibility**: Can optimize internal representation independently
-//! - **Easier testing**: Document and node behaviors can be tested separately
+//! This module provides the main public interface for a CRDT "Document" in Eidetica.
+//! The [`Doc`] type serves as the primary entry point for accessing and editing it.
+//! It is a json-ish nested type.
 //!
 //! # Usage
 //!
 //! ```
 //! use eidetica::crdt::{Doc, traits::CRDT};
-//! use eidetica::crdt::doc::path;
 //!
 //! let mut doc = Doc::new();
 //! doc.set("name", "Alice");
 //! doc.set("age", 30);
-//! doc.set_path(path!("user.profile.bio"), "Software developer").unwrap();
+//! doc.set("user.profile.bio", "Software developer"); // Creates nested structure
+//!
+//! // Type-safe retrieval
+//! let name: Option<&str> = doc.get_as("name");
+//! let age: Option<i64> = doc.get_as("age");
 //!
 //! // Merge with another document
 //! let mut doc2 = Doc::new();
@@ -35,7 +26,7 @@
 //! let merged = doc.merge(&doc2).unwrap();
 //! ```
 
-use std::{collections::HashMap, fmt, str::FromStr};
+use std::{collections::HashMap, fmt};
 
 use crate::crdt::{
     CRDTError,
@@ -59,47 +50,34 @@ pub use crate::path;
 
 /// The main CRDT document type for Eidetica.
 ///
-/// `Doc` provides the primary interface for CRDT document operations,
-/// providing a unified tree structure for CRDT operations.
-/// This type handles document-level operations like merging, serialization,
-/// and high-level data access patterns.
-///
-/// # Core Operations
-///
-/// - **Data access**: `get()`, `get_text()`, `get_int()`, etc.
-/// - **Data modification**: `set()`, `remove()`, `set_path()`, etc.
-/// - **CRDT operations**: `merge()` for conflict-free merging
-/// - **Path operations**: Dot-notation access to nested structures
+/// `Doc` is a hierarchical key-value store with Last-Write-Wins (LWW) merge semantics.
+/// Keys can be simple strings or dot-separated paths for nested access.
 ///
 /// # Examples
 ///
-/// ## Basic Operations
 /// ```
 /// # use eidetica::crdt::Doc;
 /// let mut doc = Doc::new();
+///
+/// // Simple key-value
 /// doc.set("name", "Alice");
 /// doc.set("age", 30);
 ///
+/// // Nested paths (creates intermediate Doc nodes automatically)
+/// doc.set("user.profile.bio", "Developer");
+///
+/// // Type-safe retrieval
 /// assert_eq!(doc.get_as::<&str>("name"), Some("Alice"));
 /// assert_eq!(doc.get_as::<i64>("age"), Some(30));
+/// assert_eq!(doc.get_as::<&str>("user.profile.bio"), Some("Developer"));
 /// ```
 ///
-/// ## Path Operations
-/// ```
-/// # use eidetica::crdt::Doc;
-/// # use eidetica::crdt::doc::path;
-/// let mut doc = Doc::new();
-/// doc.set("user.profile.name", "Alice");
+/// # CRDT Merging
 ///
-/// assert_eq!(doc.get_as::<&str>("user.profile.name"), Some("Alice"));
-/// ```
-///
-/// ## CRDT Merging
 /// ```
 /// # use eidetica::crdt::{Doc, traits::CRDT};
 /// let mut doc1 = Doc::new();
 /// doc1.set("name", "Alice");
-/// doc1.set("age", 30);
 ///
 /// let mut doc2 = Doc::new();
 /// doc2.set("name", "Bob");
@@ -107,8 +85,7 @@ pub use crate::path;
 ///
 /// let merged = doc1.merge(&doc2).unwrap();
 /// assert_eq!(merged.get_as::<&str>("name"), Some("Bob")); // Last write wins
-/// assert_eq!(merged.get_as::<i64>("age"), Some(30));        // Preserved from doc1
-/// assert_eq!(merged.get_as::<&str>("city"), Some("NYC"));   // Added from doc2
+/// assert_eq!(merged.get_as::<&str>("city"), Some("NYC")); // Added from doc2
 /// ```
 /// Current CRDT format version for Doc.
 pub const DOC_VERSION: u8 = 0;
@@ -148,7 +125,7 @@ pub struct Doc {
 }
 
 impl Doc {
-    /// Creates a new empty document
+    /// Creates a new empty document.
     pub fn new() -> Self {
         Self {
             version: DOC_VERSION,
@@ -156,17 +133,12 @@ impl Doc {
         }
     }
 
-    /// Returns the CRDT format version of this document.
-    pub fn version(&self) -> u8 {
-        self.version
-    }
-
-    /// Returns true if this document has no data (excluding tombstones)
+    /// Returns true if this document has no data (excluding tombstones).
     pub fn is_empty(&self) -> bool {
         self.children.values().all(|v| matches!(v, Value::Deleted))
     }
 
-    /// Returns the number of direct keys (excluding tombstones)
+    /// Returns the number of direct keys (excluding tombstones).
     pub fn len(&self) -> usize {
         self.children
             .values()
@@ -174,17 +146,19 @@ impl Doc {
             .count()
     }
 
-    /// Returns true if the document contains the given key
+    /// Returns true if the document contains the given key.
     pub fn contains_key(&self, key: impl AsRef<Path>) -> bool {
-        let path_buf = PathBuf::from_str(key.as_ref().as_str()).unwrap(); // Infallible
-        self.get(&path_buf).is_some()
+        self.get(key).is_some()
     }
 
-    /// Returns true if the given key or any of its ancestors is a tombstone.
+    /// Returns true if the exact path points to a tombstone (Value::Deleted).
     ///
-    /// This method provides access to CRDT tombstone information for advanced use cases,
-    /// testing, and debugging. A path is considered tombstoned if any segment along
-    /// the path has been deleted.
+    /// This method checks if the specific key has been deleted. Note that this
+    /// only returns true if the exact path is a tombstone - it does not check
+    /// if an ancestor was deleted (which would make the path inaccessible).
+    ///
+    /// To check if a path is inaccessible (either deleted or has a deleted ancestor),
+    /// use `get(path).is_none()` instead.
     ///
     /// # Examples
     ///
@@ -192,46 +166,34 @@ impl Doc {
     /// # use eidetica::crdt::Doc;
     /// let mut doc = Doc::new();
     /// doc.set("user.profile.name", "Alice");
-    /// doc.delete("user.profile.name");
+    /// doc.remove("user.profile.name");
     ///
     /// assert!(doc.is_tombstone("user.profile.name"));
     /// assert!(!doc.is_tombstone("user.profile")); // parent is not tombstoned
     ///
-    /// // Deleting a parent tombstones all children
+    /// // Deleting a parent makes children inaccessible but not directly tombstoned
     /// doc.set("settings.theme.color", "blue");
-    /// doc.delete("settings.theme");
-    /// assert!(doc.is_tombstone("settings.theme"));
-    /// assert!(doc.is_tombstone("settings.theme.color")); // child is tombstoned via parent
+    /// doc.remove("settings.theme");
+    /// assert!(doc.is_tombstone("settings.theme")); // exact path is tombstoned
+    /// assert!(!doc.is_tombstone("settings.theme.color")); // child path is NOT a tombstone
+    /// assert!(doc.get("settings.theme.color").is_none()); // but it's still inaccessible
     /// ```
     pub fn is_tombstone(&self, key: impl AsRef<Path>) -> bool {
-        let path = key.as_ref();
-        let segments: Vec<_> = path.components().collect();
-
-        if segments.is_empty() {
-            return false;
-        }
-
-        let mut current = self;
-
-        for (i, segment) in segments.iter().enumerate() {
-            match current.children.get(*segment) {
-                Some(Value::Deleted) => return true,
-                Some(Value::Doc(doc)) => {
-                    if i == segments.len() - 1 {
-                        return false; // Final segment is a Doc, not a tombstone
-                    }
-                    current = doc;
-                }
-                _ => return false, // Non-existent or can't navigate through
-            }
-        }
-
-        false
+        matches!(self.get_raw(key), Some(Value::Deleted))
     }
 
     /// Gets a value by key or path without filtering tombstones.
     fn get_raw(&self, key: impl AsRef<Path>) -> Option<&Value> {
         let path = key.as_ref();
+        let path_str: &str = path.as_ref();
+
+        // For simple keys (no dots), use direct access
+        // This handles empty keys ("") and regular simple keys ("foo")
+        if !path_str.contains('.') {
+            return self.children.get(path_str);
+        }
+
+        // For paths with dots, use components (which filters empty strings)
         let segments: Vec<_> = path.components().collect();
 
         if segments.is_empty() {
@@ -277,7 +239,7 @@ impl Doc {
     /// assert!(doc.get("nonexistent").is_none());
     ///
     /// // Deleted keys return None
-    /// doc.delete("name");
+    /// doc.remove("name");
     /// assert!(doc.get("name").is_none());
     /// ```
     pub fn get(&self, key: impl AsRef<Path>) -> Option<&Value> {
@@ -290,6 +252,18 @@ impl Doc {
     /// Gets a mutable reference to a value by key or path
     pub fn get_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Value> {
         let path = key.as_ref();
+        let path_str: &str = path.as_ref();
+
+        // For simple keys (no dots), use direct access
+        // This handles empty keys ("") and regular simple keys ("foo")
+        if !path_str.contains('.') {
+            return match self.children.get_mut(path_str) {
+                Some(Value::Deleted) => None, // Hide tombstones
+                value => value,
+            };
+        }
+
+        // For paths with dots, use components (which filters empty strings)
         let segments: Vec<_> = path.components().collect();
 
         if segments.is_empty() {
@@ -353,83 +327,59 @@ impl Doc {
         T::try_from(value).ok()
     }
 
-    /// Sets a value at the given key or path, returns the old value if present
+    /// Sets a value at the given key or path, returns the old value if present.
     ///
-    /// This method automatically creates intermediate nodes for nested paths.
-    /// Path creation is always successful due to normalization, but setting
-    /// through existing scalar values will fail.
+    /// This method automatically creates intermediate `Doc` nodes for nested paths.
+    /// For example, `doc.set("a.b.c", value)` will create `a` and `b` as `Doc` nodes
+    /// if they don't exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    ///
+    /// // Simple key
+    /// doc.set("name", "Alice");
+    ///
+    /// // Nested path - creates intermediate nodes automatically
+    /// doc.set("user.profile.age", 30);
+    ///
+    /// assert_eq!(doc.get_as("name"), Some("Alice"));
+    /// assert_eq!(doc.get_as("user.profile.age"), Some(30));
+    /// ```
     pub fn set(&mut self, key: impl AsRef<Path>, value: impl Into<Value>) -> Option<Value> {
-        let path_str = key.as_ref().as_str();
-        let path_buf = PathBuf::from_str(path_str).unwrap(); // Infallible
+        let path = key.as_ref();
+        let path_str: &str = path.as_ref();
 
         // For simple keys (no dots), use direct assignment
+        // This handles empty keys ("") and regular simple keys ("foo")
         if !path_str.contains('.') {
             let old = self.children.insert(path_str.to_string(), value.into());
-            match old {
+            return match old {
                 Some(Value::Deleted) => None, // Don't return tombstones
-                value => value,
-            }
-        } else {
-            // For paths, use set_path - errors should be handled by caller
-            // but we return None for this non-Result interface
-            // Path operations can fail (e.g., trying to set through scalar)
-            // For this Option-returning interface, we return None
-            // Use try_set() for Result-based error handling
-            self.set_path(&path_buf, value).unwrap_or_default()
-        }
-    }
-
-    /// Sets a value at the given key or path with Result error handling
-    ///
-    /// This provides a Result-based interface for cases where you need to
-    /// handle path operation errors (e.g., setting through scalar values).
-    pub fn try_set(
-        &mut self,
-        key: impl AsRef<Path>,
-        value: impl Into<Value>,
-    ) -> crate::Result<Option<Value>> {
-        let path_str = key.as_ref().as_str();
-        let path_buf = PathBuf::from_str(path_str).unwrap(); // Infallible
-
-        // Check for empty key - this is not allowed
-        if path_str.is_empty() {
-            return Err(crate::crdt::CRDTError::InvalidPath {
-                path: "empty path (not allowed for setting values)".to_string(),
-            }
-            .into());
+                v => v,
+            };
         }
 
-        // For simple keys (no dots), use direct assignment
-        if !path_str.contains('.') {
-            let old = self.children.insert(path_str.to_string(), value.into());
-            Ok(match old {
-                Some(Value::Deleted) => None, // Don't return tombstones
-                value => value,
-            })
-        } else {
-            // For paths, use set_path and return the Result
-            self.set_path(&path_buf, value).map_err(Into::into)
-        }
-    }
-
-    /// Sets a value at a path using dot notation, creating intermediate nodes as needed
-    pub fn set_path(
-        &mut self,
-        path: impl AsRef<Path>,
-        value: impl Into<Value>,
-    ) -> Result<Option<Value>, CRDTError> {
-        let path = path.as_ref();
+        // For paths with dots, use components (which filters empty strings)
         let segments: Vec<_> = path.components().collect();
 
         if segments.is_empty() {
-            return Err(CRDTError::InvalidPath {
-                path: "(empty path)".to_string(),
-            });
+            return None;
         }
 
-        let mut current = self;
+        // Single segment after filtering - direct assignment
+        if segments.len() == 1 {
+            let old = self.children.insert(segments[0].to_string(), value.into());
+            return match old {
+                Some(Value::Deleted) => None, // Don't return tombstones
+                v => v,
+            };
+        }
 
         // Navigate to the parent, creating intermediate nodes as needed
+        let mut current = self;
         for segment in &segments[..segments.len() - 1] {
             let entry = current
                 .children
@@ -462,10 +412,10 @@ impl Doc {
         let final_key = segments.last().unwrap();
         let old = current.children.insert(final_key.to_string(), value.into());
 
-        Ok(match old {
+        match old {
             Some(Value::Deleted) => None, // Don't return tombstones
-            value => value,
-        })
+            v => v,
+        }
     }
 
     /// Removes a value by key or path, returns the old value if present.
@@ -482,66 +432,18 @@ impl Doc {
     ///
     /// let old = doc.remove("user.profile.name");
     /// assert_eq!(old.and_then(|v| v.as_text().map(|s| s.to_string())), Some("Alice".to_string()));
-    /// assert!(doc.is_tombstone("user.profile.name"));
     /// assert!(doc.get("user.profile.name").is_none());
     /// ```
     pub fn remove(&mut self, key: impl AsRef<Path>) -> Option<Value> {
-        // Delegate to set_path with Value::Deleted
-        self.set_path(key, Value::Deleted).unwrap_or(None)
+        // Delegate to set with Value::Deleted
+        self.set(key, Value::Deleted)
     }
 
-    /// Marks a key as deleted by setting it to a tombstone.
-    ///
-    /// This method always creates a tombstone for CRDT consistency, even if the
-    /// path didn't previously exist. The return value indicates whether a
-    /// non-tombstone value was replaced:
-    /// - Returns `true` if a value existed and was deleted
-    /// - Returns `false` if the path was already a tombstone or didn't exist
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use eidetica::crdt::Doc;
-    /// let mut doc = Doc::new();
-    /// doc.set("user.profile.name", "Alice");
-    ///
-    /// assert!(doc.delete("user.profile.name")); // Returns true (value existed)
-    /// assert!(!doc.delete("user.profile.name")); // Returns false (already deleted)
-    /// assert!(!doc.delete("nonexistent")); // Returns false but tombstone is created
-    /// ```
-    pub fn delete(&mut self, key: impl AsRef<Path>) -> bool {
-        self.remove(key).is_some()
-    }
-
-    /// Gets a value by path with automatic type conversion using TryFrom
-    ///
-    /// Similar to `get_as()` but works with dot-notation paths for nested access.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use eidetica::crdt::Doc;
-    /// let mut doc = Doc::new();
-    /// doc.set("user.profile.name", "Alice");
-    /// doc.set("user.profile.age", 30);
-    ///
-    /// // Type inference with path access
-    /// let name = doc.get_as::<String>("user.profile.name");
-    /// let age = doc.get_as::<i64>("user.profile.age");
-    ///
-    /// assert_eq!(name, Some("Alice".to_string()));
-    /// assert_eq!(age, Some(30));
-    /// ```
     /// Returns an iterator over all key-value pairs (excluding tombstones)
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
         self.children
             .iter()
             .filter(|(_, v)| !matches!(v, Value::Deleted))
-    }
-
-    /// Returns a mutable iterator over all key-value pairs (excluding tombstones)
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut Value)> {
-        self.children.iter_mut()
     }
 
     /// Returns an iterator over all keys (excluding tombstones)
@@ -559,24 +461,13 @@ impl Doc {
             .filter(|v| !matches!(v, Value::Deleted))
     }
 
-    /// Returns a mutable iterator over all values (excluding tombstones)
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.children.values_mut()
-    }
-
-    /// Clears all data from this document
-    pub fn clear(&mut self) {
-        let keys: Vec<_> = self.children.keys().cloned().collect();
-        for key in keys {
-            self.children.insert(key, Value::Deleted);
-        }
-    }
-
-    /// Converts to a JSON-like string representation for human-readable output.
+    /// Converts this Doc to a JSON string representation.
     ///
-    /// See [`Doc::to_json_string`] for detailed documentation.
+    /// This produces a valid JSON object string from the document's contents,
+    /// excluding tombstones.
     pub fn to_json_string(&self) -> String {
-        let mut result = String::with_capacity(self.children.len() * 16);
+        // 64-byte preallocated buffer to avoid reallocs for simple cases
+        let mut result = String::with_capacity(64);
         result.push('{');
         let mut first = true;
         for (key, value) in self.iter() {
@@ -646,281 +537,92 @@ impl FromIterator<(String, Value)> for Doc {
     }
 }
 
-// Additional methods for compatibility and advanced operations
+// JSON serialization methods
 impl Doc {
-    /// Set a key-value pair with a raw Value (for advanced use)
-    pub fn set_raw(&mut self, key: impl AsRef<Path>, value: Value) -> &mut Self {
-        self.set(key, value);
-        self
-    }
-
-    /// Set a key-value pair with automatic JSON serialization for any Serialize type
-    pub fn set_json<T>(&mut self, key: impl AsRef<Path>, value: T) -> crate::Result<&mut Self>
-    where
-        T: serde::Serialize,
-    {
-        let path_str = key.as_ref().as_str();
-
-        // For simple keys (no dots), set as JSON string
-        if !path_str.contains('.') {
-            let json =
-                serde_json::to_string(&value).map_err(|e| CRDTError::SerializationFailed {
-                    reason: e.to_string(),
-                })?;
-            self.set(path_str, Value::Text(json));
-        } else {
-            // For paths, serialize to JSON string and set as text
-            let json =
-                serde_json::to_string(&value).map_err(|e| CRDTError::SerializationFailed {
-                    reason: e.to_string(),
-                })?;
-            self.set(key, Value::Text(json));
-        }
-        Ok(self)
-    }
-
-    /// Get a value by key with automatic JSON deserialization for any Deserialize type
-    pub fn get_json<T>(&self, key: impl AsRef<Path>) -> crate::Result<T>
-    where
-        T: for<'de> serde::Deserialize<'de>,
-    {
-        let path_str = key.as_ref().as_str();
-
-        // For simple keys (no dots), get and deserialize JSON
-        if !path_str.contains('.') {
-            match self.children.get(path_str) {
-                Some(Value::Text(json)) => serde_json::from_str::<T>(json).map_err(|e| {
-                    CRDTError::DeserializationFailed {
-                        reason: format!("Failed to deserialize JSON for key '{path_str}': {e}"),
-                    }
-                    .into()
-                }),
-                Some(Value::Deleted) => Err(CRDTError::ElementNotFound {
-                    key: path_str.to_string(),
-                }
-                .into()),
-                Some(other) => Err(CRDTError::TypeMismatch {
-                    expected: "Text (JSON string)".to_string(),
-                    actual: format!("{other:?}"),
-                }
-                .into()),
-                None => Err(CRDTError::ElementNotFound {
-                    key: path_str.to_string(),
-                }
-                .into()),
-            }
-        } else {
-            // For paths, get the value and try to deserialize as JSON
-            let key_ref = key.as_ref();
-            let value = self
-                .get(key_ref)
-                .ok_or_else(|| CRDTError::ElementNotFound {
-                    key: path_str.to_string(),
-                })?;
-
-            match value {
-                Value::Text(json) => serde_json::from_str(json).map_err(|e| {
-                    CRDTError::DeserializationFailed {
-                        reason: format!("Failed to deserialize JSON for path '{path_str}': {e}"),
-                    }
-                    .into()
-                }),
-                _ => Err(CRDTError::TypeMismatch {
-                    expected: "JSON string".to_string(),
-                    actual: format!("{value:?}"),
-                }
-                .into()),
-            }
-        }
-    }
-
-    /// Set a key-value pair where the value is a string
-    pub fn set_string(&mut self, key: impl AsRef<Path>, value: impl Into<String>) -> &mut Self {
-        self.set(key, Value::Text(value.into()));
-        self
-    }
-
-    /// Set a key-value pair where the value is a nested Doc
-    pub fn set_doc(&mut self, key: impl AsRef<Path>, value: Doc) -> &mut Self {
-        self.set(key, Value::Doc(value));
-        self
-    }
-
-    /// Get a reference to a nested Doc by key
-    pub fn get_doc(&self, key: impl AsRef<Path>) -> Option<&Doc> {
-        match self.get(key)? {
-            Value::Doc(node) => Some(node),
-            _ => None,
-        }
-    }
-
-    /// Get a mutable reference to a nested Doc by key
-    pub fn get_doc_mut(&mut self, key: impl AsRef<Path>) -> Option<&mut Doc> {
-        match self.get_mut(key)? {
-            Value::Doc(node) => Some(node),
-            _ => None,
-        }
-    }
-
-    /// Get a reference to the internal HashMap for advanced access
-    pub fn as_hashmap(&self) -> &HashMap<String, Value> {
-        &self.children
-    }
-
-    /// Get a mutable reference to the internal HashMap for advanced access
-    pub fn as_hashmap_mut(&mut self) -> &mut HashMap<String, Value> {
-        &mut self.children
-    }
-
-    /// List operations compatibility methods
-    pub fn list_add<K>(&mut self, key: K, value: Value) -> crate::Result<String>
-    where
-        K: Into<String>,
-    {
-        let key = key.into();
-
-        // Get or create the list
-        let list = match self.children.get_mut(&key) {
-            Some(Value::List(list)) => list,
-            Some(Value::Deleted) => {
-                // Replace tombstone with new list
-                let mut new_list = List::new();
-                let index = new_list.push(value);
-                self.children.insert(key, Value::List(new_list));
-                return Ok(index.to_string());
-            }
-            Some(_) => {
-                return Err(CRDTError::TypeMismatch {
-                    expected: "List".to_string(),
-                    actual: "other type".to_string(),
-                }
-                .into());
-            }
-            None => {
-                // Create new list
-                let mut new_list = List::new();
-                let index = new_list.push(value);
-                self.children.insert(key, Value::List(new_list));
-                return Ok(index.to_string());
-            }
-        };
-
-        Ok(list.push(value).to_string())
-    }
-
-    /// List remove operation - tombstones element by position ID
-    pub fn list_remove<K>(&mut self, key: K, id: &str) -> crate::Result<bool>
-    where
-        K: Into<String> + AsRef<str>,
-    {
-        let index: usize = id.parse().map_err(|_| CRDTError::InvalidPath {
-            path: format!("Invalid list index: {id}"),
-        })?;
-
-        match self.children.get_mut(key.as_ref()) {
-            Some(Value::List(list)) => Ok(list.remove(index).is_some()),
-            Some(_) => Err(CRDTError::TypeMismatch {
-                expected: "List".to_string(),
-                actual: "other type".to_string(),
-            }
-            .into()),
-            None => Ok(false), // Key doesn't exist
-        }
-    }
-
-    /// Get an element by its ID from a list
-    pub fn list_get<K>(&self, key: K, id: &str) -> Option<&Value>
-    where
-        K: AsRef<str>,
-    {
-        let index: usize = id.parse().ok()?;
-        match self.children.get(key.as_ref()) {
-            Some(Value::List(list)) => list.get(index),
-            Some(Value::Deleted) => None, // Hide tombstones
-            _ => None,
-        }
-    }
-
-    /// Get all element IDs from a list in order
-    pub fn list_ids<K>(&self, key: K) -> Vec<String>
-    where
-        K: AsRef<str>,
-    {
-        match self.children.get(key.as_ref()) {
-            Some(Value::List(list)) => {
-                // Return index-based IDs as strings
-                (0..list.len()).map(|i| i.to_string()).collect()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    /// Get list length (excluding tombstones)
-    pub fn list_len<K>(&self, key: K) -> usize
-    where
-        K: AsRef<str>,
-    {
-        match self.children.get(key.as_ref()) {
-            Some(Value::List(list)) => list.len(),
-            _ => 0,
-        }
-    }
-
-    /// Check if list is empty
-    pub fn list_is_empty<K>(&self, key: K) -> bool
-    where
-        K: AsRef<str>,
-    {
-        match self.children.get(key.as_ref()) {
-            Some(Value::List(list)) => list.is_empty(),
-            _ => true, // Non-existent lists are considered empty
-        }
-    }
-
-    /// Clear list
-    pub fn list_clear<K>(&mut self, key: K) -> crate::Result<()>
-    where
-        K: AsRef<str>,
-    {
-        match self.children.get_mut(key.as_ref()) {
-            Some(Value::List(list)) => {
-                list.clear();
-                Ok(())
-            }
-            Some(_) => Err(CRDTError::TypeMismatch {
-                expected: "List".to_string(),
-                actual: "other type".to_string(),
-            }
-            .into()),
-            None => Ok(()), // Nothing to clear
-        }
-    }
-
-    /// Convenience methods for ergonomic access with better error handling
+    /// Set a key-value pair with automatic JSON serialization for any Serialize type.
     ///
-    /// These methods provide cleaner syntax for common CRDT operations.
-    ///
-    /// Mutable access methods for working with Values directly
-    ///
-    /// These methods provide cleaner access to mutable Values for in-place modification.
-    ///
-    /// Gets or inserts a value with a default, returns a mutable reference
+    /// The value is serialized to a JSON string and stored as `Value::Text`.
     ///
     /// # Examples
     ///
     /// ```
     /// # use eidetica::crdt::Doc;
-    /// # use eidetica::crdt::doc::Value;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Serialize, Deserialize, PartialEq, Debug)]
+    /// struct User { name: String, age: i32 }
+    ///
+    /// let mut doc = Doc::new();
+    /// doc.set_json("user", User { name: "Alice".into(), age: 30 })?;
+    ///
+    /// let user: User = doc.get_json("user")?;
+    /// assert_eq!(user, User { name: "Alice".into(), age: 30 });
+    /// # Ok::<(), eidetica::Error>(())
+    /// ```
+    pub fn set_json<T>(&mut self, key: impl AsRef<Path>, value: T) -> crate::Result<&mut Self>
+    where
+        T: serde::Serialize,
+    {
+        let json = serde_json::to_string(&value).map_err(|e| CRDTError::SerializationFailed {
+            reason: e.to_string(),
+        })?;
+        self.set(key, Value::Text(json));
+        Ok(self)
+    }
+
+    /// Get a value by key with automatic JSON deserialization for any Deserialize type.
+    ///
+    /// The value must be a `Value::Text` containing valid JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The key doesn't exist
+    /// - The value is not a `Value::Text`
+    /// - The JSON deserialization fails
+    pub fn get_json<T>(&self, key: impl AsRef<Path>) -> crate::Result<T>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        let path_str = key.as_ref().as_str().to_string();
+        let value = self.get(key).ok_or_else(|| CRDTError::ElementNotFound {
+            key: path_str.clone(),
+        })?;
+
+        match value {
+            Value::Text(json) => serde_json::from_str(json).map_err(|e| {
+                CRDTError::DeserializationFailed {
+                    reason: format!("Failed to deserialize JSON for key '{path_str}': {e}"),
+                }
+                .into()
+            }),
+            _ => Err(CRDTError::TypeMismatch {
+                expected: "Text (JSON string)".to_string(),
+                actual: value.type_name().to_string(),
+            }
+            .into()),
+        }
+    }
+
+    /// Gets or inserts a value with a default, returns a mutable reference.
+    ///
+    /// If the key doesn't exist, the default value is inserted. Returns a mutable
+    /// reference to the value (existing or newly inserted).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
     /// let mut doc = Doc::new();
     ///
     /// // Key doesn't exist - will insert default
     /// doc.get_or_insert("counter", 0);
-    /// assert_eq!(doc.get_as::<i64>("counter").unwrap(), 0);
+    /// assert_eq!(doc.get_as::<i64>("counter"), Some(0));
     ///
     /// // Key exists - will keep existing value
     /// doc.set("counter", 5);
     /// doc.get_or_insert("counter", 100);
-    /// assert_eq!(doc.get_as::<i64>("counter").unwrap(), 5);
+    /// assert_eq!(doc.get_as::<i64>("counter"), Some(5));
     /// ```
     pub fn get_or_insert(
         &mut self,
@@ -931,59 +633,6 @@ impl Doc {
             self.set(key.clone(), default);
         }
         self.get_mut(key).expect("Key should exist after insert")
-    }
-
-    /// Modifies a value in-place using a closure
-    ///
-    /// If the key exists and can be converted to type T, the closure is called
-    /// with a mutable reference to the typed value. After the closure returns,
-    /// the modified value is converted back and stored.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The key doesn't exist (`CRDTError::ElementNotFound`)
-    /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use eidetica::crdt::Doc;
-    /// let mut doc = Doc::new();
-    /// doc.set("count", 5);
-    /// doc.set("text", "hello");
-    ///
-    /// // Modify counter
-    /// doc.modify::<i64, _>("count", |count| {
-    ///     *count += 10;
-    /// })?;
-    /// assert_eq!(doc.get_as::<i64>("count"), Some(15));
-    ///
-    /// // Modify string
-    /// doc.modify::<String, _>("text", |text| {
-    ///     text.push_str(" world");
-    /// })?;
-    /// assert_eq!(doc.get_as::<String>("text"), Some("hello world".to_string()));
-    /// # Ok::<(), eidetica::Error>(())
-    /// ```
-    pub fn modify<T, F>(&mut self, key: impl AsRef<Path> + Clone, f: F) -> crate::Result<()>
-    where
-        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
-        F: FnOnce(&mut T),
-    {
-        // Try to get and convert the current value
-        let mut value = self.get_as::<T>(key.clone()).ok_or_else(|| {
-            crate::Error::CRDT(CRDTError::ElementNotFound {
-                key: key.as_ref().as_str().to_string(),
-            })
-        })?;
-
-        // Apply the modification
-        f(&mut value);
-
-        // Store the modified value back
-        self.set(key, value);
-        Ok(())
     }
 }
 

@@ -428,7 +428,7 @@ fn test_create_database_with_nonexistent_key() {
 
     // Try to create database with a key that doesn't exist
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test DB");
+    settings.set("name", "Test DB");
 
     let result = user.create_database(settings, "nonexistent_key_id");
 
@@ -459,14 +459,14 @@ fn test_create_databases_with_different_keys() {
 
     // Create database with first key
     let mut settings1 = eidetica::crdt::Doc::new();
-    settings1.set_string("name", "DB from Key 1");
+    settings1.set("name", "DB from Key 1");
     let db1 = user
         .create_database(settings1, &key1)
         .expect("Should create with key1");
 
     // Create database with second key
     let mut settings2 = eidetica::crdt::Doc::new();
-    settings2.set_string("name", "DB from Key 2");
+    settings2.set("name", "DB from Key 2");
     let db2 = user
         .create_database(settings2, &key2)
         .expect("Should create with key2");

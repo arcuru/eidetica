@@ -299,7 +299,7 @@ where
         }
 
         // Iterate through all key-value pairs
-        for (key, map_value) in data.as_hashmap().iter() {
+        for (key, map_value) in data.iter() {
             // Skip non-text values
             if let Some(value) = map_value.as_text() {
                 // Deserialize the row

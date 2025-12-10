@@ -57,7 +57,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
 
     // Create a database
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "shared_notes");
+    db_settings.set("name", "shared_notes");
     let key_id = user1.get_default_key()?;
     let db1 = user1.create_database(db_settings, &key_id)?;
     let db_id = db1.root_id().clone();
@@ -88,9 +88,9 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     let tx = db1.new_transaction()?;
     let store = tx.get_store::<eidetica::store::DocStore>("notes")?;
     let mut note = Doc::new();
-    note.set_string("title", "Meeting Notes");
-    note.set_string("content", "Discuss automatic sync implementation");
-    note.set_string("author", "alice");
+    note.set("title", "Meeting Notes");
+    note.set("content", "Discuss automatic sync implementation");
+    note.set("author", "alice");
     store.set("note1", note)?;
 
     let entry_id = tx.commit()?;
@@ -174,7 +174,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
 
     // Create database on instance1
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "collaboration_space");
+    db_settings.set("name", "collaboration_space");
     let key1 = user1.get_default_key()?;
     let db1 = user1.create_database(db_settings.clone(), &key1)?;
     let db1_id = db1.root_id().clone();
@@ -216,8 +216,8 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let tx1 = db1.new_transaction()?;
     let store1 = tx1.get_store::<eidetica::store::DocStore>("messages")?;
     let mut msg1 = Doc::new();
-    msg1.set_string("from", "alice");
-    msg1.set_string("text", "Hello from instance1!");
+    msg1.set("from", "alice");
+    msg1.set("text", "Hello from instance1!");
     store1.set("alice_msg", msg1)?;
     let entry1_id = tx1.commit()?;
     println!("Alice committed entry: {entry1_id}");
@@ -228,8 +228,8 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let tx2 = db2.new_transaction()?;
     let store2 = tx2.get_store::<eidetica::store::DocStore>("messages")?;
     let mut msg2 = Doc::new();
-    msg2.set_string("from", "bob");
-    msg2.set_string("text", "Hello from instance2!");
+    msg2.set("from", "bob");
+    msg2.set("text", "Hello from instance2!");
     store2.set("bob_msg", msg2)?;
     let entry2_id = tx2.commit()?;
     println!("Bob committed entry: {entry2_id}");
@@ -276,7 +276,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     let mut user1 = instance1.login_user("alice", None)?;
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "notes");
+    db_settings.set("name", "notes");
     let key_id = user1.get_default_key()?;
     let db1 = user1.create_database(db_settings, &key_id)?;
     let db_id = db1.root_id().clone();
@@ -328,7 +328,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     let tx = db1.new_transaction()?;
     let store = tx.get_store::<eidetica::store::DocStore>("notes")?;
     let mut note = Doc::new();
-    note.set_string("content", "Test note");
+    note.set("content", "Test note");
     store.set("note1", note)?;
     let entry_id = tx.commit()?;
 
@@ -385,7 +385,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let mut user1 = instance1.login_user("alice", None)?;
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "persistent_notes");
+    db_settings.set("name", "persistent_notes");
     let key_id = user1.get_default_key()?;
     let db1 = user1.create_database(db_settings, &key_id)?;
     let db_id = db1.root_id().clone();
@@ -408,7 +408,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let tx = db1.new_transaction()?;
     let store = tx.get_store::<eidetica::store::DocStore>("notes")?;
     let mut note = Doc::new();
-    note.set_string("content", "Initial write");
+    note.set("content", "Initial write");
     store.set("note1", note)?;
     let entry1_id = tx.commit()?;
 
@@ -440,7 +440,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let tx = db1_after_restart.new_transaction()?;
     let store = tx.get_store::<eidetica::store::DocStore>("notes")?;
     let mut note = Doc::new();
-    note.set_string("content", "After restart write");
+    note.set("content", "After restart write");
     store.set("note2", note)?;
     let entry2_id = tx.commit()?;
 

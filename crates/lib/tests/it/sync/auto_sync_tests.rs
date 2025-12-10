@@ -24,7 +24,7 @@ fn test_commits_work_with_sync_enabled() {
     let mut user = instance.login_user("testuser", None).expect("Login user");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_db");
+    db_settings.set("name", "test_db");
     let key_id = user.get_default_key().expect("Get default key");
     let db = user
         .create_database(db_settings, &key_id)
@@ -57,7 +57,7 @@ fn test_commits_work_with_sync_enabled() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc = Doc::new();
-    doc.set_string("message", "Test");
+    doc.set("message", "Test");
     store.set("key1", doc).expect("Set doc");
 
     let entry_id = tx.commit().expect("Commit should succeed");
@@ -77,7 +77,7 @@ fn test_multiple_commits_with_sync_enabled() {
     let mut user = instance.login_user("testuser", None).expect("Login user");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_db");
+    db_settings.set("name", "test_db");
     let key_id = user.get_default_key().expect("Get default key");
     let db = user
         .create_database(db_settings, &key_id)
@@ -90,7 +90,7 @@ fn test_multiple_commits_with_sync_enabled() {
             .get_store::<eidetica::store::DocStore>("data")
             .expect("Get store");
         let mut doc = Doc::new();
-        doc.set_string("message", format!("Message {i}"));
+        doc.set("message", format!("Message {i}"));
         store.set(format!("key{i}"), doc).expect("Set doc");
         tx.commit()
             .unwrap_or_else(|_| panic!("Commit {i} should succeed"));
@@ -107,7 +107,7 @@ fn test_commits_with_sync_disabled() {
     let mut user = instance.login_user("testuser", None).expect("Login user");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_db");
+    db_settings.set("name", "test_db");
     let key_id = user.get_default_key().expect("Get default key");
     let db = user
         .create_database(db_settings, &key_id)
@@ -133,7 +133,7 @@ fn test_commits_with_sync_disabled() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc = Doc::new();
-    doc.set_string("message", "Sync disabled");
+    doc.set("message", "Sync disabled");
     store.set("key1", doc).expect("Set doc");
     tx.commit().expect("Commit should succeed");
 }
@@ -148,7 +148,7 @@ fn test_commits_with_sync_on_commit_disabled() {
     let mut user = instance.login_user("testuser", None).expect("Login user");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_db");
+    db_settings.set("name", "test_db");
     let key_id = user.get_default_key().expect("Get default key");
     let db = user
         .create_database(db_settings, &key_id)
@@ -174,7 +174,7 @@ fn test_commits_with_sync_on_commit_disabled() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc = Doc::new();
-    doc.set_string("message", "Sync on commit disabled");
+    doc.set("message", "Sync on commit disabled");
     store.set("key1", doc).expect("Set doc");
     tx.commit().expect("Commit should succeed");
 }
@@ -189,7 +189,7 @@ fn test_commits_before_transport_enabled() {
     let mut user = instance.login_user("testuser", None).expect("Login user");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_db");
+    db_settings.set("name", "test_db");
     let key_id = user.get_default_key().expect("Get default key");
     let db = user
         .create_database(db_settings, &key_id)
@@ -201,7 +201,7 @@ fn test_commits_before_transport_enabled() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc = Doc::new();
-    doc.set_string("message", "No transport");
+    doc.set("message", "No transport");
     store.set("key1", doc).expect("Set doc");
     tx.commit()
         .expect("Commit should succeed even without transport");
@@ -219,13 +219,13 @@ fn test_commits_with_multiple_databases() {
 
     // Create two databases
     let mut db1_settings = Doc::new();
-    db1_settings.set_string("name", "db1");
+    db1_settings.set("name", "db1");
     let db1 = user
         .create_database(db1_settings, &key_id)
         .expect("Create db1");
 
     let mut db2_settings = Doc::new();
-    db2_settings.set_string("name", "db2");
+    db2_settings.set("name", "db2");
     let db2 = user
         .create_database(db2_settings, &key_id)
         .expect("Create db2");
@@ -236,7 +236,7 @@ fn test_commits_with_multiple_databases() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc1 = Doc::new();
-    doc1.set_string("message", "DB1");
+    doc1.set("message", "DB1");
     store1.set("key1", doc1).expect("Set doc");
     tx1.commit().expect("Commit db1");
 
@@ -245,7 +245,7 @@ fn test_commits_with_multiple_databases() {
         .get_store::<eidetica::store::DocStore>("data")
         .expect("Get store");
     let mut doc2 = Doc::new();
-    doc2.set_string("message", "DB2");
+    doc2.set("message", "DB2");
     store2.set("key1", doc2).expect("Set doc");
     tx2.commit().expect("Commit db2");
 }

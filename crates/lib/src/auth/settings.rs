@@ -148,7 +148,7 @@ impl AuthSettings {
     /// Get all authentication keys
     pub fn get_all_keys(&self) -> Result<HashMap<String, AuthKey>> {
         let mut keys = HashMap::new();
-        for (key_name, _) in self.inner.as_hashmap().iter() {
+        for (key_name, _) in self.inner.iter() {
             // Try to parse as AuthKey, skip if it's not one
             if let Ok(auth_key) = self.inner.get_json::<AuthKey>(key_name) {
                 keys.insert(key_name.clone(), auth_key);
@@ -160,7 +160,7 @@ impl AuthSettings {
     /// Get all delegated tree references
     pub fn get_all_delegated_trees(&self) -> Result<HashMap<String, DelegatedTreeRef>> {
         let mut trees = HashMap::new();
-        for (tree_id, _) in self.inner.as_hashmap().iter() {
+        for (tree_id, _) in self.inner.iter() {
             // Try to parse as DelegatedTreeRef, skip if it's not one
             if let Ok(tree_ref) = self.inner.get_json::<DelegatedTreeRef>(tree_id) {
                 trees.insert(tree_id.clone(), tree_ref);

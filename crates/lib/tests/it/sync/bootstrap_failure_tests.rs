@@ -37,7 +37,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     // Create database with only server_admin having access
     let mut settings = Doc::new();
-    settings.set_string("name", "Restricted Database");
+    settings.set("name", "Restricted Database");
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
@@ -56,7 +56,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         )
         .expect("Failed to set server admin auth");
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     // Create the database
     let server_database = server_instance
@@ -138,12 +138,12 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     {
         // EXPECTED SECURE BEHAVIOR: Should NOT contain the unauthorized client key
         assert!(
-            !auth_doc.as_hashmap().contains_key("unauthorized_client"),
+            !auth_doc.contains_key("unauthorized_client"),
             "Unauthorized client key should NOT be added to server auth config - test fails because security is not implemented"
         );
         println!(
             "🔍 Server auth keys should remain unchanged: {:?}",
-            auth_doc.as_hashmap().keys().collect::<Vec<_>>()
+            auth_doc.keys().collect::<Vec<_>>()
         );
     }
 
@@ -181,7 +181,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     // Create database with NO auth configuration
     let mut settings = Doc::new();
-    settings.set_string("name", "Unprotected Database");
+    settings.set("name", "Unprotected Database");
     // Explicitly NOT setting any "auth" configuration
 
     let server_database = server_instance
@@ -260,12 +260,12 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     {
         // EXPECTED SECURE BEHAVIOR: Auth config should NOT be created by unauthorized bootstrap
         assert!(
-            !auth_doc.as_hashmap().contains_key("client_key"),
+            !auth_doc.contains_key("client_key"),
             "Auth config should NOT be created by unauthorized bootstrap - test fails because security is not implemented"
         );
         println!(
             "🔍 Server should not have unauthorized auth modifications: {:?}",
-            auth_doc.as_hashmap().keys().collect::<Vec<_>>()
+            auth_doc.keys().collect::<Vec<_>>()
         );
     }
     // If no auth section exists, that's the expected secure behavior
@@ -300,7 +300,7 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     // Create database
     let mut settings = Doc::new();
-    settings.set_string("name", "Test Database");
+    settings.set("name", "Test Database");
 
     let server_database = server_instance
         .new_database(settings, "server_key")
@@ -393,7 +393,7 @@ async fn test_bootstrap_with_revoked_key() {
 
     // Create database with auth configuration including the revoked key
     let mut settings = Doc::new();
-    settings.set_string("name", "Database With Revoked Key");
+    settings.set("name", "Database With Revoked Key");
 
     let mut auth_doc = Doc::new();
     auth_doc
@@ -418,7 +418,7 @@ async fn test_bootstrap_with_revoked_key() {
         )
         .expect("Failed to set revoked client auth");
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "server_admin")
@@ -506,7 +506,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     // Create database with restrictive auth policy
     let mut settings = Doc::new();
-    settings.set_string("name", "Restrictive Permission Database");
+    settings.set("name", "Restrictive Permission Database");
 
     let mut auth_doc = Doc::new();
     auth_doc
@@ -521,7 +521,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .expect("Failed to set server admin auth");
 
     // TODO: Add policy configuration that limits new client permissions to Read only
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "server_admin")
@@ -583,7 +583,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     {
         // EXPECTED SECURE BEHAVIOR: Greedy client should NOT be in auth config
         assert!(
-            !auth_doc.as_hashmap().contains_key("greedy_client"),
+            !auth_doc.contains_key("greedy_client"),
             "Greedy client should NOT be granted any permissions for excessive request - test fails because permission validation is not implemented"
         );
     }

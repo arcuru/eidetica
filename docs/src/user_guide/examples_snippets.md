@@ -22,7 +22,7 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 # test_instance.create_user("alice", None)?;
 # let mut test_user = test_instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "example_db");
+# settings.set("name", "example_db");
 # let test_key = test_user.get_default_key()?;
 # let _database = test_user.create_database(settings, &test_key)?;
 # let database_guard = test_instance.backend();
@@ -362,7 +362,7 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "y_crdt_example");
+# settings.set("name", "y_crdt_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 #
@@ -483,7 +483,7 @@ prefs_read_store.with_doc(|doc| {
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "save_example");
+# settings.set("name", "save_example");
 # let default_key = user.get_default_key()?;
 # let _database = user.create_database(settings, &default_key)?;
 #
@@ -561,7 +561,7 @@ println!("User {} has key: {}", username, default_key);
 ```rust,ignore
 // Create a chat room (database) with settings
 let mut settings = Doc::new();
-settings.set_string("name", "Team Chat");
+settings.set("name", "Team Chat");
 
 let key_id = user.get_default_key()?;
 let database = user.create_database(settings, &key_id)?;

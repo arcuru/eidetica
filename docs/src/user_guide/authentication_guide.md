@@ -63,7 +63,7 @@ Give other users access to your database:
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "auth_example");
+# settings.set("name", "auth_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # let transaction = database.new_transaction()?;
@@ -261,7 +261,7 @@ Note: Historical entries created by revoked keys remain valid.
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "multi_user_example");
+# settings.set("name", "multi_user_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # let transaction = database.new_transaction()?;
@@ -729,7 +729,7 @@ auth_doc.set_json("*", serde_json::json!({
     "status": "Active"
 }))?;
 
-settings.set_doc("auth", auth_doc);
+settings.set("auth", auth_doc);
 ```
 
 **Benefits**:

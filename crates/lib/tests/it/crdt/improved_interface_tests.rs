@@ -89,13 +89,12 @@ fn test_node_get_as_method() {
 fn test_mixed_path_and_direct_access() {
     let mut doc = Doc::new();
 
-    // Mix path and direct setting
+    // Mix path and direct setting - set() returns Option<Value>
     doc.set("top_level", "root_value");
-    doc.set_path(path!("user.profile.name"), "Charlie").unwrap();
-    doc.set_path(path!("user.profile.age"), 25).unwrap();
+    doc.set(path!("user.profile.name"), "Charlie");
+    doc.set(path!("user.profile.age"), 25);
     doc.set("user_count", 42); // Direct set at root level
-    doc.set_path(path!("user.settings.notifications"), true)
-        .unwrap();
+    doc.set(path!("user.settings.notifications"), true);
 
     // Access top-level values with both methods
     let root_direct: Option<String> = doc.get_as("top_level");
@@ -119,11 +118,9 @@ fn test_mixed_path_and_direct_access() {
     let age_via_path: Option<i64> = doc.get_as(path!("user.profile.age"));
     assert_eq!(age_via_path.unwrap(), 25);
 
-    // Mix modification methods - modify via path, then access directly
-    doc.modify::<i64, _>(path!("user.profile.age"), |age| {
-        *age += 1;
-    })
-    .unwrap();
+    if let Some(age) = doc.get_as::<i64>("user.profile.age") {
+        doc.set("user.profile.age", age + 1);
+    }
 
     // Verify change via both access methods
     assert_eq!(doc.get_as::<i64>(path!("user.profile.age")).unwrap(), 26);
@@ -133,9 +130,7 @@ fn test_mixed_path_and_direct_access() {
 
     // Set nested value directly on retrieved node, then access via path
     let user_mut = doc.get_mut("user").unwrap().as_doc_mut().unwrap();
-    user_mut
-        .set_path(path!("profile.email"), "charlie@example.com")
-        .unwrap();
+    user_mut.set(path!("profile.email"), "charlie@example.com");
 
     // Access the newly set value via root path
     let email: Option<String> = doc.get_as(path!("user.profile.email"));
@@ -152,7 +147,7 @@ fn test_convenience_methods() {
     doc.set("name", "Dave");
     doc.set("level", 5);
     doc.set("premium", true);
-    doc.set_path(path!("config.theme"), "dark").unwrap();
+    doc.set(path!("config.theme"), "dark");
 
     // Test get_as with type inference (clean and safe)
     let name: String = doc.get_as("name").unwrap();
@@ -183,14 +178,11 @@ fn test_convenience_methods() {
 fn test_complex_nested_structures() -> eidetica::Result<()> {
     let mut doc = Doc::new();
 
-    // Create nested structure
-    doc.set_path(path!("app.users.123.name"), "Test User")
-        .unwrap();
-    doc.set_path(path!("app.users.123.permissions.read"), true)
-        .unwrap();
-    doc.set_path(path!("app.users.123.permissions.write"), false)
-        .unwrap();
-    doc.set_path(path!("app.config.max_users"), 1000).unwrap();
+    // Create nested structure - set() returns Option<Value>, not Result
+    doc.set(path!("app.users.123.name"), "Test User");
+    doc.set(path!("app.users.123.permissions.read"), true);
+    doc.set(path!("app.users.123.permissions.write"), false);
+    doc.set(path!("app.config.max_users"), 1000);
 
     // Test deep path access with type inference
     let username: String = doc.get_as(path!("app.users.123.name")).ok_or_else(|| {
@@ -295,8 +287,8 @@ fn test_mutable_access_methods_mixed() {
 
     // Set up mixed structure - some direct, some path-based
     doc.set("counter", 0);
-    doc.set_path(path!("stats.views"), 100).unwrap();
-    doc.set_path(path!("stats.downloads"), 50).unwrap();
+    doc.set(path!("stats.views"), 100);
+    doc.set(path!("stats.downloads"), 50);
     doc.set("user_name", "alice");
 
     // Test get_or_insert on direct key
@@ -307,19 +299,17 @@ fn test_mutable_access_methods_mixed() {
     let value2 = doc.get_or_insert("new_field", "default");
     assert_eq!(*value2, Value::Text("default".to_string()));
 
-    // Modify direct key, verify with both access methods
-    doc.modify::<i64, _>("counter", |count| {
-        *count += 5;
-    })
-    .unwrap();
+    // Modify direct key using get_as + set pattern, verify with both access methods
+    if let Some(count) = doc.get_as::<i64>("counter") {
+        doc.set("counter", count + 5);
+    }
     assert_eq!(doc.get_as::<i64>("counter").unwrap(), 5);
     assert_eq!(doc.get_as::<i64>(path!("counter")).unwrap(), 5);
 
-    // Modify nested value via path, verify with direct node access
-    doc.modify::<i64, _>(path!("stats.views"), |views| {
-        *views *= 2;
-    })
-    .unwrap();
+    // Modify nested value via path using get_as + set pattern
+    if let Some(views) = doc.get_as::<i64>(path!("stats.views")) {
+        doc.set(path!("stats.views"), views * 2);
+    }
 
     // Verify via path access
     assert_eq!(doc.get_as::<i64>(path!("stats.views")).unwrap(), 200);
@@ -329,11 +319,10 @@ fn test_mutable_access_methods_mixed() {
     let views_direct = stats_node.unwrap().get_as::<i64>("views");
     assert_eq!(views_direct.unwrap(), 200);
 
-    // Modify direct key, then use path to access it
-    doc.modify::<String, _>("user_name", |name| {
+    // Modify direct key using get_mut pattern
+    if let Some(Value::Text(name)) = doc.get_mut("user_name") {
         name.push_str("_modified");
-    })
-    .unwrap();
+    }
     assert_eq!(
         doc.get_as::<String>(path!("user_name")).unwrap(),
         "alice_modified"
@@ -348,10 +337,7 @@ fn test_mutable_access_methods_mixed() {
     assert_eq!(doc.get_as::<i64>(path!("stats.likes")).unwrap(), 75);
     assert_eq!(doc.get_as::<i64>(path!("stats.rating")).unwrap(), 95);
 
-    // Try to modify non-existent paths/keys
-    let result1 = doc.modify::<i64, _>("missing", |_| {});
-    assert!(result1.is_err());
-
-    let result2 = doc.modify::<i64, _>(path!("stats.missing"), |_| {});
-    assert!(result2.is_err());
+    // Access to non-existent paths/keys returns None
+    assert!(doc.get_as::<i64>("missing").is_none());
+    assert!(doc.get_as::<i64>(path!("stats.missing")).is_none());
 }

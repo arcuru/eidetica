@@ -134,7 +134,7 @@ fn test_multiple_authenticated_entries() {
     )
     .unwrap();
     auth_settings.set_json("TEST_KEY", auth_key).unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     let tree = db
         .new_database(settings, "TEST_KEY")
@@ -285,7 +285,7 @@ fn test_entry_validation_cache_behavior() {
     auth_settings
         .set_json("TEST_KEY", auth_key.clone())
         .unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     // Create a signed entry
     let mut entry = eidetica::Entry::root_builder()
@@ -321,7 +321,7 @@ fn test_entry_validation_cache_behavior() {
     new_auth_settings
         .set_json("TEST_KEY", revoked_auth_key)
         .unwrap();
-    new_settings.set_doc("auth", new_auth_settings);
+    new_settings.set("auth", new_auth_settings);
 
     // Extract AuthSettings from new Doc
     let new_auth_settings_from_doc = match new_settings.get("auth") {
@@ -358,7 +358,7 @@ fn test_entry_validation_with_malformed_keys() {
     auth_settings
         .set_json("TEST_KEY", auth_key.clone())
         .unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::root_builder()
@@ -457,7 +457,7 @@ fn test_entry_validation_unsigned_entry_detection() {
     // Test with auth settings present
     let mut settings = Doc::new();
     let auth_doc = Doc::new();
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     // Extract AuthSettings from Doc (empty auth section)
     let auth_settings = match settings.get("auth") {
@@ -485,7 +485,7 @@ fn test_entry_validation_with_invalid_signatures() {
     let mut settings = Doc::new();
     let mut auth_settings = Doc::new();
     auth_settings.set_json("TEST_KEY", auth_key).unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::root_builder()

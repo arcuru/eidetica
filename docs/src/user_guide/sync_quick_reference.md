@@ -227,8 +227,8 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # let mut user = instance.login_user("alice", None)?;
 // Create a database to share
 let mut settings = Doc::new();
-settings.set_string("name", "My Chat Room");
-settings.set_string("description", "A room for team discussions");
+settings.set("name", "My Chat Room");
+settings.set("description", "A room for team discussions");
 
 let default_key = user.get_default_key()?;
 let database = user.create_database(settings, &default_key)?;
@@ -237,7 +237,7 @@ let tree_id = database.root_id();
 // Add some initial data
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("messages")?;
-store.set_string("welcome", "Welcome to the room!")?;
+store.set("welcome", "Welcome to the room!")?;
 op.commit()?;
 
 // Share the tree_id with others
@@ -270,7 +270,7 @@ println!("Welcome message: {}", store.get_string("welcome")?);
 // All changes automatically sync after bootstrap
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("messages")?;
-store.set_string("my_message", "Hello everyone!")?;
+store.set("my_message", "Hello everyone!")?;
 op.commit()?; // Automatically syncs to all connected peers
 
 // Manually sync to get latest changes
@@ -308,7 +308,7 @@ use eidetica::store::DocStore;
 let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("data")?;
 
-store.set_string("message", "Hello World")?;
+store.set("message", "Hello World")?;
 store.set_path("user.name", "Alice")?;
 store.set_path("user.age", 30)?;
 
@@ -326,7 +326,7 @@ let op = database.new_transaction()?;
 let store = op.get_store::<DocStore>("data")?;
 
 for i in 0..100 {
-    store.set_string(&format!("item_{}", i), &format!("value_{}", i))?;
+    store.set(&format!("item_{}", i), &format!("value_{}", i))?;
 }
 
 // Single commit, single sync entry
@@ -611,7 +611,7 @@ async fn test_sync_between_peers() -> Result<()> {
     // Test sync
     let op1 = tree1.new_transaction()?;
     let store1 = op1.get_store::<DocStore>("data")?;
-    store1.set_string("test", "value")?;
+    store1.set("test", "value")?;
     op1.commit()?;
 
     // Wait for sync

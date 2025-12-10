@@ -200,8 +200,8 @@ pub fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
             AuthKey::active(format_public_key(&public_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
-    settings.set_doc("auth", auth_settings);
-    settings.set_string("name", "AuthenticatedTree");
+    settings.set("auth", auth_settings);
+    settings.set("name", "AuthenticatedTree");
 
     let tree = db
         .new_database(settings, key_name)

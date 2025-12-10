@@ -248,9 +248,8 @@ fn test_cleaner_api_examples() {
     assert!(*map.get("age").unwrap() == 30);
     assert!(*map.get("active").unwrap() == true);
 
-    // Path-based access
-    map.set_path(path!("user.profile.bio"), "Developer")
-        .unwrap();
+    // Path-based access - set() returns Option<Value>
+    map.set(path!("user.profile.bio"), "Developer");
 
     // Old verbose way (still works)
     assert_eq!(
@@ -326,7 +325,7 @@ fn test_value_to_json_string_text_escaping() {
 fn test_value_to_json_string_empty_containers() {
     // Test empty Map
     let empty_map = Doc::new();
-    assert_eq!(empty_map.to_json_string(), "{}");
+    assert_eq!(Value::Doc(empty_map).to_json_string(), "{}");
 
     // Test empty List
     let empty_list = Value::List(List::new());

@@ -186,7 +186,7 @@ impl User {
     ///
     /// // Create database with explicit key selection
     /// let mut settings = Doc::new();
-    /// settings.set_string("name", "My Database");
+    /// settings.set("name", "My Database");
     /// let database = user.new_database(settings, key_id)?;
     /// ```
     pub fn create_database(
@@ -976,7 +976,7 @@ mod tests {
             .unwrap();
 
         let mut db_settings = crate::crdt::Doc::new();
-        db_settings.set_string("name", "test_user_db");
+        db_settings.set("name", "test_user_db");
 
         let mut auth_settings = crate::auth::settings::AuthSettings::new();
         auth_settings
@@ -989,7 +989,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        db_settings.set_doc("auth", auth_settings.as_doc().clone());
+        db_settings.set("auth", auth_settings.as_doc().clone());
 
         // Create Instance for test
         let instance = Instance::create_internal(backend.handle()).unwrap();

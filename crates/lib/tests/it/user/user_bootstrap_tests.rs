@@ -51,7 +51,7 @@ fn setup_user_with_database() -> eidetica::Result<(
 
     // Create a database owned by this user with explicit key
     let mut settings = Doc::new();
-    settings.set_string("name", "Alice's Database");
+    settings.set("name", "Alice's Database");
 
     let database = user
         .create_database(settings, &user_key_id)
@@ -462,7 +462,7 @@ async fn test_multiple_users() {
 
     // Alice creates a database with her key
     let mut alice_db_settings = Doc::new();
-    alice_db_settings.set_string("name", "Alice's Database");
+    alice_db_settings.set("name", "Alice's Database");
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
         .expect("Failed to create Alice's database");
@@ -470,7 +470,7 @@ async fn test_multiple_users() {
 
     // Bob creates a database with his key
     let mut bob_db_settings = Doc::new();
-    bob_db_settings.set_string("name", "Bob's Database");
+    bob_db_settings.set("name", "Bob's Database");
     let bob_db = bob
         .create_database(bob_db_settings, &bob_key)
         .expect("Failed to create Bob's database");
@@ -662,7 +662,7 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to get Alice's default key");
 
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "Alice's Database");
+    db_settings.set("name", "Alice's Database");
     let alice_db = alice
         .create_database(db_settings, &alice_key)
         .expect("Failed to create Alice's database");

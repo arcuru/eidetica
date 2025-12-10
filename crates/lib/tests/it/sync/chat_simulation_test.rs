@@ -75,7 +75,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Create a database (like creating a chat room)
     let mut settings = Doc::new();
-    settings.set_string("name", "Test Chat Room");
+    settings.set("name", "Test Chat Room");
     // Enable automatic bootstrap approval via global wildcard permission
     let mut auth_doc = Doc::new();
     // Include server admin key for initial database creation
@@ -100,7 +100,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             }),
         )
         .expect("Failed to set global auth");
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
     let server_database = server_instance
         .new_database(settings, SERVER_KEY_NAME)
         .expect("Failed to create server database");
@@ -531,7 +531,7 @@ async fn test_global_key_bootstrap() {
 
     // Create database with global write permission
     let mut settings = Doc::new();
-    settings.set_string("name", "Public Room");
+    settings.set("name", "Public Room");
 
     // Add admin key to auth settings as well (required for database creation)
     let admin_pubkey = server_instance
@@ -563,7 +563,7 @@ async fn test_global_key_bootstrap() {
         )
         .expect("Failed to set admin auth");
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let server_database = server_instance
         .new_database(settings, "admin_key")
@@ -695,7 +695,7 @@ async fn test_multiple_databases_sync() {
     let mut room_ids = Vec::new();
     for i in 1..=3 {
         let mut settings = Doc::new();
-        settings.set_string("name", format!("Room {i}"));
+        settings.set("name", format!("Room {i}"));
 
         // Set up auth configuration with global wildcard permission
         let mut auth_doc = Doc::new();
@@ -724,7 +724,7 @@ async fn test_multiple_databases_sync() {
             )
             .expect("Failed to set global wildcard permission");
 
-        settings.set_doc("auth", auth_doc);
+        settings.set("auth", auth_doc);
 
         let database = server_instance
             .new_database(settings, SERVER_KEY_NAME)

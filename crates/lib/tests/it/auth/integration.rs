@@ -141,7 +141,7 @@ fn test_validation_pipeline_with_concurrent_settings_changes() {
             AuthKey::active(format_public_key(&key1_pubkey), Permission::Admin(1)).unwrap(),
         )
         .unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     let tree = user
         .create_database(settings, &key1_id)
@@ -219,7 +219,7 @@ fn test_prevent_auth_corruption() {
             .unwrap(),
         )
         .unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     let tree = user
         .create_database(settings, &valid_key_id)

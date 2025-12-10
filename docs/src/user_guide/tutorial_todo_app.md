@@ -76,7 +76,7 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
             // If not found, create a new one
             println!("No existing todo database found, creating a new one...");
             let mut settings = Doc::new();
-            settings.set_string("name", database_name);
+            settings.set("name", database_name);
 
             // Get the default key
             let default_key = user.get_default_key()?;

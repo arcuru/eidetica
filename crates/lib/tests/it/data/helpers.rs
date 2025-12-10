@@ -23,7 +23,7 @@ pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
     let default_key = user.get_default_key()?;
 
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "test_tree");
+    settings.set("name", "test_tree");
 
     let tree = user.create_database(settings, &default_key)?;
     Ok((instance, tree))
@@ -82,31 +82,30 @@ pub fn create_complex_nested_structure() -> Node {
     let mut root = Doc::new();
 
     // Level 1
-    root.set_string("top_key", "top_value");
+    root.set("top_key", "top_value");
 
     // Level 2
     let mut level2 = Doc::new();
-    level2.set_string("level2_key1", "level2_value1");
-    level2.set_string("shared_key", "original_value");
+    level2.set("level2_key1", "level2_value1");
+    level2.set("shared_key", "original_value");
 
     // Level 3
     let mut level3 = Doc::new();
-    level3.set_string("level3_key1", "level3_value1");
-    level2.set_doc("level3", level3);
+    level3.set("level3_key1", "level3_value1");
+    level2.set("level3", level3);
 
-    root.set_doc("level2", level2);
+    root.set("level2", level2);
     root
 }
 
 /// Assert that a path is deleted (tombstone exists)
 pub fn assert_path_deleted(map: &Node, path: &[&str]) {
     if path.len() == 1 {
-        // Simple case: check directly in this map
-        match map.as_hashmap().get(&path[0].to_string()) {
-            Some(Value::Deleted) => (),
-            Some(other) => panic!("Expected tombstone at '{path:?}', got {other:?}"),
-            None => panic!("Expected tombstone at '{path:?}', but key not found"),
-        }
+        // Simple case: check directly in this map using is_tombstone
+        assert!(
+            map.is_tombstone(path[0]),
+            "Expected tombstone at '{path:?}'"
+        );
     } else {
         // Navigate to parent and check final key
         let mut current = map;
@@ -118,22 +117,21 @@ pub fn assert_path_deleted(map: &Node, path: &[&str]) {
         }
 
         let final_key = path.last().expect("Path should not be empty");
-        match current.as_hashmap().get(&final_key.to_string()) {
-            Some(Value::Deleted) => (),
-            Some(other) => panic!("Expected tombstone at '{path:?}', got {other:?}"),
-            None => panic!("Expected tombstone at '{path:?}', but key not found"),
-        }
+        assert!(
+            current.is_tombstone(*final_key),
+            "Expected tombstone at '{path:?}'"
+        );
     }
 }
 
 /// Create a Map with mixed value types
 pub fn create_mixed_map() -> Node {
     let mut map = Doc::new();
-    map.set_string("string_val", "test_string");
+    map.set("string_val", "test_string");
 
     let mut nested = Doc::new();
-    nested.set_string("nested_key", "nested_value");
-    map.set_doc("map_val", nested);
+    nested.set("nested_key", "nested_value");
+    map.set("map_val", nested);
 
     // Create a tombstone
     map.remove("deleted_val");
@@ -146,19 +144,16 @@ pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
-    // Compare the hashmaps directly since Map doesn't implement PartialEq
-    let original_hashmap = map.as_hashmap();
-    let deserialized_hashmap = deserialized.as_hashmap();
-
+    // Compare using the simplified API
     assert_eq!(
-        original_hashmap.len(),
-        deserialized_hashmap.len(),
+        map.len(),
+        deserialized.len(),
         "Serialization changed map size"
     );
 
-    for (key, value) in original_hashmap {
+    for (key, value) in map.iter() {
         assert_eq!(
-            deserialized_hashmap.get(key),
+            deserialized.get(key),
             Some(value),
             "Serialization changed value for key '{key}'"
         );
@@ -172,10 +167,7 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
     match value {
         Value::Doc(map) => {
             for &key in expected_keys {
-                assert!(
-                    map.as_hashmap().contains_key(key),
-                    "Map should contain key '{key}'"
-                );
+                assert!(map.contains_key(key), "Map should contain key '{key}'");
             }
         }
         _ => panic!("Expected Map value, got {value:?}"),
@@ -276,11 +268,7 @@ macro_rules! assert_value_eq {
         match $actual {
             Value::Map(map) => {
                 for key in $expected_keys {
-                    assert!(
-                        map.as_hashmap().contains_key(key),
-                        "Map should contain key '{}'",
-                        key
-                    );
+                    assert!(map.contains_key(key), "Map should contain key '{}'", key);
                 }
             }
             other => panic!("Expected map value, got {:?}", other),

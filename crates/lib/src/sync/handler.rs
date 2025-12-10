@@ -311,7 +311,7 @@ impl SyncHandlerImpl {
         let auth_settings = settings_store.get_auth_settings()?;
 
         // Check if auth settings is completely empty (no auth configured)
-        if auth_settings.as_doc().as_hashmap().is_empty() {
+        if auth_settings.as_doc().is_empty() {
             debug!(
                 tree_id = %tree_id,
                 "Database has no auth configured - allowing unauthenticated access"

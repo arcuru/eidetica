@@ -192,9 +192,8 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
     // We should be able to get values via the root editor
     match root_editor.get()? {
         Value::Doc(map) => {
-            let entries = map.as_hashmap();
-            assert!(entries.contains_key("key1"));
-            assert!(entries.contains_key("key2"));
+            assert!(map.contains_key("key1"));
+            assert!(map.contains_key("key2"));
         }
         _ => panic!("Expected root editor to get a map"),
     }
@@ -204,7 +203,7 @@ fn test_value_editor_root_operations() -> eidetica::Result<()> {
 
     // Create a new nested map at root level
     let mut nested = eidetica::crdt::Doc::new();
-    nested.set_string("nested_key", "nested_value");
+    nested.set("nested_key", "nested_value");
     root_editor.get_value_mut("nested").set(nested.into())?;
 
     // Verify the nested structure
@@ -233,12 +232,12 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 
     // Set up a nested structure
     let mut user_profile = eidetica::crdt::Doc::new();
-    user_profile.set_string("name", "Alice");
-    user_profile.set_string("email", "alice@example.com");
+    user_profile.set("name", "Alice");
+    user_profile.set("email", "alice@example.com");
 
     let mut user_data = eidetica::crdt::Doc::new();
     user_data.set("profile", user_profile);
-    user_data.set_string("role", "admin");
+    user_data.set("role", "admin");
 
     dict.set_value("user", user_data)?;
 
@@ -278,8 +277,6 @@ fn test_value_editor_delete_methods() -> eidetica::Result<()> {
     // User exists but has no role or profile
     match viewer_dict.get("user")? {
         Value::Doc(map) => {
-            let _entries = map.as_hashmap();
-
             // Check that the entries are properly marked as deleted (tombstones)
             assert_path_deleted(&map, &["role"]);
             assert_path_deleted(&map, &["profile"]);
@@ -302,7 +299,7 @@ fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
 
     // Setting a map value should succeed
     let mut map = eidetica::crdt::Doc::new();
-    map.set_string("key", "value");
+    map.set("key", "value");
     assert!(root_editor.set(map.into()).is_ok());
 
     Ok(())

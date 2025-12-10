@@ -14,10 +14,7 @@ use crate::{
 
 fn create_test_auth_with_key(key_name: &str, auth_key: &AuthKey) -> AuthSettings {
     let mut auth_section = Doc::new();
-    auth_section.as_hashmap_mut().insert(
-        key_name.to_string(),
-        serde_json::to_string(&auth_key).unwrap().into(),
-    );
+    auth_section.set_json(key_name, auth_key).unwrap();
     AuthSettings::from_doc(auth_section)
 }
 
@@ -343,7 +340,7 @@ fn test_complete_delegation_workflow() {
             AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
-    delegated_settings.set_doc("auth", delegated_auth);
+    delegated_settings.set("auth", delegated_auth);
 
     let delegated_tree = db.new_database(delegated_settings, "_device_key").unwrap();
 
@@ -386,7 +383,7 @@ fn test_complete_delegation_workflow() {
         )
         .unwrap();
 
-    main_settings.set_doc("auth", main_auth);
+    main_settings.set("auth", main_auth);
     let main_tree = db.new_database(main_settings, "_device_key").unwrap();
 
     // Test delegation resolution
@@ -475,7 +472,7 @@ fn test_delegated_tree_requires_tips() {
         )
         .unwrap();
 
-    main_settings.set_doc("auth", main_auth.clone());
+    main_settings.set("auth", main_auth.clone());
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
@@ -546,7 +543,7 @@ fn test_nested_delegation_with_permission_clamping() {
             AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
         )
         .unwrap();
-    user_settings.set_doc("auth", user_auth);
+    user_settings.set("auth", user_auth);
     let user_tree = db.new_database(user_settings, "_device_key").unwrap();
     let user_tips = user_tree.get_tips().unwrap();
 
@@ -586,7 +583,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    intermediate_settings.set_doc("auth", intermediate_auth);
+    intermediate_settings.set("auth", intermediate_auth);
     let intermediate_tree = db
         .new_database(intermediate_settings, "_device_key")
         .unwrap();
@@ -629,7 +626,7 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
 
-    main_settings.set_doc("auth", main_auth);
+    main_settings.set("auth", main_auth);
     let main_tree = db.new_database(main_settings, "_device_key").unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User

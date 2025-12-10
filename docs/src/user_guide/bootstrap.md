@@ -51,7 +51,7 @@ auth_doc.set_json("*", serde_json::json!({
     "status": "Active"
 }))?;
 
-settings.set_doc("auth", auth_doc);
+settings.set("auth", auth_doc);
 let database = instance.new_database(settings, "admin_key")?;
 ```
 

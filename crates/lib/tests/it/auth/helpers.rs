@@ -199,7 +199,7 @@ pub fn setup_authenticated_tree(
             .unwrap();
     }
 
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     // Find the first key with Admin permissions for tree creation
     let admin_key = keys

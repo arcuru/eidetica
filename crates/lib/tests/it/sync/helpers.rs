@@ -211,7 +211,7 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
 
     // Create database with manual approval (no global wildcard permission)
     let mut settings = Doc::new();
-    settings.set_string("name", "Bootstrap Test Database");
+    settings.set("name", "Bootstrap Test Database");
 
     let mut auth_doc = Doc::new();
 
@@ -247,7 +247,7 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
         )
         .expect("Failed to set device key auth");
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = instance
         .new_database(settings, "server_admin")
@@ -277,7 +277,7 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
 
     // Create database with global wildcard permission
     let mut settings = Doc::new();
-    settings.set_string("name", "Bootstrap Test Database");
+    settings.set("name", "Bootstrap Test Database");
 
     let mut auth_doc = Doc::new();
 
@@ -325,7 +325,7 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
         )
         .expect("Failed to set global wildcard permission");
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = instance
         .new_database(settings, "server_admin")
@@ -501,7 +501,7 @@ pub fn setup_server_with_bootstrap_database(
     let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
 
     let mut settings = Doc::new();
-    settings.set_string("name", db_name);
+    settings.set("name", db_name);
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
@@ -704,7 +704,7 @@ pub fn setup_sync_enabled_server(
     let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
 
     let mut settings = Doc::new();
-    settings.set_string("name", db_name);
+    settings.set("name", db_name);
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
@@ -891,7 +891,7 @@ pub fn setup_public_sync_enabled_server(
 
     // Create database settings with wildcard "*" permission for public access
     let mut settings = Doc::new();
-    settings.set_string("name", db_name);
+    settings.set("name", db_name);
 
     // Add auth config with wildcard permission for unauthenticated access
     let mut auth_settings = eidetica::auth::AuthSettings::new();
@@ -925,7 +925,7 @@ pub fn setup_public_sync_enabled_server(
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let server_database = server_user
         .create_database(settings, &server_key_id)

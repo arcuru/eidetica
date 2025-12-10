@@ -53,8 +53,8 @@ fn test_doc_tombstone_handling() {
 
     // Add a nested map
     let mut nested = eidetica::crdt::Doc::new();
-    nested.set_string("inner_key", "inner_value");
-    map.set_doc("map_key", nested);
+    nested.set("inner_key", "inner_value");
+    map.set("map_key", nested);
 
     // Remove a string value
     let removed = map.remove("str_key");
@@ -97,19 +97,19 @@ fn test_doc_recursive_merge() {
 
     // Setup a different level 2
     let mut level2_alt = eidetica::crdt::Doc::new();
-    level2_alt.set_string("level2_key2", "level2_value2");
-    level2_alt.set_string("shared_key", "map2_value"); // Same key, different value
+    level2_alt.set("level2_key2", "level2_value2");
+    level2_alt.set("shared_key", "map2_value"); // Same key, different value
 
     // Setup a different level 3
     let mut level3_alt = eidetica::crdt::Doc::new();
-    level3_alt.set_string("level3_key2", "level3_value2");
+    level3_alt.set("level3_key2", "level3_value2");
 
     // Link them
-    level2_alt.set_doc("level3", level3_alt);
-    map2.set_doc("level2", level2_alt);
+    level2_alt.set("level3", level3_alt);
+    map2.set("level2", level2_alt);
 
     // Add a top-level key that will conflict
-    map2.set_string("top_key", "updated_top_value");
+    map2.set("top_key", "updated_top_value");
 
     // Merge them
     let merged = map1.merge(&map2).expect("Merge failed");
@@ -147,12 +147,12 @@ fn test_doc_type_conflicts() {
     let mut map2 = eidetica::crdt::Doc::new();
 
     // In map1, key is a string
-    map1.set_string("conflict_key", "string_value");
+    map1.set("conflict_key", "string_value");
 
     // In map2, same key is a map
     let mut nested = eidetica::crdt::Doc::new();
-    nested.set_string("inner", "inner_value");
-    map2.set_doc("conflict_key", nested);
+    nested.set("inner", "inner_value");
+    map2.set("conflict_key", nested);
 
     // Test merge in both directions
 
@@ -208,11 +208,11 @@ fn test_doc_multi_generation_updates() {
 
     // Initialize base state
     let mut base = eidetica::crdt::Doc::new();
-    base.set_string("key", "original");
+    base.set("key", "original");
 
     // Generation 1: Update in branch1
     let mut branch1 = eidetica::crdt::Doc::new();
-    branch1.set_string("key", "branch1_value");
+    branch1.set("key", "branch1_value");
     let gen1 = base.merge(&branch1).expect("Gen1 merge failed");
 
     // Verify gen1
@@ -229,7 +229,7 @@ fn test_doc_multi_generation_updates() {
 
     // Generation 3: Resurrect in branch3
     let mut branch3 = eidetica::crdt::Doc::new();
-    branch3.set_string("key", "resurrected");
+    branch3.set("key", "resurrected");
     let gen3 = gen2.merge(&branch3).expect("Gen3 merge failed");
 
     // Verify gen3
@@ -238,8 +238,8 @@ fn test_doc_multi_generation_updates() {
     // Generation 4: Replace with map in branch4
     let mut branch4 = eidetica::crdt::Doc::new();
     let mut nested = eidetica::crdt::Doc::new();
-    nested.set_string("inner", "inner_value");
-    branch4.set_doc("key", nested);
+    nested.set("inner", "inner_value");
+    branch4.set("key", nested);
     let gen4 = gen3.merge(&branch4).expect("Gen4 merge failed");
 
     // Verify gen4
@@ -259,14 +259,14 @@ fn test_doc_set_deleted_and_get() {
     // get() should return None
     assert_eq!(map.get("deleted_key"), None);
 
-    // as_hashmap() should show the tombstone
-    assert_eq!(map.as_hashmap().get("deleted_key"), Some(&Value::Deleted));
+    // is_tombstone() should confirm the tombstone
+    assert!(map.is_tombstone("deleted_key"));
 
     // Set another key with a value, then set to Deleted
-    map.set_string("another_key", "value");
+    map.set("another_key", "value");
     map.set("another_key", Value::Deleted);
     assert_eq!(map.get("another_key"), None);
-    assert_eq!(map.as_hashmap().get("another_key"), Some(&Value::Deleted));
+    assert!(map.is_tombstone("another_key"));
 }
 
 #[test]
@@ -283,11 +283,8 @@ fn test_doc_remove_non_existent() {
     // get() should return None
     assert_eq!(map.get("non_existent_key"), None);
 
-    // as_hashmap() should show a tombstone was created
-    assert_eq!(
-        map.as_hashmap().get("non_existent_key"),
-        Some(&Value::Deleted)
-    );
+    // is_tombstone() should show a tombstone was created
+    assert!(map.is_tombstone("non_existent_key"));
 }
 
 #[test]
@@ -295,7 +292,7 @@ fn test_doc_remove_existing_tombstone() {
     let mut map = eidetica::crdt::Doc::new();
 
     // Create a tombstone by removing a key
-    map.set_string("key_to_tombstone", "some_value");
+    map.set("key_to_tombstone", "some_value");
     let _ = map.remove("key_to_tombstone"); // This creates the first tombstone
 
     // Verify it's a tombstone
@@ -314,7 +311,7 @@ fn test_doc_remove_existing_tombstone() {
     // get() should still return None
     assert_eq!(map.get("key_to_tombstone"), None);
 
-    // as_hashmap() should still show the tombstone
+    // is_tombstone() should confirm the tombstone
     assert_path_deleted(&map, &["key_to_tombstone"]);
 
     // Directly set a tombstone and then remove it
@@ -328,17 +325,17 @@ fn test_doc_remove_existing_tombstone() {
 #[test]
 fn test_doc_merge_dual_tombstones() {
     let mut map1 = eidetica::crdt::Doc::new();
-    map1.set_string("key1_map1", "value1_map1");
+    map1.set("key1_map1", "value1_map1");
     map1.remove("key1_map1"); // Tombstone in map1
 
-    map1.set_string("common_key", "value_common_map1");
+    map1.set("common_key", "value_common_map1");
     map1.remove("common_key"); // Tombstone for common_key in map1
 
     let mut map2 = eidetica::crdt::Doc::new();
-    map2.set_string("key2_map2", "value2_map2");
+    map2.set("key2_map2", "value2_map2");
     map2.remove("key2_map2"); // Tombstone in map2
 
-    map2.set_string("common_key", "value_common_map2"); // Value in map2
+    map2.set("common_key", "value_common_map2"); // Value in map2
     map2.remove("common_key"); // Tombstone for common_key in map2 (other's tombstone wins)
 
     // Merge map2 into map1
@@ -360,7 +357,7 @@ fn test_doc_merge_dual_tombstones() {
 
     // What if one has a value and the other a tombstone (map2's tombstone wins)
     let mut map3 = eidetica::crdt::Doc::new();
-    map3.set_string("val_then_tomb", "i_existed");
+    map3.set("val_then_tomb", "i_existed");
 
     let mut map4 = eidetica::crdt::Doc::new();
     map4.remove("val_then_tomb");

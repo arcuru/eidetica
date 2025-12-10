@@ -245,7 +245,7 @@ transaction.commit()?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "stores_auth_example");
+# settings.set("name", "stores_auth_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Generate a keypair for the new user
@@ -289,7 +289,7 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "complex_auth_example");
+# settings.set("name", "complex_auth_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Generate keypairs for multiple users
@@ -370,7 +370,7 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "y_crdt_stores");
+# settings.set("name", "y_crdt_stores");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 #

@@ -186,7 +186,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Create a test database
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -261,7 +261,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
 
     // Create a test database with some content
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -338,7 +338,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let key_id = user.add_private_key(Some("test_key")).unwrap();
 
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -415,12 +415,12 @@ async fn test_multiple_trees_tracked_with_same_peer() {
 
     // Create two test databases
     let mut settings1 = Doc::new();
-    settings1.set_string("name", "test_database_1");
+    settings1.set("name", "test_database_1");
     let db1 = user.create_database(settings1, &key_id).unwrap();
     let tree_id1 = db1.root_id().clone();
 
     let mut settings2 = Doc::new();
-    settings2.set_string("name", "test_database_2");
+    settings2.set("name", "test_database_2");
     let db2 = user.create_database(settings2, &key_id).unwrap();
     let tree_id2 = db2.root_id().clone();
 
@@ -565,7 +565,7 @@ async fn test_sync_without_peer_identifier_works() {
     let key_id = user.add_private_key(Some("test_key")).unwrap();
 
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -621,7 +621,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
 
     // Create database with auth
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -693,7 +693,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
 
     // Create database with auth (only user's key is authorized)
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -762,7 +762,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 
@@ -847,7 +847,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
     let db = user.create_database(settings, &key_id).unwrap();
     let tree_id = db.root_id().clone();
 

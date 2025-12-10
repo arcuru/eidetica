@@ -133,7 +133,7 @@ impl std::fmt::Debug for InstanceInternal {
 ///
 /// // Use User API for operations
 /// let mut settings = Doc::new();
-/// settings.set_string("name", "my_database");
+/// settings.set("name", "my_database");
 /// let default_key = user.get_default_key()?;
 /// let db = user.create_database(settings, &default_key)?;
 /// # Ok::<(), eidetica::Error>(())
@@ -187,7 +187,7 @@ impl Instance {
     ///
     /// // Use User API for operations
     /// let mut settings = Doc::new();
-    /// settings.set_string("name", "my_database");
+    /// settings.set("name", "my_database");
     /// let default_key = user.get_default_key()?;
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
@@ -323,7 +323,7 @@ impl Instance {
     ///
     /// // Use User API for operations
     /// let mut settings = Doc::new();
-    /// settings.set_string("name", "my_database");
+    /// settings.set("name", "my_database");
     /// let default_key = user.get_default_key()?;
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
@@ -882,7 +882,7 @@ mod tests {
 
         // Create database with deprecated API
         let mut settings = Doc::new();
-        settings.set_string("name", "test_db");
+        settings.set("name", "test_db");
 
         let database = instance.new_database(settings, "_device_key").unwrap();
         assert_eq!(database.get_name().unwrap(), "test_db");
@@ -908,7 +908,7 @@ mod tests {
 
         // Create database requires a signing key
         let mut settings = Doc::new();
-        settings.set_string("name", "test_db");
+        settings.set("name", "test_db");
 
         // This will succeed if a valid key is provided, but we're testing without a valid key
         let result = instance.new_database(settings, "nonexistent_key");
@@ -923,7 +923,7 @@ mod tests {
 
         // Create a database
         let mut settings = Doc::new();
-        settings.set_string("name", "test_db");
+        settings.set("name", "test_db");
         let database = instance.new_database(settings, "_device_key").unwrap();
         let root_id = database.root_id().clone();
 
@@ -939,11 +939,11 @@ mod tests {
 
         // Create multiple databases
         let mut settings1 = Doc::new();
-        settings1.set_string("name", "db1");
+        settings1.set("name", "db1");
         instance.new_database(settings1, "_device_key").unwrap();
 
         let mut settings2 = Doc::new();
-        settings2.set_string("name", "db2");
+        settings2.set("name", "db2");
         instance.new_database(settings2, "_device_key").unwrap();
 
         // Get all databases (should include system databases + user databases)
@@ -958,7 +958,7 @@ mod tests {
 
         // Create database with name
         let mut settings = Doc::new();
-        settings.set_string("name", "my_special_db");
+        settings.set("name", "my_special_db");
         instance.new_database(settings, "_device_key").unwrap();
 
         // Find by name
@@ -1005,7 +1005,7 @@ mod tests {
 
         // Create a user database to verify it persists
         let mut settings = Doc::new();
-        settings.set_string("name", "bob_database");
+        settings.set("name", "bob_database");
         user1.create_database(settings, &default_key)?;
 
         // Save the backend to file
@@ -1193,14 +1193,14 @@ mod tests {
 
         // Create multiple databases
         let mut settings1 = Doc::new();
-        settings1.set_string("name", "database_one");
-        settings1.set_string("purpose", "testing");
+        settings1.set("name", "database_one");
+        settings1.set("purpose", "testing");
         let db1 = user1.create_database(settings1, &default_key)?;
         let db1_root = db1.root_id().clone();
 
         let mut settings2 = Doc::new();
-        settings2.set_string("name", "database_two");
-        settings2.set_string("purpose", "production");
+        settings2.set("name", "database_two");
+        settings2.set("purpose", "production");
         let db2 = user1.create_database(settings2, &default_key)?;
         let db2_root = db2.root_id().clone();
 

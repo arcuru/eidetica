@@ -27,8 +27,8 @@ async fn test_bootstrap_sync_from_zero_state() {
         let store = tx
             .get_store::<eidetica::store::DocStore>("messages")
             .unwrap();
-        store.set_string("msg1", "Hello from server!").unwrap();
-        store.set_string("msg2", "Second message").unwrap();
+        store.set("msg1", "Hello from server!").unwrap();
+        store.set("msg2", "Second message").unwrap();
         tx.commit().unwrap()
     };
 
@@ -141,7 +141,7 @@ async fn test_incremental_sync_after_bootstrap() {
         let tx = server_database.new_transaction().unwrap();
         let store = tx.get_store::<DocStore>("messages").unwrap();
         store
-            .set_string("post_bootstrap", "After bootstrap message")
+            .set("post_bootstrap", "After bootstrap message")
             .unwrap();
         tx.commit().unwrap()
     };

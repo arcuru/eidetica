@@ -80,7 +80,7 @@ async fn test_bootstrap_pending_error_propagation() {
     server_instance.add_private_key("server_key").unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Manual Approval DB");
+    settings.set("name", "Manual Approval DB");
 
     let database = server_instance
         .new_database(settings, "server_key")
@@ -354,7 +354,7 @@ async fn test_unauthenticated_sync_should_fail() {
     server_instance.add_private_key("server_key").unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Secure Database");
+    settings.set("name", "Secure Database");
 
     // Create database - this will auto-configure auth with server_key as Admin
     let database = server_instance
@@ -377,7 +377,7 @@ async fn test_unauthenticated_sync_should_fail() {
     let tx = database.new_transaction().unwrap();
     let secrets_store = tx.get_store::<DocStore>("secrets").unwrap();
     let mut secret_doc = eidetica::crdt::Doc::new();
-    secret_doc.set_string("password", "super_secret_123");
+    secret_doc.set("password", "super_secret_123");
     secrets_store.set("admin", secret_doc).unwrap();
     tx.commit().unwrap();
     println!("✅ Added sensitive data to database");

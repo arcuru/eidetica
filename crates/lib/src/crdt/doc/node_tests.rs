@@ -9,24 +9,23 @@ mod test_node {
     // Most functionality is now comprehensively tested in integration tests under tests/it/crdt/
 
     #[test]
-    fn test_doc_as_hashmap_internal_access() {
+    fn test_doc_tombstone_handling() {
         let mut doc = Doc::new();
         doc.set("key1", "value1");
         doc.set("key2", "value2");
         doc.remove("key1");
 
-        // Test internal hashmap access - this exposes tombstones which the public API hides
-        let hashmap = doc.as_hashmap();
-        assert_eq!(hashmap.len(), 2);
-        assert_eq!(hashmap.get("key1"), Some(&Value::Deleted)); // Tombstone visible
-        assert_eq!(
-            hashmap.get("key2"),
-            Some(&Value::Text("value2".to_string()))
-        );
+        // Test that tombstones are tracked internally but hidden from public API
+        assert!(doc.is_tombstone("key1")); // Tombstone detectable via is_tombstone
+        assert!(!doc.is_tombstone("key2")); // Not a tombstone
 
         // Public API should hide the tombstone
         assert_eq!(doc.get("key1"), None);
         assert_eq!(doc.get("key2"), Some(&Value::Text("value2".to_string())));
+
+        // len() and iter() should only count non-tombstoned values
+        assert_eq!(doc.len(), 1);
+        assert_eq!(doc.iter().count(), 1);
     }
 
     #[test]

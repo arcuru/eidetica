@@ -934,10 +934,10 @@ impl Transaction {
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial database creation with auth)
         let effective_settings_for_validation = if has_settings_update {
-            let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
+            let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
             if !historical_has_auth {
                 let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
-                let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
+                let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
                 if staged_has_auth {
                     staged_settings
                 } else {
@@ -1180,7 +1180,7 @@ impl Transaction {
                         // This operation is updating settings - check if it's adding auth configuration
                         if let Ok(settings_data) = entry.data(SETTINGS) {
                             if let Ok(new_settings) = serde_json::from_str::<Doc>(settings_data) {
-                                if matches!(new_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty())
+                                if matches!(new_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty())
                                 {
                                     // This is a bootstrap operation - adding auth config for the first time
                                     // Allow it since it's setting up authentication

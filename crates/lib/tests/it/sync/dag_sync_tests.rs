@@ -505,8 +505,8 @@ async fn test_sync_protocol_implementation() {
     let test_entry_id = {
         let op = tree1.new_transaction().unwrap();
         let doc_store = op.get_store::<DocStore>("data").unwrap();
-        doc_store.set_string("test_key", "test_value").unwrap();
-        doc_store.set_string("protocol", "implemented").unwrap();
+        doc_store.set("test_key", "test_value").unwrap();
+        doc_store.set("protocol", "implemented").unwrap();
         op.commit().unwrap()
     };
 
@@ -573,10 +573,8 @@ async fn test_sync_protocol_implementation() {
     let second_entry_id = {
         let op = tree1.new_transaction().unwrap();
         let doc_store = op.get_store::<DocStore>("data").unwrap();
-        doc_store.set_string("second_key", "second_value").unwrap();
-        doc_store
-            .set_string("sync_test", "actually_working")
-            .unwrap();
+        doc_store.set("second_key", "second_value").unwrap();
+        doc_store.set("sync_test", "actually_working").unwrap();
         op.commit().unwrap()
     };
 

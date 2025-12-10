@@ -509,12 +509,16 @@ fn test_list_position_preservation_round_trip() {
 fn test_doc_list_serialization() {
     let mut map = Doc::new();
 
-    // Add a list element
-    let result = map.list_add("fruits", Value::Text("apple".to_string()));
-    assert!(result.is_ok());
+    // Create a list and add to doc
+    let mut fruits = List::new();
+    fruits.push("apple");
+    map.set("fruits", Value::List(fruits));
 
     // Check list length before serialization
-    let length_before = map.list_len("fruits");
+    let length_before = match map.get("fruits") {
+        Some(Value::List(l)) => l.len(),
+        _ => 0,
+    };
     assert_eq!(length_before, 1);
 
     // Serialize and deserialize
@@ -522,7 +526,10 @@ fn test_doc_list_serialization() {
     let deserialized: Doc = serde_json::from_str(&serialized).unwrap();
 
     // Check list length after deserialization
-    let length_after = deserialized.list_len("fruits");
+    let length_after = match deserialized.get("fruits") {
+        Some(Value::List(l)) => l.len(),
+        _ => 0,
+    };
     assert_eq!(length_after, 1);
 
     // Check if they're equal
@@ -546,7 +553,7 @@ fn test_serialization_helpers_integration() {
     );
     assert_eq!(complex_map.get_as::<i64>("priority"), Some(42));
     assert_eq!(complex_map.get_as::<bool>("published"), Some(true));
-    assert!(complex_map.get_doc("metadata").is_some());
+    assert!(complex_map.get_as::<Doc>("metadata").is_some());
     assert!(complex_map.get_as::<List>("tags").is_some());
 
     // Test that serialization doesn't fail

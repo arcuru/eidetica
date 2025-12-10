@@ -250,7 +250,7 @@ impl DocStore {
             .filter(|v| !matches!(v, Value::Deleted));
 
         // Update the data
-        data.as_hashmap_mut().insert(key, value);
+        data.set(&key, value);
 
         // Serialize and update the atomic op
         let serialized =
@@ -285,7 +285,7 @@ impl DocStore {
             .unwrap_or_default();
 
         // Update the data
-        data.as_hashmap_mut().insert(key, value);
+        data.set(&key, value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -855,8 +855,8 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        // Use Doc's try_set method to handle the path logic and propagate errors
-        data.try_set(&path, value)?;
+        // Use Doc's set method to handle the path logic
+        data.set(&path, value);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
@@ -957,7 +957,7 @@ impl DocStore {
     ///
     /// // You can verify the tombstone exists by checking the full state
     /// let all_data = store.get_all().unwrap();
-    /// assert!(all_data.as_hashmap().contains_key("user1"));
+    /// assert!(all_data.is_tombstone("user1"));
     /// ```
     ///
     /// # Arguments
@@ -1021,7 +1021,7 @@ impl DocStore {
     /// let all_data = store.get_all()?;
     ///
     /// // The top-level map has keys "user" and "config", NOT "user.name", "user.age", etc.
-    /// assert_eq!(all_data.as_hashmap().len(), 2); // Only 2 top-level keys
+    /// assert_eq!(all_data.len(), 2); // Only 2 top-level keys
     ///
     /// // To access nested data from get_all():
     /// if let Some(Value::Doc(user_node)) = all_data.get("user") {
@@ -1309,42 +1309,18 @@ impl DocStore {
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
-        let mut current_map_mut = &mut subtree_data;
+        // Build the dot-separated path string
+        let path_str: String = path_slice
+            .iter()
+            .map(|s| {
+                let s_string: String = s.clone().into();
+                s_string
+            })
+            .collect::<Vec<_>>()
+            .join(".");
 
-        // Traverse or create path segments up to the parent of the target key.
-        for key_segment_s in path_slice.iter().take(path_slice.len() - 1) {
-            let key_segment_string = key_segment_s.clone().into();
-            let entry = current_map_mut.as_hashmap_mut().entry(key_segment_string);
-            current_map_mut = match entry.or_insert_with(|| Value::Doc(Doc::default())) {
-                Value::Doc(node) => node,
-                non_map_val => {
-                    // If a non-map value exists at an intermediate path segment,
-                    // overwrite it with a map to continue.
-                    *non_map_val = Value::Doc(Doc::default());
-                    match non_map_val {
-                        Value::Doc(node) => node,
-                        _ => unreachable!("Just assigned a map"),
-                    }
-                }
-            };
-        }
-
-        // Set the value at the final key in the path.
-        if let Some(last_key_s) = path_slice.last() {
-            let map_value = value;
-            current_map_mut
-                .as_hashmap_mut()
-                .insert(last_key_s.clone().into(), map_value);
-        } else {
-            // This case should be prevented by the initial path.is_empty() check.
-            // Given the check, this is technically unreachable if path is not empty.
-            return Err(StoreError::InvalidOperation {
-                store: self.name.clone(),
-                operation: "set_at_path".to_string(),
-                reason: "Path became empty unexpectedly".to_string(),
-            }
-            .into());
-        }
+        // Use Doc::set which now creates intermediate nodes automatically
+        subtree_data.set(&path_str, value);
 
         let serialized_data = serde_json::to_string(&subtree_data)?;
         self.atomic_op.update_subtree(&self.name, &serialized_data)

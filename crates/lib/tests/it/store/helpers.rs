@@ -64,7 +64,7 @@ pub fn create_dict_with_nested_map(
 
     // Set nested map
     let mut nested = Doc::new();
-    nested.set_string("inner", "nested_value");
+    nested.set("inner", "nested_value");
     dict.set_value("key2", Value::Doc(nested)).unwrap();
 
     op.commit().unwrap()
@@ -138,7 +138,7 @@ pub fn assert_dict_viewer_count(
 ) {
     let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
     let all_data = viewer.get_all().unwrap();
-    assert_eq!(all_data.as_hashmap().len(), expected_count);
+    assert_eq!(all_data.len(), expected_count);
 }
 
 /// Verify Doc viewer List operations

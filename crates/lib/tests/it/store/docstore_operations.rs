@@ -69,19 +69,18 @@ fn test_dict_get_all_via_viewer() {
         .get_store_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data");
-    let all_data_map = all_data_crdt.as_hashmap();
 
-    assert_eq!(all_data_map.len(), 3);
+    assert_eq!(all_data_crdt.len(), 3);
     assert_eq!(
-        all_data_map.get("key_a"),
+        all_data_crdt.get("key_a"),
         Some(&Value::Text("val_a".to_string()))
     );
     assert_eq!(
-        all_data_map.get("key_b"),
+        all_data_crdt.get("key_b"),
         Some(&Value::Text("val_b_updated".to_string()))
     );
     assert_eq!(
-        all_data_map.get("key_c"),
+        all_data_crdt.get("key_c"),
         Some(&Value::Text("val_c".to_string()))
     );
 }
@@ -95,9 +94,8 @@ fn test_dict_get_all_empty() {
         .get_store_viewer::<DocStore>("empty_kv")
         .expect("Failed to get viewer for empty");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data from empty");
-    let all_data_map = all_data_crdt.as_hashmap();
 
-    assert!(all_data_map.is_empty());
+    assert!(all_data_crdt.is_empty());
 }
 
 #[test]
@@ -265,7 +263,7 @@ fn test_dict_update_nested_value() {
 
         // Create level1 -> level2_str structure
         let mut l1_map = Doc::new();
-        l1_map.set_string("level2_str", "initial_value");
+        l1_map.set("level2_str", "initial_value");
         dict.set_value("level1", l1_map)
             .expect("Op1: Failed to set level1");
     }
@@ -280,10 +278,10 @@ fn test_dict_update_nested_value() {
 
         // Create an entirely new map structure that will replace the old one
         let mut l2_map = Doc::new();
-        l2_map.set_string("deep_key", "deep_value");
+        l2_map.set("deep_key", "deep_value");
 
         let mut new_l1_map = Doc::new();
-        new_l1_map.set_doc("level2_map", l2_map);
+        new_l1_map.set("level2_map", l2_map);
 
         // Completely replace the previous value at level1
         dict.set_value("level1", new_l1_map.clone())
@@ -343,8 +341,8 @@ fn test_dict_comprehensive_operations() {
 
         // Set a nested map value
         let mut nested = Doc::new();
-        nested.set_string("nested_key1", "nested_value1");
-        nested.set_string("nested_key2", "nested_value2");
+        nested.set("nested_key1", "nested_value1");
+        nested.set("nested_key2", "nested_value2");
         dict.set_value("nested", Value::Doc(nested.clone()))
             .expect("Failed to set nested map");
     }

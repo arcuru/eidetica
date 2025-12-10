@@ -481,7 +481,7 @@ fn test_add_database_key_mapping() {
 
     // Create a database explicitly with the default key
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "test_db");
+    settings.set("name", "test_db");
     let database = user
         .create_database(settings, &default_key)
         .expect("Should create database");
@@ -622,19 +622,19 @@ fn test_complex_key_database_mappings() {
 
     // Create 3 databases explicitly with the default key
     let mut settings1 = eidetica::crdt::Doc::new();
-    settings1.set_string("name", "work_db");
+    settings1.set("name", "work_db");
     let db1 = user
         .create_database(settings1, &key1)
         .expect("Should create work_db");
 
     let mut settings2 = eidetica::crdt::Doc::new();
-    settings2.set_string("name", "home_db");
+    settings2.set("name", "home_db");
     let db2 = user
         .create_database(settings2, &key1)
         .expect("Should create home_db");
 
     let mut settings3 = eidetica::crdt::Doc::new();
-    settings3.set_string("name", "shared_db");
+    settings3.set("name", "shared_db");
     let db3 = user
         .create_database(settings3, &key1)
         .expect("Should create shared_db");
@@ -780,19 +780,19 @@ fn test_multiple_manual_mappings_persist() {
 
     // Create 3 databases explicitly with the default key
     let mut settings1 = eidetica::crdt::Doc::new();
-    settings1.set_string("name", "db1");
+    settings1.set("name", "db1");
     let db1 = user1
         .create_database(settings1, &key1)
         .expect("Should create db1");
 
     let mut settings2 = eidetica::crdt::Doc::new();
-    settings2.set_string("name", "db2");
+    settings2.set("name", "db2");
     let db2 = user1
         .create_database(settings2, &key1)
         .expect("Should create db2");
 
     let mut settings3 = eidetica::crdt::Doc::new();
-    settings3.set_string("name", "db3");
+    settings3.set("name", "db3");
     let db3 = user1
         .create_database(settings3, &key1)
         .expect("Should create db3");

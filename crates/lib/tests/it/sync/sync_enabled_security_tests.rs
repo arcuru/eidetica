@@ -27,7 +27,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 
     // Create database (user.create_database adds the user's key automatically)
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
@@ -110,7 +110,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap()
         .unwrap();
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
 
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
@@ -125,7 +125,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     auth_settings
         .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
         .unwrap();
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let server_database = Database::create(
         settings,
@@ -213,7 +213,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     {
         let tx = server_database.new_transaction().unwrap();
         let doc_store = tx.get_store::<eidetica::store::DocStore>("data").unwrap();
-        doc_store.set_string("key", "value").unwrap();
+        doc_store.set("key", "value").unwrap();
         tx.commit().unwrap();
     }
 
@@ -266,7 +266,7 @@ async fn test_sync_succeeds_when_enabled() {
         .unwrap()
         .unwrap();
     let mut settings = Doc::new();
-    settings.set_string("name", "test_database");
+    settings.set("name", "test_database");
 
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
@@ -281,7 +281,7 @@ async fn test_sync_succeeds_when_enabled() {
     auth_settings
         .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
         .unwrap();
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let server_database = Database::create(
         settings,
@@ -296,7 +296,7 @@ async fn test_sync_succeeds_when_enabled() {
     {
         let tx = server_database.new_transaction().unwrap();
         let doc_store = tx.get_store::<DocStore>("data").unwrap();
-        doc_store.set_string("test_key", "test_value").unwrap();
+        doc_store.set("test_key", "test_value").unwrap();
         tx.commit().unwrap();
     }
 

@@ -41,7 +41,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .unwrap()
         .unwrap();
     let mut db_settings = Doc::new();
-    db_settings.set_string("name", "test_database");
+    db_settings.set("name", "test_database");
 
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
@@ -56,7 +56,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     auth_settings
         .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
         .unwrap();
-    db_settings.set_doc("auth", auth_settings.as_doc().clone());
+    db_settings.set("auth", auth_settings.as_doc().clone());
 
     let server_db = Database::create(
         db_settings,

@@ -485,7 +485,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Create database with global '*' permission for Write(10) and admin key
     let mut settings = Doc::new();
-    settings.set_string("name", "Test Global Permission DB");
+    settings.set("name", "Test Global Permission DB");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -513,7 +513,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();
@@ -629,7 +629,7 @@ async fn test_global_permission_overrides_manual_policy() {
     // Create database with manual approval policy (bootstrap_auto_approve: false)
     // but also global '*' permission
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test Manual Policy with Global Permission");
+    settings.set("name", "Test Manual Policy with Global Permission");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -662,9 +662,9 @@ async fn test_global_permission_overrides_manual_policy() {
     policy_doc
         .set_json("bootstrap_auto_approve", false)
         .unwrap();
-    auth_doc.set_doc("policy", policy_doc);
+    auth_doc.set("policy", policy_doc);
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();
@@ -761,7 +761,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
 
     // Create database with both admin key and the test key with Write(5) permission
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test Existing Key DB");
+    settings.set("name", "Test Existing Key DB");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -789,7 +789,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();
@@ -864,7 +864,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 
     // Create database with admin key and global Write(5) permission
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test Global Permission No Duplicate DB");
+    settings.set("name", "Test Global Permission No Duplicate DB");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -892,7 +892,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();
@@ -985,7 +985,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
 
     // Create database with global '*' permission allowing Write(5)
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Global Permission Bug Test DB");
+    settings.set("name", "Global Permission Bug Test DB");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -1013,7 +1013,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();
 
@@ -1100,7 +1100,7 @@ async fn test_global_permission_enables_transactions() {
 
     // Create database with global Write(10) permission
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "Test Global Permission Transactions");
+    settings.set("name", "Test Global Permission Transactions");
 
     let mut auth_doc = eidetica::crdt::Doc::new();
 
@@ -1128,7 +1128,7 @@ async fn test_global_permission_enables_transactions() {
         )
         .unwrap();
 
-    settings.set_doc("auth", auth_doc);
+    settings.set("auth", auth_doc);
 
     let database = server_instance.new_database(settings, server_key).unwrap();
     let tree_id = database.root_id().clone();

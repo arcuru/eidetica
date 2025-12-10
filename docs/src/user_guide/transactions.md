@@ -33,7 +33,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # instance.create_user("alice", None)?;
     # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
-    # settings.set_string("name", "test");
+    # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
     # let database = user.create_database(settings, &default_key)?;
     #
@@ -62,7 +62,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # instance.create_user("alice", None)?;
     # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
-    # settings.set_string("name", "test");
+    # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
     # let database = user.create_database(settings, &default_key)?;
     let txn = database.new_transaction()?;
@@ -97,7 +97,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # instance.create_user("alice", None)?;
     # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
-    # settings.set_string("name", "test");
+    # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
     # let database = user.create_database(settings, &default_key)?;
     # let txn = database.new_transaction()?;
@@ -131,7 +131,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # instance.create_user("alice", None)?;
     # let mut user = instance.login_user("alice", None)?;
     # let mut settings = Doc::new();
-    # settings.set_string("name", "test");
+    # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
     # let database = user.create_database(settings, &default_key)?;
     #
@@ -161,7 +161,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "settings_example");
+# settings.set("name", "settings_example");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Generate keypairs for old user and add it first so we can revoke it
@@ -228,7 +228,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test");
+# settings.set("name", "test");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Insert test data

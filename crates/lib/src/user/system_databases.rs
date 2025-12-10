@@ -42,9 +42,9 @@ pub fn create_instance_database(
 ) -> Result<Database> {
     // Create database settings
     let mut settings = Doc::new();
-    settings.set_string("name", INSTANCE);
-    settings.set_string("type", "system");
-    settings.set_string("description", "Instance configuration and management");
+    settings.set("name", INSTANCE);
+    settings.set("type", "system");
+    settings.set("description", "Instance configuration and management");
 
     // Set up auth with device key as admin
     let mut auth_settings = AuthSettings::new();
@@ -52,7 +52,7 @@ pub fn create_instance_database(
         "_device_key",
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the database with device signing key provided directly
     let database = Database::create(
@@ -84,9 +84,9 @@ pub fn create_users_database(
 ) -> Result<Database> {
     // Create settings for _users database
     let mut settings = Doc::new();
-    settings.set_string("name", USERS);
-    settings.set_string("type", "system");
-    settings.set_string("description", "User directory database");
+    settings.set("name", USERS);
+    settings.set("type", "system");
+    settings.set("description", "User directory database");
 
     // Create auth settings with device key as admin
     let mut auth_settings = AuthSettings::new();
@@ -95,7 +95,7 @@ pub fn create_users_database(
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
 
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the database with device signing key provided directly
     let database = Database::create(
@@ -128,9 +128,9 @@ pub fn create_databases_tracking(
 ) -> Result<Database> {
     // Create settings for _databases database
     let mut settings = Doc::new();
-    settings.set_string("name", DATABASES);
-    settings.set_string("type", "system");
-    settings.set_string("description", "Database tracking and registry");
+    settings.set("name", DATABASES);
+    settings.set("type", "system");
+    settings.set("description", "Database tracking and registry");
 
     // Create auth settings with device key as admin
     let mut auth_settings = AuthSettings::new();
@@ -139,7 +139,7 @@ pub fn create_databases_tracking(
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
 
-    settings.set_doc("auth", auth_settings.as_doc().clone());
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the database with device signing key provided directly
     let database = Database::create(
@@ -207,9 +207,9 @@ pub fn create_user(
 
     // 3. Create user database with authentication for both _device_key and user's key
     let mut user_db_settings = Doc::new();
-    user_db_settings.set_string("name", format!("_user_{username}"));
-    user_db_settings.set_string("type", "user");
-    user_db_settings.set_string("description", format!("User database for {username}"));
+    user_db_settings.set("name", format!("_user_{username}"));
+    user_db_settings.set("type", "user");
+    user_db_settings.set("description", format!("User database for {username}"));
 
     // Get device key for auth settings and database creation
     let device_private_key = instance
@@ -234,7 +234,7 @@ pub fn create_user(
         &user_public_key_str,
         AuthKey::active(&user_public_key_str, Permission::Admin(0))?,
     )?;
-    user_db_settings.set_doc("auth", auth_settings.as_doc().clone());
+    user_db_settings.set("auth", auth_settings.as_doc().clone());
 
     // Create database using device_key directly (KeySource::Provided)
     let user_database = Database::create(

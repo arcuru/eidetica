@@ -271,7 +271,7 @@ fn test_password_store_empty_data() {
 
     let docstore = encrypted.unwrap::<DocStore>().unwrap();
     let all = docstore.get_all().unwrap();
-    assert!(all.as_hashmap().is_empty());
+    assert!(all.is_empty());
 }
 
 #[test]
@@ -335,7 +335,7 @@ fn test_password_store_docstore_nested_values() {
     let docstore = encrypted.unwrap::<DocStore>().unwrap();
 
     let mut inner = Doc::new();
-    inner.set_string("city", "Portland");
+    inner.set("city", "Portland");
     inner.set("zip", Value::Int(97201));
     docstore.set_value("address", Value::Doc(inner)).unwrap();
     tx.commit().unwrap();

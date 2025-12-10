@@ -62,7 +62,7 @@ let mut user = instance.login_user("alice", None)?;
 
 // Create a database
 let mut settings = Doc::new();
-settings.set_string("name", "my_database");
+settings.set("name", "my_database");
 let default_key = user.get_default_key()?;
 let database = user.create_database(settings, &default_key)?;
 

@@ -50,7 +50,7 @@ fn test_direct_key_empty_id() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_doc("auth", auth);
+    settings.set("auth", auth);
 
     // This should work - empty key is technically valid
     let tree = db.new_database(settings, "")?;
@@ -61,7 +61,11 @@ fn test_direct_key_empty_id() -> Result<()> {
     let auth_settings = tree.get_settings()?.get_auth_settings()?;
 
     let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(&db));
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "Failed to resolve empty key: {:?}",
+        result.err()
+    );
 
     Ok(())
 }
@@ -265,7 +269,7 @@ fn test_circular_delegation_simple() -> Result<()> {
     .unwrap();
 
     let mut settings = Doc::new();
-    settings.set_doc("auth", auth);
+    settings.set("auth", auth);
     let tree = db.new_database(settings, "admin")?;
     let tree_tips = tree.get_tips()?;
 

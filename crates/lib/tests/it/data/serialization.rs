@@ -15,11 +15,11 @@ fn test_doc_serialization() {
     let mut map = eidetica::crdt::Doc::new();
 
     // Add various value types
-    map.set_string("string_key", "string_value");
+    map.set("string_key", "string_value");
 
     let mut nested = eidetica::crdt::Doc::new();
-    nested.set_string("inner", "inner_value");
-    map.set_doc("map_key", nested);
+    nested.set("inner", "inner_value");
+    map.set("map_key", nested);
 
     // Create a tombstone
     map.remove("deleted_key");
@@ -40,8 +40,8 @@ fn test_doc_serialization() {
         _ => panic!("Expected map value"),
     }
 
-    // Verify tombstone survived
-    assert!(deserialized.as_hashmap().contains_key("deleted_key"));
+    // Verify tombstone survived - use is_tombstone (contains_key returns false for tombstones)
+    assert!(deserialized.is_tombstone("deleted_key"));
     assert_path_deleted(&deserialized, &["deleted_key"]);
 }
 
@@ -98,11 +98,7 @@ fn test_serialization_empty_doc() {
     let serialized = serde_json::to_string(&empty_map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
-    assert_eq!(
-        deserialized.as_hashmap().len(),
-        0,
-        "Empty map should remain empty"
-    );
+    assert_eq!(deserialized.len(), 0, "Empty map should remain empty");
 }
 
 #[test]

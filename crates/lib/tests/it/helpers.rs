@@ -89,7 +89,7 @@ pub fn setup_tree() -> (Instance, eidetica::Database) {
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut settings = eidetica::crdt::Doc::new();
-    settings.set_string("name", "test_tree");
+    settings.set("name", "test_tree");
 
     let tree = user
         .create_database(settings, &default_key)
@@ -131,7 +131,7 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetic
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut db_settings = eidetica::crdt::Doc::new();
-    db_settings.set_string("name", "test_tree_with_settings");
+    db_settings.set("name", "test_tree_with_settings");
 
     let tree = user
         .create_database(db_settings, &default_key)

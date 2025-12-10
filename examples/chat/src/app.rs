@@ -55,7 +55,7 @@ impl App {
     pub async fn create_room(&mut self, name: &str) -> Result<()> {
         // Create new database with the given name
         let mut settings = Doc::new();
-        settings.set_string("name", name);
+        settings.set("name", name);
 
         // Get the user's default key
         let key_id = self.user.get_default_key()?;
@@ -336,7 +336,7 @@ impl App {
             // The room will sync in the background and messages will appear when ready
             warn!(" Database not yet available, creating placeholder (syncing in background)");
             let mut settings = Doc::new();
-            settings.set_string("name", format!("Room {room_id} (Syncing...)"));
+            settings.set("name", format!("Room {room_id} (Syncing...)"));
             let key_id = self.user.get_default_key()?;
             let database = self.user.create_database(settings, &key_id)?;
             info!(" Created placeholder room");

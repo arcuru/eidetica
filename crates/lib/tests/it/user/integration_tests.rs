@@ -100,7 +100,7 @@ fn test_multi_device_key_management_and_database_access() {
         .create_database(
             {
                 let mut settings = eidetica::crdt::Doc::new();
-                settings.set_string("name", "Laptop Work");
+                settings.set("name", "Laptop Work");
                 settings
             },
             &laptop_key,
@@ -225,7 +225,7 @@ fn test_collaborative_database_with_global_permissions() {
     let alice_key = alice.get_default_key().expect("Alice get default key");
 
     let mut alice_db_settings = Doc::new();
-    alice_db_settings.set_string("name", "Team Workspace");
+    alice_db_settings.set("name", "Team Workspace");
 
     // Configure auth settings with global Write permission
     let mut auth_settings = AuthSettings::new();
@@ -244,7 +244,7 @@ fn test_collaborative_database_with_global_permissions() {
         .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
         .unwrap();
 
-    alice_db_settings.set_doc("auth", auth_settings.as_doc().clone());
+    alice_db_settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the new database with alice_key as the owner
     let alice_db = alice
@@ -397,7 +397,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // Alice creates a database with global Write(10) permission
     println!("📁 Alice creating collaborative database...");
     let mut alice_db_settings = Doc::new();
-    alice_db_settings.set_string("name", "Team Workspace");
+    alice_db_settings.set("name", "Team Workspace");
 
     let mut auth_settings = AuthSettings::new();
 
@@ -415,7 +415,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
         .unwrap();
 
-    alice_db_settings.set_doc("auth", auth_settings.as_doc().clone());
+    alice_db_settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the new database with alice_key as the owner
     let alice_db = alice

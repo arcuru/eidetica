@@ -63,7 +63,7 @@ use tracing::{debug, info};
 use crate::{
     Database, Entry, Instance, Result, WeakInstance,
     auth::{crypto::format_public_key, types::AuthKey},
-    crdt::Doc,
+    crdt::{Doc, doc::Value},
     entry::ID,
     instance::backend::Backend,
     store::{DocStore, Registry, SettingsStore},
@@ -247,8 +247,8 @@ impl Sync {
         };
 
         let mut sync_settings = Doc::new();
-        sync_settings.set_string("name", "_sync");
-        sync_settings.set_string("type", "sync_settings");
+        sync_settings.set("name", "_sync");
+        sync_settings.set("type", "sync_settings");
 
         let sync_tree = Database::create(
             sync_settings,
@@ -319,7 +319,7 @@ impl Sync {
     pub fn set_setting(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let op = self.sync_tree.new_transaction()?;
         let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE)?;
-        sync_settings.set_string(key, value)?;
+        sync_settings.set(key, Value::Text(value.into()))?;
         op.commit()?;
         Ok(())
     }

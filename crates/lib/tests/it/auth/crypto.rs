@@ -148,7 +148,7 @@ fn test_backend_serialization() {
             AuthKey::active(format_public_key(&public_key2), Permission::Write(20)).unwrap(),
         )
         .unwrap();
-    settings.set_doc("auth", auth_settings);
+    settings.set("auth", auth_settings);
 
     // Create database with first key (admin key)
     let tree = user

@@ -243,8 +243,8 @@ fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
     // Verify intermediate structures
     match dict.get_at_path(["user"])? {
         Value::Doc(user_map) => {
-            assert!(user_map.as_hashmap().contains_key("profile"));
-            assert!(user_map.as_hashmap().contains_key("settings"));
+            assert!(user_map.contains_key("profile"));
+            assert!(user_map.contains_key("settings"));
         }
         _ => panic!("Expected user to be a map"),
     }

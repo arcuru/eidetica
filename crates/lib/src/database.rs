@@ -93,7 +93,7 @@ impl Database {
     /// let sigkey = format_public_key(&public_key);
     ///
     /// let mut settings = Doc::new();
-    /// settings.set_string("name", "my_database");
+    /// settings.set("name", "my_database");
     ///
     /// // Create database with user-managed key (no backend storage needed)
     /// let database = Database::create(
@@ -115,7 +115,7 @@ impl Database {
         sigkey: String,
     ) -> Result<Self> {
         // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.as_hashmap().is_empty());
+        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
 
         // FIXME: this should merge the provided settings and the added signing key should be added as root
 
@@ -137,7 +137,7 @@ impl Database {
 
             // Prepare final database settings for the initial commit
             let mut final_database_settings = initial_settings.clone();
-            final_database_settings.set_doc("auth", auth_settings_handler.as_doc().clone());
+            final_database_settings.set("auth", auth_settings_handler.as_doc().clone());
 
             final_database_settings
         };
@@ -878,7 +878,7 @@ mod tests {
 
         // Create initial settings with multiple keys having different permissions
         let mut settings = Doc::new();
-        settings.set_string("name", "test_db");
+        settings.set("name", "test_db");
 
         let mut auth_settings = AuthSettings::new();
 
@@ -897,7 +897,7 @@ mod tests {
             AuthKey::active(&pubkey_str, Permission::Write(2))?,
         )?;
 
-        settings.set_doc("auth", auth_settings.as_doc().clone());
+        settings.set("auth", auth_settings.as_doc().clone());
 
         // Create database
         let db = Database::create(settings, &instance, signing_key, "key_admin".to_string())?;

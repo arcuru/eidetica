@@ -556,7 +556,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .unwrap();
 
     let mut msg = eidetica::crdt::Doc::new();
-    msg.set_string("text", "Hello from authenticated database!");
+    msg.set("text", "Hello from authenticated database!");
     msg.set_json("timestamp", 1234567890_u64).unwrap();
     messages_store.set_node("msg1", msg).unwrap();
 

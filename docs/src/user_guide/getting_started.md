@@ -47,7 +47,7 @@ Here's a simple example:
 
     // Create a database in the user's context
     let mut settings = Doc::new();
-    settings.set_string("name", "my_database");
+    settings.set("name", "my_database");
 
     // Get the default key (earliest created key)
     let default_key = user.get_default_key()?;
@@ -73,7 +73,7 @@ The backend determines how your data is stored. The example above uses `InMemory
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let _database = user.create_database(settings, &default_key)?;
 #
@@ -109,7 +109,7 @@ You can load a previously saved backend:
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let _database = user.create_database(settings, &default_key)?;
 #
@@ -200,7 +200,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 #
@@ -239,7 +239,7 @@ op.commit()?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Insert some test data
@@ -285,7 +285,7 @@ for (id, person) in all_people {
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # // Insert some test data
@@ -328,7 +328,7 @@ op.commit()?;
 # instance.create_user("alice", None)?;
 # let mut user = instance.login_user("alice", None)?;
 # let mut settings = Doc::new();
-# settings.set_string("name", "test_db");
+# settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key)?;
 # let _id = "test_id";

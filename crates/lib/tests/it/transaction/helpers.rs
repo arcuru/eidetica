@@ -154,11 +154,7 @@ pub fn test_delete_operation(
 
 /// Verify that a map contains a tombstone for a deleted key
 pub fn assert_has_tombstone(map: &Map, key: &str) {
-    match map.as_hashmap().get(key) {
-        Some(Value::Deleted) => (), // Expected
-        Some(other) => panic!("Expected tombstone for key '{key}', got: {other:?}"),
-        None => panic!("Expected tombstone for key '{key}', but key not found"),
-    }
+    assert!(map.is_tombstone(key), "Expected tombstone for key '{key}'");
 }
 
 /// Verify that public API hides tombstone but internal API shows it
@@ -183,7 +179,7 @@ pub fn assert_tombstone_hidden(map: &Map, key: &str) {
 pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
     let mut map = Doc::new();
     for (key, value) in data {
-        map.set_string(key, value.to_string());
+        map.set(key, value.to_string());
     }
     Value::Doc(map)
 }

@@ -18,7 +18,7 @@ type Map = Doc;
 pub fn create_map_with_values(pairs: &[(&str, &str)]) -> Map {
     let mut map = Doc::new();
     for (key, value) in pairs {
-        map.set_string(*key, *value);
+        map.set(*key, *value);
     }
     map
 }
@@ -28,7 +28,7 @@ pub fn create_nested_map(nested_data: &[(&str, &[(&str, &str)])]) -> Map {
     let mut map = Doc::new();
     for (outer_key, inner_pairs) in nested_data {
         let inner_map = create_map_with_values(inner_pairs);
-        map.set_doc(*outer_key, inner_map);
+        map.set(*outer_key, inner_map);
     }
     map
 }
@@ -94,12 +94,11 @@ pub fn assert_nested_value(map: &Map, path: &[&str], expected: &str) {
 /// Assert that a path is deleted (tombstone exists)
 pub fn assert_path_deleted(map: &Map, path: &[&str]) {
     if path.len() == 1 {
-        // Simple case: check directly in this map
-        match map.as_hashmap().get(&path[0].to_string()) {
-            Some(Value::Deleted) => (),
-            Some(other) => panic!("Expected tombstone at '{path:?}', got {other:?}"),
-            None => panic!("Expected tombstone at '{path:?}', but key not found"),
-        }
+        // Simple case: check directly in this map using is_tombstone
+        assert!(
+            map.is_tombstone(path[0]),
+            "Expected tombstone at '{path:?}'"
+        );
     } else {
         // Navigate to parent and check final key
         let mut current = map;
@@ -111,11 +110,10 @@ pub fn assert_path_deleted(map: &Map, path: &[&str]) {
         }
 
         let final_key = path.last().expect("Path should not be empty");
-        match current.as_hashmap().get(&final_key.to_string()) {
-            Some(Value::Deleted) => (),
-            Some(other) => panic!("Expected tombstone at '{path:?}', got {other:?}"),
-            None => panic!("Expected tombstone at '{path:?}', but key not found"),
-        }
+        assert!(
+            current.is_tombstone(*final_key),
+            "Expected tombstone at '{path:?}'"
+        );
     }
 }
 
@@ -124,19 +122,19 @@ pub fn create_complex_nested_structure() -> Map {
     let mut root = Doc::new();
 
     // Level 1
-    root.set_string("top_key", "top_value");
+    root.set("top_key", "top_value");
 
     // Level 2
     let mut level2 = Doc::new();
-    level2.set_string("level2_key1", "level2_value1");
-    level2.set_string("shared_key", "original_value");
+    level2.set("level2_key1", "level2_value1");
+    level2.set("shared_key", "original_value");
 
     // Level 3
     let mut level3 = Doc::new();
-    level3.set_string("level3_key1", "level3_value1");
-    level2.set_doc("level3", level3);
+    level3.set("level3_key1", "level3_value1");
+    level2.set("level3", level3);
 
-    root.set_doc("level2", level2);
+    root.set("level2", level2);
     root
 }
 
@@ -154,20 +152,20 @@ pub fn build_generation_test_data() -> Vec<(&'static str, Value)> {
 pub fn build_complex_merge_data() -> (Map, Map) {
     let mut map1 = Doc::new();
     let mut level1a = Doc::new();
-    level1a.set_string("key1", "value1");
-    level1a.set_string("to_delete", "will_be_deleted");
-    level1a.set_string("to_update", "initial_value");
-    map1.set_doc("level1", level1a);
-    map1.set_string("top_level_key", "top_value");
+    level1a.set("key1", "value1");
+    level1a.set("to_delete", "will_be_deleted");
+    level1a.set("to_update", "initial_value");
+    map1.set("level1", level1a);
+    map1.set("top_level_key", "top_value");
 
     let mut map2 = Doc::new();
     let mut level1b = Doc::new();
-    level1b.set_string("key2", "value2");
+    level1b.set("key2", "value2");
     level1b.remove("to_delete");
-    level1b.set_string("to_update", "updated_value");
-    map2.set_doc("level1", level1b);
+    level1b.set("to_update", "updated_value");
+    map2.set("level1", level1b);
     map2.remove("top_level_key");
-    map2.set_string("new_top_key", "new_top_value");
+    map2.set("new_top_key", "new_top_value");
 
     (map1, map2)
 }
@@ -175,8 +173,8 @@ pub fn build_complex_merge_data() -> (Map, Map) {
 /// Create a test Map with some initial data
 pub fn setup_test_map() -> Map {
     let mut map = Doc::new();
-    map.set_string("key1", "value1".to_string());
-    map.set_string("key2", "value2".to_string());
+    map.set("key1", "value1".to_string());
+    map.set("key2", "value2".to_string());
     map
 }
 
@@ -185,12 +183,12 @@ pub fn setup_concurrent_maps() -> (Map, Map) {
     let base = setup_test_map();
 
     let mut map1 = base.clone();
-    map1.set_string("branch", "left".to_string());
-    map1.set_string("unique1", "from_map1".to_string());
+    map1.set("branch", "left".to_string());
+    map1.set("unique1", "from_map1".to_string());
 
     let mut map2 = base.clone();
-    map2.set_string("branch", "right".to_string());
-    map2.set_string("unique2", "from_map2".to_string());
+    map2.set("branch", "right".to_string());
+    map2.set("unique2", "from_map2".to_string());
 
     (map1, map2)
 }
@@ -200,14 +198,14 @@ pub fn create_complex_map() -> Map {
     let mut map = Doc::new();
 
     // Add basic values
-    map.set_string("title", "My Document".to_string());
+    map.set("title", "My Document".to_string());
     map.set("priority", Value::Int(42));
     map.set("published", Value::Bool(true));
 
     // Add nested map
     let mut metadata = Doc::new();
-    metadata.set_string("author", "Alice".to_string());
-    metadata.set_string("version", "1.0".to_string());
+    metadata.set("author", "Alice".to_string());
+    metadata.set("version", "1.0".to_string());
     map.set("metadata", metadata);
 
     // Add list
@@ -252,7 +250,7 @@ pub fn create_mixed_list() -> List {
     list.push(Value::Text("mixed".to_string()));
 
     let mut nested_map = Doc::new();
-    nested_map.set_string("nested", "value".to_string());
+    nested_map.set("nested", "value".to_string());
     list.push(nested_map);
 
     list
@@ -330,13 +328,10 @@ pub fn assert_value_content(value: &Value, expected_type: &str, test_equality: O
 
 /// Assert that two Maps are equivalent (same keys and values)
 pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
-    let hashmap1 = map1.as_hashmap();
-    let hashmap2 = map2.as_hashmap();
+    assert_eq!(map1.len(), map2.len(), "Maps have different sizes");
 
-    assert_eq!(hashmap1.len(), hashmap2.len(), "Maps have different sizes");
-
-    for (key, value1) in hashmap1 {
-        match hashmap2.get(key) {
+    for (key, value1) in map1.iter() {
+        match map2.get(key) {
             Some(value2) => assert_eq!(value1, value2, "Value mismatch for key '{key}'"),
             None => panic!("Key '{key}' missing in second map"),
         }

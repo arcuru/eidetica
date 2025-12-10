@@ -198,8 +198,8 @@ mod tests {
 
         // Create sync tree similar to how Sync::new does it
         let mut sync_settings = crate::crdt::Doc::new();
-        sync_settings.set_string("name", "_sync");
-        sync_settings.set_string("type", "sync_settings");
+        sync_settings.set("name", "_sync");
+        sync_settings.set("type", "sync_settings");
 
         let database = instance
             .new_database(sync_settings, DEVICE_KEY_NAME)

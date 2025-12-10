@@ -27,7 +27,7 @@
 //!
 //! // Use in document operations
 //! let mut doc = Doc::new();
-//! doc.set_path(path, "Alice")?;
+//! doc.set(path, "Alice");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
