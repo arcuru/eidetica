@@ -148,6 +148,20 @@ pub enum SyncError {
         expected: String,
         found: String,
     },
+
+    /// Transport not found by type identifier.
+    #[error("Transport not found: {transport_type}")]
+    TransportNotFound { transport_type: String },
+
+    /// No transport can handle the given address.
+    #[error("No transport can handle address: {address:?}")]
+    NoTransportForAddress {
+        address: crate::sync::peer_types::Address,
+    },
+
+    /// Multiple transport operations failed.
+    #[error("Multiple transport errors: {}", errors.join(", "))]
+    MultipleTransportErrors { errors: Vec<String> },
 }
 
 impl SyncError {

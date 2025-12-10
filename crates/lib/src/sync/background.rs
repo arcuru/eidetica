@@ -22,6 +22,7 @@ use super::{
     peer_manager::PeerManager,
     peer_types::{Address, PeerInfo},
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
+    transport_manager::TransportManager,
     transports::SyncTransport,
 };
 use crate::{
@@ -31,7 +32,6 @@ use crate::{
 };
 
 /// Commands that can be sent to the background sync engine
-#[derive(Debug)]
 pub enum SyncCommand {
     /// Send entries to a specific peer
     SendEntries { peer: String, entries: Vec<Entry> },
@@ -46,19 +46,35 @@ pub enum SyncCommand {
     /// Shutdown the background engine
     Shutdown,
 
+    // Transport management
+    /// Add a transport to the transport manager
+    AddTransport {
+        transport: Box<dyn super::transports::SyncTransport>,
+        response: oneshot::Sender<Result<()>>,
+    },
+
     // Server management commands
-    /// Start the sync server
+    /// Start the sync server on specified or all transports
     StartServer {
+        /// Transport type to start, or None for all transports
+        transport_type: Option<String>,
         addr: String,
         response: oneshot::Sender<Result<()>>,
     },
-    /// Stop the sync server
+    /// Stop the sync server on specified or all transports
     StopServer {
+        /// Transport type to stop, or None for all transports
+        transport_type: Option<String>,
         response: oneshot::Sender<Result<()>>,
     },
-    /// Get the server's listening address
+    /// Get the server's listening address for a specific transport
     GetServerAddress {
+        transport_type: String,
         response: oneshot::Sender<Result<String>>,
+    },
+    /// Get all server addresses for running servers
+    GetAllServerAddresses {
+        response: oneshot::Sender<Result<Vec<(String, String)>>>,
     },
 
     // Peer connection
@@ -77,6 +93,70 @@ pub enum SyncCommand {
     },
 }
 
+// Manual Debug impl required because:
+// - `Box<dyn SyncTransport>` doesn't implement Debug (trait object)
+// - `oneshot::Sender` doesn't implement Debug (channel internals)
+// - Transports may contain secrets (e.g., Iroh's cryptographic keys)
+// This impl provides safe, useful debug output for logging.
+impl std::fmt::Debug for SyncCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SendEntries { peer, entries } => f
+                .debug_struct("SendEntries")
+                .field("peer", peer)
+                .field("entries_count", &entries.len())
+                .finish(),
+            Self::QueueEntry {
+                peer,
+                entry_id,
+                tree_id,
+            } => f
+                .debug_struct("QueueEntry")
+                .field("peer", peer)
+                .field("entry_id", entry_id)
+                .field("tree_id", tree_id)
+                .finish(),
+            Self::SyncWithPeer { peer } => {
+                f.debug_struct("SyncWithPeer").field("peer", peer).finish()
+            }
+            Self::Shutdown => write!(f, "Shutdown"),
+            Self::AddTransport { transport, .. } => f
+                .debug_struct("AddTransport")
+                .field("transport_type", &transport.transport_type())
+                .finish(),
+            Self::StartServer {
+                transport_type,
+                addr,
+                ..
+            } => f
+                .debug_struct("StartServer")
+                .field("transport_type", transport_type)
+                .field("addr", addr)
+                .finish(),
+            Self::StopServer { transport_type, .. } => f
+                .debug_struct("StopServer")
+                .field("transport_type", transport_type)
+                .finish(),
+            Self::GetServerAddress { transport_type, .. } => f
+                .debug_struct("GetServerAddress")
+                .field("transport_type", transport_type)
+                .finish(),
+            Self::GetAllServerAddresses { .. } => write!(f, "GetAllServerAddresses"),
+            Self::ConnectToPeer { address, .. } => f
+                .debug_struct("ConnectToPeer")
+                .field("address", address)
+                .finish(),
+            Self::SendRequest {
+                address, request, ..
+            } => f
+                .debug_struct("SendRequest")
+                .field("address", address)
+                .field("request", request)
+                .finish(),
+        }
+    }
+}
+
 /// Entry in the retry queue for failed sends
 #[derive(Debug, Clone)]
 struct RetryEntry {
@@ -89,12 +169,9 @@ struct RetryEntry {
 /// Background sync engine that owns all sync state and handles operations
 pub struct BackgroundSync {
     // Core components - owns everything
-    transport: Box<dyn SyncTransport>,
+    transport_manager: TransportManager,
     instance: crate::WeakInstance,
     sync_tree_id: ID,
-
-    // Server state
-    server_address: Option<String>,
 
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
@@ -113,10 +190,9 @@ impl BackgroundSync {
         let (tx, rx) = mpsc::channel(100);
 
         let background = Self {
-            transport,
+            transport_manager: TransportManager::with_transport(transport),
             instance: instance.downgrade(),
             sync_tree_id,
-            server_address: None,
             retry_queue: Vec::new(),
             command_rx: rx,
         };
@@ -313,19 +389,42 @@ impl BackgroundSync {
                 }
             }
 
-            SyncCommand::StartServer { addr, response } => {
-                let result = self.start_server(&addr).await;
+            SyncCommand::AddTransport {
+                transport,
+                response,
+            } => {
+                self.transport_manager.add(transport);
+                let _ = response.send(Ok(()));
+            }
+
+            SyncCommand::StartServer {
+                transport_type,
+                addr,
+                response,
+            } => {
+                let result = self.start_server(transport_type.as_deref(), &addr).await;
                 let _ = response.send(result);
             }
 
-            SyncCommand::StopServer { response } => {
-                let result = self.stop_server().await;
+            SyncCommand::StopServer {
+                transport_type,
+                response,
+            } => {
+                let result = self.stop_server(transport_type.as_deref()).await;
                 let _ = response.send(result);
             }
 
-            SyncCommand::GetServerAddress { response } => {
-                let result = self.get_server_address();
+            SyncCommand::GetServerAddress {
+                transport_type,
+                response,
+            } => {
+                let result = self.transport_manager.get_server_address(&transport_type);
                 let _ = response.send(result);
+            }
+
+            SyncCommand::GetAllServerAddresses { response } => {
+                let addresses = self.transport_manager.get_all_server_addresses();
+                let _ = response.send(Ok(addresses));
             }
 
             SyncCommand::ConnectToPeer { address, response } => {
@@ -383,7 +482,10 @@ impl BackgroundSync {
         }; // Operation is dropped here
 
         let request = SyncRequest::SendEntries(entries);
-        let response = self.transport.send_request(&address, &request).await?;
+        let response = self
+            .transport_manager
+            .send_request(&address, &request)
+            .await?;
 
         match response {
             crate::sync::protocol::SyncResponse::Ack
@@ -602,7 +704,7 @@ impl BackgroundSync {
                 requested_permission: None,
             });
 
-            let response = self.transport.send_request(address, &request).await?;
+            let response = self.transport_manager.send_request(address, &request).await?;
 
             match response {
                 SyncResponse::Bootstrap(bootstrap_response) => {
@@ -698,55 +800,47 @@ impl BackgroundSync {
         // and automatic reconnection logic here
     }
 
-    /// Start the sync server
-    async fn start_server(&mut self, addr: &str) -> Result<()> {
-        if self.transport.is_server_running() {
-            return Err(SyncError::ServerAlreadyRunning {
-                address: addr.to_string(),
-            }
-            .into());
-        }
-
+    /// Start the sync server on specified or all transports
+    async fn start_server(&mut self, transport_type: Option<&str>, addr: &str) -> Result<()> {
         // Create a sync handler with instance access and sync tree ID
         let handler = Arc::new(SyncHandlerImpl::new(
             self.instance()?,
             self.sync_tree_id.clone(),
         ));
 
-        self.transport.start_server(addr, handler).await?;
-
-        // Store the server address for later retrieval
-        match self.transport.get_server_address() {
-            Ok(server_addr) => {
-                self.server_address = Some(server_addr);
-                tracing::info!("Sync server started on {addr}");
-                Ok(())
+        match transport_type {
+            Some(tt) => {
+                // Start server on specific transport
+                self.transport_manager
+                    .start_server(tt, addr, handler)
+                    .await?;
+                tracing::info!("Sync server started on {addr} for transport {tt}");
             }
-            Err(e) => {
-                // If we can't get the address, stop the server and return error
-                let _ = self.transport.stop_server().await;
-                Err(e)
+            None => {
+                // Start servers on all transports
+                self.transport_manager
+                    .start_all_servers(addr, handler)
+                    .await?;
+                tracing::info!("Sync servers started on {addr} for all transports");
             }
         }
-    }
 
-    /// Stop the sync server
-    async fn stop_server(&mut self) -> Result<()> {
-        if !self.transport.is_server_running() {
-            return Err(SyncError::ServerNotRunning.into());
-        }
-
-        self.transport.stop_server().await?;
-        self.server_address = None;
-        tracing::info!("Sync server stopped");
         Ok(())
     }
 
-    /// Get the server's listening address
-    fn get_server_address(&self) -> Result<String> {
-        self.server_address
-            .clone()
-            .ok_or_else(|| SyncError::ServerNotRunning.into())
+    /// Stop the sync server on specified or all transports
+    async fn stop_server(&mut self, transport_type: Option<&str>) -> Result<()> {
+        match transport_type {
+            Some(tt) => {
+                self.transport_manager.stop_server(tt).await?;
+                tracing::info!("Sync server stopped for transport {tt}");
+            }
+            None => {
+                self.transport_manager.stop_all_servers().await?;
+                tracing::info!("All sync servers stopped");
+            }
+        }
+        Ok(())
     }
 
     /// Connect to a peer and perform handshake
@@ -768,15 +862,16 @@ impl BackgroundSync {
                 .into());
             };
 
-        // Build listen addresses from our server address if available
-        let listen_addresses = if let Some(ref server_addr) = self.server_address {
-            vec![Address {
-                transport_type: address.transport_type.clone(),
-                address: server_addr.clone(),
-            }]
-        } else {
-            Vec::new()
-        };
+        // Build listen addresses from all running servers
+        let listen_addresses: Vec<Address> = self
+            .transport_manager
+            .get_all_server_addresses()
+            .into_iter()
+            .map(|(transport_type, addr)| Address {
+                transport_type,
+                address: addr,
+            })
+            .collect();
 
         // Create handshake request
         let handshake_request = HandshakeRequest {
@@ -790,7 +885,10 @@ impl BackgroundSync {
 
         // Send handshake request
         let request = SyncRequest::Handshake(handshake_request);
-        let response = self.transport.send_request(address, &request).await?;
+        let response = self
+            .transport_manager
+            .send_request(address, &request)
+            .await?;
 
         // Process handshake response
         match response {
@@ -870,7 +968,7 @@ impl BackgroundSync {
         address: &Address,
         request: &SyncRequest,
     ) -> Result<SyncResponse> {
-        self.transport.send_request(address, request).await
+        self.transport_manager.send_request(address, request).await
     }
 
     /// Handle bootstrap response by storing root and all entries

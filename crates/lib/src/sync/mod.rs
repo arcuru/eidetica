@@ -5,7 +5,7 @@
 //! The sync system uses a Background Sync architecture with command-pattern communication:
 //!
 //! - **[`Sync`]**: Thread-safe frontend using `Arc<Sync>` with interior mutability
-//!   (`AtomicBool`, `OnceLock`). Provides the public API and sends commands to the background.
+//!   (`OnceLock`). Provides the public API and sends commands to the background.
 //! - **[`background::BackgroundSync`]**: Single background thread handling all sync operations
 //!   via a command loop. Owns the transport and retry queue.
 //! - **Write Callbacks**: Automatically trigger sync when entries are committed via
@@ -54,10 +54,7 @@
 //! - **Retry queue**: Failed sends retried with exponential backoff
 
 use handle_trait::Handle;
-use std::sync::{
-    OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::OnceLock;
 use tracing::{debug, info};
 
 use crate::{
@@ -77,6 +74,7 @@ pub mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
 pub mod state;
+mod transport_manager;
 pub mod transports;
 mod user_sync_manager;
 pub mod utils;
@@ -199,27 +197,25 @@ pub struct SyncStatus {
 /// communication, and state management happen in the background thread.
 #[derive(Debug)]
 pub struct Sync {
-    /// Communication channel to the background sync engine (initialized once when transport is enabled)
-    command_tx: OnceLock<mpsc::Sender<SyncCommand>>,
+    /// Communication channel to the background sync engine.
+    /// Initialized when the first transport is enabled via `enable_*_transport()` or `add_transport()`.
+    background_tx: OnceLock<mpsc::Sender<SyncCommand>>,
     /// The instance for read operations and tree management
     instance: WeakInstance,
     /// The tree containing synchronization settings
     sync_tree: Database,
-    /// Track if transport has been enabled
-    transport_enabled: AtomicBool,
 }
 
 impl Clone for Sync {
     fn clone(&self) -> Self {
-        let command_tx = OnceLock::new();
-        if let Some(tx) = self.command_tx.get() {
-            let _ = command_tx.set(tx.clone());
+        let background_tx = OnceLock::new();
+        if let Some(tx) = self.background_tx.get() {
+            let _ = background_tx.set(tx.clone());
         }
         Self {
-            command_tx,
+            background_tx,
             instance: self.instance.clone(),
             sync_tree: self.sync_tree.clone(),
-            transport_enabled: AtomicBool::new(self.transport_enabled.load(Ordering::Acquire)),
         }
     }
 }
@@ -258,10 +254,9 @@ impl Sync {
         )?;
 
         let sync = Self {
-            command_tx: OnceLock::new(),
+            background_tx: OnceLock::new(),
             instance: instance.downgrade(),
             sync_tree,
-            transport_enabled: AtomicBool::new(false),
         };
 
         // Initialize combined settings for all tracked users
@@ -294,10 +289,9 @@ impl Sync {
         )?;
 
         let sync = Self {
-            command_tx: OnceLock::new(),
+            background_tx: OnceLock::new(),
             instance: instance.downgrade(),
             sync_tree,
-            transport_enabled: AtomicBool::new(false),
         };
 
         // Initialize combined settings for all tracked users
@@ -734,7 +728,7 @@ impl Sync {
     pub async fn connect_to_peer(&self, address: &Address) -> Result<String> {
         let (tx, rx) = oneshot::channel();
 
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::ConnectToPeer {
@@ -1058,16 +1052,13 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure of server startup.
     pub async fn start_server_async(&self, addr: &str) -> Result<()> {
-        if !self.transport_enabled.load(Ordering::Acquire) {
-            return Err(SyncError::NoTransportEnabled.into());
-        }
-
         let (tx, rx) = oneshot::channel();
 
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::StartServer {
+                transport_type: None, // Start on all transports
                 addr: addr.to_string(),
                 response: tx,
             })
@@ -1080,31 +1071,25 @@ impl Sync {
 
     /// Stop the running sync server (async version).
     ///
+    /// Stops servers on all transports.
+    ///
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
     pub async fn stop_server_async(&self) -> Result<()> {
-        if !self.transport_enabled.load(Ordering::Acquire) {
-            return Err(SyncError::NoTransportEnabled.into());
-        }
         let (tx, rx) = oneshot::channel();
 
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
-            .send(SyncCommand::StopServer { response: tx })
+            .send(SyncCommand::StopServer {
+                transport_type: None, // Stop all transports
+                response: tx,
+            })
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        let result = rx
-            .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?;
-
-        // Clear the transport_enabled flag after successfully stopping the server
-        if result.is_ok() {
-            self.transport_enabled.store(false, Ordering::Release);
-        }
-
-        result
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
     /// Enable HTTP transport for network communication.
@@ -1112,9 +1097,7 @@ impl Sync {
     /// This initializes the HTTP transport layer and starts the background sync engine.
     pub fn enable_http_transport(&self) -> Result<()> {
         let transport = HttpTransport::new()?;
-        self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled.store(true, Ordering::Release);
-        Ok(())
+        self.start_background_sync(Box::new(transport))
     }
 
     /// Enable Iroh transport for peer-to-peer network communication.
@@ -1148,9 +1131,7 @@ impl Sync {
             .relay_mode(config.relay_mode.into())
             .build()?;
 
-        self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled.store(true, Ordering::Release);
-        Ok(())
+        self.start_background_sync(Box::new(transport))
     }
 
     /// Enable Iroh transport with custom configuration.
@@ -1158,36 +1139,72 @@ impl Sync {
     /// This allows specifying custom relay modes, discovery options, etc.
     /// Use IrohTransport::builder() to create a configured transport.
     pub fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
-        self.start_background_sync(Box::new(transport))?;
-        self.transport_enabled.store(true, Ordering::Release);
-        Ok(())
+        self.start_background_sync(Box::new(transport))
     }
 
-    /// Add a transport with a pre-created transport instance.
+    /// Add a transport to the sync system.
     ///
+    /// Multiple transports can be added. The first transport starts the background
+    /// sync engine, subsequent transports are added to the existing engine.
     /// This is useful for testing and advanced configuration scenarios.
-    /// Eventually we will support multiple concurrent transports.
     pub fn add_transport(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
-        self.start_background_sync(transport)?;
-        self.transport_enabled.store(true, Ordering::Release);
-        Ok(())
+        if self.background_tx.get().is_some() {
+            // Background sync already running, add transport via command
+            self.add_transport_to_running(transport)
+        } else {
+            // First transport, start background sync
+            self.start_background_sync(transport)
+        }
     }
 
-    /// Start the background sync engine with the given transport
-    fn start_background_sync(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
-        if self.transport_enabled.load(Ordering::Acquire) {
-            return Err(SyncError::ServerAlreadyRunning {
-                // This is a placeholder until the backend supports multiple transports simultaneously.
-                address: "background sync".to_string(),
-            }
-            .into());
+    /// Add a transport to the already-running background sync engine.
+    fn add_transport_to_running(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        // Try to use existing async context, or create runtime if needed
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.block_on(self.add_transport_async(transport))
+        } else {
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
+            runtime.block_on(self.add_transport_async(transport))
+        }
+    }
+
+    /// Add a transport to the running background sync (async version).
+    ///
+    /// Use this method when calling from an async context. The sync version
+    /// `add_transport` may panic if called from within an async runtime.
+    pub async fn add_transport_async(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
+        if self.background_tx.get().is_none() {
+            // First transport - start background sync
+            return self.start_background_sync(transport);
         }
 
+        // Background sync already running, send command to add transport
+        let (tx, rx) = oneshot::channel();
+
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(SyncCommand::AddTransport {
+                transport,
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Start the background sync engine with the given transport.
+    ///
+    /// This is called for the first transport only.
+    fn start_background_sync(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
         let sync_tree_id = self.sync_tree.root_id().clone();
         let instance = self.instance()?;
 
         // Create the background sync and get command sender
-        let command_tx = if tokio::runtime::Handle::try_current().is_ok() {
+        let background_tx = if tokio::runtime::Handle::try_current().is_ok() {
             BackgroundSync::start(transport, instance, sync_tree_id)
         } else {
             // If not in async context, create a runtime to spawn the background task
@@ -1203,8 +1220,8 @@ impl Sync {
         };
 
         // Initialize the command channel (can only be done once)
-        self.command_tx
-            .set(command_tx)
+        self.background_tx
+            .set(background_tx)
             .map_err(|_| SyncError::ServerAlreadyRunning {
                 address: "command channel already initialized".to_string(),
             })?;
@@ -1212,21 +1229,60 @@ impl Sync {
         Ok(())
     }
 
-    /// Get the server address if the transport is running a server.
+    /// Get a server address if any transport is running a server.
+    ///
+    /// For backward compatibility, returns the first available server address.
+    /// Use `get_server_address_for_transport_async` for specific transports.
     ///
     /// # Returns
-    /// The address the server is bound to, or an error if no server is running.
-    /// Get the server address (async version).
+    /// The address of the first running server, or an error if no server is running.
     pub async fn get_server_address_async(&self) -> Result<String> {
-        if !self.transport_enabled.load(Ordering::Acquire) {
-            return Err(SyncError::NoTransportEnabled.into());
-        }
+        let addresses = self.get_all_server_addresses_async().await?;
+        addresses
+            .into_iter()
+            .next()
+            .map(|(_, addr)| addr)
+            .ok_or_else(|| SyncError::ServerNotRunning.into())
+    }
+
+    /// Get the server address for a specific transport.
+    ///
+    /// # Arguments
+    /// * `transport_type` - The transport type (e.g., "http", "iroh")
+    ///
+    /// # Returns
+    /// The address the server is bound to for that transport.
+    pub async fn get_server_address_for_transport_async(
+        &self,
+        transport_type: &str,
+    ) -> Result<String> {
         let (tx, rx) = oneshot::channel();
 
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
-            .send(SyncCommand::GetServerAddress { response: tx })
+            .send(SyncCommand::GetServerAddress {
+                transport_type: transport_type.to_string(),
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Get all server addresses for running transports.
+    ///
+    /// # Returns
+    /// A vector of (transport_type, address) pairs for all running servers.
+    pub async fn get_all_server_addresses_async(&self) -> Result<Vec<(String, String)>> {
+        let (tx, rx) = oneshot::channel();
+
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(SyncCommand::GetAllServerAddresses { response: tx })
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
@@ -1335,7 +1391,7 @@ impl Sync {
 
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
@@ -1473,7 +1529,7 @@ impl Sync {
 
         // Send via command channel
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
@@ -1610,7 +1666,7 @@ impl Sync {
     /// # Returns
     /// A Result indicating whether the command was successfully queued for background processing.
     pub async fn send_entries_to_peer(&self, peer_pubkey: &str, entries: Vec<Entry>) -> Result<()> {
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendEntries {
@@ -1642,7 +1698,10 @@ impl Sync {
         entry_id: &ID,
         tree_id: &ID,
     ) -> Result<()> {
-        let command_tx = self.command_tx.get().ok_or(SyncError::NoTransportEnabled)?;
+        let background_tx = self
+            .background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?;
 
         let command = SyncCommand::QueueEntry {
             peer: peer_pubkey.to_string(),
@@ -1652,7 +1711,7 @@ impl Sync {
 
         // Use try_send for non-blocking operation
         // Log errors but don't fail since this is called during commit
-        if let Err(e) = command_tx.try_send(command) {
+        if let Err(e) = background_tx.try_send(command) {
             tracing::error!(
                 "Failed to queue entry {:?} for sync with peer {}: {}",
                 entry_id,
@@ -1685,8 +1744,8 @@ impl Sync {
         database: &Database,
         _instance: &Instance,
     ) -> Result<()> {
-        // Early return if transport not enabled
-        if !self.transport_enabled.load(Ordering::Acquire) {
+        // Early return if background sync not running
+        if self.background_tx.get().is_none() {
             return Ok(());
         }
 
@@ -1794,12 +1853,9 @@ impl Sync {
         request: &SyncRequest,
         address: &Address,
     ) -> Result<SyncResponse> {
-        if !self.transport_enabled.load(Ordering::Acquire) {
-            return Err(SyncError::NoTransportEnabled.into());
-        }
         let (tx, rx) = oneshot::channel();
 
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
@@ -1955,7 +2011,7 @@ impl Sync {
 
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
-        self.command_tx
+        self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {

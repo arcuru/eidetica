@@ -72,6 +72,10 @@ impl HttpTransport {
 
 #[async_trait]
 impl SyncTransport for HttpTransport {
+    fn transport_type(&self) -> &'static str {
+        Self::TRANSPORT_TYPE
+    }
+
     fn can_handle_address(&self, address: &Address) -> bool {
         address.transport_type == Self::TRANSPORT_TYPE
     }

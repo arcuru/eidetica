@@ -23,6 +23,7 @@ mod integration_tests;
 mod iroh_e2e_test;
 mod iroh_transport_tests;
 mod manual_approval_test;
+mod multi_transport_tests;
 mod peer_management_tests;
 // mod queue_flush_tests; // Uses old queue API
 mod sync_enabled_security_tests;

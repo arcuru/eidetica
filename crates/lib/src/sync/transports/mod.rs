@@ -62,6 +62,12 @@ pub trait TransportConfig:
 /// implement this trait to provide server and client functionality.
 #[async_trait]
 pub trait SyncTransport: Send + Sync {
+    /// Get the transport type identifier.
+    ///
+    /// This should return a unique string identifying the transport type
+    /// (e.g., "http", "iroh"). Used for routing and configuration lookup.
+    fn transport_type(&self) -> &'static str;
+
     /// Check if this transport can handle the given address
     ///
     /// # Arguments
