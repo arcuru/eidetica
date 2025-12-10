@@ -180,25 +180,57 @@ impl Doc {
         self.get(&path_buf).is_some()
     }
 
-    /// Returns true if the given key contains a tombstone (deleted value).
+    /// Returns true if the given key or any of its ancestors is a tombstone.
     ///
     /// This method provides access to CRDT tombstone information for advanced use cases,
-    /// testing, and debugging. See [`Doc::is_tombstone`] for detailed documentation.
+    /// testing, and debugging. A path is considered tombstoned if any segment along
+    /// the path has been deleted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("user.profile.name", "Alice");
+    /// doc.delete("user.profile.name");
+    ///
+    /// assert!(doc.is_tombstone("user.profile.name"));
+    /// assert!(!doc.is_tombstone("user.profile")); // parent is not tombstoned
+    ///
+    /// // Deleting a parent tombstones all children
+    /// doc.set("settings.theme.color", "blue");
+    /// doc.delete("settings.theme");
+    /// assert!(doc.is_tombstone("settings.theme"));
+    /// assert!(doc.is_tombstone("settings.theme.color")); // child is tombstoned via parent
+    /// ```
     pub fn is_tombstone(&self, key: impl AsRef<Path>) -> bool {
-        // For path-based access, we need to check the final component
-        let path_str = key.as_ref().as_str();
-        if path_str.contains('.') {
-            // For nested paths, we can't easily check tombstones
-            // FIXME: This is a limitation of the current design
-            false
-        } else {
-            // For direct keys, check our children directly
-            matches!(self.children.get(path_str), Some(Value::Deleted))
+        let path = key.as_ref();
+        let segments: Vec<_> = path.components().collect();
+
+        if segments.is_empty() {
+            return false;
         }
+
+        let mut current = self;
+
+        for (i, segment) in segments.iter().enumerate() {
+            match current.children.get(*segment) {
+                Some(Value::Deleted) => return true,
+                Some(Value::Doc(doc)) => {
+                    if i == segments.len() - 1 {
+                        return false; // Final segment is a Doc, not a tombstone
+                    }
+                    current = doc;
+                }
+                _ => return false, // Non-existent or can't navigate through
+            }
+        }
+
+        false
     }
 
-    /// Gets a value by key or path (immutable reference)
-    pub fn get(&self, key: impl AsRef<Path>) -> Option<&Value> {
+    /// Gets a value by key or path without filtering tombstones.
+    fn get_raw(&self, key: impl AsRef<Path>) -> Option<&Value> {
         let path = key.as_ref();
         let segments: Vec<_> = path.components().collect();
 
@@ -206,32 +238,53 @@ impl Doc {
             return None;
         }
 
-        // Start with the first segment to get into our structure
         let first_segment = segments.first()?;
-        let mut current_value = match self.children.get(*first_segment) {
-            Some(Value::Deleted) => return None, // Hide tombstones
-            value => value?,
-        };
+        let mut current_value = self.children.get(*first_segment)?;
 
-        // Navigate through remaining segments
         for segment in &segments[1..] {
             match current_value {
                 Value::Doc(doc) => {
-                    current_value = match doc.children.get(*segment) {
-                        Some(Value::Deleted) => return None, // Hide tombstones
-                        value => value?,
-                    };
+                    current_value = doc.children.get(*segment)?;
                 }
                 Value::List(list) => {
                     // Try to parse segment as list index
                     let index: usize = segment.parse().ok()?;
                     current_value = list.get(index)?;
                 }
-                _ => return None, // Can't navigate further
+                // Can't navigate through Deleted, scalars, etc.
+                _ => return None,
             }
         }
 
         Some(current_value)
+    }
+
+    /// Gets a value by key or path (immutable reference).
+    ///
+    /// Supports both simple keys and dot-separated paths for nested access.
+    /// Returns `None` if the key doesn't exist or has been deleted (tombstone).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("name", "Alice");
+    /// doc.set("user.profile.age", 30);
+    ///
+    /// assert!(doc.get("name").is_some());
+    /// assert!(doc.get("user.profile.age").is_some());
+    /// assert!(doc.get("nonexistent").is_none());
+    ///
+    /// // Deleted keys return None
+    /// doc.delete("name");
+    /// assert!(doc.get("name").is_none());
+    /// ```
+    pub fn get(&self, key: impl AsRef<Path>) -> Option<&Value> {
+        match self.get_raw(key) {
+            Some(Value::Deleted) => None,
+            value => value,
+        }
     }
 
     /// Gets a mutable reference to a value by key or path
@@ -417,43 +470,47 @@ impl Doc {
 
     /// Removes a value by key or path, returns the old value if present.
     ///
-    /// This method implements CRDT semantics by creating a tombstone marker.
-    /// For paths with dots, this removes the value at the nested location.
+    /// This method implements CRDT semantics by always creating a tombstone marker.
+    /// For nested paths, intermediate Doc nodes are created if they don't exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("user.profile.name", "Alice");
+    ///
+    /// let old = doc.remove("user.profile.name");
+    /// assert_eq!(old.and_then(|v| v.as_text().map(|s| s.to_string())), Some("Alice".to_string()));
+    /// assert!(doc.is_tombstone("user.profile.name"));
+    /// assert!(doc.get("user.profile.name").is_none());
+    /// ```
     pub fn remove(&mut self, key: impl AsRef<Path>) -> Option<Value> {
-        let path_str = key.as_ref().as_str();
-
-        // For simple keys (no dots), use direct remove
-        if !path_str.contains('.') {
-            let key = path_str.to_string();
-            let old_value = self.children.get(&key).cloned();
-            self.children.insert(key, Value::Deleted);
-            match old_value {
-                Some(Value::Deleted) => None, // Don't return tombstones
-                value => value,
-            }
-        } else {
-            // For paths, get the current value first, then set to tombstone
-            let _current = self.get(key)?.clone();
-            // FIXME: We can't easily remove nested paths in the current CRDT design
-            // This is a limitation we'll need to address in the future
-            // For now, we'll just return None for nested paths
-            None
-        }
+        // Delegate to set_path with Value::Deleted
+        self.set_path(key, Value::Deleted).unwrap_or(None)
     }
 
     /// Marks a key as deleted by setting it to a tombstone.
     ///
-    /// For paths with dots, this is limited to direct keys only.
+    /// This method always creates a tombstone for CRDT consistency, even if the
+    /// path didn't previously exist. The return value indicates whether a
+    /// non-tombstone value was replaced:
+    /// - Returns `true` if a value existed and was deleted
+    /// - Returns `false` if the path was already a tombstone or didn't exist
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::Doc;
+    /// let mut doc = Doc::new();
+    /// doc.set("user.profile.name", "Alice");
+    ///
+    /// assert!(doc.delete("user.profile.name")); // Returns true (value existed)
+    /// assert!(!doc.delete("user.profile.name")); // Returns false (already deleted)
+    /// assert!(!doc.delete("nonexistent")); // Returns false but tombstone is created
+    /// ```
     pub fn delete(&mut self, key: impl AsRef<Path>) -> bool {
-        let path_str = key.as_ref().as_str();
-
-        // For simple keys (no dots), use direct delete
-        if !path_str.contains('.') {
-            self.remove(path_str).is_some()
-        } else {
-            // Nested path deletion is not supported in current design
-            false
-        }
+        self.remove(key).is_some()
     }
 
     /// Gets a value by path with automatic type conversion using TryFrom

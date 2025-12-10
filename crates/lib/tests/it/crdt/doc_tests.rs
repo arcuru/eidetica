@@ -783,6 +783,200 @@ fn test_doc_is_tombstone_key_types() {
 }
 
 #[test]
+fn test_doc_nested_is_tombstone() {
+    let mut doc = Doc::new();
+
+    // Set up nested structure
+    doc.set("user.profile.name", "Alice");
+    doc.set("user.profile.age", 30);
+    doc.set("user.settings.theme", "dark");
+
+    // Non-existent paths are not tombstones
+    assert!(!doc.is_tombstone("nonexistent"));
+    assert!(!doc.is_tombstone("user.nonexistent"));
+    assert!(!doc.is_tombstone("user.profile.nonexistent"));
+
+    // Existing values are not tombstones
+    assert!(!doc.is_tombstone("user"));
+    assert!(!doc.is_tombstone("user.profile"));
+    assert!(!doc.is_tombstone("user.profile.name"));
+
+    // Delete nested value and verify tombstone
+    doc.remove("user.profile.name");
+    assert!(doc.is_tombstone("user.profile.name"));
+    assert!(!doc.is_tombstone("user.profile")); // Parent is not tombstone
+    assert!(!doc.is_tombstone("user.profile.age")); // Sibling is not tombstone
+
+    // Verify API consistency
+    assert!(doc.get("user.profile.name").is_none());
+    assert!(!doc.contains_key("user.profile.name"));
+}
+
+#[test]
+fn test_doc_nested_remove() {
+    let mut doc = Doc::new();
+
+    // Set up nested structure
+    doc.set("user.profile.name", "Alice");
+    doc.set("user.profile.age", 30);
+
+    // Remove nested value
+    let old = doc.remove("user.profile.name");
+    assert_eq!(
+        old.and_then(|v| v.as_text().map(|s| s.to_string())),
+        Some("Alice".to_string())
+    );
+
+    // Verify tombstone created
+    assert!(doc.is_tombstone("user.profile.name"));
+    assert!(doc.get("user.profile.name").is_none());
+
+    // Verify sibling unaffected
+    assert_eq!(doc.get_as("user.profile.age"), Some(30));
+
+    // Remove already-tombstoned value returns None
+    let old_again = doc.remove("user.profile.name");
+    assert!(old_again.is_none());
+}
+
+#[test]
+fn test_doc_nested_delete() {
+    let mut doc = Doc::new();
+
+    // Set up nested structure
+    doc.set("user.profile.name", "Alice");
+
+    // Delete nested value
+    assert!(doc.delete("user.profile.name"));
+    assert!(doc.is_tombstone("user.profile.name"));
+
+    // Delete already-deleted returns false
+    assert!(!doc.delete("user.profile.name"));
+
+    // Delete non-existent creates tombstone but returns false (no old value)
+    assert!(!doc.delete("other.nested.path"));
+    assert!(doc.is_tombstone("other.nested.path"));
+}
+
+#[test]
+fn test_doc_nested_remove_creates_path() {
+    let mut doc = Doc::new();
+
+    // Remove from non-existent path - should create intermediate nodes
+    let result = doc.remove("nonexistent.path.value");
+    assert!(result.is_none()); // No old value
+
+    // But tombstone should be created
+    assert!(doc.is_tombstone("nonexistent.path.value"));
+
+    // Intermediate nodes should exist
+    assert!(doc.get("nonexistent").is_some());
+    assert!(doc.get("nonexistent.path").is_some());
+}
+
+#[test]
+fn test_doc_nested_tombstone_resurrection() {
+    let mut doc = Doc::new();
+
+    // Set up, delete, verify tombstone
+    doc.set("user.profile.name", "Alice");
+    doc.delete("user.profile.name");
+    assert!(doc.is_tombstone("user.profile.name"));
+
+    // Resurrect by setting new value
+    doc.set("user.profile.name", "Bob");
+    assert!(!doc.is_tombstone("user.profile.name"));
+    assert_eq!(
+        doc.get_as::<String>("user.profile.name"),
+        Some("Bob".to_string())
+    );
+}
+
+#[test]
+fn test_doc_sibling_set_does_not_resurrect_deleted_child() {
+    // Scenario: delete a parent, then set a sibling - the original child should not come back
+    let mut doc = Doc::new();
+
+    // Set up nested value
+    doc.set("a.b.c", "something");
+    assert_eq!(doc.get_as("a.b.c"), Some("something".to_string()));
+
+    // Delete the parent
+    doc.delete("a.b");
+    assert!(doc.is_tombstone("a.b"));
+    assert!(doc.is_tombstone("a.b.c")); // Child is tombstoned via parent
+    assert!(doc.get("a.b.c").is_none());
+
+    // Set a sibling - this replaces the tombstone at a.b with a new Doc
+    doc.set("a.b.d", "new");
+
+    // a.b is no longer a tombstone (it's now a Doc)
+    assert!(!doc.is_tombstone("a.b"));
+
+    // a.b.d exists
+    assert_eq!(doc.get_as("a.b.d"), Some("new".to_string()));
+
+    // a.b.c should NOT be resurrected - it simply doesn't exist
+    assert!(doc.get("a.b.c").is_none());
+    // And it's not a tombstone either - it just doesn't exist in the new Doc
+    assert!(!doc.is_tombstone("a.b.c"));
+}
+
+#[test]
+fn test_doc_is_tombstone_through_deleted_intermediate() {
+    let mut doc = Doc::new();
+
+    // Set up nested structure
+    doc.set("user.profile.name", "Alice");
+
+    // Delete the intermediate node
+    doc.delete("user.profile");
+
+    // Deleting a parent tombstones all children
+    assert!(doc.is_tombstone("user.profile"));
+    assert!(doc.is_tombstone("user.profile.name"));
+
+    // get() still returns None for both
+    assert!(doc.get("user.profile").is_none());
+    assert!(doc.get("user.profile.name").is_none());
+}
+
+#[test]
+fn test_doc_remove_replaces_scalar_intermediate() {
+    let mut doc = Doc::new();
+
+    // Set a scalar value
+    doc.set("user", "scalar_value");
+
+    // Remove through scalar should replace it with Doc and create tombstone
+    let result = doc.remove("user.profile.name");
+    assert!(result.is_none()); // No old value at that path
+
+    // The scalar was replaced with a Doc, and tombstone created
+    assert!(doc.is_tombstone("user.profile.name"));
+    assert!(doc.get("user.profile").is_some());
+}
+
+#[test]
+fn test_doc_nested_tombstone_serialization_roundtrip() {
+    let mut doc = Doc::new();
+    doc.set("user.profile.name", "Alice");
+    doc.set("user.profile.age", 30);
+    doc.delete("user.profile.name"); // Create nested tombstone
+
+    // Serialize
+    let json = serde_json::to_string(&doc).unwrap();
+
+    // Deserialize
+    let restored: Doc = serde_json::from_str(&json).unwrap();
+
+    // Verify tombstone preserved
+    assert!(restored.is_tombstone("user.profile.name"));
+    assert!(restored.get("user.profile.name").is_none());
+    assert_eq!(restored.get_as::<i64>("user.profile.age"), Some(30));
+}
+
+#[test]
 fn test_serde_json_round_trip_with_tombstones() {
     // Test that tombstones are preserved during round-trip
     let mut original_map = Doc::new();

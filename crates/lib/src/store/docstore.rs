@@ -964,8 +964,18 @@ impl DocStore {
     /// * `key` - The key to delete.
     ///
     /// # Returns
-    /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn delete(&self, key: impl AsRef<str>) -> Result<()> {
+    /// - `Ok(true)` if the key existed and was deleted
+    /// - `Ok(false)` if the key did not exist (no-op)
+    /// - `Err` on serialization or staging errors
+    pub fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
+        let key_str = key.as_ref();
+
+        // Check if key exists in full merged state
+        let full_state = self.get_all()?;
+        if full_state.get(key_str).is_none() {
+            return Ok(false); // Key doesn't exist, no-op
+        }
+
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
             .atomic_op
@@ -973,11 +983,12 @@ impl DocStore {
             .unwrap_or_default();
 
         // Remove the key (creates a tombstone)
-        data.remove(key.as_ref());
+        data.remove(key_str);
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+        self.atomic_op.update_subtree(&self.name, &serialized)?;
+        Ok(true)
     }
 
     /// Retrieves all key-value pairs as a Doc, merging staged and historical state.
