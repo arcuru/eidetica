@@ -646,40 +646,6 @@ impl FromIterator<(String, Value)> for Doc {
     }
 }
 
-// Builder pattern methods
-impl Doc {
-    /// Builder method to set a value and return self
-    pub fn with(mut self, key: impl AsRef<Path>, value: impl Into<Value>) -> Self {
-        self.set(key, value);
-        self
-    }
-
-    /// Builder method to set a boolean value
-    pub fn with_bool(self, key: impl AsRef<Path>, value: bool) -> Self {
-        self.with(key, Value::Bool(value))
-    }
-
-    /// Builder method to set an integer value
-    pub fn with_int(self, key: impl AsRef<Path>, value: i64) -> Self {
-        self.with(key, Value::Int(value))
-    }
-
-    /// Builder method to set a text value
-    pub fn with_text(self, key: impl AsRef<Path>, value: impl Into<String>) -> Self {
-        self.with(key, Value::Text(value.into()))
-    }
-
-    /// Builder method to set a list value
-    pub fn with_list(self, key: impl AsRef<Path>, value: impl Into<List>) -> Self {
-        self.with(key, Value::List(value.into()))
-    }
-
-    /// Builder method to set a nested Doc
-    pub fn with_doc(self, key: impl AsRef<Path>, value: impl Into<Doc>) -> Self {
-        self.with(key, Value::Doc(value.into()))
-    }
-}
-
 // Additional methods for compatibility and advanced operations
 impl Doc {
     /// Set a key-value pair with a raw Value (for advanced use)

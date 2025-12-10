@@ -243,30 +243,6 @@ fn test_doc_iterators() {
     );
 }
 
-// ===== BUILDER PATTERN =====
-
-#[test]
-fn test_doc_builder_pattern() {
-    let map = Doc::new()
-        .with_text("name", "Alice")
-        .with_int("age", 30)
-        .with_bool("active", true)
-        .with_doc("profile", Doc::new().with_text("bio", "Developer"))
-        .with_list("tags", List::new());
-
-    assert_eq!(map.get_as::<String>("name"), Some("Alice".to_string()));
-    assert_eq!(map.get_as::<i64>("age"), Some(30));
-    assert_eq!(map.get_as::<bool>("active"), Some(true));
-    assert!(map.get_as::<Doc>("profile").is_some());
-    assert!(map.get_as::<List>("tags").is_some());
-
-    // Test nested access
-    assert_eq!(
-        map.get_as::<String>(path!("profile.bio")),
-        Some("Developer".to_string())
-    );
-}
-
 #[test]
 fn test_doc_clear() {
     let mut map = Doc::new();
