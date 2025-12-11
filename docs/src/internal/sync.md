@@ -32,7 +32,7 @@ The same protocol handles both cases:
 - **HTTP**: REST API for server-based sync
 - **Iroh P2P**: QUIC-based with NAT traversal for peer-to-peer sync
 
-Both transports implement the same sync protocol.
+Both transports implement the same `SyncTransport` trait. Multiple transports can be enabled simultaneously.
 
 ## Architecture
 
@@ -40,11 +40,21 @@ Both transports implement the same sync protocol.
 graph LR
     App[Application] --> Sync[Sync Module]
     Sync --> BG[Background Thread]
-    BG --> HTTP[HTTP Transport]
-    BG --> Iroh[Iroh Transport]
+    BG --> TM[TransportManager]
+    TM --> HTTP[HTTP Transport]
+    TM --> Iroh[Iroh Transport]
 ```
 
-The Sync module queues operations for a background thread, which handles transport connections and retries failed sends with exponential backoff.
+The Sync module queues operations for a background thread, which uses a `TransportManager` to route requests to the appropriate transport based on address type. Failed sends are retried with exponential backoff.
+
+### Multi-Transport Support
+
+The `TransportManager` enables simultaneous use of multiple transports:
+
+- **Address-based routing**: Each transport declares which addresses it can handle via `can_handle_address()`
+- **First-match routing**: Requests are routed to the first transport that can handle the address
+- **Independent servers**: Each transport runs its own server on different ports/protocols
+- **Unified API**: `start_server_async()` starts all transports, `get_all_server_addresses_async()` returns all addresses
 
 ## Current Limitations
 

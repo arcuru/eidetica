@@ -134,14 +134,20 @@ database.on_local_write(move |entry, db, _instance| {
 - Simple cloning pattern for use in closures
 - Easy testing and debugging
 
-### 4. Modular Transport Layer with SyncHandler Architecture
+### 4. Modular Transport Layer with TransportManager
 
-**Decision:** Abstract transport layer with handler-based request processing and transport metadata
+**Decision:** Abstract transport layer with handler-based request processing, transport metadata, and multi-transport support via TransportManager
 
 **Core Interface:**
 
 ```rust,ignore
 pub trait SyncTransport: Send + Sync {
+    /// Get the transport type identifier (e.g., "http", "iroh")
+    fn transport_type(&self) -> &'static str;
+
+    /// Check if this transport can handle the given address
+    fn can_handle_address(&self, address: &Address) -> bool;
+
     /// Start server with handler for processing sync requests
     async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
 
@@ -163,10 +169,28 @@ pub struct RequestContext {
 }
 ```
 
+**TransportManager** manages multiple transports and routes requests:
+
+```rust,ignore
+pub struct TransportManager {
+    transports: Vec<Box<dyn SyncTransport>>,
+}
+
+impl TransportManager {
+    /// Route request to appropriate transport based on address
+    pub async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
+
+    /// Start servers on all or specific transports
+    pub async fn start_all_servers(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
+}
+```
+
 **RequestContext** captures transport metadata (remote address, peer pubkey after handshake) for automatic peer registration and address discovery.
 
 **Rationale:**
 
+- **Multi-Transport**: Support multiple transports simultaneously (HTTP + Iroh)
+- **Address-Based Routing**: Requests routed to appropriate transport via `can_handle_address()`
 - **Database Access**: Handlers can store received entries via backend
 - **Stateful Processing**: Support GetTips, GetEntries, SendEntries operations
 - **Clean Separation**: Transport handles networking, handler handles sync logic
@@ -302,8 +326,10 @@ graph LR
 
     subgraph "BackgroundSync Thread"
         E --> F[BackgroundSync]
-        F --> G[Transport Layer]
-        G --> H[HTTP/Iroh/Custom]
+        F --> TM[TransportManager]
+        TM --> H1[HTTP Transport]
+        TM --> H2[Iroh Transport]
+        TM --> H3[Custom Transport]
         F --> I[Retry Queue]
         F -.->|reads| ST[Sync Database]
     end
@@ -318,6 +344,8 @@ graph LR
         F --> M
     end
 ```
+
+The TransportManager routes requests to the appropriate transport based on address type, enabling simultaneous use of multiple transports for different network conditions.
 
 ### Data Flow Design
 

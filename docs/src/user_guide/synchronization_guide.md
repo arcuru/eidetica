@@ -43,6 +43,8 @@ That's it. The system automatically detects whether you need full bootstrap or i
 
 ## Transport Options
 
+Eidetica supports multiple transports simultaneously, allowing peers to be reachable via different networks.
+
 ### HTTP
 
 Simple REST-based sync. Good for development and fixed-IP deployments.
@@ -61,6 +63,29 @@ sync.enable_iroh_transport()?;
 sync.start_server_async("ignored").await?;  // Iroh manages addressing
 let my_address = sync.get_server_address_async().await?;  // Share this with peers
 ```
+
+### Multiple Transports
+
+Enable multiple transports for maximum connectivity:
+
+<!-- Code block ignored: Requires network connectivity for transport setup -->
+
+```rust,ignore
+// Enable both HTTP (for local network) and Iroh (for P2P)
+sync.enable_http_transport()?;
+sync.enable_iroh_transport()?;
+
+// Start servers on all transports (HTTP uses address, Iroh ignores it)
+sync.start_server_async("127.0.0.1:0").await?;
+
+// Get all server addresses
+let addresses = sync.get_all_server_addresses_async().await?;
+for (transport_type, addr) in addresses {
+    println!("{}: {}", transport_type, addr);
+}
+```
+
+Requests are automatically routed to the appropriate transport based on address type.
 
 ## Declarative Sync API
 

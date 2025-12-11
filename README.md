@@ -35,6 +35,7 @@ No backwards compatibility OR MIGRATION PATH is guaranteed before 1.0.
 
 - Peer-to-Peer Database, built on top of layered [Merkle-CRDTs](https://arxiv.org/abs/2004.00107)
 - Direct connections using [iroh](https://www.iroh.computer/)
+- Multi-transport sync (HTTP + Iroh P2P simultaneously)
 - Decentralized Authentication
 - Built in Rust for native compilation and broad platform support
 - Efficient Sync with a data model aware API (TODO)

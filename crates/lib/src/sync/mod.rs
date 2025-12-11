@@ -195,6 +195,24 @@ pub struct SyncStatus {
 /// The Sync module is a thin frontend that communicates with a background
 /// sync engine thread via command channels. All actual sync operations, transport
 /// communication, and state management happen in the background thread.
+///
+/// ## Multi-Transport Support
+///
+/// Multiple transports can be enabled simultaneously (e.g., HTTP + Iroh P2P),
+/// allowing peers to be reachable via different networks. Requests are automatically
+/// routed to the appropriate transport based on address type.
+///
+/// ```rust,ignore
+/// // Enable both HTTP and Iroh transports
+/// sync.enable_http_transport()?;
+/// sync.enable_iroh_transport()?;
+///
+/// // Start servers on all transports
+/// sync.start_server_async("127.0.0.1:0").await?;
+///
+/// // Get all server addresses
+/// let addresses = sync.get_all_server_addresses_async().await?;
+/// ```
 #[derive(Debug)]
 pub struct Sync {
     /// Communication channel to the background sync engine.
@@ -1094,16 +1112,16 @@ impl Sync {
 
     /// Enable HTTP transport for network communication.
     ///
-    /// This initializes the HTTP transport layer and starts the background sync engine.
+    /// Can be called multiple times to add HTTP transport alongside other transports.
     pub fn enable_http_transport(&self) -> Result<()> {
         let transport = HttpTransport::new()?;
-        self.start_background_sync(Box::new(transport))
+        self.add_transport(Box::new(transport))
     }
 
     /// Enable Iroh transport for peer-to-peer network communication.
     ///
-    /// This initializes the Iroh transport layer with production defaults (n0's relay servers)
-    /// and starts the background sync engine.
+    /// This initializes the Iroh transport layer with production defaults (n0's relay servers).
+    /// Can be called alongside other transports for multi-transport support.
     ///
     /// The transport's secret key is automatically persisted to the `_sync` database,
     /// ensuring the node maintains a stable identity (and thus address) across restarts.
@@ -1131,15 +1149,16 @@ impl Sync {
             .relay_mode(config.relay_mode.into())
             .build()?;
 
-        self.start_background_sync(Box::new(transport))
+        self.add_transport(Box::new(transport))
     }
 
     /// Enable Iroh transport with custom configuration.
     ///
     /// This allows specifying custom relay modes, discovery options, etc.
     /// Use IrohTransport::builder() to create a configured transport.
+    /// Can be called alongside other transports for multi-transport support.
     pub fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
-        self.start_background_sync(Box::new(transport))
+        self.add_transport(Box::new(transport))
     }
 
     /// Add a transport to the sync system.
