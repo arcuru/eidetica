@@ -1,35 +1,36 @@
-use eidetica::{
-    backend::{BackendImpl, database::InMemory},
-    entry::{Entry, ID},
+use eidetica::entry::{Entry, ID};
+
+use super::helpers::{
+    DiamondStructure, assert_single_tip, assert_tree_contains_ids, create_and_store_child,
+    create_and_store_subtree_entry, create_linear_chain, create_test_backend_with_root,
+    test_backend,
 };
 
-use super::helpers::*;
-
 #[test]
-fn test_in_memory_backend_tree_operations() {
+fn test_backend_tree_operations() {
     let (backend, root_id) = create_test_backend_with_root();
 
     // Create a linear chain: root -> child1 -> child2
-    let chain_ids = create_linear_chain(&backend, &root_id, &root_id, 2);
+    let chain_ids = create_linear_chain(&*backend, &root_id, &root_id, 2);
     let child1_id = &chain_ids[0];
     let child2_id = &chain_ids[1];
 
     // Test that the tip is the last entry in the chain
-    assert_single_tip(&backend, &root_id, child2_id);
+    assert_single_tip(&*backend, &root_id, child2_id);
 
     // Test that the tree contains all expected entries
-    assert_tree_contains_ids(&backend, &root_id, &[&root_id, child1_id, child2_id]);
+    assert_tree_contains_ids(&*backend, &root_id, &[&root_id, child1_id, child2_id]);
 }
 
 #[test]
-fn test_in_memory_backend_complex_tree_structure() {
+fn test_backend_complex_tree_structure() {
     let (backend, root_id) = create_test_backend_with_root();
 
     // Create a diamond pattern: root -> A, B -> C
     // Add subtree data to distinguish the branches
     let diamond = {
-        let a_id = create_and_store_subtree_entry(&backend, &root_id, &root_id, "branch", "a");
-        let b_id = create_and_store_subtree_entry(&backend, &root_id, &root_id, "branch", "b");
+        let a_id = create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "a");
+        let b_id = create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "b");
 
         // Create merge entry with both parents
         let c_entry = Entry::builder(root_id.clone())
@@ -50,11 +51,11 @@ fn test_in_memory_backend_complex_tree_structure() {
     };
 
     // Test that C is the only tip
-    assert_single_tip(&backend, &root_id, &diamond.merge_id);
+    assert_single_tip(&*backend, &root_id, &diamond.merge_id);
 
     // Test that the tree contains all expected entries
     assert_tree_contains_ids(
-        &backend,
+        &*backend,
         &root_id,
         &[
             &diamond.root_id,
@@ -65,15 +66,15 @@ fn test_in_memory_backend_complex_tree_structure() {
     );
 
     // Extend the diamond by adding D which has C as a parent
-    let d_id = create_and_store_child(&backend, &root_id, &diamond.merge_id);
+    let d_id = create_and_store_child(&*backend, &root_id, &diamond.merge_id);
 
     // Tips should now be D (the latest entry)
-    assert_single_tip(&backend, &root_id, &d_id);
+    assert_single_tip(&*backend, &root_id, &d_id);
 }
 
 #[test]
 fn test_backend_get_tree_from_tips() {
-    let backend = InMemory::new();
+    let backend = test_backend();
     let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -156,13 +157,15 @@ fn test_backend_get_tree_from_tips() {
     );
 
     // --- Test with non-existent tree root ---
+    // When given a valid tip but an invalid root (tree_id doesn't match),
+    // the result should be empty because the tip doesn't belong to the specified tree.
     let bad_root_id: ID = "bad_root".into();
     let tree_bad_root = backend
         .get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id))
         .expect("Failed to get tree with non-existent root");
     assert!(
         tree_bad_root.is_empty(),
-        "Getting tree from non-existent root should return empty vector"
+        "Getting tree from tip with mismatched root should return empty vector"
     );
 
     // --- Test get_tree() convenience function ---
@@ -178,7 +181,7 @@ fn test_backend_get_tree_from_tips() {
 
 #[test]
 fn test_get_tips() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Create a simple tree structure:
     // Root -> A -> B

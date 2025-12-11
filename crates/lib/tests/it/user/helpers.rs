@@ -8,16 +8,17 @@
 
 #![allow(dead_code)]
 
-use eidetica::{Database, Instance, backend::database::InMemory, user::User};
+use eidetica::{Database, Instance, user::User};
+
+use crate::helpers::test_instance;
 
 // ===== INSTANCE SETUP HELPERS =====
 
 /// Create a new Instance for user testing
 ///
-/// Uses InMemory backend and the new unified API (no implicit user).
+/// Uses configurable backend via TEST_BACKEND env var.
 pub fn setup_instance() -> Instance {
-    let backend = Box::new(InMemory::new());
-    Instance::open(backend).expect("Failed to create instance")
+    test_instance()
 }
 
 /// Create an Instance with a single user already created

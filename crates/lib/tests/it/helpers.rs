@@ -5,15 +5,72 @@ use eidetica::{
     instance::LegacyInstanceOps, store::DocStore, user::User,
 };
 
+// Re-export TestContext for convenience
+pub use crate::context::TestContext;
+
 // ==========================
 // CORE TEST FACTORIES
 // ==========================
 // These are the foundation for all test setup. They provide a single point of change
-// for future backend matrix testing (e.g., TEST_BACKEND=sled).
+// for backend matrix testing via TEST_BACKEND env var.
 
-/// Creates a test backend (InMemory by default, future-proof for matrix testing)
+/// Creates a test backend based on TEST_BACKEND env var.
+///
+/// Supported values:
+/// - "inmemory" or unset: InMemory backend (default)
+/// - "sqlite": SQLite in-memory backend (requires `sqlite` feature)
+/// - "postgres": PostgreSQL backend (requires `postgres` feature and TEST_POSTGRES_URL)
+///
+/// # Panics
+/// Panics if TEST_BACKEND=sqlite but the `sqlite` feature is not enabled.
+/// Panics if TEST_BACKEND=postgres but the `postgres` feature is not enabled.
+///
+/// # Example
+/// ```bash
+/// # Run tests with InMemory (default)
+/// cargo test
+///
+/// # Run tests with SQLite
+/// TEST_BACKEND=sqlite cargo test --features sqlite
+///
+/// # Run tests with PostgreSQL
+/// TEST_BACKEND=postgres TEST_POSTGRES_URL="host=localhost dbname=eidetica_test" \
+///   cargo test --features postgres
+/// ```
 pub fn test_backend() -> Box<dyn BackendImpl> {
-    Box::new(InMemory::new())
+    match std::env::var("TEST_BACKEND").as_deref() {
+        Ok("sqlite") => {
+            #[cfg(feature = "sqlite")]
+            {
+                use eidetica::backend::database::sql::Sqlite;
+                Box::new(Sqlite::in_memory().expect("Failed to create SQLite backend"))
+            }
+            #[cfg(not(feature = "sqlite"))]
+            {
+                panic!("TEST_BACKEND=sqlite requires the 'sqlite' feature to be enabled")
+            }
+        }
+        Ok("postgres") => {
+            #[cfg(feature = "postgres")]
+            {
+                use eidetica::backend::database::Postgres;
+                let url = std::env::var("TEST_POSTGRES_URL")
+                    .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+                // Use connect_isolated for test isolation - each test gets its own schema
+                // This always creates its own runtime internally, which works whether
+                // we're in a tokio context or not (the runtime is contained in the backend)
+                Box::new(Postgres::connect_isolated(&url).expect("Failed to connect to PostgreSQL"))
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                panic!("TEST_BACKEND=postgres requires the 'postgres' feature to be enabled")
+            }
+        }
+        Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
+        Ok(other) => {
+            panic!("Unknown TEST_BACKEND value: {other}. Supported: inmemory, sqlite, postgres")
+        }
+    }
 }
 
 /// Creates a basic Instance with no users or keys

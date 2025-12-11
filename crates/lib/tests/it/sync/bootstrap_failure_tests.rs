@@ -5,10 +5,9 @@
 //! expect secure behavior and will fail until proper security is implemented.
 
 use super::helpers::*;
+use crate::helpers::test_instance;
 use eidetica::{
-    Instance,
     auth::Permission,
-    backend::database::InMemory,
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,
 };
@@ -24,8 +23,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
     // Setup server with restricted auth policy - only specific admin keys allowed
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -73,8 +71,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     };
 
     // Setup client with its own key
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -169,8 +166,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Setup server with a database that has NO authentication configuration
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -198,8 +194,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     };
 
     // Setup client
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -288,8 +283,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
     // Setup server
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -315,8 +309,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     };
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -369,8 +362,7 @@ async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
     // Setup server with auth configuration including a revoked key
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -433,8 +425,7 @@ async fn test_bootstrap_with_revoked_key() {
     };
 
     // Setup different client instance (to simulate external client using revoked key)
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -490,8 +481,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
     // Setup server with policy allowing only Read permissions for new clients
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -536,8 +526,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     };
 
     // Setup client requesting Admin permissions (should be excessive)
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");

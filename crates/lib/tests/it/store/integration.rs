@@ -10,10 +10,10 @@ use crate::helpers::*;
 
 #[test]
 fn test_table_complex_data_merging() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to test concurrent modifications
-    let (key1, merged_record) = test_table_concurrent_modifications(&tree, "merge_test");
+    let (key1, merged_record) = test_table_concurrent_modifications(ctx.database(), "merge_test");
 
     // With KVOverWrite semantics, one of the concurrent updates should win
     // The exact result depends on the deterministic merge order of the underlying CRDT
@@ -33,7 +33,8 @@ fn test_table_complex_data_merging() {
     }
 
     // Verify the merged state persists after commit
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("merge_test")
         .expect("Failed to get Table viewer");
 
@@ -48,10 +49,13 @@ fn test_table_complex_data_merging() {
 
 #[test]
 fn test_mixed_subtree_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create operations that use multiple subtree types in one operation
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
 
     let table_key = {
         // Use Table subtree
@@ -80,10 +84,12 @@ fn test_mixed_subtree_operations() {
     op.commit().expect("Failed to commit mixed operation");
 
     // Verify both subtrees persist correctly
-    let table_viewer = tree
+    let table_viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("records")
         .expect("Failed to get Table viewer");
-    let dict_viewer = tree
+    let dict_viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("config")
         .expect("Failed to get Doc viewer");
 
@@ -98,10 +104,13 @@ fn test_mixed_subtree_operations() {
 
 #[test]
 fn test_subtree_persistence_across_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Operation 1: Create data in multiple subtrees
-    let op1 = tree.new_transaction().expect("Op1: Failed to start");
+    let op1 = ctx
+        .database()
+        .new_transaction()
+        .expect("Op1: Failed to start");
     let table_key = {
         let table = op1
             .get_store::<Table<SimpleRecord>>("data")
@@ -122,7 +131,10 @@ fn test_subtree_persistence_across_operations() {
     op1.commit().expect("Op1: Failed to commit");
 
     // Operation 2: Update existing data and add new data
-    let op2 = tree.new_transaction().expect("Op2: Failed to start");
+    let op2 = ctx
+        .database()
+        .new_transaction()
+        .expect("Op2: Failed to start");
     {
         let table = op2
             .get_store::<Table<SimpleRecord>>("data")
@@ -148,10 +160,12 @@ fn test_subtree_persistence_across_operations() {
     op2.commit().expect("Op2: Failed to commit");
 
     // Verify final state
-    let table_viewer = tree
+    let table_viewer = ctx
+        .database()
         .get_store_viewer::<Table<SimpleRecord>>("data")
         .expect("Failed to get Table viewer");
-    let dict_viewer = tree
+    let dict_viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("metadata")
         .expect("Failed to get Doc viewer");
 
@@ -170,10 +184,13 @@ fn test_subtree_persistence_across_operations() {
 
 #[test]
 fn test_subtree_concurrent_access_patterns() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create base entry with both Doc and Table data
-    let op_base = tree.new_transaction().expect("Base: Failed to start");
+    let op_base = ctx
+        .database()
+        .new_transaction()
+        .expect("Base: Failed to start");
     let base_table_key = {
         let table = op_base
             .get_store::<Table<TestRecord>>("shared_data")
@@ -197,7 +214,8 @@ fn test_subtree_concurrent_access_patterns() {
     let base_entry_id = op_base.commit().expect("Base: Failed to commit");
 
     // Branch A: Modify Table data
-    let op_branch_a = tree
+    let op_branch_a = ctx
+        .database()
         .new_transaction_with_tips([base_entry_id.clone()])
         .expect("Branch A: Failed to start");
     {
@@ -217,7 +235,8 @@ fn test_subtree_concurrent_access_patterns() {
     op_branch_a.commit().expect("Branch A: Failed to commit");
 
     // Branch B: Modify Doc data (parallel to Branch A)
-    let op_branch_b = tree
+    let op_branch_b = ctx
+        .database()
         .new_transaction_with_tips([base_entry_id])
         .expect("Branch B: Failed to start");
     {
@@ -233,7 +252,10 @@ fn test_subtree_concurrent_access_patterns() {
     op_branch_b.commit().expect("Branch B: Failed to commit");
 
     // Merge operation: Read the merged state
-    let op_merge = tree.new_transaction().expect("Merge: Failed to start");
+    let op_merge = ctx
+        .database()
+        .new_transaction()
+        .expect("Merge: Failed to start");
     let (merged_record, merged_status) = {
         let table = op_merge
             .get_store::<Table<TestRecord>>("shared_data")
@@ -262,10 +284,12 @@ fn test_subtree_concurrent_access_patterns() {
     assert_eq!(merged_status, "modified");
 
     // Verify final persistence
-    let table_viewer = tree
+    let table_viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("shared_data")
         .expect("Failed to get Table viewer");
-    let dict_viewer = tree
+    let dict_viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("shared_config")
         .expect("Failed to get Doc viewer");
 
@@ -281,19 +305,19 @@ fn test_subtree_concurrent_access_patterns() {
 
 #[test]
 fn test_subtree_integration_with_helpers() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helpers to set up complex scenario
     let records = create_test_records();
-    let table_keys = create_table_operation(&tree, "integration_records", &records);
+    let table_keys = create_table_operation(ctx.database(), "integration_records", &records);
 
     let dict_data = &[("config_a", "value_a"), ("config_b", "value_b")];
-    create_dict_operation(&tree, "integration_config", dict_data);
+    create_dict_operation(ctx.database(), "integration_config", dict_data);
 
     // Verify integration using helpers
-    assert_table_search_count(&tree, "integration_records", |r| r.age >= 30, 2);
-    assert_dict_viewer_data(&tree, "integration_config", dict_data);
-    assert_dict_viewer_count(&tree, "integration_config", 2);
+    assert_table_search_count(ctx.database(), "integration_records", |r| r.age >= 30, 2);
+    assert_dict_viewer_data(ctx.database(), "integration_config", dict_data);
+    assert_dict_viewer_count(ctx.database(), "integration_config", 2);
 
     // Test UUID generation for all table records
     assert_valid_uuids(&table_keys);
@@ -301,13 +325,13 @@ fn test_subtree_integration_with_helpers() {
 
 #[test]
 fn test_subtree_helper_functions_integration() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test Doc helper functions
     let dict_data = &[("key1", "value1"), ("key2", "value2")];
-    create_dict_operation(&tree, "helper_dict", dict_data);
-    assert_dict_viewer_data(&tree, "helper_dict", dict_data);
-    assert_dict_viewer_count(&tree, "helper_dict", 2);
+    create_dict_operation(ctx.database(), "helper_dict", dict_data);
+    assert_dict_viewer_data(ctx.database(), "helper_dict", dict_data);
+    assert_dict_viewer_count(ctx.database(), "helper_dict", 2);
 
     // Test Table helper functions
     let table_records = &[TestRecord {
@@ -315,27 +339,34 @@ fn test_subtree_helper_functions_integration() {
         age: 25,
         email: "helper@test.com".to_string(),
     }];
-    let table_keys = create_table_operation(&tree, "helper_table", table_records);
+    let table_keys = create_table_operation(ctx.database(), "helper_table", table_records);
     assert_eq!(table_keys.len(), 1);
-    assert_table_record(&tree, "helper_table", &table_keys[0], &table_records[0]);
+    assert_table_record(
+        ctx.database(),
+        "helper_table",
+        &table_keys[0],
+        &table_records[0],
+    );
     assert_valid_uuids(&table_keys);
 
     // Test simple Table helper functions
     let simple_values = &[100, 200, 300];
-    let simple_keys = create_simple_table_operation(&tree, "helper_simple_table", simple_values);
+    let simple_keys =
+        create_simple_table_operation(ctx.database(), "helper_simple_table", simple_values);
     assert_eq!(simple_keys.len(), 3);
     assert_valid_uuids(&simple_keys);
 
     #[cfg(feature = "y-crdt")]
     {
         // Test YDoc helper functions when feature is enabled
-        let text_id = create_ydoc_text_operation(&tree, "helper_text", "Helper test content");
+        let text_id =
+            create_ydoc_text_operation(ctx.database(), "helper_text", "Helper test content");
         assert!(!text_id.to_string().is_empty());
-        assert_ydoc_text_content(&tree, "helper_text", "Helper test content");
+        assert_ydoc_text_content(ctx.database(), "helper_text", "Helper test content");
 
         let map_data = &[("helper_name", "test"), ("helper_value", "123")];
-        let map_id = create_ydoc_map_operation(&tree, "helper_map", map_data);
+        let map_id = create_ydoc_map_operation(ctx.database(), "helper_map", map_data);
         assert!(!map_id.to_string().is_empty());
-        assert_ydoc_map_content(&tree, "helper_map", map_data);
+        assert_ydoc_map_content(ctx.database(), "helper_map", map_data);
     }
 }

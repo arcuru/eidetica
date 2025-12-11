@@ -154,6 +154,17 @@ pub enum BackendError {
         /// Description of the cache error
         reason: String,
     },
+
+    /// SQL database error (sqlx).
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    #[error("SQL error: {reason}")]
+    SqlxError {
+        /// Description of the SQL error
+        reason: String,
+        /// The underlying sqlx error, if available
+        #[source]
+        source: Option<sqlx::Error>,
+    },
 }
 
 impl BackendError {
@@ -181,12 +192,22 @@ impl BackendError {
 
     /// Check if this error is related to I/O operations.
     pub fn is_io_error(&self) -> bool {
+        #[cfg(any(feature = "sqlite", feature = "postgres"))]
+        if matches!(self, BackendError::SqlxError { .. }) {
+            return true;
+        }
         matches!(
             self,
             BackendError::FileIo { .. }
                 | BackendError::SerializationFailed { .. }
                 | BackendError::DeserializationFailed { .. }
         )
+    }
+
+    /// Check if this error is related to SQL database operations.
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
+    pub fn is_sql_error(&self) -> bool {
+        matches!(self, BackendError::SqlxError { .. })
     }
 
     /// Check if this error is related to cache operations.

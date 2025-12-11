@@ -9,16 +9,16 @@ use eidetica::{
         crypto::{format_public_key, generate_keypair},
         types::{AuthKey, Permission},
     },
-    backend::database::InMemory,
     crdt::Doc,
     instance::LegacyInstanceOps,
     store::DocStore,
 };
 
+use crate::helpers::test_instance;
+
 /// Helper to create a database with global "*" permission configured
 fn setup_database_with_global_permission() -> (Instance, eidetica::Database, String) {
-    // Create instance with backend
-    let instance = Instance::open(Box::new(InMemory::new())).expect("Failed to create instance");
+    let instance = test_instance();
 
     // Generate a keypair for the client using global permission
     let (signing_key, verifying_key) = generate_keypair();

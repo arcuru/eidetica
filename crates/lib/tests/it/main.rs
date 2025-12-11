@@ -29,6 +29,7 @@ fn init_test_tracing() {
 
 mod auth;
 mod backend;
+mod context;
 mod crdt;
 mod data;
 mod database;

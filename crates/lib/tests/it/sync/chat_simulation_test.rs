@@ -4,9 +4,8 @@
 //! to debug authentication and sync issues.
 
 use super::helpers::enable_sync_for_instance_database;
+use crate::helpers::test_instance;
 use eidetica::{
-    Instance,
-    backend::database::InMemory,
     constants::GLOBAL_PERMISSION_KEY,
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,
@@ -57,8 +56,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n🧪 TEST: Starting chat app authenticated bootstrap test");
 
     // Setup server instance (like Device 1 creating a room)
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -149,8 +147,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Setup client instance (like Device 2 joining the room)
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -518,8 +515,7 @@ async fn test_global_key_bootstrap() {
     println!("\n🧪 TEST: Starting global key bootstrap test");
 
     // Setup similar to above but use '*' key
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -593,8 +589,7 @@ async fn test_global_key_bootstrap() {
     };
 
     // Setup client
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");
@@ -676,8 +671,7 @@ async fn test_multiple_databases_sync() {
     println!("\n🧪 TEST: Starting multiple databases sync test");
 
     // Setup server with multiple databases
-    let server_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let server_instance = test_instance();
     server_instance
         .enable_sync()
         .expect("Failed to initialize sync on server");
@@ -756,8 +750,7 @@ async fn test_multiple_databases_sync() {
     };
 
     // Setup client
-    let client_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let client_instance = test_instance();
     client_instance
         .enable_sync()
         .expect("Failed to initialize sync on client");

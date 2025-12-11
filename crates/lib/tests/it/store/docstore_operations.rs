@@ -16,14 +16,17 @@ use crate::helpers::*;
 
 #[test]
 fn test_dict_set_and_get_via_op() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create initial data
     let initial_data = &[("key1", "value1"), ("key2", "value2")];
-    create_dict_operation(&tree, "my_kv", initial_data);
+    create_dict_operation(ctx.database(), "my_kv", initial_data);
 
     // Test operation-level modifications
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("my_kv")
         .expect("Failed to get Doc");
@@ -54,18 +57,19 @@ fn test_dict_set_and_get_via_op() {
 
     // Verify final state using helper
     let expected_final = &[("key1", "value1_updated"), ("key2", "value2")];
-    assert_dict_viewer_data(&tree, "my_kv", expected_final);
+    assert_dict_viewer_data(ctx.database(), "my_kv", expected_final);
 }
 
 #[test]
 fn test_dict_get_all_via_viewer() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test dict persistence helper
-    test_dict_persistence(&tree, "my_kv");
+    test_dict_persistence(ctx.database(), "my_kv");
 
     // Verify get_all using a viewer
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data");
@@ -87,10 +91,11 @@ fn test_dict_get_all_via_viewer() {
 
 #[test]
 fn test_dict_get_all_empty() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Get viewer for a non-existent subtree
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("empty_kv")
         .expect("Failed to get viewer for empty");
     let all_data_crdt = viewer.get_all().expect("Failed to get all data from empty");
@@ -100,8 +105,11 @@ fn test_dict_get_all_empty() {
 
 #[test]
 fn test_dict_delete() {
-    let (_instance, tree) = setup_tree();
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let ctx = TestContext::new().with_database();
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
 
     {
         let dict = op
@@ -126,7 +134,8 @@ fn test_dict_delete() {
     op.commit().expect("Failed to commit operation");
 
     // Verify the deletion persisted
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
     assert_key_not_found(viewer.get("key1"));
@@ -136,13 +145,14 @@ fn test_dict_delete() {
 
 #[test]
 fn test_dict_set_value() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create nested map operation
-    create_dict_with_nested_map(&tree, "my_kv");
+    create_dict_with_nested_map(ctx.database(), "my_kv");
 
     // Get viewer to verify persistence
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("my_kv")
         .expect("Failed to get viewer");
 
@@ -155,20 +165,23 @@ fn test_dict_set_value() {
 
 #[test]
 fn test_dict_list_basic_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create Doc with list
     let list_items = &["apple", "banana", "orange"];
-    create_dict_with_list(&tree, "my_kv", list_items);
+    create_dict_with_list(ctx.database(), "my_kv", list_items);
 
     // Verify with viewer
-    assert_dict_list_data(&tree, "my_kv", "fruits", list_items);
+    assert_dict_list_data(ctx.database(), "my_kv", "fruits", list_items);
 }
 
 #[test]
 fn test_dict_list_nonexistent_key() {
-    let (_instance, tree) = setup_tree();
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let ctx = TestContext::new().with_database();
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
 
     {
         let dict = op
@@ -203,10 +216,13 @@ fn test_dict_list_nonexistent_key() {
 
 #[test]
 fn test_dict_list_persistence() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create list in first operation
-    let op1 = tree.new_transaction().expect("Failed to start op1");
+    let op1 = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start op1");
     {
         let dict = op1
             .get_store::<DocStore>("my_kv")
@@ -222,7 +238,10 @@ fn test_dict_list_persistence() {
     op1.commit().expect("Failed to commit op1");
 
     // Modify list in second operation
-    let op2 = tree.new_transaction().expect("Failed to start op2");
+    let op2 = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start op2");
     {
         let dict = op2
             .get_store::<DocStore>("my_kv")
@@ -247,15 +266,18 @@ fn test_dict_list_persistence() {
     op2.commit().expect("Failed to commit op2");
 
     // Verify final state
-    assert_dict_list_data(&tree, "my_kv", "colors", &["green", "blue"]);
+    assert_dict_list_data(ctx.database(), "my_kv", "colors", &["green", "blue"]);
 }
 
 #[test]
 fn test_dict_update_nested_value() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // First operation: Create initial nested structure
-    let op1 = tree.new_transaction().expect("Op1: Failed to start");
+    let op1 = ctx
+        .database()
+        .new_transaction()
+        .expect("Op1: Failed to start");
     {
         let dict = op1
             .get_store::<DocStore>("nested_test")
@@ -270,7 +292,10 @@ fn test_dict_update_nested_value() {
     op1.commit().expect("Op1: Failed to commit");
 
     // Second operation: Update with another structure
-    let op2 = tree.new_transaction().expect("Op2: Failed to start");
+    let op2 = ctx
+        .database()
+        .new_transaction()
+        .expect("Op2: Failed to start");
     {
         let dict = op2
             .get_store::<DocStore>("nested_test")
@@ -305,7 +330,8 @@ fn test_dict_update_nested_value() {
     op2.commit().expect("Op2: Failed to commit");
 
     // Verify the update persists after commit
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("nested_test")
         .expect("Failed to get viewer");
 
@@ -327,8 +353,11 @@ fn test_dict_update_nested_value() {
 
 #[test]
 fn test_dict_comprehensive_operations() {
-    let (_instance, tree) = setup_tree();
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let ctx = TestContext::new().with_database();
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
 
     {
         let dict = op
@@ -351,7 +380,8 @@ fn test_dict_comprehensive_operations() {
     op.commit().expect("Failed to commit operation");
 
     // Get a viewer to check the subtree
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("test_store")
         .expect("Failed to get viewer");
 
@@ -375,12 +405,13 @@ fn test_dict_comprehensive_operations() {
 
 #[test]
 fn test_empty_dict_behavior() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test empty Doc behavior
-    assert_dict_viewer_count(&tree, "empty_dict", 0);
+    assert_dict_viewer_count(ctx.database(), "empty_dict", 0);
 
-    let dict_viewer = tree
+    let dict_viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("empty_dict")
         .expect("Failed to get empty Doc viewer");
     assert_key_not_found(dict_viewer.get("any_key"));
@@ -388,10 +419,13 @@ fn test_empty_dict_behavior() {
 
 #[test]
 fn test_docstore_path_based_access() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create operation and set up nested data structure
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("path_test")
         .expect("Failed to get DocStore");
@@ -506,7 +540,8 @@ fn test_docstore_path_based_access() {
     op.commit().expect("Failed to commit operation");
 
     // Test via viewer (read-only access)
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("path_test")
         .expect("Failed to get viewer");
 
@@ -533,11 +568,14 @@ fn test_docstore_path_based_access() {
 
 #[test]
 fn test_docstore_path_mixed_with_staging() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create initial committed data
     {
-        let op = tree.new_transaction().expect("Failed to start operation");
+        let op = ctx
+            .database()
+            .new_transaction()
+            .expect("Failed to start operation");
         let dict = op
             .get_store::<DocStore>("staging_test")
             .expect("Failed to get DocStore");
@@ -553,7 +591,10 @@ fn test_docstore_path_mixed_with_staging() {
     }
 
     // Now test staging behavior with paths
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("staging_test")
         .expect("Failed to get DocStore");
@@ -602,7 +643,8 @@ fn test_docstore_path_mixed_with_staging() {
     assert!(!unchanged_debug); // Should still be false
 
     // Test that viewer still sees old committed data
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("staging_test")
         .expect("Failed to get viewer");
 
@@ -621,9 +663,12 @@ fn test_docstore_path_mixed_with_staging() {
 
 #[test]
 fn test_docstore_set_path() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("set_path_test")
         .expect("Failed to get DocStore");
@@ -695,7 +740,8 @@ fn test_docstore_set_path() {
     // Commit and verify persistence
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("set_path_test")
         .expect("Failed to get viewer");
 
@@ -712,9 +758,12 @@ fn test_docstore_set_path() {
 
 #[test]
 fn test_docstore_modify_path() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("modify_path_test")
         .expect("Failed to get DocStore");
@@ -761,7 +810,8 @@ fn test_docstore_modify_path() {
     // Commit and verify persistence
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("modify_path_test")
         .expect("Failed to get viewer");
 
@@ -781,9 +831,12 @@ fn test_docstore_modify_path() {
 
 #[test]
 fn test_docstore_get_or_insert_path() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("get_or_insert_path_test")
         .expect("Failed to get DocStore");
@@ -847,7 +900,8 @@ fn test_docstore_get_or_insert_path() {
     // Commit and verify persistence
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("get_or_insert_path_test")
         .expect("Failed to get viewer");
 
@@ -872,9 +926,12 @@ fn test_docstore_get_or_insert_path() {
 
 #[test]
 fn test_docstore_modify_or_insert_path() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("modify_or_insert_path_test")
         .expect("Failed to get DocStore");
@@ -961,7 +1018,8 @@ fn test_docstore_modify_or_insert_path() {
     // Commit and verify persistence
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("modify_or_insert_path_test")
         .expect("Failed to get viewer");
 
@@ -993,9 +1051,12 @@ fn test_docstore_modify_or_insert_path() {
 
 #[test]
 fn test_docstore_path_mutation_interoperability() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("interop_test")
         .expect("Failed to get DocStore");
@@ -1073,7 +1134,8 @@ fn test_docstore_path_mutation_interoperability() {
     // Commit and verify all operations persisted correctly
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("interop_test")
         .expect("Failed to get viewer");
 
@@ -1096,9 +1158,12 @@ fn test_docstore_path_mutation_interoperability() {
 
 #[test]
 fn test_docstore_contains_key() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("contains_key_test")
         .expect("Failed to get DocStore");
@@ -1130,7 +1195,8 @@ fn test_docstore_contains_key() {
     op.commit().expect("Failed to commit operation");
 
     // Test with committed data
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("contains_key_test")
         .expect("Failed to get viewer");
 
@@ -1139,7 +1205,8 @@ fn test_docstore_contains_key() {
     assert!(viewer.contains_key("user")); // Nested structure in committed data
 
     // Test with new operation on committed data
-    let op2 = tree
+    let op2 = ctx
+        .database()
         .new_transaction()
         .expect("Failed to start second operation");
     let dict2 = op2
@@ -1168,9 +1235,12 @@ fn test_docstore_contains_key() {
 
 #[test]
 fn test_docstore_contains_path() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("contains_path_test")
         .expect("Failed to get DocStore");
@@ -1235,7 +1305,8 @@ fn test_docstore_contains_path() {
     // Commit and test persistence
     op.commit().expect("Failed to commit operation");
 
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<DocStore>("contains_path_test")
         .expect("Failed to get viewer");
 
@@ -1249,7 +1320,8 @@ fn test_docstore_contains_path() {
     assert!(!viewer.contains_path(path!("temp.value"))); // Should not exist
 
     // Test with new operation adding more paths
-    let op2 = tree
+    let op2 = ctx
+        .database()
         .new_transaction()
         .expect("Failed to start second operation");
     let dict2 = op2
@@ -1282,9 +1354,12 @@ fn test_docstore_contains_path() {
 
 #[test]
 fn test_docstore_contains_methods_consistency() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let dict = op
         .get_store::<DocStore>("consistency_test")
         .expect("Failed to get DocStore");

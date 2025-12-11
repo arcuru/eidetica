@@ -3,9 +3,11 @@ use eidetica::{
     entry::{Entry, ID},
 };
 
+use super::helpers::test_backend;
+
 #[test]
 fn test_verification_status_basic_operations() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Create a test entry
     let entry = Entry::root_builder()
@@ -48,7 +50,7 @@ fn test_verification_status_basic_operations() {
 
 #[test]
 fn test_verification_status_default_behavior() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Create a test entry
     let entry = Entry::root_builder()
@@ -75,7 +77,7 @@ fn test_verification_status_default_behavior() {
 
 #[test]
 fn test_verification_status_multiple_entries() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Create multiple test entries
     let entry1 = Entry::root_builder()
@@ -116,7 +118,7 @@ fn test_verification_status_multiple_entries() {
 
 #[test]
 fn test_verification_status_not_found_errors() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     let nonexistent_id: ID = "nonexistent".into();
 
@@ -178,7 +180,7 @@ fn test_verification_status_serialization() {
 
 #[test]
 fn test_backend_verification_helpers() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Test the convenience methods
     let entry1 = Entry::root_builder()

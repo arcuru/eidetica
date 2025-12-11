@@ -11,10 +11,10 @@ use crate::helpers::*;
 #[test]
 fn test_transaction_through_dict() {
     // Create a backend and a tree
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create a new operation
-    let operation = tree.new_transaction().unwrap();
+    let operation = ctx.database().new_transaction().unwrap();
 
     // Get a Doc subtree, which will use Transaction internally
     let dict = DocStore::new(&operation, "test").unwrap();
@@ -26,7 +26,7 @@ fn test_transaction_through_dict() {
     operation.commit().unwrap();
 
     // Use a new operation to read the data
-    let read_op = tree.new_transaction().unwrap();
+    let read_op = ctx.database().new_transaction().unwrap();
     let read_store = DocStore::new(&read_op, "test").unwrap();
 
     // Verify the value was set correctly
@@ -39,10 +39,10 @@ fn test_transaction_through_dict() {
 #[test]
 fn test_transaction_multiple_subtrees() {
     // Create a backend and a tree
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create a new operation
-    let operation = tree.new_transaction().unwrap();
+    let operation = ctx.database().new_transaction().unwrap();
 
     // Create two different Doc subtrees
     let store1 = DocStore::new(&operation, "store1").unwrap();
@@ -59,7 +59,7 @@ fn test_transaction_multiple_subtrees() {
     operation.commit().unwrap();
 
     // Create a new operation to read the data
-    let read_op = tree.new_transaction().unwrap();
+    let read_op = ctx.database().new_transaction().unwrap();
     let store1_read = DocStore::new(&read_op, "store1").unwrap();
     let store2_read = DocStore::new(&read_op, "store2").unwrap();
 
@@ -71,10 +71,10 @@ fn test_transaction_multiple_subtrees() {
 #[test]
 fn test_transaction_empty_subtree_removal() {
     // Create a backend and a tree
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create a new operation
-    let operation = tree.new_transaction().unwrap();
+    let operation = ctx.database().new_transaction().unwrap();
 
     // Create a Doc subtree but don't add any data (will be empty)
     let _empty_store = DocStore::new(&operation, "empty").unwrap();
@@ -87,7 +87,7 @@ fn test_transaction_empty_subtree_removal() {
     operation.commit().unwrap();
 
     // Create a new operation to check if subtrees exist
-    let read_op = tree.new_transaction().unwrap();
+    let read_op = ctx.database().new_transaction().unwrap();
 
     // Try to access both subtrees
     let data_result = DocStore::new(&read_op, "data");
@@ -109,22 +109,22 @@ fn test_transaction_empty_subtree_removal() {
 #[test]
 fn test_transaction_parent_relationships() {
     // Create a backend and a tree
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create first operation and set data
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = ctx.database().new_transaction().unwrap();
     let store1 = DocStore::new(&op1, "data").unwrap();
     store1.set("first", "entry").unwrap();
     op1.commit().unwrap();
 
     // Create second operation that will use the first as parent
-    let op2 = tree.new_transaction().unwrap();
+    let op2 = ctx.database().new_transaction().unwrap();
     let store2 = DocStore::new(&op2, "data").unwrap();
     store2.set("second", "entry").unwrap();
     op2.commit().unwrap();
 
     // Create a third operation to read all entries
-    let op3 = tree.new_transaction().unwrap();
+    let op3 = ctx.database().new_transaction().unwrap();
     let store3 = DocStore::new(&op3, "data").unwrap();
 
     // Get all data - should include both entries due to CRDT merge

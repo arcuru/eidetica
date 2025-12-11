@@ -10,9 +10,10 @@ readme.workspace = true
 description.workspace = true
 
 [features]
-default = ["full"]
-y-crdt = ["yrs"]
-full = ["y-crdt"]
+default = ["y-crdt", "sqlite", "postgres"]
+y-crdt = ["dep:yrs"]
+sqlite = ["dep:sqlx"]
+postgres = ["dep:sqlx"]
 
 [dependencies]
 chrono = { workspace = true }
@@ -37,6 +38,7 @@ argon2 = { workspace = true }
 aes-gcm = { workspace = true }
 zeroize = { workspace = true }
 handle_trait = { workspace = true }
+sqlx = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -7,12 +7,11 @@
 //! 4. Device 2 syncs back to Device 1
 //! 5. Device 1 tries to add message C -> "no common ancestor found" error
 
-use eidetica::{
-    Instance, Result, auth::Permission, backend::database::InMemory, crdt::Doc,
-    instance::LegacyInstanceOps, store::Table,
-};
+use eidetica::{Result, auth::Permission, crdt::Doc, instance::LegacyInstanceOps, store::Table};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+use crate::helpers::test_instance;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
@@ -48,8 +47,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
 
-    let device1_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let device1_instance = test_instance();
     device1_instance
         .enable_sync()
         .expect("Failed to initialize sync on device1");
@@ -132,8 +130,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let device2_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let device2_instance = test_instance();
     device2_instance
         .enable_sync()
         .expect("Failed to initialize sync on device2");

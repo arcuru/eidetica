@@ -14,24 +14,23 @@ use crate::helpers::*;
 
 #[test]
 fn test_transaction_with_delete() {
-    // Create a backend and a tree
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create an operation and add some data
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = ctx.database().new_transaction().unwrap();
     let store1 = DocStore::new(&op1, "data").unwrap();
     store1.set("key1", "value1").unwrap();
     store1.set("key2", "value2").unwrap();
     op1.commit().unwrap();
 
     // Create another operation to delete a key
-    let op2 = tree.new_transaction().unwrap();
+    let op2 = ctx.database().new_transaction().unwrap();
     let store2 = DocStore::new(&op2, "data").unwrap();
     store2.delete("key1").unwrap();
     op2.commit().unwrap();
 
     // Verify with a third operation
-    let op3 = tree.new_transaction().unwrap();
+    let op3 = ctx.database().new_transaction().unwrap();
     let store3 = DocStore::new(&op3, "data").unwrap();
 
     // key1 should be deleted
@@ -98,16 +97,17 @@ fn test_transaction_nested_values() {
 
 #[test]
 fn test_transaction_staged_data_isolation() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create initial data
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = ctx.database().new_transaction().unwrap();
     let store1 = op1.get_store::<DocStore>("data").unwrap();
     store1.set("key1", "committed_value").unwrap();
     let entry1_id = op1.commit().unwrap();
 
     // Create operation from entry1
-    let op2 = tree
+    let op2 = ctx
+        .database()
         .new_transaction_with_tips(std::slice::from_ref(&entry1_id))
         .unwrap();
     let store2 = op2.get_store::<DocStore>("data").unwrap();
@@ -124,7 +124,10 @@ fn test_transaction_staged_data_isolation() {
     assert_dict_value(&store2, "key2", "new_staged");
 
     // Create another operation from same tip - should not see staged data
-    let op3 = tree.new_transaction_with_tips([entry1_id]).unwrap();
+    let op3 = ctx
+        .database()
+        .new_transaction_with_tips([entry1_id])
+        .unwrap();
     let store3 = op3.get_store::<DocStore>("data").unwrap();
 
     // Should see original committed data, not staged data from op2
@@ -135,7 +138,10 @@ fn test_transaction_staged_data_isolation() {
     let entry2_id = op2.commit().unwrap();
 
     // Create operation from entry2 - should see committed staged data
-    let op4 = tree.new_transaction_with_tips([entry2_id]).unwrap();
+    let op4 = ctx
+        .database()
+        .new_transaction_with_tips([entry2_id])
+        .unwrap();
     let store4 = op4.get_store::<DocStore>("data").unwrap();
 
     assert_dict_value(&store4, "key1", "staged_value");
@@ -204,7 +210,7 @@ fn test_delete_operations_with_helpers() {
 
 #[test]
 fn test_nested_map_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test nested map creation helper
     let nested_value = create_nested_map(&[("key1", "val1"), ("key2", "val2")]);
@@ -218,11 +224,11 @@ fn test_nested_map_operations() {
     }
 
     // Test integration with Transaction
-    let entry_id = create_operation_with_nested_data(&tree);
+    let entry_id = create_operation_with_nested_data(ctx.database());
     assert!(!entry_id.to_string().is_empty());
 
     // Verify using nested data helper
-    let read_op = tree.new_transaction().unwrap();
+    let read_op = ctx.database().new_transaction().unwrap();
     let store = DocStore::new(&read_op, "data").unwrap();
 
     assert_nested_data(
@@ -235,14 +241,14 @@ fn test_nested_map_operations() {
 
 #[test]
 fn test_nested_data_operations_with_helpers() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test nested data creation helper
-    let entry_id = create_operation_with_nested_data(&tree);
+    let entry_id = create_operation_with_nested_data(ctx.database());
     assert!(!entry_id.to_string().is_empty());
 
     // Verify using nested data helper
-    let read_op = tree.new_transaction().unwrap();
+    let read_op = ctx.database().new_transaction().unwrap();
     let store = DocStore::new(&read_op, "data").unwrap();
 
     assert_nested_data(

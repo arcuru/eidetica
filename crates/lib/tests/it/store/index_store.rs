@@ -1,14 +1,15 @@
 //! Tests for the Registry and _index subtree functionality
 
 use eidetica::{
-    Database, Instance, Registered,
+    Database, Registered,
     auth::crypto::generate_keypair,
-    backend::database::InMemory,
     crdt::Doc,
     store::{DocStore, Table},
 };
 
 use serde::{Deserialize, Serialize};
+
+use crate::helpers::test_instance;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestRecord {
@@ -22,8 +23,7 @@ struct TestRecord {
 
 #[test]
 fn test_index_store_register_subtree() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -59,8 +59,7 @@ fn test_index_store_register_subtree() {
 
 #[test]
 fn test_index_store_get_subtree_info() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -89,8 +88,7 @@ fn test_index_store_get_subtree_info() {
 
 #[test]
 fn test_index_store_contains_subtree() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -112,8 +110,7 @@ fn test_index_store_contains_subtree() {
 
 #[test]
 fn test_index_store_list_subtrees() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -142,8 +139,7 @@ fn test_index_store_list_subtrees() {
 
 #[test]
 fn test_index_store_update_existing() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -180,8 +176,7 @@ fn test_index_store_update_existing() {
 
 #[test]
 fn test_auto_register_on_first_access_docstore() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -204,8 +199,7 @@ fn test_auto_register_on_first_access_docstore() {
 
 #[test]
 fn test_no_auto_register_for_system_subtrees() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -231,8 +225,7 @@ fn test_no_auto_register_for_system_subtrees() {
 
 #[test]
 fn test_second_access_uses_existing_registration() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -269,8 +262,7 @@ fn test_second_access_uses_existing_registration() {
 
 #[test]
 fn test_index_update_includes_target_subtree() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -304,8 +296,7 @@ fn test_index_update_includes_target_subtree() {
 
 #[test]
 fn test_auto_dummy_write_on_index_update() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -335,8 +326,7 @@ fn test_auto_dummy_write_on_index_update() {
 
 #[test]
 fn test_entry_has_both_index_and_subtree_nodes() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -366,8 +356,7 @@ fn test_entry_has_both_index_and_subtree_nodes() {
 
 #[test]
 fn test_manual_index_update_with_subtree_modification() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -411,8 +400,7 @@ fn test_manual_index_update_with_subtree_modification() {
 
 #[test]
 fn test_multi_store_database_index_complete() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -457,8 +445,7 @@ fn test_multi_store_database_index_complete() {
 
 #[test]
 fn test_index_persists_across_transactions() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -489,8 +476,7 @@ fn test_index_persists_across_transactions() {
 
 #[test]
 fn test_read_index_from_viewer() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database = Database::create(
@@ -528,8 +514,7 @@ fn test_read_index_from_viewer() {
 
 #[test]
 fn test_index_survives_database_reload() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     // Create database and add subtrees
@@ -569,8 +554,7 @@ fn test_index_survives_database_reload() {
 
 #[test]
 fn test_get_nonexistent_subtree_info() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -586,8 +570,7 @@ fn test_get_nonexistent_subtree_info() {
 
 #[test]
 fn test_index_with_empty_database() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -603,8 +586,7 @@ fn test_index_with_empty_database() {
 
 #[test]
 fn test_concurrent_index_updates() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -644,8 +626,7 @@ fn test_concurrent_index_updates() {
 
 #[test]
 fn test_empty_config_is_valid() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -671,8 +652,7 @@ fn test_empty_config_is_valid() {
 #[test]
 fn test_index_modification_forces_subtree_in_entry() {
     // Verify that when _index is modified for a subtree, that subtree appears in the Entry
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -710,8 +690,7 @@ fn test_index_modification_forces_subtree_in_entry() {
 #[test]
 fn test_auto_registration_includes_both_subtrees() {
     // Verify that auto-registration during commit includes both _index and the data subtree
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -742,8 +721,7 @@ fn test_auto_registration_includes_both_subtrees() {
 fn test_accessing_store_registers_in_index() {
     // Verify that calling get_store() registers the subtree in _index even without writing data
     // This is the expected behavior: accessing a store initializes it
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -772,8 +750,7 @@ fn test_accessing_store_registers_in_index() {
 #[test]
 fn test_multiple_stores_registered_on_access() {
     // Verify that accessing multiple stores registers all of them in _index
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -819,8 +796,7 @@ fn test_multiple_stores_registered_on_access() {
 #[test]
 fn test_type_mismatch_docstore_as_table() {
     // Register a subtree as DocStore, then try to access as Table
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -858,8 +834,7 @@ fn test_type_mismatch_docstore_as_table() {
 #[test]
 fn test_type_mismatch_table_as_docstore() {
     // Register a subtree as Table, then try to access as DocStore
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =
@@ -894,8 +869,7 @@ fn test_type_mismatch_table_as_docstore() {
 #[test]
 fn test_correct_type_access_succeeds() {
     // Verify that accessing with correct type still works
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).unwrap();
+    let instance = test_instance();
     let (private_key, _) = generate_keypair();
 
     let database =

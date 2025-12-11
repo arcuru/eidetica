@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod backend;
+pub mod context;
 pub mod crdt;
 pub mod data;
 pub mod database;

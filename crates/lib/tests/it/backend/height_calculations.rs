@@ -1,13 +1,57 @@
+//! Tests for height calculation internals.
+//!
+//! These tests verify the internal `calculate_heights` and `sort_entries_by_height`
+//! methods which are implementation details of the InMemory backend.
+//! Height ordering is tested indirectly through `get_tree`/`get_store` in the
+//! backend-agnostic tests.
+
+use std::collections::HashMap;
+
 use eidetica::{
     Entry,
     backend::{BackendImpl, database::InMemory},
+    entry::ID,
 };
 
-use super::helpers::*;
+/// Helper to create and store an entry with subtree data
+fn create_subtree_entry(
+    backend: &InMemory,
+    tree_id: &ID,
+    parent_id: &ID,
+    subtree_name: &str,
+    data: &str,
+) -> ID {
+    let entry = Entry::builder(tree_id.clone())
+        .add_parent(parent_id.clone())
+        .set_subtree_data(subtree_name, data)
+        .build()
+        .expect("Entry should build successfully");
+    let id = entry.id();
+    backend.put_verified(entry).unwrap();
+    id
+}
+
+/// Helper to verify entry heights
+fn assert_entry_heights(heights: &HashMap<ID, usize>, expected_heights: &[(&ID, usize)]) {
+    for (entry_id, expected_height) in expected_heights {
+        let actual_height = heights.get(entry_id).unwrap_or(&9999);
+        assert_eq!(
+            *actual_height, *expected_height,
+            "Entry {entry_id} has height {actual_height}, expected {expected_height}"
+        );
+    }
+}
 
 #[test]
 fn test_calculate_entry_height() {
-    let (backend, root_id) = create_test_backend_with_root();
+    let backend = InMemory::new();
+
+    // Create root entry
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let root_id = root.id();
+    backend.put_verified(root).unwrap();
 
     // Create a complex tree structure:
     // root -> A -> B -> C\
@@ -15,13 +59,13 @@ fn test_calculate_entry_height() {
     //     \-> E -> F --->/
 
     // Create main branch: A -> B -> C
-    let id_a = create_and_store_subtree_entry(&backend, &root_id, &root_id, "branch", "a");
-    let id_b = create_and_store_subtree_entry(&backend, &root_id, &id_a, "branch", "b");
-    let id_c = create_and_store_subtree_entry(&backend, &root_id, &id_b, "branch", "c");
+    let id_a = create_subtree_entry(&backend, &root_id, &root_id, "branch", "a");
+    let id_b = create_subtree_entry(&backend, &root_id, &id_a, "branch", "b");
+    let id_c = create_subtree_entry(&backend, &root_id, &id_b, "branch", "c");
 
     // Create side branch: E -> F
-    let id_e = create_and_store_subtree_entry(&backend, &root_id, &root_id, "branch", "e");
-    let id_f = create_and_store_subtree_entry(&backend, &root_id, &id_e, "branch", "f");
+    let id_e = create_subtree_entry(&backend, &root_id, &root_id, "branch", "e");
+    let id_f = create_subtree_entry(&backend, &root_id, &id_e, "branch", "f");
 
     // Create merge entry D with both C and F as parents
     let entry_d = Entry::builder(root_id.clone())
@@ -65,7 +109,14 @@ fn test_calculate_entry_height() {
 
 #[test]
 fn test_calculate_subtree_height() {
-    let (backend, root_id) = create_test_backend_with_root();
+    let backend = InMemory::new();
+
+    // Create root entry
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let root_id = root.id();
+    backend.put_verified(root).unwrap();
 
     // A
     let entry_a = Entry::builder(root_id.clone())

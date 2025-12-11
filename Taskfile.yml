@@ -183,3 +183,56 @@ tasks:
     cmds:
       - nix build .#eidetica-image
       - docker load < ./result
+
+  test:postgres:
+    desc: Run tests against PostgreSQL (requires docker)
+    aliases: [tp]
+    vars:
+      CONTAINER_NAME: eidetica-test-postgres
+      DB_NAME: eidetica_test
+      DB_PORT: 54321
+    cmds:
+      - docker rm -f {{.CONTAINER_NAME}} 2>/dev/null || true
+      - defer: docker rm -f {{.CONTAINER_NAME}} 2>/dev/null || true
+      - |
+        echo "Starting PostgreSQL container..."
+        docker run -d --name {{.CONTAINER_NAME}} \
+          -e POSTGRES_DB={{.DB_NAME}} \
+          -e POSTGRES_HOST_AUTH_METHOD=trust \
+          -p {{.DB_PORT}}:5432 \
+          postgres:16-alpine
+      - |
+        echo "Waiting for PostgreSQL to be ready..."
+        for i in $(seq 1 30); do
+          if docker exec {{.CONTAINER_NAME}} pg_isready -U postgres -d {{.DB_NAME}} >/dev/null 2>&1; then
+            echo "PostgreSQL is ready!"
+            break
+          fi
+          if [ $i -eq 30 ]; then
+            echo "Timed out waiting for PostgreSQL"
+            exit 1
+          fi
+          sleep 1
+        done
+      - |
+        echo "Running tests against PostgreSQL..."
+        TEST_BACKEND=postgres \
+        TEST_POSTGRES_URL="postgres://postgres@localhost:{{.DB_PORT}}/{{.DB_NAME}}" \
+        cargo nextest run --workspace --features postgres --no-fail-fast --status-level fail
+
+  test:sqlite:
+    desc: Run tests against SQLite backend
+    aliases: [ts]
+    cmds:
+      - TEST_BACKEND=sqlite cargo nextest run --workspace --features sqlite --no-fail-fast --status-level fail
+
+  test:backends:
+    desc: Run tests against all backends
+    aliases: [tb]
+    cmds:
+      - echo "=== Testing InMemory backend ==="
+      - task: test
+      - echo "=== Testing SQLite backend ==="
+      - task: test:sqlite
+      - echo "=== Testing PostgreSQL backend ==="
+      - task: test:postgres

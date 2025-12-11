@@ -1,12 +1,10 @@
-use eidetica::{
-    Instance,
-    backend::database::InMemory,
-    sync::{
-        Address, Sync,
-        protocol::{SyncRequest, SyncResponse},
-        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
-    },
+use eidetica::sync::{
+    Address, Sync,
+    protocol::{SyncRequest, SyncResponse},
+    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
 };
+
+use crate::helpers::test_instance;
 
 /// Test that both HTTP and Iroh transports use the same message handler
 /// by directly testing the shared handler function.
@@ -29,7 +27,7 @@ async fn test_unified_message_handling() {
         .expect("Entry should build successfully");
 
     // Create a Sync instance for testing
-    let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+    let db = test_instance();
     let sync = Sync::new(db.clone()).unwrap();
 
     // Test single entry request directly through shared handler

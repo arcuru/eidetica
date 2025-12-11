@@ -1,12 +1,9 @@
-use eidetica::{
-    backend::{BackendImpl, database::InMemory},
-    entry::{Entry, ID},
-};
+use eidetica::entry::{Entry, ID};
 
-use super::helpers::*;
+use super::helpers::{create_test_backend_with_root, test_backend};
 
 #[test]
-fn test_in_memory_backend_basic_operations() {
+fn test_backend_basic_operations() {
     let (backend, root_id) = create_test_backend_with_root();
 
     // Get the entry back
@@ -24,47 +21,51 @@ fn test_in_memory_backend_basic_operations() {
 }
 
 #[test]
-fn test_in_memory_backend_error_handling() {
-    let backend = create_test_backend();
+fn test_backend_error_handling() {
+    let backend = test_backend();
 
     // Test retrieving a non-existent entry
     let non_existent_id: ID = "non_existent_id".into();
     let get_result = backend.get(&non_existent_id);
     assert!(get_result.is_err());
 
-    // For some database implementations like InMemory, get_tips might return
-    // an empty vector instead of an error when the tree doesn't exist
-    // Let's verify it returns either an error or an empty vector
-    // FIXME: Code smell, databases should be consistent. Update this test once the API is defined.
+    // get_tips for non-existent tree returns an empty vector
     let tips_result = backend.get_tips(&non_existent_id);
-    if let Ok(tips) = tips_result {
-        // If it returns Ok, it should be an empty vector
-        assert!(tips.is_empty());
-    } else {
-        // If it returns an error, that's also acceptable
-        assert!(tips_result.is_err());
-    }
+    assert!(
+        tips_result.is_ok(),
+        "get_tips should succeed for non-existent tree"
+    );
+    assert!(
+        tips_result.unwrap().is_empty(),
+        "get_tips should return empty vector for non-existent tree"
+    );
 
-    // Similarly, get_subtree might return an empty vector for non-existent trees
+    // get_store for non-existent tree returns an empty vector
     let subtree_result = backend.get_store(&non_existent_id, "non_existent_subtree");
-    if let Ok(entries) = subtree_result {
-        assert!(entries.is_empty());
-    } else {
-        assert!(subtree_result.is_err());
-    }
+    assert!(
+        subtree_result.is_ok(),
+        "get_store should succeed for non-existent tree"
+    );
+    assert!(
+        subtree_result.unwrap().is_empty(),
+        "get_store should return empty vector for non-existent tree"
+    );
 
-    // Similar to get_tips, get_store_tips might return an empty vector for non-existent trees
+    // get_store_tips for non-existent tree returns an empty vector
     let subtree_tips_result = backend.get_store_tips(&non_existent_id, "non_existent_subtree");
-    if let Ok(tips) = subtree_tips_result {
-        assert!(tips.is_empty());
-    } else {
-        assert!(subtree_tips_result.is_err());
-    }
+    assert!(
+        subtree_tips_result.is_ok(),
+        "get_store_tips should succeed for non-existent tree"
+    );
+    assert!(
+        subtree_tips_result.unwrap().is_empty(),
+        "get_store_tips should return empty vector for non-existent tree"
+    );
 }
 
 #[test]
 fn test_all_roots() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Initially, there should be no roots
     assert!(backend.all_roots().unwrap().is_empty());

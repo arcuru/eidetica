@@ -5,10 +5,11 @@
 
 use eidetica::{
     Database, Instance, Transaction,
-    backend::database::InMemory,
     crdt::{Doc, doc::Value},
     store::DocStore,
 };
+
+use crate::helpers::test_instance;
 
 // Type alias for local usage
 type Node = Doc;
@@ -17,7 +18,7 @@ type Node = Doc;
 
 /// Create a database with a test key and return both Instance and tree
 pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
-    let instance = Instance::open(Box::new(InMemory::new()))?;
+    let instance = test_instance();
     instance.create_user("test_user", None)?;
     let mut user = instance.login_user("test_user", None)?;
     let default_key = user.get_default_key()?;

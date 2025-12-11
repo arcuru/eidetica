@@ -10,7 +10,7 @@ use crate::helpers::*;
 
 #[test]
 fn test_table_basic_crud_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create initial record
     let initial_record = TestRecord {
@@ -18,11 +18,18 @@ fn test_table_basic_crud_operations() {
         age: 30,
         email: "john@example.com".to_string(),
     };
-    let keys = create_table_operation(&tree, "test_records", std::slice::from_ref(&initial_record));
+    let keys = create_table_operation(
+        ctx.database(),
+        "test_records",
+        std::slice::from_ref(&initial_record),
+    );
     let primary_key = &keys[0];
 
     // Test CRUD operations within an operation
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let table = op
         .get_store::<Table<TestRecord>>("test_records")
         .expect("Failed to get Table");
@@ -67,20 +74,21 @@ fn test_table_basic_crud_operations() {
     op.commit().expect("Failed to commit operation");
 
     // Verify persistence using helper
-    assert_table_record(&tree, "test_records", primary_key, &updated_record);
-    assert_table_record(&tree, "test_records", &new_pk, &new_record);
+    assert_table_record(ctx.database(), "test_records", primary_key, &updated_record);
+    assert_table_record(ctx.database(), "test_records", &new_pk, &new_record);
 }
 
 #[test]
 fn test_table_multiple_records() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create multiple records
     let values = &[10, 20, 30, 40, 50];
-    let inserted_keys = create_simple_table_operation(&tree, "simple_records", values);
+    let inserted_keys = create_simple_table_operation(ctx.database(), "simple_records", values);
 
     // Verify all records persist after commit
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<SimpleRecord>>("simple_records")
         .expect("Failed to get Table viewer");
 
@@ -92,18 +100,23 @@ fn test_table_multiple_records() {
 
 #[test]
 fn test_table_search_functionality() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to create test records
     let records = create_test_records();
-    create_table_operation(&tree, "search_records", &records);
+    create_table_operation(ctx.database(), "search_records", &records);
 
     // Test search by age using helper
-    assert_table_search_count(&tree, "search_records", |record| record.age == 25, 2);
+    assert_table_search_count(
+        ctx.database(),
+        "search_records",
+        |record| record.age == 25,
+        2,
+    );
 
     // Test search by email domain using helper
     assert_table_search_count(
-        &tree,
+        ctx.database(),
         "search_records",
         |record| record.email.contains("example.com"),
         2,
@@ -111,17 +124,23 @@ fn test_table_search_functionality() {
 
     // Test search by name prefix using helper
     assert_table_search_count(
-        &tree,
+        ctx.database(),
         "search_records",
         |record| record.name.starts_with('B'),
         1,
     );
 
     // Test search with no matches using helper
-    assert_table_search_count(&tree, "search_records", |record| record.age > 100, 0);
+    assert_table_search_count(
+        ctx.database(),
+        "search_records",
+        |record| record.age > 100,
+        0,
+    );
 
     // Test search after commit with detailed verification
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("search_records")
         .expect("Failed to get Table viewer");
 
@@ -134,17 +153,18 @@ fn test_table_search_functionality() {
 
 #[test]
 fn test_table_uuid_generation() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Generate 100 records to test UUID uniqueness
     let values: Vec<i32> = (1..=100).collect();
-    let generated_keys = create_simple_table_operation(&tree, "uuid_test", &values);
+    let generated_keys = create_simple_table_operation(ctx.database(), "uuid_test", &values);
 
     // Use helper to verify UUID format and uniqueness
     assert_valid_uuids(&generated_keys);
 
     // Verify all records are retrievable with their unique keys
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<SimpleRecord>>("uuid_test")
         .expect("Failed to get Table viewer");
 
@@ -156,13 +176,14 @@ fn test_table_uuid_generation() {
 
 #[test]
 fn test_table_multiple_operations() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Use helper to test multi-operation workflow
-    let (key1, key2, key3) = test_table_multi_operations(&tree, "multi_op_test");
+    let (key1, key2, key3) = test_table_multi_operations(ctx.database(), "multi_op_test");
 
     // Verify final state
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("multi_op_test")
         .expect("Failed to get Table viewer");
 
@@ -193,8 +214,11 @@ fn test_table_multiple_operations() {
 
 #[test]
 fn test_table_empty_search() {
-    let (_instance, tree) = setup_tree();
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let ctx = TestContext::new().with_database();
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
 
     {
         let table = op
@@ -211,7 +235,8 @@ fn test_table_empty_search() {
     op.commit().expect("Failed to commit operation");
 
     // Search in empty store after commit
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<SimpleRecord>>("empty_search_test")
         .expect("Failed to get Table viewer");
 
@@ -223,10 +248,11 @@ fn test_table_empty_search() {
 
 #[test]
 fn test_empty_table_behavior() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Test empty Table behavior
-    let table_viewer = tree
+    let table_viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("empty_table")
         .expect("Failed to get empty Table viewer");
 
@@ -238,7 +264,7 @@ fn test_empty_table_behavior() {
 
 #[test]
 fn test_table_delete_basic() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create initial records using helper
     let initial_records = vec![
@@ -258,10 +284,13 @@ fn test_table_delete_basic() {
             email: "user3@test.com".to_string(),
         },
     ];
-    let keys = create_table_operation(&tree, "delete_test", &initial_records);
+    let keys = create_table_operation(ctx.database(), "delete_test", &initial_records);
 
     // Delete one record within an operation
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op
             .get_store::<Table<TestRecord>>("delete_test")
@@ -289,16 +318,16 @@ fn test_table_delete_basic() {
     op.commit().expect("Failed to commit operation");
 
     // Verify deletion persisted using helper
-    assert_table_record_deleted(&tree, "delete_test", &keys[1]);
+    assert_table_record_deleted(ctx.database(), "delete_test", &keys[1]);
 
     // Verify other records still exist
-    assert_table_record(&tree, "delete_test", &keys[0], &initial_records[0]);
-    assert_table_record(&tree, "delete_test", &keys[2], &initial_records[2]);
+    assert_table_record(ctx.database(), "delete_test", &keys[0], &initial_records[0]);
+    assert_table_record(ctx.database(), "delete_test", &keys[2], &initial_records[2]);
 }
 
 #[test]
 fn test_table_delete_nonexistent() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create one record
     let record = TestRecord {
@@ -306,9 +335,16 @@ fn test_table_delete_nonexistent() {
         age: 30,
         email: "existing@test.com".to_string(),
     };
-    let keys = create_table_operation(&tree, "delete_nonexistent", std::slice::from_ref(&record));
+    let keys = create_table_operation(
+        ctx.database(),
+        "delete_nonexistent",
+        std::slice::from_ref(&record),
+    );
 
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op
             .get_store::<Table<TestRecord>>("delete_nonexistent")
@@ -330,12 +366,12 @@ fn test_table_delete_nonexistent() {
     op.commit().expect("Failed to commit operation");
 
     // Verify existing record persisted
-    assert_table_record(&tree, "delete_nonexistent", &keys[0], &record);
+    assert_table_record(ctx.database(), "delete_nonexistent", &keys[0], &record);
 }
 
 #[test]
 fn test_table_delete_and_reinsert() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create initial record
     let initial_record = TestRecord {
@@ -344,14 +380,17 @@ fn test_table_delete_and_reinsert() {
         email: "original@test.com".to_string(),
     };
     let keys = create_table_operation(
-        &tree,
+        ctx.database(),
         "delete_reinsert",
         std::slice::from_ref(&initial_record),
     );
     let original_key = &keys[0];
 
     // Delete the record
-    let op1 = tree.new_transaction().expect("Failed to start operation");
+    let op1 = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op1
             .get_store::<Table<TestRecord>>("delete_reinsert")
@@ -362,10 +401,13 @@ fn test_table_delete_and_reinsert() {
     op1.commit().expect("Failed to commit deletion");
 
     // Verify deletion
-    assert_table_record_deleted(&tree, "delete_reinsert", original_key);
+    assert_table_record_deleted(ctx.database(), "delete_reinsert", original_key);
 
     // Re-insert with the same key
-    let op2 = tree.new_transaction().expect("Failed to start operation");
+    let op2 = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op2
             .get_store::<Table<TestRecord>>("delete_reinsert")
@@ -395,22 +437,30 @@ fn test_table_delete_and_reinsert() {
         age: 30,
         email: "new@test.com".to_string(),
     };
-    assert_table_record(&tree, "delete_reinsert", original_key, &new_record);
+    assert_table_record(ctx.database(), "delete_reinsert", original_key, &new_record);
 }
 
 #[test]
 fn test_table_search_after_delete() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create test records using helper
     let records = create_test_records();
-    let keys = create_table_operation(&tree, "search_after_delete", &records);
+    let keys = create_table_operation(ctx.database(), "search_after_delete", &records);
 
     // Verify initial search count
-    assert_table_search_count(&tree, "search_after_delete", |record| record.age == 25, 2);
+    assert_table_search_count(
+        ctx.database(),
+        "search_after_delete",
+        |record| record.age == 25,
+        2,
+    );
 
     // Delete one of the age=25 records
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op
             .get_store::<Table<TestRecord>>("search_after_delete")
@@ -421,10 +471,16 @@ fn test_table_search_after_delete() {
     op.commit().expect("Failed to commit deletion");
 
     // Verify search count decreased
-    assert_table_search_count(&tree, "search_after_delete", |record| record.age == 25, 1);
+    assert_table_search_count(
+        ctx.database(),
+        "search_after_delete",
+        |record| record.age == 25,
+        1,
+    );
 
     // Verify the remaining age=25 record is the correct one
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("search_after_delete")
         .expect("Failed to get Table viewer");
 
@@ -437,14 +493,17 @@ fn test_table_search_after_delete() {
 
 #[test]
 fn test_table_delete_multiple() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create multiple records
     let values = &[10, 20, 30, 40, 50];
-    let keys = create_simple_table_operation(&tree, "delete_multiple", values);
+    let keys = create_simple_table_operation(ctx.database(), "delete_multiple", values);
 
     // Delete multiple records in one operation
-    let op = tree.new_transaction().expect("Failed to start operation");
+    let op = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     {
         let table = op
             .get_store::<Table<SimpleRecord>>("delete_multiple")
@@ -469,7 +528,8 @@ fn test_table_delete_multiple() {
     op.commit().expect("Failed to commit deletions");
 
     // Verify search returns only non-deleted records
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<SimpleRecord>>("delete_multiple")
         .expect("Failed to get Table viewer");
 
@@ -487,10 +547,13 @@ fn test_table_delete_multiple() {
 
 #[test]
 fn test_table_delete_concurrent_modifications() {
-    let (_instance, tree) = setup_tree();
+    let ctx = TestContext::new().with_database();
 
     // Create base record
-    let op_base = tree.new_transaction().expect("Failed to start operation");
+    let op_base = ctx
+        .database()
+        .new_transaction()
+        .expect("Failed to start operation");
     let key1 = {
         let table = op_base
             .get_store::<Table<TestRecord>>("concurrent_delete")
@@ -505,7 +568,8 @@ fn test_table_delete_concurrent_modifications() {
     let base_entry_id = op_base.commit().expect("Failed to commit base");
 
     // Branch A: Delete the record
-    let op_branch_a = tree
+    let op_branch_a = ctx
+        .database()
         .new_transaction_with_tips([base_entry_id.clone()])
         .expect("Failed to start branch A");
     {
@@ -520,7 +584,8 @@ fn test_table_delete_concurrent_modifications() {
         .expect("Failed to commit branch A deletion");
 
     // Branch B: Update the same record
-    let op_branch_b = tree
+    let op_branch_b = ctx
+        .database()
         .new_transaction_with_tips([base_entry_id])
         .expect("Failed to start branch B");
     {
@@ -543,7 +608,8 @@ fn test_table_delete_concurrent_modifications() {
 
     // Get merged result - CRDT last-write-wins should apply
     // The result depends on CRDT merge semantics
-    let viewer = tree
+    let viewer = ctx
+        .database()
         .get_store_viewer::<Table<TestRecord>>("concurrent_delete")
         .expect("Failed to get Table viewer");
 

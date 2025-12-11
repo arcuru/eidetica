@@ -7,6 +7,7 @@
 //! - database_operations_tests: Database CRUD operations
 
 use super::helpers::*;
+use crate::helpers::test_instance;
 use eidetica::store::DocStore;
 
 // ===== MULTI-USER COLLABORATION SCENARIOS =====
@@ -362,13 +363,12 @@ fn test_collaborative_database_with_global_permissions() {
 #[tokio::test]
 async fn test_collaborative_database_with_sync_and_global_permissions() {
     use eidetica::{
-        Database, Instance,
+        Database,
         auth::{
             Permission,
             settings::AuthSettings,
             types::{AuthKey, SigKey},
         },
-        backend::database::InMemory,
         crdt::Doc,
     };
     use std::time::Duration;
@@ -379,8 +379,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === ALICE'S INSTANCE (Server) ===
     println!("\n👤 Setting up Alice's instance...");
-    let alice_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create Alice's instance");
+    let alice_instance = test_instance();
     alice_instance
         .enable_sync()
         .expect("Failed to enable sync for Alice");
@@ -478,8 +477,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === BOB'S INSTANCE (Client) ===
     println!("\n👤 Setting up Bob's instance (separate from Alice)...");
-    let bob_instance =
-        Instance::open(Box::new(InMemory::new())).expect("Failed to create Bob's instance");
+    let bob_instance = test_instance();
     bob_instance
         .enable_sync()
         .expect("Failed to enable sync for Bob");

@@ -1,11 +1,10 @@
-use eidetica::{
-    backend::{BackendImpl, database::InMemory},
-    entry::{Entry, ID},
-};
+use eidetica::entry::{Entry, ID};
+
+use super::helpers::test_backend;
 
 #[test]
-fn test_in_memory_backend_subtree_operations() {
-    let backend = InMemory::new();
+fn test_backend_subtree_operations() {
+    let backend = test_backend();
 
     // Create a root entry with a subtree
     let root_entry = Entry::root_builder()
@@ -41,7 +40,7 @@ fn test_in_memory_backend_subtree_operations() {
 
 #[test]
 fn test_backend_get_store_from_tips() {
-    let backend = InMemory::new();
+    let backend = test_backend();
     let subtree_name = "my_subtree";
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -129,16 +128,16 @@ fn test_backend_get_store_from_tips() {
     assert!(last_two.contains(&e2b_id));
 
     // --- Test with non-existent subtree name ---
-    let subtree_bad_name =
-        backend.get_store_from_tips(&root_entry_id, "bad_name", std::slice::from_ref(&e2a_id));
+    // When given a tip that exists but doesn't have the specified store,
+    // the result should be empty.
+    let subtree_bad_name = backend
+        .get_store_from_tips(&root_entry_id, "bad_name", std::slice::from_ref(&e2a_id))
+        .expect("Getting subtree with bad name should succeed");
     assert!(
-        subtree_bad_name.is_ok(),
-        "Getting subtree with bad name should be ok..."
+        subtree_bad_name.is_empty(),
+        "Getting subtree with non-existent store name should return empty vector"
     );
-    assert!(
-        subtree_bad_name.unwrap().is_empty(),
-        "...but return empty list"
-    );
+
     // --- Test with non-existent tip ---
     let subtree_bad_tip = backend
         .get_store_from_tips(&root_entry_id, subtree_name, &["bad_tip_id".into()])
@@ -149,13 +148,15 @@ fn test_backend_get_store_from_tips() {
     );
 
     // --- Test with non-existent tree root ---
+    // When given a valid tip but an invalid root (tree_id doesn't match),
+    // the result should be empty because the tip doesn't belong to the specified tree.
     let bad_root_id_2: ID = "bad_root".into();
     let subtree_bad_root = backend
         .get_store_from_tips(&bad_root_id_2, subtree_name, std::slice::from_ref(&e1_id))
         .expect("Failed to get subtree with non-existent root");
     assert!(
         subtree_bad_root.is_empty(),
-        "Getting subtree from non-existent root should return empty list"
+        "Getting subtree from tip with mismatched root should return empty vector"
     );
 
     // --- Test get_subtree() convenience function ---
@@ -177,7 +178,7 @@ fn test_backend_get_store_from_tips() {
 
 #[test]
 fn test_get_store_tips() {
-    let backend = InMemory::new();
+    let backend = test_backend();
 
     // Create a tree with subtrees
     let root = Entry::root_builder()

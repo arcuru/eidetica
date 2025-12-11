@@ -17,7 +17,7 @@ Key responsibilities of a Database:
 
 ### InMemory
 
-The `InMemory` database is currently the primary storage implementation:
+The `InMemory` database is a simple in-memory storage implementation:
 
 - Stores all entries in memory
 - Can load from and save to a JSON file
@@ -48,9 +48,33 @@ let database = InMemory::load_from_file(&path)?;
 let db = Instance::open(Box::new(database))?;
 ```
 
-**Note:** The `InMemory` database is the only storage implementation currently provided with Eidetica.
+### SQLite
 
-<!-- TODO: Document other database implementations when available (e.g., persistent storage, distributed databases) -->
+SQLite provides embedded persistent storage. Enabled with the `sqlite` feature.
+
+<!-- Code block ignored: Requires async runtime context -->
+
+```rust,ignore
+use eidetica::backend::database::Sqlite;
+
+// File-based storage (async)
+let backend = Sqlite::open_sqlite("my_data.db").await?;
+
+// In-memory (sync, creates its own runtime)
+let backend = Sqlite::in_memory()?;
+```
+
+### PostgreSQL
+
+PostgreSQL provides production-grade persistent storage. Enabled with the `postgres` feature.
+
+<!-- Code block ignored: Requires PostgreSQL server -->
+
+```rust,ignore
+use eidetica::backend::database::Postgres;
+
+let backend = Postgres::connect("postgres://user:pass@localhost/mydb")?;
+```
 
 ## Database Trait Responsibilities
 

@@ -10,7 +10,6 @@ use eidetica::{
         crypto::{format_public_key, generate_keypair},
         settings::AuthSettings,
     },
-    backend::database::InMemory,
     constants::SETTINGS,
     crdt::Doc,
     instance::LegacyInstanceOps,
@@ -21,6 +20,8 @@ use eidetica::{
         protocol::{SyncRequest, SyncTreeRequest},
     },
 };
+
+use crate::helpers::test_instance;
 
 // === TEST INFRASTRUCTURE ===
 
@@ -35,8 +36,7 @@ fn setup_user_with_database() -> eidetica::Result<(
     eidetica::entry::ID,
     String,
 )> {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend)?;
+    let instance = test_instance();
 
     // Create and login user
     instance
@@ -438,8 +438,7 @@ async fn test_user_cannot_reject_after_approval() {
 #[tokio::test]
 async fn test_multiple_users() {
     // Create instances with 2 users
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend).expect("Failed to create instance1");
+    let instance = test_instance();
     instance
         .create_user("alice", None)
         .expect("Failed to create alice");
@@ -649,8 +648,7 @@ async fn test_user_list_pending_bootstrap_requests() {
 #[tokio::test]
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend).expect("Failed to create instance");
+    let instance = test_instance();
     instance
         .create_user("alice", None)
         .expect("Failed to create alice");

@@ -4,17 +4,15 @@
 //! settings tips tracking, metadata propagation, and historical validation.
 
 use eidetica::{
-    Instance,
-    backend::database::InMemory,
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,
 };
 
+use crate::helpers::test_instance;
+
 #[test]
 fn test_settings_tips_in_metadata() {
-    // Create a backend and database
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
 
     // Add a test key
     let key_id = "test_key";
@@ -98,9 +96,7 @@ fn test_settings_tips_in_metadata() {
 
 #[test]
 fn test_entry_get_settings_from_subtree() {
-    // Create a backend and database
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
 
     // Add a test key
     let key_id = "test_key";
@@ -141,9 +137,7 @@ fn test_entry_get_settings_from_subtree() {
 
 #[test]
 fn test_settings_tips_propagation() {
-    // Create a backend and database
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
 
     // Add a test key
     let key_id = "test_key";
@@ -220,8 +214,7 @@ fn test_settings_tips_propagation() {
 #[test]
 fn test_settings_metadata_with_complex_operations() {
     // Test settings metadata handling with complex operations
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
     let key_id = "complex_key";
     db.add_private_key(key_id).unwrap();
 
@@ -316,8 +309,7 @@ fn test_settings_metadata_with_complex_operations() {
 #[test]
 fn test_settings_metadata_with_branching() {
     // Test settings metadata with branching scenarios
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
     let key_id = "branch_key";
     db.add_private_key(key_id).unwrap();
 
@@ -395,8 +387,7 @@ fn test_settings_metadata_with_branching() {
 #[test]
 fn test_metadata_consistency_across_operations() {
     // Test that metadata is consistently tracked across different operation types
-    let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = test_instance();
     let key_id = "consistency_key";
     db.add_private_key(key_id).unwrap();
 

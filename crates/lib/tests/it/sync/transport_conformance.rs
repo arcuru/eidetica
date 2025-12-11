@@ -5,20 +5,21 @@
 
 use std::time::Duration;
 
-use eidetica::{Instance, Result, backend::database::InMemory, instance::LegacyInstanceOps};
+use eidetica::{Instance, Result, instance::LegacyInstanceOps};
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
+use crate::helpers::test_instance;
 
 /// Set up two Instance instances with private keys
 async fn setup_databases() -> Result<(Instance, Instance)> {
     let db1 = {
-        let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+        let db = test_instance();
         db.add_private_key("device_key")?;
         db
     };
     let db2 = {
-        let db = Instance::open(Box::new(InMemory::new())).expect("Failed to create test instance");
+        let db = test_instance();
         db.add_private_key("device_key")?;
         db
     };
