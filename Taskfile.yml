@@ -91,9 +91,10 @@ tasks:
     cmd: cargo doc --workspace --all-features --quiet
   audit:
     desc: Run security and license checks (advisories, licenses, bans, sources)
+    # Note: We use cargo-deny instead of cargo-audit because cargo-deny properly
+    # resolves features and ignores unused optional dependencies in Cargo.lock
     cmds:
       - cargo deny check
-      - cargo audit
   udeps:
     desc: Check for unused dependencies
     cmd: cargo udeps --workspace --all-targets

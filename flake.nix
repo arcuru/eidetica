@@ -13,12 +13,6 @@
       inputs.rust-analyzer-src.follows = "";
     };
 
-    # Rust dependency security advisories
-    advisory-db = {
-      url = "github:rustsec/advisory-db";
-      flake = false;
-    };
-
     # Flake helper for better organization with modules
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
@@ -198,8 +192,14 @@
               cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
             });
 
-          # License compliance checking
-          deny = craneLib.cargoDeny debugArgs;
+          # Compliance checking
+          # This runs cargo deny "bans", "licenses", and "sources" only
+          # It unfortunately does not run "advisories" because that requires a network connection
+          deny = craneLib.cargoDeny (debugArgs
+            // {
+              cargoDenyExtraArgs = "--workspace --all-features";
+              cargoDenyChecks = "bans licenses sources";
+            });
 
           # Documentation generation
           doc = craneLib.cargoDoc (debugArgs
@@ -244,13 +244,6 @@
               };
             });
 
-          # Security audit of dependencies
-          # Uses debug build for faster analysis (no runtime performance needed)
-          audit = craneLib.cargoAudit (debugArgs
-            // {
-              inherit (inputs) advisory-db;
-            });
-
           # Documentation examples testing
           book-test = craneLib.mkCargoDerivation (debugArgs
             // {
@@ -289,7 +282,6 @@
 
           inherit
             (config.packages)
-            audit # Security vulnerabilities
             clippy # Linting and code quality
             book-test # Documentation tests in the mdbook
             doc # Documentation builds
