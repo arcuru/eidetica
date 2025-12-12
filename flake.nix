@@ -169,7 +169,7 @@
           eidetica-bin = eidetica-bin;
           eidetica-image = eidetica-image;
 
-          # Check code coverage with tarpaulin
+          # Check code coverage with tarpaulin (inmemory backend)
           coverage = craneLib.cargoTarpaulin (baseArgs
             // {
               # Use dummy artifacts since tarpaulin rebuilds everything anyway
@@ -177,6 +177,23 @@
               # Use lcov output format for wider tool support and LLVM engine to avoid segfaults
               cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
               # Add llvm-tools-preview for tarpaulin
+              nativeBuildInputs =
+                baseArgs.nativeBuildInputs
+                ++ [
+                  (fenixStable.withComponents [
+                    "llvm-tools-preview"
+                  ])
+                ];
+            });
+
+          # Check code coverage with tarpaulin (sqlite backend)
+          coverage-sqlite = craneLib.cargoTarpaulin (baseArgs
+            // {
+              pname = "coverage-sqlite";
+              cargoArtifacts = craneLib.mkDummySrc {src = ./.;};
+              cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
+              # Set environment variable to use SQLite backend
+              TEST_BACKEND = "sqlite";
               nativeBuildInputs =
                 baseArgs.nativeBuildInputs
                 ++ [
@@ -293,7 +310,7 @@
             ;
 
           # Note: Excluded from CI for performance reasons:
-          # - coverage: tarpaulin can not use cached dependencies and rebuilds everything
+          # - coverage, coverage-sqlite: tarpaulin can not use cached dependencies and rebuilds everything
           # - bench: benchmarks are run separately and take significant time
         };
 
@@ -377,6 +394,9 @@
 
             # Performance analysis
             cargo-flamegraph # Profiling
+
+            # Code coverage
+            lcov # Merge coverage reports
 
             # Documentation
             mdbook # Book generation

@@ -11,6 +11,9 @@ env:
 jobs:
   coverage:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [inmemory, sqlite, postgres]
 
     steps:
       - name: Checkout
@@ -25,12 +28,49 @@ jobs:
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
 
-      - name: Build Coverage
+      - name: Start PostgreSQL
+        if: matrix.backend == 'postgres'
         run: |
-          cargo tarpaulin --verbose --all-features --out lcov --engine llvm
+          docker run -d --name test-postgres \
+            -e POSTGRES_DB=eidetica_test \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -p 5432:5432 \
+            postgres:16-alpine
+          # Wait for PostgreSQL to be ready
+          for i in $(seq 1 30); do
+            if docker exec test-postgres pg_isready -U postgres -d eidetica_test >/dev/null 2>&1; then
+              echo "PostgreSQL is ready!"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "Timed out waiting for PostgreSQL"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Run coverage (inmemory)
+        if: matrix.backend == 'inmemory'
+        run: |
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Run coverage (sqlite)
+        if: matrix.backend == 'sqlite'
+        run: |
+          TEST_BACKEND=sqlite \
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Run coverage (postgres)
+        if: matrix.backend == 'postgres'
+        run: |
+          TEST_BACKEND=postgres \
+          TEST_POSTGRES_URL="postgres://postgres@localhost:5432/eidetica_test" \
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          flags: ${{ matrix.backend }}
+          files: coverage/lcov.info
           fail_ci_if_error: true
