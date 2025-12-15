@@ -413,6 +413,17 @@ impl Entry {
             let subtree_name = &subtree_node.name;
             let subtree_parents = &subtree_node.parents;
 
+            // Empty string is not allowed as a subtree name
+            if subtree_name.is_empty() {
+                return Err(InstanceError::EntryValidationFailed {
+                    reason: format!(
+                        "Entry {} has a subtree with empty name. Store names must be non-empty.",
+                        self.id()
+                    ),
+                }
+                .into());
+            }
+
             // Skip validation for the special "_root" marker subtree
             if subtree_name == ROOT {
                 continue;

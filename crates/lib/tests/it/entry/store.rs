@@ -190,18 +190,20 @@ fn test_entrybuilder_subtree_parent_methods() {
 }
 
 #[test]
-fn test_subtree_empty_name() {
-    // Builder with empty subtree names
-    let entry_with_empty_subtree = Entry::builder(ID::from_bytes("test_root"))
-        .add_parent(ID::from_bytes("main_parent")) // Add parent for valid non-root entry
+fn test_subtree_empty_name_rejected() {
+    // Empty string is reserved, it cannot be used as a subtree name.
+    let entry_result = Entry::builder(ID::from_bytes("test_root"))
+        .add_parent(ID::from_bytes("main_parent"))
         .set_subtree_data("", "empty_subtree_data")
-        .build()
-        .expect("Entry with empty subtree name should build successfully");
+        .build();
 
-    // Verify the empty-named subtree exists
-    assert!(entry_with_empty_subtree.in_subtree(""));
-    assert_eq!(
-        entry_with_empty_subtree.data("").unwrap(),
-        "empty_subtree_data"
+    assert!(
+        entry_result.is_err(),
+        "Entry with empty subtree name should fail validation"
+    );
+    let err_msg = entry_result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("empty name"),
+        "Error should mention empty name: {err_msg}"
     );
 }

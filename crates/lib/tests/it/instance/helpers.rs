@@ -255,9 +255,7 @@ pub fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
         // The error contains "name:{non_existent_name}" format
         assert!(
             database_id.contains(non_existent_name),
-            "Expected database_id to contain '{}', got '{}'",
-            non_existent_name,
-            database_id
+            "Expected database_id to contain '{non_existent_name}', got '{database_id}'"
         );
     } else {
         panic!("Expected DatabaseNotTracked error, got an unexpected result");

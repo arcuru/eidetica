@@ -323,7 +323,7 @@ impl User {
 
         if matching.is_empty() {
             Err(crate::user::UserError::DatabaseNotTracked {
-                database_id: format!("name:{}", name),
+                database_id: format!("name:{name}"),
             }
             .into())
         } else {

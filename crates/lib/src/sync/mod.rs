@@ -381,8 +381,7 @@ impl Sync {
                 }
                 serde_json::from_str(&entry.config).map_err(|e| {
                     SyncError::SerializationError(format!(
-                        "Failed to deserialize transport config '{}': {}",
-                        name, e
+                        "Failed to deserialize transport config '{name}': {e}"
                     ))
                     .into()
                 })
@@ -417,8 +416,7 @@ impl Sync {
     pub fn save_transport_config<T: TransportConfig>(&self, name: &str, config: &T) -> Result<()> {
         let json = serde_json::to_string(config).map_err(|e| {
             SyncError::SerializationError(format!(
-                "Failed to serialize transport config '{}': {}",
-                name, e
+                "Failed to serialize transport config '{name}': {e}"
             ))
         })?;
         let tx = self.sync_tree.new_transaction()?;
