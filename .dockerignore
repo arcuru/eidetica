@@ -1,8 +1,17 @@
-# Include all gitignore patterns
-.gitignore
+# Build artifacts
+**/target/
+**/*.rs.bk
+/result
+
+# Development tooling
+/.direnv
+/.task
+/.vscode
+/.idea
 
 # Additional Docker-specific exclusions (files tracked in git but not needed in container)
 .git
+.jj
 .github/
 .forgejo/
 *.md

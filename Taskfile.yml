@@ -179,12 +179,7 @@ tasks:
     cmds:
       - docker build -t eidetica:dev .
   container:nix:
-    desc: Build Nix OCI container image
-    cmds:
-      - nix build .#eidetica-image
-      - echo "Image built at ./result"
-  container:load:
-    desc: Load Nix OCI image into Docker
+    desc: Build and load Nix OCI container image
     cmds:
       - nix build .#eidetica-image
       - docker load < ./result
