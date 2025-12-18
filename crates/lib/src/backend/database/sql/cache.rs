@@ -9,7 +9,7 @@ use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::entry::ID;
 
-use super::SqlxBackend;
+use super::{SqlxBackend, SqlxResultExt};
 
 /// Calculate heights for all entries in a tree or store context.
 ///
@@ -64,10 +64,7 @@ async fn get_cached_heights(
     .bind(store_name)
     .fetch_all(pool)
     .await
-    .map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to get cached heights: {e}"),
-        source: Some(e),
-    })?;
+    .sql_context("Failed to get cached heights")?;
 
     let mut heights = HashMap::with_capacity(rows.len());
     for (entry_id, height) in rows {
@@ -96,10 +93,7 @@ async fn count_entries_in_context(
             .bind(store_name)
             .fetch_one(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to count entries in store: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to count entries in store")?;
             row.0
         }
         None => {
@@ -107,10 +101,7 @@ async fn count_entries_in_context(
                 .bind(tree_id.to_string())
                 .fetch_one(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to count entries in tree: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to count entries in tree")?;
             row.0
         }
     };
@@ -229,10 +220,7 @@ async fn build_graph_from_db(
             .bind(store_name)
             .fetch_all(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get entries in store: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get entries in store")?;
 
             for (entry_id,) in entry_rows {
                 let entry_id = ID::from(entry_id);
@@ -246,10 +234,7 @@ async fn build_graph_from_db(
                 .bind(store_name)
                 .fetch_all(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to get store parents: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to get store parents")?;
 
                 let parents: Vec<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
 
@@ -263,10 +248,7 @@ async fn build_graph_from_db(
                     .bind(tree_id.to_string())
                     .fetch_all(pool)
                     .await
-                    .map_err(|e| BackendError::SqlxError {
-                        reason: format!("Failed to get entries in tree: {e}"),
-                        source: Some(e),
-                    })?;
+                    .sql_context("Failed to get entries in tree")?;
 
             for (entry_id,) in entry_rows {
                 let entry_id = ID::from(entry_id);
@@ -278,10 +260,7 @@ async fn build_graph_from_db(
                         .bind(entry_id.to_string())
                         .fetch_all(pool)
                         .await
-                        .map_err(|e| BackendError::SqlxError {
-                            reason: format!("Failed to get tree parents: {e}"),
-                            source: Some(e),
-                        })?;
+                        .sql_context("Failed to get tree parents")?;
 
                 let parents: Vec<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
 
@@ -315,10 +294,7 @@ async fn cache_heights(
             .bind(*height as i64)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to cache height: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to cache height")?;
         } else {
             sqlx::query(
                 "INSERT INTO heights (entry_id, tree_id, store_name, height)
@@ -331,10 +307,7 @@ async fn cache_heights(
             .bind(*height as i64)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to cache height: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to cache height")?;
         }
     }
 
@@ -363,10 +336,7 @@ pub async fn get_entry_height(
     .bind(store_name)
     .fetch_optional(pool)
     .await
-    .map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to get entry height: {e}"),
-        source: Some(e),
-    })?;
+    .sql_context("Failed to get entry height")?;
 
     if let Some((height,)) = row {
         return Ok(height as usize);

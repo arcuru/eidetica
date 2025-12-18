@@ -19,7 +19,7 @@
 use crate::Result;
 use crate::backend::errors::BackendError;
 
-use super::SqlxBackend;
+use super::{SqlxBackend, SqlxResultExt};
 
 /// Current schema version.
 ///
@@ -129,20 +129,14 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         sqlx::query(statement)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Schema creation failed: {e} - SQL: {statement}"),
-                source: Some(e),
-            })?;
+            .sql_context("Schema creation failed")?;
     }
 
     // Check current schema version
     let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM schema_version")
         .fetch_optional(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to check schema version: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to check schema version")?;
 
     if row.is_none() {
         // First initialization
@@ -150,10 +144,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             .bind(SCHEMA_VERSION)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to initialize schema version: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to initialize schema version")?;
     } else if let Some((current_version,)) = row
         && current_version < SCHEMA_VERSION
     {
@@ -166,10 +157,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         sqlx::query(statement)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Index creation failed: {e} - SQL: {statement}"),
-                source: Some(e),
-            })?;
+            .sql_context("Index creation failed")?;
     }
 
     Ok(())
@@ -194,10 +182,7 @@ async fn migrate(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
             .bind(next)
             .execute(backend.pool())
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to update schema version to {next}: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to update schema version")?;
 
         tracing::info!(version = next, "Migration completed");
         current = next;

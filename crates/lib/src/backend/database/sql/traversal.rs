@@ -9,7 +9,7 @@ use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 
-use super::SqlxBackend;
+use super::{SqlxBackend, SqlxResultExt};
 
 /// Get tree tips (entries with no children in the main tree).
 pub async fn get_tips(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
@@ -27,10 +27,7 @@ pub async fn get_store_tips(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
             .bind(store)
             .fetch_all(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get store tips: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get store tips")?;
 
     Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
 }
@@ -68,10 +65,7 @@ pub async fn get_store_tips_up_to_entries(
         .bind(store)
         .fetch_optional(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to check store membership: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to check store membership")?;
 
         if in_store.is_some() {
             reachable.insert(entry_id.clone());
@@ -83,10 +77,7 @@ pub async fn get_store_tips_up_to_entries(
                 .bind(entry_id.to_string())
                 .fetch_all(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to get tree parents: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to get tree parents")?;
 
         for (parent_id,) in parent_rows {
             let parent_id = ID::from(parent_id);
@@ -114,10 +105,7 @@ pub async fn get_store_tips_up_to_entries(
             .bind(store)
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to check store parents: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to check store parents")?;
 
             if result.is_some() {
                 has_child = true;
@@ -190,10 +178,7 @@ pub async fn find_lca(
                 .bind(store)
                 .fetch_all(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to get store parents: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to get store parents")?;
 
                 for (parent_id,) in parent_rows {
                     queue.push_back(ID::from(parent_id));
@@ -242,10 +227,7 @@ pub async fn collect_root_to_target(
         .bind(store)
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get store parents: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get store parents")?;
 
         if parent_rows.is_empty() {
             // Reached root
@@ -291,10 +273,7 @@ pub async fn get_tree_from_tips(
                 .bind(tree.to_string())
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to check tree membership: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to check tree membership")?;
 
         if in_tree.is_some() {
             to_visit.push_back(tip.clone());
@@ -304,10 +283,7 @@ pub async fn get_tree_from_tips(
                 .bind(tip.to_string())
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to check entry existence: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to check entry existence")?;
 
             if exists.is_some() {
                 return Err(BackendError::EntryNotInTree {
@@ -333,10 +309,7 @@ pub async fn get_tree_from_tips(
                 .bind(entry_id.to_string())
                 .fetch_all(pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to get tree parents: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to get tree parents")?;
 
         for (parent_id,) in parent_rows {
             let parent_id = ID::from(parent_id);
@@ -353,10 +326,7 @@ pub async fn get_tree_from_tips(
             .bind(id.to_string())
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get entry: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get entry")?;
 
         if let Some((json,)) = row {
             let entry: Entry = serde_json::from_str(&json)
@@ -408,10 +378,7 @@ pub async fn get_store_from_tips(
         .bind(store)
         .fetch_optional(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to check tree/store membership: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to check tree/store membership")?;
 
         if in_tree_and_store.is_some() {
             to_visit.push_back(tip.clone());
@@ -432,10 +399,7 @@ pub async fn get_store_from_tips(
         .bind(store)
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get store parents: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get store parents")?;
 
         for (parent_id,) in parent_rows {
             let parent_id = ID::from(parent_id);
@@ -452,10 +416,7 @@ pub async fn get_store_from_tips(
             .bind(id.to_string())
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get entry: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get entry")?;
 
         if let Some((json,)) = row {
             let entry: Entry = serde_json::from_str(&json)
@@ -488,10 +449,7 @@ pub async fn get_sorted_store_parents(
     .bind(store)
     .fetch_all(pool)
     .await
-    .map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to get store parents: {e}"),
-        source: Some(e),
-    })?;
+    .sql_context("Failed to get store parents")?;
 
     let parents: Vec<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
 
@@ -553,10 +511,7 @@ pub async fn get_path_from_to(
         .bind(store)
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get store parents: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get store parents")?;
 
         for (parent_id,) in parent_rows {
             let parent_id = ID::from(parent_id);

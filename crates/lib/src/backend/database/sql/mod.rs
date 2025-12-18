@@ -41,6 +41,27 @@ use crate::backend::errors::BackendError;
 use crate::backend::{BackendImpl, VerificationStatus};
 use crate::entry::{Entry, ID};
 
+/// Extension trait for sqlx Result types to simplify error handling.
+///
+/// Similar to `anyhow::Context`, this trait adds a method to convert
+/// sqlx errors to `BackendError::SqlxError` with a context message.
+pub(crate) trait SqlxResultExt<T> {
+    /// Convert sqlx error to BackendError with context message.
+    fn sql_context(self, context: &str) -> Result<T>;
+}
+
+impl<T> SqlxResultExt<T> for std::result::Result<T, sqlx::Error> {
+    fn sql_context(self, context: &str) -> Result<T> {
+        self.map_err(|e| {
+            BackendError::SqlxError {
+                reason: format!("{context}: {e}"),
+                source: Some(e),
+            }
+            .into()
+        })
+    }
+}
+
 /// Database backend kind for SQL dialect selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbKind {
@@ -165,10 +186,7 @@ impl SqlxBackend {
             .max_connections(5)
             .connect(url)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to connect to SQLite: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to connect to SQLite")?;
 
         // Configure SQLite:
         // - journal_mode=WAL: Write-Ahead Logging for better concurrency
@@ -181,10 +199,7 @@ impl SqlxBackend {
         )
         .execute(&pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to configure SQLite: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to configure SQLite")?;
 
         let backend = Self {
             pool,
@@ -318,20 +333,14 @@ impl SqlxBackend {
                 .max_connections(1)
                 .connect(url)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to connect to PostgreSQL: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to connect to PostgreSQL")?;
 
             // Create schema if it doesn't exist
             let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {schema}");
             sqlx::query(&create_schema)
                 .execute(&temp_pool)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to create schema {schema}: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context(&format!("Failed to create schema {schema}"))?;
 
             temp_pool.close().await;
 
@@ -346,10 +355,7 @@ impl SqlxBackend {
             .max_connections(5)
             .connect(&connection_url)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to connect to PostgreSQL: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to connect to PostgreSQL")?;
 
         let backend = Self {
             pool,

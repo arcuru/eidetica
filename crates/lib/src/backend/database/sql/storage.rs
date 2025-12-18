@@ -9,7 +9,7 @@ use crate::backend::VerificationStatus;
 use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 
-use super::SqlxBackend;
+use super::{SqlxBackend, SqlxResultExt};
 
 /// Get an entry by ID.
 pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
@@ -19,10 +19,7 @@ pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
         .bind(id.to_string())
         .fetch_optional(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get entry: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get entry")?;
 
     match row {
         Some((json,)) => {
@@ -43,10 +40,7 @@ pub async fn get_verification_status(backend: &SqlxBackend, id: &ID) -> Result<V
             .bind(id.to_string())
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get verification status: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get verification status")?;
 
     match row {
         Some((status,)) => Ok(match status {
@@ -88,14 +82,13 @@ pub async fn put(
     };
 
     // Use a transaction for atomicity
-    let mut tx = pool.begin().await.map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to begin transaction: {e}"),
-        source: Some(e),
-    })?;
+    let mut tx = pool
+        .begin()
+        .await
+        .sql_context("Failed to begin transaction")?;
 
     // Insert or update entry (different syntax for SQLite vs Postgres)
     let is_root_int: i64 = if is_root { 1 } else { 0 };
-
     if backend.is_sqlite() {
         sqlx::query(
             "INSERT OR REPLACE INTO entries (id, tree_id, is_root, verification_status, entry_json)
@@ -108,10 +101,7 @@ pub async fn put(
         .bind(&entry_json)
         .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to insert entry: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to insert entry")?;
     } else {
         // PostgreSQL uses ON CONFLICT
         sqlx::query(
@@ -130,10 +120,7 @@ pub async fn put(
         .bind(&entry_json)
         .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to insert entry: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to insert entry")?;
     }
 
     // Clear existing parent relationships for this entry
@@ -141,28 +128,19 @@ pub async fn put(
         .bind(id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to clear tree parents: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to clear tree parents")?;
 
     sqlx::query("DELETE FROM store_parents WHERE child_id = $1")
         .bind(id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to clear store parents: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to clear store parents")?;
 
     sqlx::query("DELETE FROM store_memberships WHERE entry_id = $1")
         .bind(id.to_string())
         .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to clear store memberships: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to clear store memberships")?;
 
     // Insert tree parent relationships
     for parent_id in entry.parents()? {
@@ -204,10 +182,9 @@ pub async fn put(
     // Update tips incrementally
     update_tips_for_entry(backend, &mut tx, &id, &tree_id, &entry).await?;
 
-    tx.commit().await.map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to commit transaction: {e}"),
-        source: Some(e),
-    })?;
+    tx.commit()
+        .await
+        .sql_context("Failed to commit transaction")?;
 
     Ok(())
 }
@@ -238,10 +215,7 @@ async fn insert_or_ignore(
     query
         .execute(&mut **tx)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to insert into {table}: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context(&format!("Failed to insert into {table}"))?;
 
     Ok(())
 }
@@ -276,10 +250,7 @@ async fn update_tips_for_entry(
             .bind("")
             .execute(&mut **tx)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to delete tip: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to delete tip")?;
         }
     }
 
@@ -310,10 +281,7 @@ async fn update_tips_for_entry(
                 .bind(&store_name)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| BackendError::SqlxError {
-                    reason: format!("Failed to delete store tip: {e}"),
-                    source: Some(e),
-                })?;
+                .sql_context("Failed to delete store tip")?;
             }
         }
     }
@@ -339,10 +307,7 @@ pub async fn update_verification_status(
         .bind(id.to_string())
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to update verification status: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to update verification status")?;
 
     if result.rows_affected() == 0 {
         return Err(BackendError::EntryNotFound { id: id.clone() }.into());
@@ -368,10 +333,7 @@ pub async fn get_entries_by_verification_status(
             .bind(status_int)
             .fetch_all(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get entries by status: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get entries by status")?;
 
     Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
 }
@@ -383,10 +345,7 @@ pub async fn all_roots(backend: &SqlxBackend) -> Result<Vec<ID>> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM entries WHERE is_root = 1")
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get all roots: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get all roots")?;
 
     Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
 }
@@ -399,10 +358,7 @@ pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
         .bind(tree.to_string())
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to get tree: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to get tree")?;
 
     let mut entries = Vec::with_capacity(rows.len());
     for (json,) in rows {
@@ -431,10 +387,7 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
     .bind(store)
     .fetch_all(pool)
     .await
-    .map_err(|e| BackendError::SqlxError {
-        reason: format!("Failed to get store: {e}"),
-        source: Some(e),
-    })?;
+    .sql_context("Failed to get store")?;
 
     let mut entries = Vec::with_capacity(rows.len());
     for (json,) in rows {
@@ -466,10 +419,7 @@ pub async fn store_private_key(
             .bind(&key_bytes)
             .execute(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to store private key: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to store private key")?;
     } else {
         sqlx::query(
             "INSERT INTO private_keys (key_name, key_bytes) VALUES ($1, $2)
@@ -479,10 +429,7 @@ pub async fn store_private_key(
         .bind(&key_bytes)
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to store private key: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to store private key")?;
     }
 
     Ok(())
@@ -497,10 +444,7 @@ pub async fn get_private_key(backend: &SqlxBackend, key_name: &str) -> Result<Op
             .bind(key_name)
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get private key: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get private key")?;
 
     match row {
         Some((bytes,)) => {
@@ -520,10 +464,7 @@ pub async fn list_private_keys(backend: &SqlxBackend) -> Result<Vec<String>> {
     let rows: Vec<(String,)> = sqlx::query_as("SELECT key_name FROM private_keys")
         .fetch_all(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to list private keys: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to list private keys")?;
 
     Ok(rows.into_iter().map(|(name,)| name).collect())
 }
@@ -536,10 +477,7 @@ pub async fn remove_private_key(backend: &SqlxBackend, key_name: &str) -> Result
         .bind(key_name)
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to remove private key: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to remove private key")?;
 
     Ok(())
 }
@@ -560,10 +498,7 @@ pub async fn get_cached_crdt_state(
             .bind(store)
             .fetch_optional(pool)
             .await
-            .map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to get cached CRDT state: {e}"),
-                source: Some(e),
-            })?;
+            .sql_context("Failed to get cached CRDT state")?;
 
     Ok(row.map(|(state,)| state))
 }
@@ -586,10 +521,7 @@ pub async fn cache_crdt_state(
         .bind(&state)
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to cache CRDT state: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to cache CRDT state")?;
     } else {
         sqlx::query(
             "INSERT INTO crdt_cache (entry_id, store_name, state) VALUES ($1, $2, $3)
@@ -600,10 +532,7 @@ pub async fn cache_crdt_state(
         .bind(&state)
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to cache CRDT state: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to cache CRDT state")?;
     }
 
     Ok(())
@@ -616,10 +545,7 @@ pub async fn clear_crdt_cache(backend: &SqlxBackend) -> Result<()> {
     sqlx::query("DELETE FROM crdt_cache")
         .execute(pool)
         .await
-        .map_err(|e| BackendError::SqlxError {
-            reason: format!("Failed to clear CRDT cache: {e}"),
-            source: Some(e),
-        })?;
+        .sql_context("Failed to clear CRDT cache")?;
 
     Ok(())
 }
