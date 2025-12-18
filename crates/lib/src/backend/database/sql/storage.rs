@@ -87,60 +87,45 @@ pub async fn put(
         .await
         .sql_context("Failed to begin transaction")?;
 
-    // Insert or update entry (different syntax for SQLite vs Postgres)
-    let is_root_int: i64 = if is_root { 1 } else { 0 };
-    if backend.is_sqlite() {
-        sqlx::query(
-            "INSERT OR REPLACE INTO entries (id, tree_id, is_root, verification_status, entry_json)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(id.to_string())
-        .bind(tree_id.to_string())
-        .bind(is_root_int)
-        .bind(status_int)
-        .bind(&entry_json)
-        .execute(&mut *tx)
-        .await
-        .sql_context("Failed to insert entry")?;
-    } else {
-        // PostgreSQL uses ON CONFLICT
-        sqlx::query(
-            "INSERT INTO entries (id, tree_id, is_root, verification_status, entry_json)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (id) DO UPDATE SET
-                tree_id = EXCLUDED.tree_id,
-                is_root = EXCLUDED.is_root,
-                verification_status = EXCLUDED.verification_status,
-                entry_json = EXCLUDED.entry_json",
-        )
-        .bind(id.to_string())
-        .bind(tree_id.to_string())
-        .bind(is_root_int)
-        .bind(status_int)
-        .bind(&entry_json)
-        .execute(&mut *tx)
-        .await
-        .sql_context("Failed to insert entry")?;
+    // Check if entry already exists - entries are content-addressable and immutable
+    let existing_status: Option<(i64,)> =
+        sqlx::query_as("SELECT verification_status FROM entries WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .sql_context("Failed to check entry existence")?;
+
+    if let Some((existing_status_int,)) = existing_status {
+        // Entry exists - content is immutable, but verification_status may need update
+        if existing_status_int != status_int {
+            sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
+                .bind(status_int)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .sql_context("Failed to update verification status")?;
+            tx.commit()
+                .await
+                .sql_context("Failed to commit transaction")?;
+        }
+        // Relationships are immutable - no need to update or delete
+        return Ok(());
     }
 
-    // Clear existing parent relationships for this entry
-    sqlx::query("DELETE FROM tree_parents WHERE child_id = $1")
-        .bind(id.to_string())
-        .execute(&mut *tx)
-        .await
-        .sql_context("Failed to clear tree parents")?;
-
-    sqlx::query("DELETE FROM store_parents WHERE child_id = $1")
-        .bind(id.to_string())
-        .execute(&mut *tx)
-        .await
-        .sql_context("Failed to clear store parents")?;
-
-    sqlx::query("DELETE FROM store_memberships WHERE entry_id = $1")
-        .bind(id.to_string())
-        .execute(&mut *tx)
-        .await
-        .sql_context("Failed to clear store memberships")?;
+    // Insert new entry (we've already confirmed it doesn't exist)
+    let is_root_int: i64 = if is_root { 1 } else { 0 };
+    sqlx::query(
+        "INSERT INTO entries (id, tree_id, is_root, verification_status, entry_json)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id.to_string())
+    .bind(tree_id.to_string())
+    .bind(is_root_int)
+    .bind(status_int)
+    .bind(&entry_json)
+    .execute(&mut *tx)
+    .await
+    .sql_context("Failed to insert entry")?;
 
     // Insert tree parent relationships
     for parent_id in entry.parents()? {
