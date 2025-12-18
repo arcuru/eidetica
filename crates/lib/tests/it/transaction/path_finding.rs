@@ -469,3 +469,166 @@ async fn test_complex_path_finding_scenario() {
     )
     .await;
 }
+
+/// Test that find_merge_base correctly finds the merge base when there are bypass paths.
+///
+/// This test creates a DAG where a traditional LCA (lowest common ancestor) exists,
+/// but there's a parallel path that bypasses it. The correct merge base should be
+/// the ancestor where ALL paths converge - not just a common ancestor.
+///
+/// DAG structure:
+/// ```text
+///         R (root)
+///        / \
+///       A   X
+///      /|   |
+///     B |   |
+///     |  \ /
+///     D   C
+///     |   |
+///     E   F
+/// ```
+///
+/// Where:
+/// - E's only path to R: E → D → B → A → R
+/// - F's paths to R: F → C → A → R  OR  F → C → X → R (bypass!)
+///
+/// Traditional LCA of [E, F] = A (both can reach A)
+/// Correct merge base = R (the only point where ALL paths must converge)
+#[tokio::test]
+async fn test_find_merge_base_with_bypass_path() {
+    let ctx = TestContext::new().with_database().await;
+
+    // Step 1: Create R (the true merge base / root)
+    let op_r = ctx.database().new_transaction().await.unwrap();
+    let store_r = op_r.get_store::<DocStore>("data").await.unwrap();
+    store_r.set("root", "R_data").await.unwrap();
+    let r_id = op_r.commit().await.unwrap();
+
+    // Step 2: Create A (branches from R)
+    let op_a = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&r_id))
+        .await
+        .unwrap();
+    let store_a = op_a.get_store::<DocStore>("data").await.unwrap();
+    store_a.set("branch_a", "A_data").await.unwrap();
+    let a_id = op_a.commit().await.unwrap();
+
+    // Step 3: Create X (also branches from R, parallel to A)
+    let op_x = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&r_id))
+        .await
+        .unwrap();
+    let store_x = op_x.get_store::<DocStore>("data").await.unwrap();
+    store_x.set("bypass_x", "X_data").await.unwrap(); // This data will be MISSED with buggy LCA!
+    let x_id = op_x.commit().await.unwrap();
+
+    // Step 4: Create B (child of A only)
+    let op_b = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&a_id))
+        .await
+        .unwrap();
+    let store_b = op_b.get_store::<DocStore>("data").await.unwrap();
+    store_b.set("branch_b", "B_data").await.unwrap();
+    let b_id = op_b.commit().await.unwrap();
+
+    // Step 5: Create C (child of BOTH A and X - this creates the bypass!)
+    let op_c = ctx
+        .database()
+        .new_transaction_with_tips([a_id.clone(), x_id.clone()])
+        .await
+        .unwrap();
+    let store_c = op_c.get_store::<DocStore>("data").await.unwrap();
+    store_c.set("merge_c", "C_data").await.unwrap();
+    let c_id = op_c.commit().await.unwrap();
+
+    // Step 6: Create D (child of B only)
+    let op_d = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&b_id))
+        .await
+        .unwrap();
+    let store_d = op_d.get_store::<DocStore>("data").await.unwrap();
+    store_d.set("branch_d", "D_data").await.unwrap();
+    let d_id = op_d.commit().await.unwrap();
+
+    // Step 7: Create E (tip, child of D)
+    let op_e = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&d_id))
+        .await
+        .unwrap();
+    let store_e = op_e.get_store::<DocStore>("data").await.unwrap();
+    store_e.set("tip_e", "E_data").await.unwrap();
+    let e_id = op_e.commit().await.unwrap();
+
+    // Step 8: Create F (tip, child of C)
+    let op_f = ctx
+        .database()
+        .new_transaction_with_tips(std::slice::from_ref(&c_id))
+        .await
+        .unwrap();
+    let store_f = op_f.get_store::<DocStore>("data").await.unwrap();
+    store_f.set("tip_f", "F_data").await.unwrap();
+    let f_id = op_f.commit().await.unwrap();
+
+    // Now query state from tips [E, F]
+    // With buggy LCA: finds A as LCA, misses X's data
+    // With correct merge base: finds R, includes all data including X
+    let op_final = ctx
+        .database()
+        .new_transaction_with_tips([e_id.clone(), f_id.clone()])
+        .await
+        .unwrap();
+    let store_final = op_final.get_store::<DocStore>("data").await.unwrap();
+    let final_state = store_final.get_all().await.unwrap();
+
+    // These should all pass regardless of LCA implementation
+    assert!(final_state.get("root").is_some(), "Should have root R data");
+    assert!(
+        final_state.get("branch_a").is_some(),
+        "Should have branch A data"
+    );
+    assert!(
+        final_state.get("branch_b").is_some(),
+        "Should have branch B data"
+    );
+    assert!(
+        final_state.get("merge_c").is_some(),
+        "Should have merge C data"
+    );
+    assert!(
+        final_state.get("branch_d").is_some(),
+        "Should have branch D data"
+    );
+    assert!(final_state.get("tip_e").is_some(), "Should have tip E data");
+    assert!(final_state.get("tip_f").is_some(), "Should have tip F data");
+
+    // Directly test find_merge_base
+    let backend = ctx.database().backend().unwrap();
+    let merge_base = backend
+        .find_merge_base(ctx.database().root_id(), "data", &[e_id, f_id])
+        .await
+        .unwrap();
+
+    // Traditional LCA would return A (both E and F can reach A)
+    // Correct merge base should return R (the only point where ALL paths converge)
+    assert_eq!(
+        merge_base, r_id,
+        "find_merge_base should return R, not the traditional LCA A. \
+         E's path: E→D→B→A→R. F's paths: F→C→A→R OR F→C→X→R. \
+         Since F can bypass A via X, the merge base is R, not A."
+    );
+
+    // With the corrected find_merge_base algorithm:
+    // - find_merge_base correctly returns R (the merge base, not traditional LCA)
+    // - State is computed from R, which includes all branches
+    // - X's data is correctly included because R is the proper merge base
+    assert!(
+        final_state.get("bypass_x").is_some(),
+        "Should have bypass X data - find_merge_base correctly returns R as the merge base"
+    );
+}

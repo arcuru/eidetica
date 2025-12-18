@@ -494,10 +494,10 @@ async fn test_true_diamond_pattern() {
 
     println!("True diamond pattern final state: {final_state:#?}");
 
-    // With the CORRECT LCA-based algorithm:
+    // With the CORRECT merge-base algorithm:
     // 1. get_full_state() will see tips [B, C] from the operation
-    // 2. compute_subtree_state_lca_based([B, C]) will be called
-    // 3. find_lca([B, C]) = A (common ancestor)
+    // 2. compute_subtree_state_merge_base([B, C]) will be called
+    // 3. find_merge_base([B, C]) = A (common ancestor)
     // 4. compute_single_entry_state_recursive(A) gets State(A)
     // 5. Merge path A->B into State(A)
     // 6. Merge path A->C into the result

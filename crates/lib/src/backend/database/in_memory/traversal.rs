@@ -1,10 +1,10 @@
 //! Database traversal and pathfinding for InMemory database
 //!
 //! This module handles navigation through the DAG structure of trees,
-//! including path building, LCA (Lowest Common Ancestor) algorithms,
-//! parent-child relationships, and tip finding.
+//! including path building, merge base computation, parent-child
+//! relationships, and tip finding.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use super::InMemory;
 use crate::{Result, backend::errors::BackendError, entry::ID};
@@ -158,15 +158,23 @@ pub(crate) async fn get_path_from_to(
         }
     }
 
-    // Deduplicate and sort result by height then ID for deterministic ordering
+    // Deduplicate result
     result.sort();
     result.dedup();
 
+    // Sort by subtree height then ID for deterministic ordering
+    // Fetch entries to get their embedded heights
     if !result.is_empty() {
-        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree)).await?;
+        let entries = backend.entries.read().await;
         result.sort_by(|a, b| {
-            let a_height = *heights.get(a).unwrap_or(&0);
-            let b_height = *heights.get(b).unwrap_or(&0);
+            let a_height = entries
+                .get(a)
+                .and_then(|e| e.subtree_height(subtree).ok())
+                .unwrap_or(0);
+            let b_height = entries
+                .get(b)
+                .and_then(|e| e.subtree_height(subtree).ok())
+                .unwrap_or(0);
             a_height.cmp(&b_height).then_with(|| a.cmp(b))
         });
     }
@@ -208,14 +216,19 @@ pub(crate) async fn get_sorted_store_parents(
         Ok(parents) => parents,
         Err(_) => return Ok(Vec::new()),
     };
-    drop(entries);
 
     // Sort parents by height (ascending), then by ID for determinism
+    // Heights are embedded in entries, so we read them directly
     if !parents.is_empty() {
-        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree)).await?;
         parents.sort_by(|a, b| {
-            let a_height = *heights.get(a).unwrap_or(&0);
-            let b_height = *heights.get(b).unwrap_or(&0);
+            let a_height = entries
+                .get(a)
+                .and_then(|e| e.subtree_height(subtree).ok())
+                .unwrap_or(0);
+            let b_height = entries
+                .get(b)
+                .and_then(|e| e.subtree_height(subtree).ok())
+                .unwrap_or(0);
             a_height.cmp(&b_height).then_with(|| a.cmp(b))
         });
     }
@@ -223,20 +236,19 @@ pub(crate) async fn get_sorted_store_parents(
     Ok(parents)
 }
 
-/// Find the Lowest Common Ancestor (LCA) of multiple entries within a tree/subtree
+/// Find the merge base (common dominator) of multiple entries within a tree/subtree.
 ///
-/// This function uses breadth-first search to find the first common ancestor
-/// that is reachable from all the specified entry IDs.
+/// The merge base is the lowest ancestor that ALL paths from ALL tips must pass through.
 ///
 /// # Arguments
 /// * `backend` - The InMemory database
 /// * `tree` - The ID of the tree containing all entries
 /// * `subtree` - The name of the subtree to search within
-/// * `entry_ids` - The entry IDs to find the LCA for
+/// * `entry_ids` - The entry IDs to find the merge base for
 ///
 /// # Returns
-/// A `Result` containing the ID of the lowest common ancestor, or an error if no LCA is found.
-pub(crate) async fn find_lca(
+/// A `Result` containing the ID of the merge base, or an error if none is found.
+pub(crate) async fn find_merge_base(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -244,7 +256,7 @@ pub(crate) async fn find_lca(
 ) -> Result<ID> {
     if entry_ids.is_empty() {
         return Err(BackendError::EmptyEntryList {
-            operation: "LCA".to_string(),
+            operation: "find_merge_base".to_string(),
         }
         .into());
     }
@@ -253,31 +265,23 @@ pub(crate) async fn find_lca(
         return Ok(entry_ids[0].clone());
     }
 
-    // Debug logging for LCA algorithm
     tracing::debug!(
         tree_id = %tree,
         subtree = subtree,
         entry_count = entry_ids.len(),
         entry_ids = ?entry_ids,
-        "Starting LCA algorithm"
+        "Starting merge base algorithm"
     );
 
     // Verify that all entries exist and belong to the specified tree
     for entry_id in entry_ids {
         match super::storage::get(backend, entry_id).await {
             Ok(entry) => {
-                // CRITICAL: Validate entry structure to fail fast on invalid data
-                //
-                // This validation step is essential for preventing the LCA algorithm
-                // from operating on entries with broken subtree parent relationships.
-                // Without this check, the algorithm could fail with confusing
-                // errors. By validating here, we provide clear error messages
-                // that identify the specific invalid entry.
                 if let Err(validation_error) = entry.validate() {
                     tracing::error!(
                         entry_id = %entry_id,
                         error = %validation_error,
-                        "Entry failed validation in LCA algorithm"
+                        "Entry failed validation in merge base algorithm"
                     );
                     return Err(BackendError::EntryValidationFailed {
                         entry_id: entry_id.clone(),
@@ -299,11 +303,6 @@ pub(crate) async fn find_lca(
                     }
                     .into());
                 }
-                tracing::debug!(
-                    entry_id = %entry_id,
-                    parents = ?entry.parents().unwrap_or_default(),
-                    "Entry verified and belongs to tree"
-                );
             }
             Err(_) => {
                 tracing::error!(entry_id = %entry_id, "Entry not found");
@@ -315,149 +314,154 @@ pub(crate) async fn find_lca(
         }
     }
 
-    // Track which entries can reach each ancestor
-    let mut ancestors: HashMap<ID, HashSet<usize>> = HashMap::new();
-    let mut queues: Vec<VecDeque<ID>> = Vec::new();
-
-    // Initialize BFS from each entry
-    for (idx, entry_id) in entry_ids.iter().enumerate() {
-        let mut queue = VecDeque::new();
-        queue.push_back(entry_id.clone());
-        ancestors.entry(entry_id.clone()).or_default().insert(idx);
-        queues.push(queue);
+    // Step 1: Collect all ancestors for each entry
+    // FIXME(perf): Improve this, it's correct but leaves optimizations on the table.
+    let mut ancestor_sets: Vec<HashSet<ID>> = Vec::with_capacity(entry_ids.len());
+    for entry_id in entry_ids {
+        let ancestors = collect_ancestors(backend, subtree, entry_id).await?;
+        ancestor_sets.push(ancestors);
     }
 
-    // BFS upward until we find common ancestor
-    let mut iteration = 0;
-    loop {
-        iteration += 1;
-        let mut any_progress = false;
+    // Step 2: Find common ancestors (intersection of all ancestor sets)
+    let mut common_ancestors: HashSet<ID> = ancestor_sets[0].clone();
+    for ancestor_set in &ancestor_sets[1..] {
+        common_ancestors.retain(|a| ancestor_set.contains(a));
+    }
 
-        tracing::trace!(iteration = iteration, "LCA BFS iteration starting");
+    if common_ancestors.is_empty() {
+        tracing::debug!(subtree = subtree, "No common ancestors found");
+        return Err(BackendError::NoCommonAncestor {
+            entry_ids: entry_ids.to_vec(),
+        }
+        .into());
+    }
 
-        for (idx, queue) in queues.iter_mut().enumerate() {
-            if let Some(current) = queue.pop_front() {
-                any_progress = true;
+    // Step 3: Get heights for sorting (we want highest height first = closest to tips)
+    let mut candidates: Vec<(ID, u64)> = Vec::with_capacity(common_ancestors.len());
+    for id in common_ancestors {
+        let height = get_subtree_height(backend, subtree, &id).await?;
+        candidates.push((id, height));
+    }
+    // Sort by height descending (highest first = closest to tips)
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-                tracing::trace!(
-                    iteration = iteration,
-                    entry_idx = idx,
-                    current_entry = %current,
-                    "Processing entry in BFS"
-                );
+    tracing::trace!(
+        candidate_count = candidates.len(),
+        "Checking candidates for merge base"
+    );
 
-                // Check if this ancestor is reachable by all entries
-                let reachable_by = ancestors.entry(current.clone()).or_default();
-                reachable_by.insert(idx);
-
-                tracing::trace!(
-                    current_entry = %current,
-                    reachable_by_count = reachable_by.len(),
-                    required_count = entry_ids.len(),
-                    reachable_by = ?reachable_by,
-                    "Checking if entry is reachable by all"
-                );
-
-                if reachable_by.len() == entry_ids.len() {
-                    // Found LCA!
-                    tracing::debug!(
-                        lca = %current,
-                        iteration = iteration,
-                        "Found LCA successfully"
-                    );
-                    return Ok(current);
-                }
-
-                // Add parents to queue
-                if let Ok(entry) = super::storage::get(backend, &current).await {
-                    // Get subtree parents for LCA calculations
-                    match entry.subtree_parents(subtree) {
-                        Ok(parents) => {
-                            if parents.is_empty() {
-                                // This entry is a subtree root (has the subtree but no parents in it)
-                                tracing::trace!(
-                                    entry = %current,
-                                    subtree = subtree,
-                                    "Entry is subtree root (empty parents)"
-                                );
-                                // Don't add any parents - this is a root in the subtree
-                            } else {
-                                // Entry has parents in the subtree, add them to queue
-                                tracing::trace!(
-                                    entry = %current,
-                                    subtree_parents = ?parents,
-                                    "Adding subtree parents to queue"
-                                );
-
-                                for parent in parents {
-                                    tracing::trace!(
-                                        entry = %current,
-                                        parent = %parent,
-                                        "Adding parent to queue"
-                                    );
-                                    queue.push_back(parent);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Entry doesn't contain this subtree - this is a serious problem
-                            // All entries in subtree LCA should participate in that subtree
-                            tracing::error!(
-                                entry = %current,
-                                subtree = subtree,
-                                "Entry encountered in subtree LCA that doesn't contain the subtree"
-                            );
-                            return Err(BackendError::EntryNotInSubtree {
-                                entry_id: current,
-                                tree_id: tree.clone(),
-                                subtree: subtree.to_string(),
-                            }
-                            .into());
-                        }
-                    }
-                }
+    // Step 4: Find the first candidate where ALL paths from ALL entries pass through it
+    for (candidate, height) in candidates {
+        let mut all_paths_pass = true;
+        for entry_id in entry_ids {
+            if !all_paths_pass_through(backend, subtree, entry_id, &candidate).await? {
+                all_paths_pass = false;
+                break;
             }
         }
-
-        if !any_progress {
-            // BFS terminated without finding a perfect LCA
-            // This can happen legitimately when:
-            // 1. Entries in subtree don't share a common ancestor in that subtree
-            // 2. The subtree has multiple independent root entries
-            // 3. Entries arrived out of sync order and don't have proper parent relationships
-
+        if all_paths_pass {
             tracing::debug!(
-                iteration = iteration,
-                final_ancestors_count = ancestors.len(),
-                subtree = subtree,
-                "BFS terminated without finding perfect LCA - using fallback strategy"
+                merge_base = %candidate,
+                height = height,
+                "Found merge base"
             );
-
-            // TODO: Improve fallback strategy in LCA calculation
-
-            // Fallback strategy: find the ancestor reachable by the most entries
-            // If no perfect LCA exists, we use the "best" common ancestor available
-            if let Some((best_ancestor, reachable_set)) = ancestors
-                .iter()
-                .max_by_key(|(_, reachable_by)| reachable_by.len())
-            {
-                tracing::debug!(
-                    best_ancestor = %best_ancestor,
-                    reachable_by_count = reachable_set.len(),
-                    required_count = entry_ids.len(),
-                    "Using best available ancestor as fallback LCA"
-                );
-                return Ok(best_ancestor.clone());
-            }
-
-            break;
+            return Ok(candidate);
         }
     }
 
+    // Should not reach here if there's a root
     Err(BackendError::NoCommonAncestor {
         entry_ids: entry_ids.to_vec(),
     }
     .into())
+}
+
+/// Collect all ancestors of an entry in a subtree (including the entry itself).
+async fn collect_ancestors(backend: &InMemory, subtree: &str, entry: &ID) -> Result<HashSet<ID>> {
+    let mut ancestors: HashSet<ID> = HashSet::new();
+    let mut queue: VecDeque<ID> = VecDeque::new();
+    queue.push_back(entry.clone());
+
+    while let Some(current) = queue.pop_front() {
+        if ancestors.contains(&current) {
+            continue;
+        }
+        ancestors.insert(current.clone());
+
+        if let Ok(entry_data) = super::storage::get(backend, &current).await
+            && let Ok(parents) = entry_data.subtree_parents(subtree)
+        {
+            for parent in parents {
+                queue.push_back(parent);
+            }
+        }
+    }
+
+    Ok(ancestors)
+}
+
+/// Get the subtree height for an entry.
+async fn get_subtree_height(backend: &InMemory, subtree: &str, entry: &ID) -> Result<u64> {
+    if let Ok(entry_data) = super::storage::get(backend, entry).await {
+        // Try to get subtree-specific height, fall back to tree height
+        Ok(entry_data
+            .subtree_height(subtree)
+            .unwrap_or_else(|_| entry_data.height()))
+    } else {
+        Ok(0)
+    }
+}
+
+/// Check if ALL paths from entry to root pass through candidate.
+///
+/// This works by trying to reach a root (entry with no parents) while avoiding
+/// the candidate. If we can reach a root, there's a bypass path and the candidate
+/// is not on all paths.
+async fn all_paths_pass_through(
+    backend: &InMemory,
+    subtree: &str,
+    entry: &ID,
+    candidate: &ID,
+) -> Result<bool> {
+    // Trivial case: entry is the candidate
+    if entry == candidate {
+        return Ok(true);
+    }
+
+    // Try to reach a root while avoiding the candidate
+    let mut visited: HashSet<ID> = HashSet::new();
+    visited.insert(candidate.clone()); // Block the candidate
+    let mut queue: VecDeque<ID> = VecDeque::new();
+    queue.push_back(entry.clone());
+
+    while let Some(current) = queue.pop_front() {
+        if visited.contains(&current) {
+            continue;
+        }
+        visited.insert(current.clone());
+
+        // Get parents in subtree
+        if let Ok(entry_data) = super::storage::get(backend, &current).await {
+            match entry_data.subtree_parents(subtree) {
+                Ok(parents) => {
+                    if parents.is_empty() {
+                        // Reached a root while avoiding the candidate - there's a bypass path!
+                        return Ok(false);
+                    }
+                    for parent in parents {
+                        queue.push_back(parent);
+                    }
+                }
+                Err(_) => {
+                    // Entry doesn't have this subtree - treat as root
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    // Couldn't reach any root without going through the candidate
+    Ok(true)
 }
 
 /// Find the tip entries for the specified tree

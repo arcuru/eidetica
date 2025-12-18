@@ -228,20 +228,21 @@ pub trait BackendImpl: Send + Sync + Any {
     /// A `Result` containing a vector of top-level root entry IDs or an error.
     async fn all_roots(&self) -> Result<Vec<ID>>;
 
-    /// Finds the Lowest Common Ancestor (LCA) of the given entry IDs within a store.
+    /// Finds the merge base (common dominator) of the given entry IDs within a store.
     ///
-    /// The LCA is the deepest entry that is an ancestor of all the given entries
-    /// within the specified store context. This is used to determine optimal
-    /// computation boundaries for CRDT state calculation.
+    /// The merge base is the lowest ancestor that ALL paths from ALL entries must pass through.
+    /// This is different from the traditional LCA - if there are parallel paths that bypass
+    /// a common ancestor, that ancestor is not the merge base. This is used to determine
+    /// optimal computation boundaries for CRDT state calculation.
     ///
     /// # Arguments
     /// * `tree` - The root ID of the tree
     /// * `store` - The name of the store context
-    /// * `entry_ids` - The entry IDs to find the LCA for
+    /// * `entry_ids` - The entry IDs to find the merge base for
     ///
     /// # Returns
-    /// A `Result` containing the LCA entry ID, or an error if no common ancestor exists
-    async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
+    /// A `Result` containing the merge base entry ID, or an error if no common ancestor exists
+    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
 
     /// Collects all entries from the tree root down to the target entry within a store.
     ///

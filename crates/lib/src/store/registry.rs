@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::height::HeightStrategy;
+
 /// Trait for types that can be registered in a Registry.
 ///
 /// Provides a unique type identifier for runtime type checking. This trait
@@ -75,6 +77,29 @@ use crate::{
     store::{DocStore, Store, StoreError},
 };
 
+/// Common settings for any subtree type.
+///
+/// These settings can be configured per-subtree via the `_index` registry.
+/// Settings not specified here inherit from database-level defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubtreeSettings {
+    /// Height strategy override for this subtree.
+    ///
+    /// - `None`: Inherit from database-level strategy (subtree height omitted in entries)
+    /// - `Some(strategy)`: Use independent height calculation for this subtree
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_strategy: Option<HeightStrategy>,
+}
+
+impl SubtreeSettings {
+    /// Check if all settings are at their default values.
+    ///
+    /// Used for serde `skip_serializing_if` to avoid storing empty settings.
+    pub fn is_default(&self) -> bool {
+        self.height_strategy.is_none()
+    }
+}
+
 /// Metadata for a registry entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegistryEntry {
@@ -84,6 +109,10 @@ pub struct RegistryEntry {
 
     /// Type-specific configuration data as JSON string
     pub config: String,
+
+    /// Common subtree settings
+    #[serde(default, skip_serializing_if = "SubtreeSettings::is_default")]
+    pub settings: SubtreeSettings,
 }
 
 /// A registry that wraps a DocStore and provides specialized methods
@@ -158,7 +187,50 @@ impl Registry {
             })?
             .to_string();
 
-        Ok(RegistryEntry { type_id, config })
+        // Parse settings if present, default to empty settings
+        let settings = match doc.get("settings") {
+            Some(settings_value) => {
+                let settings_doc =
+                    settings_value
+                        .as_doc()
+                        .ok_or_else(|| StoreError::DeserializationFailed {
+                            store: self.inner.name().to_string(),
+                            reason: format!("Entry '{name}' settings is not a Doc"),
+                        })?;
+
+                // Parse height_strategy if present
+                let height_strategy = match settings_doc.get("height_strategy") {
+                    Some(strategy_value) => {
+                        let json = strategy_value.as_text().ok_or_else(|| {
+                            StoreError::DeserializationFailed {
+                                store: self.inner.name().to_string(),
+                                reason: format!(
+                                    "Entry '{name}' height_strategy is not a text value"
+                                ),
+                            }
+                        })?;
+                        Some(serde_json::from_str(json).map_err(|e| {
+                            StoreError::DeserializationFailed {
+                                store: self.inner.name().to_string(),
+                                reason: format!(
+                                    "Failed to parse height_strategy for '{name}': {e}"
+                                ),
+                            }
+                        })?)
+                    }
+                    None => None,
+                };
+
+                SubtreeSettings { height_strategy }
+            }
+            None => SubtreeSettings::default(),
+        };
+
+        Ok(RegistryEntry {
+            type_id,
+            config,
+            settings,
+        })
     }
 
     /// Check if an entry is registered
@@ -217,5 +289,71 @@ impl Registry {
         let keys: Vec<String> = full_state.keys().cloned().collect();
 
         Ok(keys)
+    }
+
+    /// Get the settings for a subtree.
+    ///
+    /// Returns default settings if the subtree is not registered or has no settings.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the subtree
+    ///
+    /// # Returns
+    /// The subtree settings (default if not found or not registered)
+    pub async fn get_subtree_settings(&self, name: impl AsRef<str>) -> Result<SubtreeSettings> {
+        match self.get_entry(name).await {
+            Ok(entry) => Ok(entry.settings),
+            Err(e) if e.is_not_found() => Ok(SubtreeSettings::default()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Update the settings for a registered subtree.
+    ///
+    /// The subtree must already be registered (via `set_entry`). This method
+    /// only updates the settings portion, preserving the type_id and config.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the subtree
+    /// * `settings` - The new settings to apply
+    ///
+    /// # Returns
+    /// Result indicating success or failure. Returns an error if the subtree
+    /// is not registered.
+    pub async fn set_subtree_settings(
+        &self,
+        name: impl AsRef<str>,
+        settings: SubtreeSettings,
+    ) -> Result<()> {
+        let name = name.as_ref();
+
+        // Get existing entry to preserve type_id and config
+        let entry = self.get_entry(name).await?;
+
+        // Create the nested structure with updated settings
+        let mut metadata_doc = Doc::new();
+        metadata_doc.set("type", doc::Value::Text(entry.type_id));
+        metadata_doc.set("config", doc::Value::Text(entry.config));
+
+        // Only add settings if non-default
+        if !settings.is_default() {
+            let mut settings_doc = Doc::new();
+            if let Some(strategy) = settings.height_strategy {
+                // Serialize the strategy as a JSON string for storage
+                let strategy_json = serde_json::to_string(&strategy).map_err(|e| {
+                    StoreError::SerializationFailed {
+                        store: self.inner.name().to_string(),
+                        reason: format!("Failed to serialize height_strategy: {e}"),
+                    }
+                })?;
+                settings_doc.set("height_strategy", doc::Value::Text(strategy_json));
+            }
+            metadata_doc.set("settings", doc::Value::Doc(settings_doc));
+        }
+
+        // Set the updated metadata
+        self.inner.set(name, doc::Value::Doc(metadata_doc)).await?;
+
+        Ok(())
     }
 }

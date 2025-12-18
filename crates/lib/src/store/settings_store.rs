@@ -11,6 +11,7 @@ use crate::{
         types::{AuthKey, ResolvedAuth, SigKey},
     },
     crdt::{Doc, doc},
+    height::HeightStrategy,
     store::DocStore,
 };
 
@@ -98,6 +99,48 @@ impl SettingsStore {
     /// A Doc containing all current settings
     pub async fn get_all(&self) -> Result<Doc> {
         self.inner.get_all().await
+    }
+
+    /// Get the height strategy for this database.
+    ///
+    /// Returns [`HeightStrategy::Incremental`] if no strategy is configured,
+    /// ensuring backwards compatibility with existing databases.
+    ///
+    /// # Returns
+    /// The configured height strategy, or the default (Incremental)
+    pub async fn get_height_strategy(&self) -> Result<HeightStrategy> {
+        match self.inner.get("height_strategy").await {
+            Ok(value) => {
+                // HeightStrategy is stored as JSON in a Text value
+                let json = match value {
+                    doc::Value::Text(s) => s,
+                    _ => return Ok(HeightStrategy::default()),
+                };
+                serde_json::from_str(&json).map_err(|e| {
+                    crate::crdt::CRDTError::DeserializationFailed {
+                        reason: e.to_string(),
+                    }
+                    .into()
+                })
+            }
+            Err(e) if e.is_not_found() => Ok(HeightStrategy::default()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Set the height strategy for this database.
+    ///
+    /// # Arguments
+    /// * `strategy` - The height strategy to use
+    pub async fn set_height_strategy(&self, strategy: HeightStrategy) -> Result<()> {
+        let json = serde_json::to_string(&strategy).map_err(|e| {
+            crate::crdt::CRDTError::SerializationFailed {
+                reason: e.to_string(),
+            }
+        })?;
+        self.inner
+            .set("height_strategy", doc::Value::Text(json))
+            .await
     }
 
     /// Get the current authentication settings as an AuthSettings instance

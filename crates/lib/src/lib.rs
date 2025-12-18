@@ -23,6 +23,7 @@ pub mod constants;
 pub mod crdt;
 pub mod database;
 pub mod entry;
+pub mod height;
 pub mod instance;
 pub mod store;
 pub mod sync;
@@ -31,6 +32,7 @@ pub mod user;
 
 pub use database::Database;
 pub use entry::Entry;
+pub use height::HeightStrategy;
 pub use instance::{Instance, WeakInstance};
 pub use store::{Registered, Store};
 /// Re-export fundamental types for easier access.

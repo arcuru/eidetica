@@ -1,0 +1,445 @@
+//! HeightStrategy integration tests.
+//!
+//! These tests verify that height calculation strategies work correctly
+//! when entries are created through the Transaction layer.
+
+use eidetica::{
+    HeightStrategy, Instance, Store, backend::database::InMemory, instance::LegacyInstanceOps,
+    store::DocStore,
+};
+
+/// Helper to create a test instance and database
+async fn create_test_database() -> (Instance, eidetica::Database) {
+    let backend = Box::new(InMemory::new());
+    let instance = Instance::open(backend)
+        .await
+        .expect("Failed to create test instance");
+
+    let database = instance.new_database_default("_device_key").await.unwrap();
+
+    (instance, database)
+}
+
+#[tokio::test]
+async fn test_height_strategy_default_is_incremental() {
+    let (_instance, database) = create_test_database().await;
+
+    // Get the default height strategy
+    let tx = database.new_transaction().await.unwrap();
+    let settings = tx.get_settings().unwrap();
+    let strategy = settings.get_height_strategy().await.unwrap();
+
+    assert_eq!(
+        strategy,
+        HeightStrategy::Incremental,
+        "Default strategy should be Incremental"
+    );
+}
+
+#[tokio::test]
+async fn test_height_strategy_incremental_produces_sequential_heights() {
+    let (_instance, database) = create_test_database().await;
+
+    // Create several entries and verify sequential heights
+    for i in 1..=5 {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+        store.set("value", format!("entry_{i}")).await.unwrap();
+        let entry_id = tx.commit().await.unwrap();
+
+        // Fetch the entry to check its height
+        let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+        // Height should be i (1, 2, 3, 4, 5)
+        assert_eq!(entry.height(), i, "Entry {i} should have height {i}");
+    }
+}
+
+#[tokio::test]
+async fn test_height_strategy_timestamp_produces_timestamp_heights() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Create an entry and verify height is a timestamp
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+    store.set("value", "test").await.unwrap();
+    let entry_id = tx.commit().await.unwrap();
+
+    let after_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Fetch the entry to check its height
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+    // Height should be a timestamp within the expected range
+    assert!(
+        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
+        "Entry height {} should be a timestamp between {} and {}",
+        entry.height(),
+        before_ms,
+        after_ms
+    );
+}
+
+#[tokio::test]
+async fn test_height_strategy_timestamp_ensures_monotonic() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Create entries quickly and verify heights are always increasing
+    let mut last_height = 0u64;
+    for i in 1..=10 {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+        store.set("value", format!("entry_{i}")).await.unwrap();
+        let entry_id = tx.commit().await.unwrap();
+
+        // Fetch the entry to check its height
+        let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+        assert!(
+            entry.height() > last_height,
+            "Entry {i} height {} should be > previous height {}",
+            entry.height(),
+            last_height
+        );
+        last_height = entry.height();
+    }
+}
+
+#[tokio::test]
+async fn test_height_strategy_subtrees_inherit_database_strategy() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Create an entry with subtree data
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("value", "test").await.unwrap();
+    let entry_id = tx.commit().await.unwrap();
+
+    let after_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Fetch the entry to check its height
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+    // Subtree height should also be a timestamp
+    let subtree_height = entry.subtree_height("my_subtree").unwrap();
+    assert!(
+        subtree_height >= before_ms && subtree_height <= after_ms + 1000,
+        "Subtree height {} should be a timestamp between {} and {}",
+        subtree_height,
+        before_ms,
+        after_ms
+    );
+}
+
+#[tokio::test]
+async fn test_height_strategy_persisted_in_settings() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Read it back in a new transaction
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        let strategy = settings.get_height_strategy().await.unwrap();
+        assert_eq!(strategy, HeightStrategy::Timestamp);
+    }
+}
+
+#[tokio::test]
+async fn test_height_strategy_works_in_same_transaction() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set timestamp strategy AND create entry in the SAME transaction
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let tx = database.new_transaction().await.unwrap();
+
+    // Set strategy
+    let settings = tx.get_settings().unwrap();
+    settings
+        .set_height_strategy(HeightStrategy::Timestamp)
+        .await
+        .unwrap();
+
+    // Create entry in same transaction
+    let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+    store.set("value", "test").await.unwrap();
+
+    let entry_id = tx.commit().await.unwrap();
+
+    let after_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Fetch the entry to check its height
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+    // Height should be a timestamp (not sequential like 1, 2, 3)
+    assert!(
+        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
+        "Entry height {} should be a timestamp between {} and {} (same-transaction strategy change)",
+        entry.height(),
+        before_ms,
+        after_ms
+    );
+}
+
+#[tokio::test]
+async fn test_per_subtree_strategy_via_index() {
+    let (_instance, database) = create_test_database().await;
+
+    // First, create a store to register it in _index
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("my_store").await.unwrap();
+        store.set("key", "value1").await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Now set an independent height strategy for the store
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("my_store").await.unwrap();
+        store
+            .set_height_strategy(Some(HeightStrategy::Incremental))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Verify the strategy was persisted
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("my_store").await.unwrap();
+        let strategy = store.get_height_strategy().await.unwrap();
+        assert_eq!(
+            strategy,
+            Some(HeightStrategy::Incremental),
+            "Height strategy should be persisted"
+        );
+    }
+
+    // Create an entry and verify the subtree has an independent height
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("my_store").await.unwrap();
+        store.set("key", "value2").await.unwrap();
+        let entry_id = tx.commit().await.unwrap();
+
+        // Fetch the entry
+        let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+        // Subtree should have an independent height (not 0)
+        // Since it's Incremental strategy and has parents, height should be > 0
+        let subtree_height = entry.subtree_height("my_store").unwrap();
+        assert!(
+            subtree_height > 0,
+            "Subtree with independent strategy should have non-zero height"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_unregistered_subtree_inherits_tree_height() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set database to use timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Create an entry with a store (which auto-registers in _index)
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("new_store").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    let entry_id = tx.commit().await.unwrap();
+
+    let after_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Fetch the entry
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+    // Tree height should be a timestamp
+    assert!(
+        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
+        "Tree height should be a timestamp"
+    );
+
+    // Subtree should inherit tree height (returned via subtree_height())
+    let subtree_height = entry.subtree_height("new_store").unwrap();
+    assert_eq!(
+        subtree_height,
+        entry.height(),
+        "Subtree without explicit strategy should inherit tree height"
+    );
+}
+
+#[tokio::test]
+async fn test_mixed_subtree_strategies() {
+    let (_instance, database) = create_test_database().await;
+
+    // Set database to use timestamp strategy
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // Create two stores - one with independent strategy, one inheriting
+    {
+        let tx = database.new_transaction().await.unwrap();
+
+        // Create stores
+        let inherit_store = tx.get_store::<DocStore>("inherit_store").await.unwrap();
+        inherit_store.set("key", "value").await.unwrap();
+
+        let independent_store = tx.get_store::<DocStore>("independent_store").await.unwrap();
+        independent_store.set("key", "value").await.unwrap();
+        // Set independent strategy for this one
+        independent_store
+            .set_height_strategy(Some(HeightStrategy::Incremental))
+            .await
+            .unwrap();
+
+        tx.commit().await.unwrap();
+    }
+
+    // Verify the strategy was persisted before the next transaction
+    {
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("independent_store").await.unwrap();
+        let strategy = store.get_height_strategy().await.unwrap();
+        assert_eq!(
+            strategy,
+            Some(HeightStrategy::Incremental),
+            "Height strategy should be persisted after first commit"
+        );
+    }
+
+    // Create an entry that writes to both stores
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    let tx = database.new_transaction().await.unwrap();
+    let inherit_store = tx.get_store::<DocStore>("inherit_store").await.unwrap();
+    inherit_store.set("key", "new_value").await.unwrap();
+
+    let independent_store = tx.get_store::<DocStore>("independent_store").await.unwrap();
+    independent_store.set("key", "new_value").await.unwrap();
+
+    let entry_id = tx.commit().await.unwrap();
+
+    let after_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Fetch the entry
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
+
+    // Tree height should be a timestamp
+    let tree_height = entry.height();
+    assert!(
+        tree_height >= before_ms && tree_height <= after_ms + 1000,
+        "Tree height should be a timestamp"
+    );
+
+    // inherit_store should have same height as tree (inherited)
+    let inherit_height = entry.subtree_height("inherit_store").unwrap();
+    assert_eq!(
+        inherit_height, tree_height,
+        "Inheriting subtree should match tree height"
+    );
+
+    // independent_store should have a different (incremental) height
+    let independent_height = entry.subtree_height("independent_store").unwrap();
+    // It should be a small integer (2 or 3), not a timestamp
+    assert!(
+        independent_height < 100,
+        "Independent subtree should have incremental height ({}), not timestamp",
+        independent_height
+    );
+}

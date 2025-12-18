@@ -44,13 +44,14 @@ async fn test_backend_get_store_from_tips() {
     let subtree_name = "my_subtree";
 
     // Create entries: root -> e1 -> e2a, e2b
-    // root: has subtree
+    // root: has subtree (subtree height 0)
     // e1: no subtree
-    // e2a: has subtree
-    // e2b: has subtree
+    // e2a: has subtree (subtree height 1)
+    // e2b: has subtree (subtree height 1)
 
     let entry_root = Entry::root_builder()
         .set_subtree_data(subtree_name, "root_sub_data")
+        .set_subtree_height(subtree_name, Some(0)) // Subtree root
         .build()
         .expect("Entry should build successfully");
     let root_entry_id = entry_root.id();
@@ -58,6 +59,7 @@ async fn test_backend_get_store_from_tips() {
 
     let e1 = Entry::builder(root_entry_id.clone())
         .add_parent(root_entry_id.clone())
+        .set_height(1) // Tree height
         .build()
         .expect("Entry should build successfully");
     let e1_id = e1.id();
@@ -65,8 +67,10 @@ async fn test_backend_get_store_from_tips() {
 
     let e2a = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
+        .set_height(2) // Tree height
         .set_subtree_data(subtree_name, "e2a_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
+        .set_subtree_height(subtree_name, Some(1)) // Subtree height (child of subtree root)
         .build()
         .expect("Entry should build successfully");
     let e2a_id = e2a.id();
@@ -74,8 +78,10 @@ async fn test_backend_get_store_from_tips() {
 
     let e2b = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
+        .set_height(2) // Tree height
         .set_subtree_data(subtree_name, "e2b_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
+        .set_subtree_height(subtree_name, Some(1)) // Subtree height (child of subtree root)
         .build()
         .expect("Entry should build successfully");
     let e2b_id = e2b.id();

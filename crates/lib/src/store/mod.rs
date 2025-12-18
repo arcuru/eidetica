@@ -1,3 +1,4 @@
+use crate::HeightStrategy;
 use crate::{Result, Transaction};
 use async_trait::async_trait;
 
@@ -16,6 +17,8 @@ pub use settings_store::SettingsStore;
 mod registry;
 pub use registry::Registered;
 pub use registry::Registry;
+pub use registry::RegistryEntry;
+pub use registry::SubtreeSettings;
 
 mod password_store;
 pub use password_store::{
@@ -136,5 +139,41 @@ pub trait Store: Sized + Registered + Send + Sync {
             .set_entry(self.name(), Self::type_id(), config.into())
             .await?;
         Ok(())
+    }
+
+    /// Gets the height strategy for this Store from the `_index` subtree.
+    ///
+    /// Returns `None` if no strategy is set (meaning the subtree inherits
+    /// from the database-level height strategy).
+    ///
+    /// # Returns
+    /// A `Result<Option<HeightStrategy>>` containing the strategy if set.
+    ///
+    /// # Errors
+    /// Returns an error if the subtree is not registered in `_index`.
+    async fn get_height_strategy(&self) -> Result<Option<HeightStrategy>> {
+        let index = self.transaction().get_index().await?;
+        let settings = index.get_subtree_settings(self.name()).await?;
+        Ok(settings.height_strategy)
+    }
+
+    /// Sets the height strategy for this Store in the `_index` subtree.
+    ///
+    /// Pass `None` to inherit from the database-level strategy,
+    /// or `Some(strategy)` for independent height calculation.
+    ///
+    /// # Arguments
+    /// * `strategy` - The height strategy to use, or None for inheritance.
+    ///
+    /// # Returns
+    /// A `Result<()>` indicating success or failure.
+    ///
+    /// # Errors
+    /// Returns an error if the subtree is not registered in `_index`.
+    async fn set_height_strategy(&self, strategy: Option<HeightStrategy>) -> Result<()> {
+        let index = self.transaction().get_index().await?;
+        let mut settings = index.get_subtree_settings(self.name()).await?;
+        settings.height_strategy = strategy;
+        index.set_subtree_settings(self.name(), settings).await
     }
 }

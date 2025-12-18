@@ -1,3 +1,5 @@
+use eidetica::backend::BackendImpl;
+use eidetica::backend::database::InMemory;
 use eidetica::backend::errors::BackendError;
 use eidetica::entry::{Entry, ID};
 
@@ -82,8 +84,10 @@ async fn test_backend_get_tree_from_tips() {
     let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
+    // Set heights explicitly since we're using EntryBuilder directly
     let root_entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
+        .set_height(0) // Root level
         .build()
         .expect("Root entry should build successfully");
     let root_entry_id = root_entry.id();
@@ -91,6 +95,7 @@ async fn test_backend_get_tree_from_tips() {
 
     let e1_entry = Entry::builder(root_id.clone())
         .add_parent(root_entry_id.clone())
+        .set_height(1) // Child of root
         .build()
         .expect("E1 entry should build successfully");
     let e1_id = e1_entry.id();
@@ -99,6 +104,7 @@ async fn test_backend_get_tree_from_tips() {
     let e2a_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
         .set_subtree_data("branch", "a")
+        .set_height(2) // Grandchild of root
         .build()
         .expect("E2a entry should build successfully");
     let e2a_id = e2a_entry.id();
@@ -107,6 +113,7 @@ async fn test_backend_get_tree_from_tips() {
     let e2b_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
         .set_subtree_data("branch", "b")
+        .set_height(2) // Grandchild of root
         .build()
         .expect("E2b entry should build successfully");
     let e2b_id = e2b_entry.id();
@@ -283,4 +290,63 @@ async fn test_get_tips() {
     assert_eq!(tips.len(), 2);
     assert!(tips.contains(&id_b));
     assert!(tips.contains(&id_c));
+}
+
+#[tokio::test]
+async fn test_sort_entries_by_height() {
+    let backend = InMemory::new();
+
+    // Create a simple tree with mixed order
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let root_id = root.id();
+
+    let entry_a = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_height(1) // Manually set height for test
+        .build()
+        .expect("Entry should build successfully");
+    let id_a = entry_a.id();
+
+    let entry_b = Entry::builder(root_id.clone())
+        .add_parent(id_a.clone())
+        .set_height(2) // Manually set height for test
+        .build()
+        .expect("Entry should build successfully");
+    let id_b = entry_b.id();
+
+    let entry_c = Entry::builder(root_id.clone())
+        .add_parent(id_b.clone())
+        .set_height(3) // Manually set height for test
+        .build()
+        .expect("Entry should build successfully");
+
+    // Store all entries in backend
+    backend.put_verified(root.clone()).await.unwrap();
+    backend.put_verified(entry_a.clone()).await.unwrap();
+    backend.put_verified(entry_b.clone()).await.unwrap();
+    backend.put_verified(entry_c.clone()).await.unwrap();
+
+    // Create a vector with entries in random order
+    let mut entries = vec![
+        entry_c.clone(),
+        root.clone(),
+        entry_b.clone(),
+        entry_a.clone(),
+    ];
+
+    // Sort the entries by height
+    backend.sort_entries_by_height(&root_id, &mut entries);
+
+    // Check the sorted order: root, A, B, C (by height)
+    assert_eq!(entries[0].id(), root_id);
+    assert_eq!(entries[1].id(), id_a);
+    assert_eq!(entries[2].id(), id_b);
+    assert_eq!(entries[3].id(), entry_c.id());
+
+    // Test with an empty vector (should not panic)
+    let mut empty_entries: Vec<Entry> = Vec::new();
+    backend.sort_entries_by_height(&root_id, &mut empty_entries);
+    assert!(empty_entries.is_empty());
 }

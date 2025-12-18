@@ -65,16 +65,6 @@ pub const CREATE_TABLES: &[&str] = &[
         store_name TEXT NOT NULL,
         PRIMARY KEY (child_id, parent_id, store_name)
     )",
-    // Heights cache - computed values, persisted
-    // Heights are immutable per entry once computed
-    // store_name uses empty string for tree-level heights (PostgreSQL disallows NULL in PK)
-    "CREATE TABLE IF NOT EXISTS heights (
-        entry_id TEXT NOT NULL,
-        tree_id TEXT NOT NULL,
-        store_name TEXT NOT NULL DEFAULT '',
-        height BIGINT NOT NULL,
-        PRIMARY KEY (entry_id, tree_id, store_name)
-    )",
     // Tips cache - maintained incrementally
     // Tips are entries with no children in their tree/store context
     // store_name uses empty string for tree-level tips (PostgreSQL disallows NULL in PK)
@@ -112,8 +102,7 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_store_memberships_store ON store_memberships(store_name, entry_id)",
     "CREATE INDEX IF NOT EXISTS idx_store_parents_parent ON store_parents(store_name, parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
-    // Height and tip lookups
-    "CREATE INDEX IF NOT EXISTS idx_heights_tree_store ON heights(tree_id, store_name)",
+    // Tip lookups
     "CREATE INDEX IF NOT EXISTS idx_tips_tree_store ON tips(tree_id, store_name)",
 ];
 

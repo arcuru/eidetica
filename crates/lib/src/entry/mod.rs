@@ -22,6 +22,11 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc};
 /// This allows users to manage their own data structures and serialization formats.
 pub type RawData = String;
 
+/// Helper to check if tree height is zero for serde skip_serializing_if
+fn is_zero(h: &u64) -> bool {
+    *h == 0
+}
+
 /// Internal representation of the main tree node within an `Entry`.
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct TreeNode {
@@ -38,6 +43,10 @@ struct TreeNode {
     /// Metadata is optional and may not be present in all entries. Future versions
     /// may extend metadata to include additional information.
     pub metadata: Option<RawData>,
+    /// Height of this entry in the tree DAG (longest path from root).
+    /// Root entries have height 0, children have max(parent heights) + 1.
+    #[serde(rename = "h", default, skip_serializing_if = "is_zero")]
+    pub height: u64,
 }
 
 /// Internal representation of a named subtree node within an `Entry`.
@@ -57,6 +66,12 @@ struct SubTreeNode {
     /// `Some(data)` contains the actual serialized data for this subtree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<RawData>,
+    /// Height of this entry in the subtree DAG.
+    ///
+    /// `None` means the subtree inherits the tree's height (not serialized).
+    /// `Some(h)` is an independent height for subtrees with their own strategy.
+    #[serde(rename = "h", default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
 }
 
 /// The fundamental unit of data in Eidetica, representing a finalized, immutable Database Entry.
@@ -263,6 +278,32 @@ impl Entry {
             .iter()
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
+            .ok_or_else(|| {
+                crate::store::StoreError::KeyNotFound {
+                    store: "entry".to_string(),
+                    key: subtree_name.as_ref().to_string(),
+                }
+                .into()
+            })
+    }
+
+    /// Get the height of this entry in the main tree DAG.
+    pub fn height(&self) -> u64 {
+        self.tree.height
+    }
+
+    /// Get the height of this entry in a specific subtree's DAG.
+    ///
+    /// If the subtree has an explicit height (`Some(h)`), that value is returned.
+    /// If the subtree height is `None`, it inherits from the main tree height.
+    ///
+    /// This allows subtrees to either track independent heights (for subtrees
+    /// with their own height strategy) or share the tree's height (default).
+    pub fn subtree_height(&self, subtree_name: impl AsRef<str>) -> Result<u64> {
+        self.subtrees
+            .iter()
+            .find(|node| node.name == subtree_name.as_ref())
+            .map(|node| node.height.unwrap_or_else(|| self.height()))
             .ok_or_else(|| {
                 crate::store::StoreError::KeyNotFound {
                     store: "entry".to_string(),
@@ -590,6 +631,7 @@ impl EntryBuilder {
                 root: root.into(),
                 parents: Vec::new(),
                 metadata: None,
+                height: 0,
             },
             subtrees: Vec::new(),
             sig: SigInfo::default(),
@@ -710,6 +752,7 @@ impl EntryBuilder {
                 name,
                 data: Some(data.into()),
                 parents: vec![],
+                height: None,
             });
         }
         self
@@ -735,6 +778,7 @@ impl EntryBuilder {
                 name,
                 data: Some(data.into()),
                 parents: vec![],
+                height: None,
             });
         }
         self
@@ -909,6 +953,7 @@ impl EntryBuilder {
                 name: subtree_name,
                 data: None,
                 parents,
+                height: None,
             });
         }
         self
@@ -937,6 +982,7 @@ impl EntryBuilder {
                 name: subtree_name,
                 data: None,
                 parents,
+                height: None,
             });
         }
         self
@@ -964,6 +1010,7 @@ impl EntryBuilder {
                 name: subtree_name,
                 data: None,
                 parents: vec![parent_id.into()],
+                height: None,
             });
         }
         self
@@ -992,6 +1039,7 @@ impl EntryBuilder {
                 name: subtree_name,
                 data: None,
                 parents: vec![parent_id.into()],
+                height: None,
             });
         }
         self
@@ -1058,6 +1106,75 @@ impl EntryBuilder {
     /// ```
     pub fn metadata(&self) -> Option<&RawData> {
         self.tree.metadata.as_ref()
+    }
+
+    /// Set the height for this entry in the main tree DAG.
+    ///
+    /// # Arguments
+    /// * `height` - The height value for this entry
+    pub fn set_height(mut self, height: u64) -> Self {
+        self.tree.height = height;
+        self
+    }
+
+    /// Mutable reference version of set_height.
+    pub fn set_height_mut(&mut self, height: u64) -> &mut Self {
+        self.tree.height = height;
+        self
+    }
+
+    /// Set the height for this entry in a specific subtree's DAG.
+    ///
+    /// If the subtree does not exist, it will be created with no data (`None`).
+    ///
+    /// # Arguments
+    /// * `subtree_name` - The name of the subtree
+    /// * `height` - The height value for this entry in the subtree
+    pub fn set_subtree_height(
+        mut self,
+        subtree_name: impl Into<String>,
+        height: Option<u64>,
+    ) -> Self {
+        let subtree_name = subtree_name.into();
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
+            node.height = height;
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name,
+                data: None,
+                parents: vec![],
+                height,
+            });
+        }
+        self
+    }
+
+    /// Mutable reference version of set_subtree_height.
+    pub fn set_subtree_height_mut(
+        &mut self,
+        subtree_name: impl Into<String>,
+        height: Option<u64>,
+    ) -> &mut Self {
+        let subtree_name = subtree_name.into();
+        if let Some(node) = self
+            .subtrees
+            .iter_mut()
+            .find(|node| node.name == subtree_name)
+        {
+            node.height = height;
+        } else {
+            self.subtrees.push(SubTreeNode {
+                name: subtree_name,
+                data: None,
+                parents: vec![],
+                height,
+            });
+        }
+        self
     }
 
     /// Build and return the final immutable `Entry`.
@@ -1395,6 +1512,7 @@ mod tests {
             name: "test".to_string(),
             parents: vec![],
             data: None,
+            height: None,
         };
         let serialized = serde_json::to_string(&node_with_none).unwrap();
         assert!(
@@ -1407,11 +1525,37 @@ mod tests {
             name: "test".to_string(),
             parents: vec![],
             data: Some("content".to_string()),
+            height: None,
         };
         let serialized = serde_json::to_string(&node_with_data).unwrap();
         assert!(
             serialized.contains(r#""data":"content""#),
             "Some data should be serialized: {serialized}"
+        );
+
+        // Verify height serialization: None should be omitted, Some(n) should serialize as just n
+        let node_no_height = SubTreeNode {
+            name: "test".to_string(),
+            parents: vec![],
+            data: None,
+            height: None,
+        };
+        let serialized = serde_json::to_string(&node_no_height).unwrap();
+        assert!(
+            !serialized.contains("\"h\""),
+            "None height should be omitted: {serialized}"
+        );
+
+        let node_with_height = SubTreeNode {
+            name: "test".to_string(),
+            parents: vec![],
+            data: None,
+            height: Some(42),
+        };
+        let serialized = serde_json::to_string(&node_with_height).unwrap();
+        assert!(
+            serialized.contains(r#""h":42"#),
+            "Some(42) should serialize as h:42, not Some(42): {serialized}"
         );
     }
 }

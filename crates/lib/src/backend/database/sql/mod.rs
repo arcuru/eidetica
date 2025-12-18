@@ -407,8 +407,8 @@ impl BackendImpl for SqlxBackend {
         storage::all_roots(self).await
     }
 
-    async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        traversal::find_lca(self, tree, store, entry_ids).await
+    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+        traversal::find_merge_base(self, tree, store, entry_ids).await
     }
 
     async fn collect_root_to_target(

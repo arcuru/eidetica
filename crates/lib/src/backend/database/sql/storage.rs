@@ -206,6 +206,9 @@ async fn insert_or_ignore(
 }
 
 /// Update the tips table when a new entry is added.
+///
+/// Tips are entries with no children. This function handles out-of-order arrival
+/// by checking if the new entry already has children before adding it as a tip.
 async fn update_tips_for_entry(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
@@ -213,16 +216,26 @@ async fn update_tips_for_entry(
     tree_id: &ID,
     entry: &Entry,
 ) -> Result<()> {
-    // The new entry is initially a tip (at tree level)
+    // Check if this entry already has children in the tree (out-of-order arrival)
+    let has_tree_children: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM tree_parents WHERE parent_id = $1 LIMIT 1")
+            .bind(entry_id.to_string())
+            .fetch_optional(&mut **tx)
+            .await
+            .sql_context("Failed to check for tree children")?;
+
+    // Only add as tree-level tip if no children exist
     // Note: empty string '' used for tree-level (PostgreSQL doesn't allow NULL in PK)
-    insert_or_ignore(
-        backend,
-        tx,
-        "tips",
-        &["entry_id", "tree_id", "store_name"],
-        &[entry_id.to_string(), tree_id.to_string(), String::new()],
-    )
-    .await?;
+    if has_tree_children.is_none() {
+        insert_or_ignore(
+            backend,
+            tx,
+            "tips",
+            &["entry_id", "tree_id", "store_name"],
+            &[entry_id.to_string(), tree_id.to_string(), String::new()],
+        )
+        .await?;
+    }
 
     // Remove parents from tree tips (they now have children)
     if let Ok(parents) = entry.parents() {
@@ -241,19 +254,31 @@ async fn update_tips_for_entry(
 
     // Handle store-level tips
     for store_name in entry.subtrees() {
-        // New entry is a tip in this store
-        insert_or_ignore(
-            backend,
-            tx,
-            "tips",
-            &["entry_id", "tree_id", "store_name"],
-            &[
-                entry_id.to_string(),
-                tree_id.to_string(),
-                store_name.clone(),
-            ],
+        // Check if this entry already has children in this store (out-of-order arrival)
+        let has_store_children: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM store_parents WHERE parent_id = $1 AND store_name = $2 LIMIT 1",
         )
-        .await?;
+        .bind(entry_id.to_string())
+        .bind(&store_name)
+        .fetch_optional(&mut **tx)
+        .await
+        .sql_context("Failed to check for store children")?;
+
+        // Only add as store-level tip if no children exist in this store
+        if has_store_children.is_none() {
+            insert_or_ignore(
+                backend,
+                tx,
+                "tips",
+                &["entry_id", "tree_id", "store_name"],
+                &[
+                    entry_id.to_string(),
+                    tree_id.to_string(),
+                    store_name.clone(),
+                ],
+            )
+            .await?;
+        }
 
         // Remove parents from store tips
         if let Ok(store_parents) = entry.subtree_parents(&store_name) {
@@ -352,8 +377,8 @@ pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
         entries.push(entry);
     }
 
-    // Sort by height using the heights table
-    super::cache::sort_entries_by_height(backend, tree, None, &mut entries).await?;
+    // Sort by height (heights are stored in entries)
+    super::cache::sort_entries_by_height(&mut entries);
 
     Ok(entries)
 }
@@ -381,8 +406,8 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
         entries.push(entry);
     }
 
-    // Sort by store height using the heights table
-    super::cache::sort_entries_by_height(backend, tree, Some(store), &mut entries).await?;
+    // Sort by store height (heights are stored in entries)
+    super::cache::sort_entries_by_subtree_height(&mut entries, store)?;
 
     Ok(entries)
 }

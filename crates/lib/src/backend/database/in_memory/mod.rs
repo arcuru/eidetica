@@ -26,9 +26,6 @@ use crate::{
     entry::{Entry, ID},
 };
 
-/// Heights cache: entry_id -> (tree_height, subtree_name -> subtree_height)
-pub(crate) type TreeHeightsCache = HashMap<ID, (usize, HashMap<String, usize>)>;
-
 /// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct TreeTipsCache {
@@ -62,8 +59,6 @@ pub struct InMemory {
     pub(crate) private_keys: RwLock<HashMap<String, SigningKey>>,
     /// Generic key-value cache for frequently computed results
     pub(crate) cache: RwLock<HashMap<String, String>>,
-    /// Cached heights grouped by tree: tree_id -> (entry_id -> (tree_height, subtree_name -> subtree_height))
-    pub(crate) heights: RwLock<HashMap<ID, TreeHeightsCache>>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: RwLock<HashMap<ID, TreeTipsCache>>,
 }
@@ -76,7 +71,6 @@ impl InMemory {
             verification_status: RwLock::new(HashMap::new()),
             private_keys: RwLock::new(HashMap::new()),
             cache: RwLock::new(HashMap::new()),
-            heights: RwLock::new(HashMap::new()),
             tips: RwLock::new(HashMap::new()),
         }
     }
@@ -111,50 +105,27 @@ impl InMemory {
         persistence::load_from_file(path).await
     }
 
-    /// Calculate heights for entries in a tree or subtree (exposed for testing)
-    ///
-    /// # Arguments
-    /// * `tree` - The ID of the tree to calculate heights for
-    /// * `subtree` - Optional subtree name to limit calculation to a specific subtree
-    ///
-    /// # Returns
-    /// A `Result` containing a `HashMap` mapping entry IDs to their heights.
-    pub async fn calculate_heights(
-        &self,
-        tree: &ID,
-        subtree: Option<&str>,
-    ) -> Result<std::collections::HashMap<ID, usize>> {
-        cache::calculate_heights(self, tree, subtree).await
-    }
-
     /// Sort entries by their height within a tree (exposed for testing)
     ///
-    /// # Arguments
-    /// * `tree` - The ID of the tree context
-    /// * `entries` - The vector of entries to be sorted in place
+    /// Heights are stored directly in entries, so this just reads and sorts.
     ///
-    /// # Returns
-    /// A `Result` indicating success or an error if height calculation fails.
-    pub async fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) -> Result<()> {
-        cache::sort_entries_by_height(self, tree, entries).await
+    /// # Arguments
+    /// * `tree` - The ID of the tree context (unused, kept for API compatibility)
+    /// * `entries` - The vector of entries to be sorted in place
+    pub fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) {
+        cache::sort_entries_by_height(self, tree, entries)
     }
 
     /// Sort entries by their height within a subtree (exposed for testing)
     ///
+    /// Heights are stored directly in entries, so this just reads and sorts.
+    ///
     /// # Arguments
-    /// * `tree` - The ID of the tree context
+    /// * `tree` - The ID of the tree context (unused, kept for API compatibility)
     /// * `subtree` - The name of the subtree context
     /// * `entries` - The vector of entries to be sorted in place
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error if height calculation fails.
-    pub async fn sort_entries_by_subtree_height(
-        &self,
-        tree: &ID,
-        subtree: &str,
-        entries: &mut [Entry],
-    ) -> Result<()> {
-        cache::sort_entries_by_subtree_height(self, tree, subtree, entries).await
+    pub fn sort_entries_by_subtree_height(&self, tree: &ID, subtree: &str, entries: &mut [Entry]) {
+        cache::sort_entries_by_subtree_height(self, tree, subtree, entries)
     }
 
     /// Check if an entry is a tip within its tree (exposed for benchmarks)
@@ -299,8 +270,8 @@ impl BackendImpl for InMemory {
         Ok(roots)
     }
 
-    async fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
-        traversal::find_lca(self, tree, subtree, entry_ids).await
+    async fn find_merge_base(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
+        traversal::find_merge_base(self, tree, subtree, entry_ids).await
     }
 
     async fn collect_root_to_target(

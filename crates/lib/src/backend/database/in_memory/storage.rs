@@ -1,6 +1,6 @@
 //! Core storage operations for InMemory database
 
-use super::{InMemory, TreeHeightsCache};
+use super::InMemory;
 use crate::{
     Result,
     backend::{VerificationStatus, errors::BackendError},
@@ -47,8 +47,7 @@ pub(crate) async fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
 /// 1. **Validates entry structure** via `entry.validate()` - HARD FAILURE on invalid
 /// 2. Stores the entry in the entries HashMap
 /// 3. Records the verification status
-/// 4. Updates cached heights for performance optimization
-/// 5. Updates tip tracking for efficient DAG traversal
+/// 4. Updates tip tracking for efficient DAG traversal
 ///
 /// # Tip Tracking
 /// The function maintains tips (leaf nodes) for both the main tree and subtrees.
@@ -107,14 +106,6 @@ pub(crate) async fn put(
         verification_status_map.insert(entry_id.clone(), verification_status);
     }
 
-    // Smart cache update for heights
-    {
-        let mut heights_cache = backend.heights.write().await;
-        if let Some(cache) = heights_cache.get_mut(&tree_id) {
-            update_cached_heights(cache, &entry, &entry_id);
-        }
-    }
-
     // Tip tracking uses full recalculation to handle out-of-order entry arrival during sync.
     // This ensures correctness when entries arrive in any order, which is common during
     // sync operations between peers.
@@ -131,23 +122,43 @@ pub(crate) async fn put(
             update_tips_for_tree_async(backend, &mut tips_cache, additional_tree).await;
         }
 
-        // Update subtree tips for each subtree (for the main tree only)
+        // Update subtree tips - recalculate from scratch to handle out-of-order arrival
+        // This mirrors the tree-level tip recalculation above
         let cache = tips_cache.entry(tree_id.clone()).or_default();
         for subtree_name in entry.subtrees() {
+            // Recalculate tips for this store from scratch
             let subtree_tips = cache.subtree_tips.entry(subtree_name.clone()).or_default();
-            if let Ok(store_parents) = entry.subtree_parents(&subtree_name) {
-                if store_parents.is_empty() {
-                    // Root subtree entry is also a tip initially
-                    subtree_tips.insert(entry_id.clone());
-                } else {
-                    // Remove parents from tips if they exist (they're no longer tips)
-                    for parent in &store_parents {
-                        subtree_tips.remove(parent);
+            subtree_tips.clear();
+
+            // Get all entries in this store
+            let entries = backend.entries.read().await;
+            let store_entries: Vec<&Entry> = entries
+                .values()
+                .filter(|e| {
+                    (e.root() == tree_id || (e.is_root() && e.id() == tree_id))
+                        && e.subtrees().contains(&subtree_name)
+                })
+                .collect();
+
+            // An entry is a store tip if no other entry in the store has it as a store parent
+            for store_entry in &store_entries {
+                let store_entry_id = store_entry.id();
+                let mut is_tip = true;
+
+                for other_entry in &store_entries {
+                    if let Ok(parents) = other_entry.subtree_parents(&subtree_name)
+                        && parents.contains(&store_entry_id)
+                    {
+                        is_tip = false;
+                        break;
                     }
-                    // Add the new entry as a tip (it has no children yet)
-                    subtree_tips.insert(entry_id.clone());
+                }
+
+                if is_tip {
+                    subtree_tips.insert(store_entry_id);
                 }
             }
+            drop(entries);
         }
     }
 
@@ -243,53 +254,6 @@ pub(crate) async fn is_subtree_tip(
     true
 }
 
-/// Helper function to update cached heights
-fn update_cached_heights(cache: &mut TreeHeightsCache, entry: &Entry, entry_id: &ID) {
-    // Calculate height based on parents
-    let tree_height = if let Ok(parents) = entry.parents() {
-        if parents.is_empty() {
-            0 // Root has height 0
-        } else {
-            // Height is max parent height + 1
-            parents
-                .iter()
-                .filter_map(|parent_id| cache.get(parent_id).map(|(h, _)| h))
-                .max()
-                .unwrap_or(&0)
-                + 1
-        }
-    } else {
-        0 // If parents() fails, assume it's a root
-    };
-
-    // Calculate subtree heights
-    let mut subtree_heights = std::collections::HashMap::new();
-    for subtree_name in entry.subtrees() {
-        let subtree_height = if let Ok(store_parents) = entry.subtree_parents(&subtree_name) {
-            if store_parents.is_empty() {
-                0 // Subtree root has height 0
-            } else {
-                // Height is max subtree parent height + 1
-                store_parents
-                    .iter()
-                    .filter_map(|parent_id| {
-                        cache
-                            .get(parent_id)
-                            .and_then(|(_, subtree_map)| subtree_map.get(&subtree_name))
-                    })
-                    .max()
-                    .unwrap_or(&0)
-                    + 1
-            }
-        } else {
-            0 // If store_parents() fails, assume it's a subtree root
-        };
-        subtree_heights.insert(subtree_name, subtree_height);
-    }
-
-    cache.insert(entry_id.clone(), (tree_height, subtree_heights));
-}
-
 /// Retrieves all entries belonging to a specific tree, sorted topologically.
 pub(crate) async fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
     let entries = backend.entries.read().await;
@@ -301,8 +265,8 @@ pub(crate) async fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>
 
     drop(entries); // Release the lock before calling sort_entries_by_height
 
-    // Sort by height using the cache module function
-    super::cache::sort_entries_by_height(backend, tree, &mut tree_entries).await?;
+    // Sort by height
+    super::cache::sort_entries_by_height(backend, tree, &mut tree_entries);
     Ok(tree_entries)
 }
 
@@ -317,9 +281,8 @@ pub(crate) async fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> R
 
     drop(entries); // Release the lock before calling sort_entries_by_subtree_height
 
-    // Sort by subtree height using the cache module function
-    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries)
-        .await?;
+    // Sort by subtree height
+    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries);
     Ok(subtree_entries)
 }
 
@@ -384,10 +347,8 @@ pub(crate) async fn get_tree_from_tips(
     }
     drop(entries);
 
-    // Sort the result by height within the tree context
-    if !result.is_empty() {
-        super::cache::sort_entries_by_height(backend, tree, &mut result).await?;
-    }
+    // Sort the result by height
+    super::cache::sort_entries_by_height(backend, tree, &mut result);
 
     Ok(result)
 }
@@ -447,9 +408,7 @@ pub(crate) async fn get_store_from_tips(
     drop(entries);
 
     // Sort the result by subtree height
-    if !result.is_empty() {
-        super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut result).await?;
-    }
+    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut result);
 
     Ok(result)
 }

@@ -9,7 +9,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::RwLock;
 
-use super::{InMemory, TreeHeightsCache, TreeTipsCache};
+use super::{InMemory, TreeTipsCache};
 use crate::{
     Error, Result,
     auth::crypto::ED25519_PRIVATE_KEY_SIZE,
@@ -61,9 +61,6 @@ struct SerializableDatabase {
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
     cache: HashMap<String, String>,
-    /// Cached heights grouped by tree
-    #[serde(default)]
-    heights: HashMap<ID, TreeHeightsCache>,
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,
@@ -83,7 +80,6 @@ impl Serialize for InMemory {
             .map(|(k, v)| (k.clone(), v.to_bytes()))
             .collect();
         let cache = self.cache.blocking_read().clone();
-        let heights = self.heights.blocking_read().clone();
         let tips = self.tips.blocking_read().clone();
 
         let serializable = SerializableDatabase {
@@ -92,7 +88,6 @@ impl Serialize for InMemory {
             verification_status,
             private_keys_bytes,
             cache,
-            heights,
             tips,
         };
 
@@ -122,7 +117,6 @@ impl<'de> Deserialize<'de> for InMemory {
             verification_status: RwLock::new(serializable.verification_status),
             private_keys: RwLock::new(private_keys),
             cache: RwLock::new(serializable.cache),
-            heights: RwLock::new(serializable.heights),
             tips: RwLock::new(serializable.tips),
         })
     }
@@ -147,7 +141,6 @@ pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) ->
         .collect();
     drop(private_keys);
     let cache = backend.cache.read().await.clone();
-    let heights = backend.heights.read().await.clone();
     let tips = backend.tips.read().await.clone();
 
     let serializable = SerializableDatabase {
@@ -156,7 +149,6 @@ pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) ->
         verification_status,
         private_keys_bytes,
         cache,
-        heights,
         tips,
     };
 

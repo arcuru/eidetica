@@ -1,255 +1,157 @@
-//! Tests for height calculation internals.
+//! Tests for Entry height storage and serialization.
 //!
-//! These tests verify the internal `calculate_heights` and `sort_entries_by_height`
-//! methods which are implementation details of the InMemory backend.
-//! Height ordering is tested indirectly through `get_tree`/`get_store` in the
-//! backend-agnostic tests.
+//! These tests verify that heights are correctly stored in Entry structures
+//! and survive serialization roundtrips. Height *computation* via Transaction
+//! is tested in the transaction/height_strategy.rs tests.
 
-use std::collections::HashMap;
+use eidetica::Entry;
 
-use eidetica::{
-    Entry,
-    backend::{BackendImpl, database::InMemory},
-    entry::ID,
-};
-
-/// Helper to create and store an entry with subtree data
-async fn create_subtree_entry(
-    backend: &InMemory,
-    tree_id: &ID,
-    parent_id: &ID,
-    subtree_name: &str,
-    data: &str,
-) -> ID {
-    let entry = Entry::builder(tree_id.clone())
-        .add_parent(parent_id.clone())
-        .set_subtree_data(subtree_name, data)
-        .build()
-        .expect("Entry should build successfully");
-    let id = entry.id();
-    backend.put_verified(entry).await.unwrap();
-    id
-}
-
-/// Helper to verify entry heights
-fn assert_entry_heights(heights: &HashMap<ID, usize>, expected_heights: &[(&ID, usize)]) {
-    for (entry_id, expected_height) in expected_heights {
-        let actual_height = heights.get(entry_id).unwrap_or(&9999);
-        assert_eq!(
-            *actual_height, *expected_height,
-            "Entry {entry_id} has height {actual_height}, expected {expected_height}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn test_calculate_entry_height() {
-    let backend = InMemory::new();
-
-    // Create root entry
+#[test]
+fn test_height_stored_in_entry() {
+    // Verify that height is correctly stored and retrieved from Entry
     let root = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
+    assert_eq!(root.height(), 0, "Root height should be 0");
+
     let root_id = root.id();
-    backend.put_verified(root).await.unwrap();
 
-    // Create a complex tree structure:
-    // root -> A -> B -> C\
-    //    \                -> D
-    //     \-> E -> F --->/
-
-    // Create main branch: A -> B -> C
-    let id_a = create_subtree_entry(&backend, &root_id, &root_id, "branch", "a").await;
-    let id_b = create_subtree_entry(&backend, &root_id, &id_a, "branch", "b").await;
-    let id_c = create_subtree_entry(&backend, &root_id, &id_b, "branch", "c").await;
-
-    // Create side branch: E -> F
-    let id_e = create_subtree_entry(&backend, &root_id, &root_id, "branch", "e").await;
-    let id_f = create_subtree_entry(&backend, &root_id, &id_e, "branch", "f").await;
-
-    // Create merge entry D with both C and F as parents
-    let entry_d = Entry::builder(root_id.clone())
-        .add_parent(id_c.clone())
-        .add_parent(id_f.clone())
-        .set_subtree_data("branch", "d")
+    // Create entry with explicit height
+    let entry_with_height = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_height(5)
         .build()
         .expect("Entry should build successfully");
-    let id_d = entry_d.id();
-    backend.put_verified(entry_d).await.unwrap();
 
-    // Check that the tree was created correctly
-    // by verifying the tip is entry D
-    let tips = backend.get_tips(&root_id).await.unwrap();
-    assert_eq!(tips.len(), 1);
-    assert_eq!(tips[0], id_d);
+    assert_eq!(entry_with_height.height(), 5, "Entry height should be 5");
 
-    // Check the full tree contains all 7 entries
-    let tree = backend
-        .get_tree_from_tips(&root_id, std::slice::from_ref(&id_d))
-        .await
-        .unwrap();
-    assert_eq!(tree.len(), 7, "Tree should contain all 7 entries");
+    // Create entry with subtree height
+    let entry_with_subtree = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_subtree_data("test_store", "data")
+        .set_subtree_height("test_store", Some(3))
+        .build()
+        .expect("Entry should build successfully");
 
-    // Calculate heights map and verify correct heights
-    let heights = backend.calculate_heights(&root_id, None).await.unwrap();
-
-    // Verify all heights using helper function
-    assert_entry_heights(
-        &heights,
-        &[
-            (&root_id, 0), // Root has height 0
-            (&id_a, 1),    // First level
-            (&id_e, 1),    // First level
-            (&id_b, 2),    // Second level
-            (&id_f, 2),    // Second level
-            (&id_c, 3),    // Third level
-            (&id_d, 4),    // Fourth level (takes longer path)
-        ],
+    assert_eq!(
+        entry_with_subtree.subtree_height("test_store").unwrap(),
+        3,
+        "Subtree height should be 3"
     );
 }
 
-#[tokio::test]
-async fn test_calculate_subtree_height() {
-    let backend = InMemory::new();
-
-    // Create root entry
+#[test]
+fn test_height_serialization() {
+    // Create a proper root entry first to get a valid ID
     let root = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
-    backend.put_verified(root).await.unwrap();
 
-    // A
-    let entry_a = Entry::builder(root_id.clone())
+    let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("sub1", "A_sub1")
+        .set_height(42)
+        .set_subtree_data("store1", "data")
+        .set_subtree_height("store1", Some(7))
         .build()
         .expect("Entry should build successfully");
-    let id_a = entry_a.id();
-    backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_a.clone(),
-        )
-        .await
-        .unwrap();
 
-    // B (after A in main tree)
-    let entry_b = Entry::builder(root_id.clone())
-        .add_parent(id_a.clone())
-        .set_subtree_data("sub1", "B_sub1")
-        .build()
-        .expect("Entry should build successfully");
-    // B is directly under root in subtree (not under A)
-    // So we don't set subtree parents
-    let id_b = entry_b.id();
-    backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_b.clone(),
-        )
-        .await
-        .unwrap();
+    // Serialize and deserialize
+    let json = serde_json::to_string(&entry).expect("Should serialize");
+    let deserialized: Entry = serde_json::from_str(&json).expect("Should deserialize");
 
-    // C (after B in main tree)
-    let entry_c = Entry::builder(root_id.clone())
-        .add_parent(id_b.clone())
-        .set_subtree_data("sub1", "C_sub1")
-        .add_subtree_parent("sub1", id_a.clone())
-        .add_subtree_parent("sub1", id_b.clone())
-        .build()
-        .expect("Entry should build successfully");
-    let id_c = entry_c.id();
-    backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_c.clone(),
-        )
-        .await
-        .unwrap();
-
-    // Calculate heights for main tree
-    let main_heights = backend.calculate_heights(&root_id, None).await.unwrap();
-
-    // Main tree: root -> A -> B -> C
-    assert_eq!(main_heights.get(&root_id).unwrap_or(&9999), &0);
-    assert_eq!(main_heights.get(&id_a).unwrap_or(&9999), &1);
-    assert_eq!(main_heights.get(&id_b).unwrap_or(&9999), &2);
-    assert_eq!(main_heights.get(&id_c).unwrap_or(&9999), &3);
-
-    // Calculate heights for subtree
-    let sub_heights = backend
-        .calculate_heights(&root_id, Some("sub1"))
-        .await
-        .unwrap();
-
-    // Subtree structure:
-    // A   B
-    //  \ /
-    //   C
-    assert_eq!(sub_heights.get(&id_a).unwrap(), &0);
-    assert_eq!(sub_heights.get(&id_b).unwrap(), &0);
-    assert_eq!(sub_heights.get(&id_c).unwrap(), &1);
+    assert_eq!(
+        deserialized.height(),
+        42,
+        "Tree height should survive roundtrip"
+    );
+    assert_eq!(
+        deserialized.subtree_height("store1").unwrap(),
+        7,
+        "Subtree height should survive roundtrip"
+    );
 }
 
-#[tokio::test]
-async fn test_sort_entries() {
-    let backend = InMemory::new();
+#[test]
+fn test_zero_height_not_serialized() {
+    // Verify that height 0 is not serialized (skip_serializing_if = "is_zero")
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
 
-    // Create a simple tree with mixed order
+    let json = serde_json::to_string(&root).expect("Should serialize");
+
+    // Height 0 should be skipped in serialization
+    assert!(
+        !json.contains("\"h\":0"),
+        "Zero height should not be serialized: {json}"
+    );
+
+    // But deserializing without height should give height 0
+    let deserialized: Entry = serde_json::from_str(&json).expect("Should deserialize");
+    assert_eq!(
+        deserialized.height(),
+        0,
+        "Missing height should default to 0"
+    );
+}
+
+#[test]
+fn test_subtree_height_inheritance() {
+    // Test that Entry.subtree_height() returns tree height when subtree height is None
     let root = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
 
-    let entry_a = Entry::builder(root_id.clone())
+    // Create entry with explicit tree height and subtree without explicit height
+    let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .build()
-        .expect("Entry should build successfully");
-    let id_a = entry_a.id();
-
-    let entry_b = Entry::builder(root_id.clone())
-        .add_parent(id_a.clone())
-        .build()
-        .expect("Entry should build successfully");
-    let id_b = entry_b.id();
-
-    let entry_c = Entry::builder(root_id.clone())
-        .add_parent(id_b.clone())
+        .set_height(42) // Tree height
+        .set_subtree_data("test_store", "data")
+        // Note: not setting subtree height, so it defaults to None (inherit)
         .build()
         .expect("Entry should build successfully");
 
-    // Store all entries in backend
-    backend.put_verified(root.clone()).await.unwrap();
-    backend.put_verified(entry_a.clone()).await.unwrap();
-    backend.put_verified(entry_b.clone()).await.unwrap();
-    backend.put_verified(entry_c.clone()).await.unwrap();
+    // Subtree height should inherit from tree (42)
+    assert_eq!(
+        entry.subtree_height("test_store").unwrap(),
+        42,
+        "Subtree with no explicit height should inherit tree height"
+    );
 
-    // Create a vector with entries in random order
-    let mut entries = vec![
-        entry_c.clone(),
-        root.clone(),
-        entry_b.clone(),
-        entry_a.clone(),
-    ];
+    assert_eq!(entry.height(), 42, "Tree height should be 42");
+}
 
-    // Sort the entries
-    backend
-        .sort_entries_by_height(&root_id, &mut entries)
-        .await
-        .unwrap();
+#[test]
+fn test_subtree_independent_height_vs_inherited() {
+    let root = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let root_id = root.id();
 
-    // Check the sorted order: root, A, B, C (by height)
-    assert_eq!(entries[0].id(), root_id);
-    assert_eq!(entries[1].id(), id_a);
-    assert_eq!(entries[2].id(), id_b);
-    assert_eq!(entries[3].id(), entry_c.id());
+    // Create entry with both inherited and independent subtree heights
+    let entry = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_height(100) // Tree height
+        .set_subtree_data("inherited_store", "data1")
+        // inherited_store height not set, defaults to None (inherit)
+        .set_subtree_data("independent_store", "data2")
+        .set_subtree_height("independent_store", Some(5)) // Independent height
+        .build()
+        .expect("Entry should build successfully");
 
-    // Test with an empty vector (should not panic)
-    let mut empty_entries = Vec::new();
-    backend
-        .sort_entries_by_height(&root_id, &mut empty_entries)
-        .await
-        .unwrap();
-    assert!(empty_entries.is_empty());
+    // Inherited store should return tree height
+    assert_eq!(
+        entry.subtree_height("inherited_store").unwrap(),
+        100,
+        "Subtree with no explicit height should return tree height"
+    );
+
+    // Independent store should return its own height
+    assert_eq!(
+        entry.subtree_height("independent_store").unwrap(),
+        5,
+        "Subtree with explicit height should return that height"
+    );
 }

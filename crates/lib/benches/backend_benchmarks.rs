@@ -9,20 +9,24 @@ use eidetica::{
 use std::hint::black_box;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
-async fn setup_tree_async() -> eidetica::Database {
+/// Returns both Instance and Database to keep Instance alive
+async fn setup_tree_async() -> (Instance, eidetica::Database) {
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend)
+    let instance = Instance::open(backend)
         .await
         .expect("Benchmark setup failed");
-    db.add_private_key("BENCH_KEY")
+    instance
+        .add_private_key("BENCH_KEY")
         .await
         .expect("Failed to add benchmark key");
-    db.new_database_default("BENCH_KEY")
+    let db = instance
+        .new_database_default("BENCH_KEY")
         .await
-        .expect("Failed to create tree")
+        .expect("Failed to create tree");
+    (instance, db)
 }
 
-/// Create a linear chain of entries for testing LCA performance
+/// Create a linear chain of entries for testing merge base performance
 async fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
@@ -82,7 +86,7 @@ async fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
         .expect("Failed to set value");
     let entry_c = op_c.commit().await.expect("Failed to commit");
 
-    // Return B and C for LCA testing (LCA should be A)
+    // Return B and C for merge base testing (merge base should be A)
     (vec![entry_b, entry_c], entry_a)
 }
 
@@ -206,13 +210,13 @@ async fn create_large_tree(
     entry_ids
 }
 
-/// Benchmark find_lca performance with linear chains
-pub fn bench_lca_linear_chains(c: &mut Criterion) {
+/// Benchmark find_merge_base performance with linear chains
+pub fn bench_merge_base_linear_chains(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("Failed to build Tokio runtime");
-    let mut group = c.benchmark_group("find_lca_linear");
+    let mut group = c.benchmark_group("find_merge_base_linear");
 
     for chain_length in [10, 50, 100] {
         group.bench_with_input(
@@ -222,33 +226,36 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let tree = setup_tree_async().await;
+                            let (_instance, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, length).await;
-                            (tree, entry_ids)
+                            (_instance, tree, entry_ids)
                         })
                     },
-                    |(tree, entry_ids)| {
+                    |(_instance, tree, entry_ids)| {
                         rt.block_on(async {
-                            // Test LCA of first and last entries
+                            // Test merge base of first and last entries
                             let endpoints =
                                 vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
-                            let expected_lca = &entry_ids[0]; // In a linear chain, LCA of first and last is the first
+                            let expected_merge_base = &entry_ids[0]; // In a linear chain, merge base of first and last is the first
 
-                            // Access database to call find_lca
+                            // Access database to call find_merge_base
                             let backend = tree.backend().expect("Failed to get backend");
                             let in_memory = backend
                                 .as_any()
                                 .downcast_ref::<InMemory>()
                                 .expect("Failed to downcast database");
 
-                            let lca = in_memory
-                                .find_lca(tree.root_id(), "data", &endpoints)
+                            let merge_base = in_memory
+                                .find_merge_base(tree.root_id(), "data", &endpoints)
                                 .await
-                                .expect("Failed to find LCA");
+                                .expect("Failed to find merge base");
 
                             // Verify correctness
-                            assert_eq!(&lca, expected_lca, "LCA mismatch in linear chain");
-                            black_box(lca);
+                            assert_eq!(
+                                &merge_base, expected_merge_base,
+                                "Merge base mismatch in linear chain"
+                            );
+                            black_box(merge_base);
                         });
                     },
                 );
@@ -259,125 +266,40 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark find_lca performance with diamond patterns
-pub fn bench_lca_diamond_merge(c: &mut Criterion) {
+/// Benchmark find_merge_base performance with diamond patterns
+pub fn bench_merge_base_diamond_merge(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("Failed to build Tokio runtime");
-    c.bench_function("find_lca_diamond", |b| {
+    c.bench_function("find_merge_base_diamond", |b| {
         b.iter_with_setup(
             || {
                 rt.block_on(async {
-                    let tree = setup_tree_async().await;
-                    let (test_entries, expected_lca) = create_diamond_pattern(&tree).await;
-                    (tree, test_entries, expected_lca)
+                    let (_instance, tree) = setup_tree_async().await;
+                    let (test_entries, expected_merge_base) = create_diamond_pattern(&tree).await;
+                    (_instance, tree, test_entries, expected_merge_base)
                 })
             },
-            |(tree, test_entries, expected_lca)| {
+            |(_instance, tree, test_entries, expected_merge_base)| {
                 rt.block_on(async {
                     let backend = tree.backend().expect("Failed to get backend");
 
-                    let lca = backend
-                        .find_lca(tree.root_id(), "data", &test_entries)
+                    let merge_base = backend
+                        .find_merge_base(tree.root_id(), "data", &test_entries)
                         .await
-                        .expect("Failed to find LCA");
+                        .expect("Failed to find merge base");
 
                     // Verify correctness
-                    assert_eq!(lca, expected_lca, "LCA mismatch in diamond pattern");
-                    black_box(lca);
+                    assert_eq!(
+                        merge_base, expected_merge_base,
+                        "Merge base mismatch in diamond pattern"
+                    );
+                    black_box(merge_base);
                 });
             },
         );
     });
-}
-
-/// Benchmark height calculation performance
-pub fn bench_tree_heights(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to build Tokio runtime");
-    let mut group = c.benchmark_group("height_calculation");
-
-    for depth in [10, 50] {
-        group.bench_with_input(BenchmarkId::new("depth", depth), &depth, |b, &depth| {
-            b.iter_with_setup(
-                || {
-                    rt.block_on(async {
-                        let tree = setup_tree_async().await;
-                        let _ = create_linear_chain(&tree, depth).await;
-                        tree
-                    })
-                },
-                |tree| {
-                    rt.block_on(async {
-                        let backend = tree.backend().expect("Failed to get backend");
-                        let in_memory = backend
-                            .as_any()
-                            .downcast_ref::<InMemory>()
-                            .expect("Failed to downcast backend");
-
-                        let heights = in_memory
-                            .calculate_heights(tree.root_id(), None)
-                            .await
-                            .expect("Failed to calculate heights");
-                        black_box(heights);
-                    });
-                },
-            );
-        });
-    }
-
-    group.finish();
-}
-
-/// Benchmark repeated height calculations
-pub fn bench_height_calculation_overhead(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to build Tokio runtime");
-    let mut group = c.benchmark_group("repeated_height_calculations");
-    group.sample_size(20); // Reduce sample size for repeated calculations
-
-    for tree_size in [50, 100] {
-        group.bench_with_input(
-            BenchmarkId::new("tree_size", tree_size),
-            &tree_size,
-            |b, &size| {
-                b.iter_with_setup(
-                    || {
-                        rt.block_on(async {
-                            let tree = setup_tree_async().await;
-                            let _ = create_linear_chain(&tree, size).await;
-                            tree
-                        })
-                    },
-                    |tree| {
-                        rt.block_on(async {
-                            let backend = tree.backend().expect("Failed to get backend");
-                            let in_memory = backend
-                                .as_any()
-                                .downcast_ref::<InMemory>()
-                                .expect("Failed to downcast database");
-
-                            // Simulate 5 operations that need height info
-                            for _ in 0..5 {
-                                let heights = in_memory
-                                    .calculate_heights(tree.root_id(), None)
-                                    .await
-                                    .expect("Failed to calculate heights");
-                                black_box(heights);
-                            }
-                        });
-                    },
-                );
-            },
-        );
-    }
-
-    group.finish();
 }
 
 /// Benchmark tips finding performance
@@ -396,12 +318,12 @@ pub fn bench_tips_finding(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let tree = setup_tree_async().await;
+                            let (_instance, tree) = setup_tree_async().await;
                             let _ = create_branching_tree(&tree, num, 3).await; // Create branches as tips
-                            tree
+                            (_instance, tree)
                         })
                     },
-                    |tree| {
+                    |(_instance, tree)| {
                         rt.block_on(async {
                             let backend = tree.backend().expect("Failed to get backend");
                             let tips = backend
@@ -441,12 +363,12 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                     b.iter_with_setup(
                         || {
                             rt.block_on(async {
-                                let tree = setup_tree_async().await;
+                                let (_instance, tree) = setup_tree_async().await;
                                 let _ = create_large_tree(&tree, size, structure).await;
-                                tree
+                                (_instance, tree)
                             })
                         },
-                        |tree| {
+                        |(_instance, tree)| {
                             rt.block_on(async {
                                 let backend = tree.backend().expect("Failed to get backend");
                                 let entries = backend
@@ -481,13 +403,13 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let tree = setup_tree_async().await;
+                            let (_instance, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, depth).await;
                             let tip_entry = entry_ids.last().unwrap().clone();
-                            (tree, tip_entry)
+                            (_instance, tree, tip_entry)
                         })
                     },
-                    |(tree, tip_entry)| {
+                    |(_instance, tree, tip_entry)| {
                         rt.block_on(async {
                             let op = tree
                                 .new_transaction_with_tips([tip_entry])
@@ -530,13 +452,13 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let tree = setup_tree_async().await;
+                            let (_instance, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, size).await;
                             let last_entry_id = entry_ids.last().unwrap().clone();
-                            (tree, last_entry_id)
+                            (_instance, tree, last_entry_id)
                         })
                     },
-                    |(tree, last_entry_id)| {
+                    |(_instance, tree, last_entry_id)| {
                         rt.block_on(async {
                             let backend = tree.backend().expect("Failed to get backend");
                             let in_memory = backend
@@ -559,8 +481,8 @@ pub fn bench_tip_validation(c: &mut Criterion) {
 criterion_group! {
     name = backend_benches;
     config = Criterion::default().sample_size(30);
-    targets = bench_lca_linear_chains, bench_lca_diamond_merge, bench_tree_heights,
-              bench_height_calculation_overhead, bench_tips_finding, bench_tree_traversal_scalability,
+    targets = bench_merge_base_linear_chains, bench_merge_base_diamond_merge,
+              bench_tips_finding, bench_tree_traversal_scalability,
               bench_crdt_merge_operations, bench_tip_validation
 }
 

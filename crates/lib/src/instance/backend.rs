@@ -106,9 +106,11 @@ impl Backend {
         self.backend_impl.all_roots().await
     }
 
-    /// Find lowest common ancestor
-    pub async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        self.backend_impl.find_lca(tree, store, entry_ids).await
+    /// Find merge base (common dominator) of entries
+    pub async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+        self.backend_impl
+            .find_merge_base(tree, store, entry_ids)
+            .await
     }
 
     /// Collect root to target path

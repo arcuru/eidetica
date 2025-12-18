@@ -37,6 +37,7 @@ use crate::{
     constants::{INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
+    height::HeightStrategy,
     store::{Registry, SettingsStore, StoreError},
 };
 
@@ -734,17 +735,17 @@ impl Transaction {
             return Ok(T::default());
         }
 
-        // Compute the CRDT state using LCA-based ROOT-to-target computation
-        self.compute_subtree_state_lca_based(subtree_name, &parents)
+        // Compute the CRDT state using merge-base ROOT-to-target computation
+        self.compute_subtree_state_merge_based(subtree_name, &parents)
             .await
     }
 
-    /// Computes the CRDT state for a subtree using correct recursive LCA-based algorithm.
+    /// Computes the CRDT state for a subtree using correct recursive merge-base algorithm.
     ///
     /// Algorithm:
     /// 1. If no entries, return default state
     /// 2. If single entry, compute its state recursively
-    /// 3. If multiple entries, find their LCA and compute state from that LCA
+    /// 3. If multiple entries, find their merge base and compute state from there
     ///
     /// # Type Parameters
     /// * `T` - The CRDT type to compute the state for
@@ -755,7 +756,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the computed CRDT state
-    async fn compute_subtree_state_lca_based<T>(
+    async fn compute_subtree_state_merge_based<T>(
         &self,
         subtree_name: impl AsRef<str> + Send,
         entry_ids: &[ID],
@@ -763,6 +764,10 @@ impl Transaction {
     where
         T: CRDT + Default + Send,
     {
+        // FIXME: Cache the merged state for multi-tip queries. Currently every read
+        // with 2+ tips re-runs find_merge_base and re-merges the path. Should cache
+        // keyed by (sorted_tip_ids, subtree_name) and invalidate when tips change.
+
         // Base case: no entries
         if entry_ids.is_empty() {
             return Ok(T::default());
@@ -777,23 +782,23 @@ impl Transaction {
                 .await;
         }
 
-        // Multiple entries: find LCA and compute state from there
-        let lca_id = self
+        // Multiple entries: find merge base and compute state from there
+        let merge_base_id = self
             .db
             .backend()?
-            .find_lca(self.db.root_id(), subtree_name, entry_ids)
+            .find_merge_base(self.db.root_id(), subtree_name, entry_ids)
             .await?;
 
-        // Get the LCA state recursively
+        // Get the merge base state recursively
         let mut result = self
-            .compute_single_entry_state_recursive(subtree_name, &lca_id)
+            .compute_single_entry_state_recursive(subtree_name, &merge_base_id)
             .await?;
 
-        // Get all entries from LCA to all tip entries (deduplicated and sorted)
+        // Get all entries from merge base to all tip entries (deduplicated and sorted)
         let path_entries = {
             self.db
                 .backend()?
-                .get_path_from_to(self.db.root_id(), subtree_name, &lca_id, entry_ids)
+                .get_path_from_to(self.db.root_id(), subtree_name, &merge_base_id, entry_ids)
                 .await?
         };
 
@@ -805,12 +810,12 @@ impl Transaction {
         Ok(result)
     }
 
-    /// Computes the CRDT state for a single entry using correct recursive LCA algorithm.
+    /// Computes the CRDT state for a single entry using correct recursive merge-base algorithm.
     ///
     /// Algorithm:
     /// 1. Check if entry state is cached → return it
-    /// 2. Find LCA of parents and get its state (recursively)
-    /// 3. Merge all entries from LCA to current entry into that state
+    /// 2. Find merge base of parents and get its state (recursively)
+    /// 3. Merge all entries from merge base to current entry into that state
     ///
     /// # Type Parameters
     /// * `T` - The CRDT type to compute the state for
@@ -850,8 +855,8 @@ impl Transaction {
                 .get_sorted_store_parents(self.db.root_id(), entry_id, subtree_name)
                 .await?;
 
-            // Step 2: Compute LCA state recursively
-            let (lca_state, lca_id_opt) = if parents.is_empty() {
+            // Step 2: Compute merge base state recursively
+            let (merge_base_state, merge_base_id_opt) = if parents.is_empty() {
                 // No parents - this is a root, start with default
                 (T::default(), None)
             } else if parents.len() == 1 {
@@ -862,28 +867,28 @@ impl Transaction {
                     None,
                 )
             } else {
-                // Multiple parents - find LCA and get its state
-                let lca_id = self
+                // Multiple parents - find merge base and get its state
+                let merge_base_id = self
                     .db
                     .backend()?
-                    .find_lca(self.db.root_id(), subtree_name, &parents)
+                    .find_merge_base(self.db.root_id(), subtree_name, &parents)
                     .await?;
-                let lca_state = self
-                    .compute_single_entry_state_recursive(subtree_name, &lca_id)
+                let merge_base_state = self
+                    .compute_single_entry_state_recursive(subtree_name, &merge_base_id)
                     .await?;
-                (lca_state, Some(lca_id))
+                (merge_base_state, Some(merge_base_id))
             };
 
-            // Step 3: Merge entries from LCA to current entry
-            let mut result = lca_state;
+            // Step 3: Merge entries from merge base to current entry
+            let mut result = merge_base_state;
 
-            // If we have multiple parents, we need to merge paths from LCA to all parents
-            if let Some(lca_id) = lca_id_opt {
-                // Get all entries from LCA to all parents (deduplicated and sorted)
+            // If we have multiple parents, we need to merge paths from merge base to all parents
+            if let Some(merge_base_id) = merge_base_id_opt {
+                // Get all entries from merge base to all parents (deduplicated and sorted)
                 let path_entries = self
                     .db
                     .backend()?
-                    .get_path_from_to(self.db.root_id(), subtree_name, &lca_id, &parents)
+                    .get_path_from_to(self.db.root_id(), subtree_name, &merge_base_id, &parents)
                     .await?;
 
                 // Merge all path entries in order
@@ -1155,6 +1160,91 @@ impl Transaction {
                         let encoded = Base64::encode_string(&ciphertext);
                         // Update the builder with encrypted data
                         builder.set_subtree_data_mut(subtree_name.clone(), encoded);
+                    }
+                }
+            }
+        }
+
+        // Extract height strategy from settings (defaults to Incremental)
+        // If this transaction includes settings updates, merge them to get the effective strategy
+        let settings_for_height = if has_settings_update {
+            let local_settings = self.get_local_data::<Doc>(SETTINGS)?;
+            effective_settings_for_validation.merge(&local_settings)?
+        } else {
+            effective_settings_for_validation.clone()
+        };
+        let height_strategy: HeightStrategy = settings_for_height
+            .get_json("height_strategy")
+            .unwrap_or_default();
+
+        // Compute heights from parent entries using the configured strategy
+        {
+            let backend = self.db.backend()?;
+
+            // Compute main tree height using the height strategy
+            let main_parents = builder.parents().unwrap_or_default();
+            let max_parent_height = if main_parents.is_empty() {
+                None
+            } else {
+                let mut max_height = 0u64;
+                for parent_id in &main_parents {
+                    if let Ok(parent) = backend.get(parent_id).await {
+                        max_height = max_height.max(parent.height());
+                    }
+                }
+                Some(max_height)
+            };
+            let tree_height = height_strategy.calculate_height(max_parent_height);
+            builder.set_height_mut(tree_height);
+
+            // Compute subtree heights based on per-subtree settings from _index
+            // System subtrees (prefixed with _) always inherit from tree.
+            // Regular subtrees check _index for a height_strategy override.
+            //
+            // If a subtree has no override, its height is left as None, which means
+            // Entry.subtree_height() will return the tree height (inheritance).
+            let index = self.get_index().await.ok();
+
+            for subtree_name in builder.subtrees() {
+                // Determine the effective strategy for this subtree:
+                // - System subtrees (_settings, _index, etc.): inherit (None)
+                // - User subtrees: look up in _index, default to inherit (None)
+                let subtree_strategy: Option<HeightStrategy> = if subtree_name.starts_with('_') {
+                    // System subtrees always inherit from tree
+                    None
+                } else if let Some(ref idx) = index {
+                    idx.get_subtree_settings(&subtree_name)
+                        .await
+                        .ok()
+                        .and_then(|s| s.height_strategy)
+                } else {
+                    None
+                };
+
+                match subtree_strategy {
+                    None => {
+                        // Inherit from tree - height stays None (default)
+                        // Entry.subtree_height() will return tree height
+                    }
+                    Some(strategy) => {
+                        // Calculate independent height from subtree parents
+                        let subtree_parents =
+                            builder.subtree_parents(&subtree_name).unwrap_or_default();
+                        let max_subtree_parent_height = if subtree_parents.is_empty() {
+                            None
+                        } else {
+                            let mut max_height = 0u64;
+                            for parent_id in &subtree_parents {
+                                if let Ok(parent) = backend.get(parent_id).await
+                                    && let Ok(height) = parent.subtree_height(&subtree_name)
+                                {
+                                    max_height = max_height.max(height);
+                                }
+                            }
+                            Some(max_height)
+                        };
+                        let subtree_height = strategy.calculate_height(max_subtree_parent_height);
+                        builder.set_subtree_height_mut(&subtree_name, Some(subtree_height));
                     }
                 }
             }
