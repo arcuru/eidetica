@@ -19,17 +19,17 @@ The system supports branching and merging through parent-child relationships:
 
 ## Merge Algorithm
 
-Uses a recursive LCA-based approach for computing CRDT states:
+Uses a recursive merge-base approach for computing CRDT states:
 
 - **Cache Check**: Avoids redundant computation through automatic caching
-- **LCA Computation**: Finds lowest common ancestor for multi-parent entries
+- **Merge Base Computation**: Finds the common dominator for multi-parent entries (the lowest ancestor through which ALL paths must pass)
 - **Recursive Building**: Computes ancestor states recursively
-- **Path Merging**: Merges all entries from LCA to parents with proper ordering
+- **Path Merging**: Merges all entries from merge base to parents with proper ordering
 - **Local Integration**: Applies current entry's data to final state
 
 ## Key Properties
 
 - **Correctness**: Consistent state computation regardless of access patterns
 - **Performance**: Caching eliminates redundant work
-- **Deterministic**: Maintains ordering through proper LCA computation
+- **Deterministic**: Maintains ordering through proper merge base computation
 - **Immutable Caching**: Entry immutability ensures cache validity

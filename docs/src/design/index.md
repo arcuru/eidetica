@@ -30,6 +30,7 @@ Each design document typically includes:
 - [Authentication](authentication.md) - Mandatory cryptographic authentication for all entries
 - [Settings Storage](settings_storage.md) - How settings are stored and tracked in databases
 - [Subtree Index](subtree_index.md) - Registry system for subtree metadata and type discovery
+- [Height Strategy](height_strategy.md) - Configurable height calculation for entry ordering
 
 ### Proposed
 

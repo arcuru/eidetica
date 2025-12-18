@@ -438,6 +438,7 @@ The `_index` subtree tracks:
 - **Subtree names**: Which subtrees exist in the database
 - **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0")
 - **Configuration**: Store-specific settings for each subtree
+- **Subtree settings**: Common settings like height strategy overrides
 
 The index is maintained automatically when you access stores via `get_store()` and is useful for:
 
@@ -586,6 +587,27 @@ pub trait Store: Sized {
 ```
 
 Store implementations add their own methods on top of this minimal interface.
+
+## Store Height Strategies
+
+Each store can configure its own height calculation strategy, independent of the database-level strategy. When branches diverge and later merge (e.g., after a network split), heights determine the order entries are processed. Lower heights come first; ties are broken by entry hash.
+
+### Available Methods
+
+All Store types have these height strategy methods available:
+
+- `get_height_strategy()`: Get the current strategy (`None` = inherit from database)
+- `set_height_strategy(Option<HeightStrategy>)`: Set or clear an override
+
+### Use Cases
+
+| Scenario                             | Recommended Setup                      |
+| ------------------------------------ | -------------------------------------- |
+| Global timestamp ordering            | Database: `Timestamp`, stores inherit  |
+| Simple sequential ordering           | Database: `Incremental` (default)      |
+| Audit logs with independent ordering | Specific store: `Incremental` override |
+
+For detailed usage examples, see [Height Strategies](../transactions.md#height-strategies) in the Transactions guide.
 
 ## Store History and Merging (CRDT Aspects)
 

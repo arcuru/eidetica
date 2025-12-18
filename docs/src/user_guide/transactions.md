@@ -216,6 +216,89 @@ transaction.commit().await?;
 
 This ensures that settings changes are atomic and properly authenticated alongside other database modifications.
 
+## Height Strategies
+
+Each Entry in Eidetica has a **height** value. When branches diverge and later merge (e.g., after a network split), heights determine the order entries are processed. Lower heights come first; ties are broken by entry hash. The height strategy determines how this value is calculated during commit.
+
+### Available Strategies
+
+| Strategy                | Calculation                     | Use Case                            |
+| ----------------------- | ------------------------------- | ----------------------------------- |
+| `Incremental` (default) | `max(parent_heights) + 1`       | Offline-first apps, simple ordering |
+| `Timestamp`             | `max(timestamp_ms, parent + 1)` | Time-series data, audit logs        |
+
+### Database-Level Strategy
+
+Configure the height strategy for the entire database via `SettingsStore`:
+
+```rust
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, HeightStrategy};
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
+# let mut settings = Doc::new();
+# settings.set("name", "height_example");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key).await?;
+let txn = database.new_transaction().await?;
+let settings = txn.get_settings()?;
+
+// Set timestamp-based heights for time-series data
+settings.set_height_strategy(HeightStrategy::Timestamp).await?;
+
+txn.commit().await?;
+# Ok(())
+# }
+```
+
+### Per-Subtree Height Strategy
+
+Individual stores can override the database strategy for independent height tracking:
+
+```rust
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, HeightStrategy, Store, store::DocStore};
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
+# let mut settings = Doc::new();
+# settings.set("name", "per_subtree_example");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key).await?;
+let txn = database.new_transaction().await?;
+
+// This store uses its own incremental counter
+let audit_log = txn.get_store::<DocStore>("audit_log").await?;
+audit_log.set_height_strategy(Some(HeightStrategy::Incremental)).await?;
+audit_log.set("event", "user_login").await?;
+
+// This store inherits the database strategy
+let messages = txn.get_store::<DocStore>("messages").await?;
+messages.set("content", "Hello").await?;
+
+txn.commit().await?;
+# Ok(())
+# }
+```
+
+### How Height Inheritance Works
+
+Subtrees with no explicit height strategy inherit from the database-level strategy:
+
+- **No explicit height** (`None`): The subtree inherits from the tree (database) height
+- **Explicit height** (`Some(h)`): The subtree has an independent height value
+
+When querying `Entry.subtree_height()`, the returned value reflects this inheritance transparently.
+
 ## Read-Only Access
 
 While `Transaction`s are essential for writes, you can perform reads without an explicit `Transaction` using `Database::get_store_viewer`:

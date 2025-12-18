@@ -46,4 +46,25 @@ Transactions automatically determine subtree parents:
 
 **Always use transactions** for entry creation - they handle parent discovery automatically.
 
+## Subtree Heights
+
+Each subtree can have its own height value. Heights provide deterministic ordering when merging DAG branches after network splits. Entries are processed in height order, with ties broken by entry hash:
+
+- **Height = None**: Subtree inherits the tree (main database) height
+- **Height = Some(h)**: Subtree has an independent height value
+
+The `Entry.subtree_height()` accessor handles inheritance transparently:
+
+```rust,ignore
+// If subtree.height is None, returns tree.height (inheritance)
+// If subtree.height is Some(h), returns the independent value
+let height = entry.subtree_height("messages")?;
+```
+
+Per-subtree height strategies are configured via the `_index` registry. System subtrees (`_settings`, `_index`, `_root`) always inherit from the tree.
+
+See [Height Strategy Design](../design/height_strategy.md) for implementation details.
+
+## Implementation
+
 See `src/entry/mod.rs` and `src/transaction/mod.rs` for implementation.

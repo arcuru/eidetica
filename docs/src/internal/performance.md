@@ -7,11 +7,11 @@ The architecture provides several performance characteristics:
 - **InMemoryDatabase**: Provides high-speed operations but is limited by available RAM.
 - **Lock-based concurrency**: May create bottlenecks in high-concurrency write scenarios.
 - **Height calculation**: Uses BFS-based topological sorting with O(V + E) complexity.
-- **CRDT merge algorithm**: Employs recursive LCA-based merging with intelligent caching.
+- **CRDT merge algorithm**: Employs recursive merge-base merging with intelligent caching.
 
 ### CRDT Merge Performance
 
-The recursive LCA-based merge algorithm uses caching for performance optimization:
+The recursive merge-base algorithm uses caching for performance optimization:
 
 #### Algorithm Complexity
 
