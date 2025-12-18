@@ -305,6 +305,10 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a vector of `Entry` objects in the tree up to the given tips,
     /// sorted topologically, or an error.
+    ///
+    /// # Errors
+    /// - `EntryNotFound` if any tip doesn't exist locally
+    /// - `EntryNotInTree` if any tip belongs to a different tree
     fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
 
     /// Retrieves all entries belonging to a specific store within a tree up to the given tips, sorted topologically.

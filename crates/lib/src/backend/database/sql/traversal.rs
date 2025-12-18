@@ -263,8 +263,8 @@ pub async fn collect_root_to_target(
 
 /// Get entries in a tree reachable from the given tips.
 ///
-/// Only includes entries that belong to the specified tree. Tips that don't
-/// belong to the tree are ignored.
+/// Returns an error if any tip doesn't exist locally (`EntryNotFound`) or
+/// belongs to a different tree (`EntryNotInTree`).
 pub async fn get_tree_from_tips(
     backend: &SqlxBackend,
     tree: &ID,
@@ -299,9 +299,25 @@ pub async fn get_tree_from_tips(
         if in_tree.is_some() {
             to_visit.push_back(tip.clone());
         } else {
-            // Ignore tips that don't belong in the specified tree
-            debug_assert!(false);
-            continue;
+            // Entry not in tree - check if it exists at all to give a better error
+            let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM entries WHERE id = $1")
+                .bind(tip.to_string())
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| BackendError::SqlxError {
+                    reason: format!("Failed to check entry existence: {e}"),
+                    source: Some(e),
+                })?;
+
+            if exists.is_some() {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: tip.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
+            } else {
+                return Err(BackendError::EntryNotFound { id: tip.clone() }.into());
+            }
         }
     }
 

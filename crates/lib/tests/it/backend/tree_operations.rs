@@ -1,3 +1,4 @@
+use eidetica::backend::errors::BackendError;
 use eidetica::entry::{Entry, ID};
 
 use super::helpers::{
@@ -148,24 +149,30 @@ fn test_backend_get_tree_from_tips() {
     assert!(last_two.contains(&e2b_id));
 
     // --- Test with non-existent tip ---
-    let tree_bad_tip = backend
-        .get_tree_from_tips(&root_id, &["bad_tip_id".into()])
-        .expect("Failed to get tree with non-existent tip");
+    let result = backend.get_tree_from_tips(&root_id, &["bad_tip_id".into()]);
+    assert!(result.is_err(), "Non-existent tip should return an error");
+    let err = result.unwrap_err();
     assert!(
-        tree_bad_tip.is_empty(),
-        "Getting tree from non-existent tip should return empty vector"
+        matches!(
+            err,
+            eidetica::Error::Backend(BackendError::EntryNotFound { .. })
+        ),
+        "Expected EntryNotFound error, got: {err:?}"
     );
 
-    // --- Test with non-existent tree root ---
+    // --- Test with mismatched tree root ---
     // When given a valid tip but an invalid root (tree_id doesn't match),
-    // the result should be empty because the tip doesn't belong to the specified tree.
+    // the function should return an error because the tip doesn't belong to the specified tree.
     let bad_root_id: ID = "bad_root".into();
-    let tree_bad_root = backend
-        .get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id))
-        .expect("Failed to get tree with non-existent root");
+    let result = backend.get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id));
+    assert!(result.is_err(), "Mismatched tree should return an error");
+    let err = result.unwrap_err();
     assert!(
-        tree_bad_root.is_empty(),
-        "Getting tree from tip with mismatched root should return empty vector"
+        matches!(
+            err,
+            eidetica::Error::Backend(BackendError::EntryNotInTree { .. })
+        ),
+        "Expected EntryNotInTree error, got: {err:?}"
     );
 
     // --- Test get_tree() convenience function ---

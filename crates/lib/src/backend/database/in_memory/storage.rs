@@ -335,7 +335,15 @@ pub(crate) fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> 
             // Only include entries that are part of the specified tree
             if entry.in_tree(tree) {
                 to_process.push_back(tip.clone());
+            } else {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: tip.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
             }
+        } else {
+            return Err(BackendError::EntryNotFound { id: tip.clone() }.into());
         }
     }
 
