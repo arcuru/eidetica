@@ -1,0 +1,122 @@
+# Forgejo CI workflow for code coverage
+name: Coverage
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Coverage for backends that don't need external services
+  coverage:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [inmemory, sqlite]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        id: rust
+        uses: https://github.com/dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-coverage-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-coverage-
+            ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-
+
+      - name: Install cargo-tarpaulin
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin@0.34.1
+
+      - name: Run coverage (inmemory)
+        if: matrix.backend == 'inmemory'
+        run: |
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Run coverage (sqlite)
+        if: matrix.backend == 'sqlite'
+        run: |
+          TEST_BACKEND=sqlite \
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Upload coverage to Codecov
+        uses: https://github.com/codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
+        continue-on-error: true
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: arcuru/eidetica
+          flags: ${{ matrix.backend }}
+          files: coverage/lcov.info
+          fail_ci_if_error: false
+
+  # PostgreSQL coverage uses service containers instead of docker run
+  coverage-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: eidetica_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        id: rust
+        uses: https://github.com/dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-coverage-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-coverage-
+            ${{ runner.os }}-cargo-${{ steps.rust.outputs.cachekey }}-
+
+      - name: Install cargo-tarpaulin
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin@0.34.1
+
+      - name: Run coverage (postgres)
+        run: |
+          TEST_BACKEND=postgres \
+          TEST_POSTGRES_URL="postgres://postgres@postgres:5432/eidetica_test" \
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Upload coverage to Codecov
+        uses: https://github.com/codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
+        continue-on-error: true
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: arcuru/eidetica
+          flags: postgres
+          files: coverage/lcov.info
+          fail_ci_if_error: false

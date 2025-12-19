@@ -9,45 +9,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Coverage for backends that don't need external services
   coverage:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        backend: [inmemory, sqlite, postgres]
+        backend: [inmemory, sqlite]
 
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@1.92.0
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
-
-      - name: Start PostgreSQL
-        if: matrix.backend == 'postgres'
-        run: |
-          docker run -d --name test-postgres \
-            -e POSTGRES_DB=eidetica_test \
-            -e POSTGRES_HOST_AUTH_METHOD=trust \
-            -p 5432:5432 \
-            postgres:16-alpine
-          # Wait for PostgreSQL to be ready
-          for i in $(seq 1 30); do
-            if docker exec test-postgres pg_isready -U postgres -d eidetica_test >/dev/null 2>&1; then
-              echo "PostgreSQL is ready!"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "Timed out waiting for PostgreSQL"
-              exit 1
-            fi
-            sleep 1
-          done
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin@0.34.1
 
       - name: Run coverage (inmemory)
         if: matrix.backend == 'inmemory'
@@ -60,8 +42,47 @@ jobs:
           TEST_BACKEND=sqlite \
           cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: ${{ matrix.backend }}
+          files: coverage/lcov.info
+          fail_ci_if_error: true
+
+  # PostgreSQL coverage uses service containers instead of docker run
+  coverage-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: eidetica_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin@0.34.1
+
       - name: Run coverage (postgres)
-        if: matrix.backend == 'postgres'
         run: |
           TEST_BACKEND=postgres \
           TEST_POSTGRES_URL="postgres://postgres@localhost:5432/eidetica_test" \
@@ -71,6 +92,6 @@ jobs:
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: ${{ matrix.backend }}
+          flags: postgres
           files: coverage/lcov.info
           fail_ci_if_error: true
