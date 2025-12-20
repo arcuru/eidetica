@@ -3,7 +3,7 @@
   "extends": ["config:best-practices"],
   "platform": "github",
   "repositories": ["arcuru/eidetica"],
-  "enabledManagers": ["cargo", "github-actions", "nix"],
+  "enabledManagers": ["cargo", "github-actions"],
   "schedule": ["* 0-3 1 * *"],
   "prConcurrentLimit": 5,
   "minimumReleaseAge": "14 days",
@@ -28,11 +28,6 @@
       "groupName": "GitHub Actions"
     },
     {
-      "description": "Group all Nix flake updates together",
-      "matchManagers": ["nix"],
-      "groupName": "Nix flake updates"
-    },
-    {
       "description": "Group Cargo workspace dependencies",
       "matchManagers": ["cargo"],
       "matchFileNames": ["Cargo.toml"],
@@ -47,7 +42,8 @@
     }
   ],
   "lockFileMaintenance": {
-    "enabled": true
+    "enabled": true,
+    "schedule": ["* 0-3 1 * *"]
   },
   "labels": ["dependencies"],
   "assigneesFromCodeOwners": true,
