@@ -31,19 +31,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
-      - name: Install mdbook
-        run: |
-          if ! command -v mdbook &> /dev/null
-          then
-              cargo install mdbook --locked --version ^0.4
-          fi
-
-      - name: Install mdbook-mermaid
-        run: |
-          if ! command -v mdbook-mermaid &> /dev/null
-          then
-              cargo install mdbook-mermaid --locked --version ^0.15
-          fi
+      - name: Install mdbook and plugins
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.4,mdbook-mermaid@0.15
 
       - name: Build cargo docs with dev banner
         env:

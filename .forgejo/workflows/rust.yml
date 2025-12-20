@@ -85,23 +85,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Install mdbook
-        run: |
-          if ! command -v mdbook &> /dev/null
-          then
-              cargo install mdbook --locked --version ^0.4
-          fi
+      - name: Install mdbook and nextest
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.115,mdbook@0.4
 
       - name: Test (inmemory backend)
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features
 
       - name: Test (sqlite backend)
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features
         env:
           TEST_BACKEND: sqlite
 
       - name: Test (postgres backend)
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features
         env:
           TEST_BACKEND: postgres
           TEST_POSTGRES_URL: postgres://postgres@postgres:5432/eidetica_test
@@ -121,4 +119,4 @@ jobs:
         run: cargo build -p eidetica --no-default-features
 
       - name: Test with minimal features
-        run: cargo test -p eidetica --no-default-features
+        run: cargo nextest run -p eidetica --no-default-features

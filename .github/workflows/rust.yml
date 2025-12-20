@@ -52,15 +52,13 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
-      - name: Install mdbook
-        run: |
-          if ! command -v mdbook &> /dev/null
-          then
-              cargo install mdbook --locked --version ^0.4
-          fi
+      - name: Install mdbook and nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.115,mdbook@0.4
 
       - name: Test
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --workspace --all-features
 
       - name: Test Doc Examples
         run: cargo test --doc --workspace --all-features
@@ -86,8 +84,13 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.115
+
       - name: Build with no default features
         run: cargo build -p eidetica --no-default-features
 
       - name: Test with no default features
-        run: cargo test -p eidetica --no-default-features
+        run: cargo nextest run -p eidetica --no-default-features
