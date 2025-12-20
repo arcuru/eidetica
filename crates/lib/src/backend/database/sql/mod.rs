@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use sqlx::AnyPool;
+use sqlx::Executor;
 use sqlx::any::AnyPoolOptions;
 
 use crate::Result;
@@ -325,9 +326,10 @@ impl SqlxBackend {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
-        // If schema_name is provided, append it to the URL as the options parameter
-        // This ensures all connections in the pool use the same schema
-        let connection_url = if let Some(ref schema) = schema_name {
+        // If schema_name is provided, first create the schema, then use after_connect
+        // to set search_path on each connection. This is more reliable than URL options
+        // which don't work consistently across all network configurations.
+        if let Some(ref schema) = schema_name {
             // First connect to create the schema if needed
             let temp_pool = AnyPoolOptions::new()
                 .max_connections(1)
@@ -343,17 +345,23 @@ impl SqlxBackend {
                 .sql_context(&format!("Failed to create schema {schema}"))?;
 
             temp_pool.close().await;
+        }
 
-            // Build URL with search_path option
-            let separator = if url.contains('?') { '&' } else { '?' };
-            format!("{url}{separator}options=-c%20search_path%3D{schema}")
-        } else {
-            url.to_string()
-        };
-
+        // Build pool with after_connect hook to set search_path on each connection
+        let schema_for_hook = schema_name.clone();
         let pool = AnyPoolOptions::new()
             .max_connections(5)
-            .connect(&connection_url)
+            .after_connect(move |conn, _meta| {
+                let schema = schema_for_hook.clone();
+                Box::pin(async move {
+                    if let Some(ref s) = schema {
+                        let set_path = format!("SET search_path TO {s}");
+                        conn.execute(set_path.as_str()).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .connect(url)
             .await
             .sql_context("Failed to connect to PostgreSQL")?;
 
