@@ -15,18 +15,19 @@ use super::helpers::{
 };
 use crate::create_auth_keys;
 
-#[test]
-fn test_authentication_validation_revoked_key() {
+#[tokio::test]
+async fn test_authentication_validation_revoked_key() {
     let keys = create_auth_keys![
         ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("REVOKED_KEY", Permission::Write(10), KeyStatus::Revoked)
     ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
 
     let revoked_signing_key = db
         .backend()
         .get_private_key("REVOKED_KEY")
+        .await
         .expect("Failed to get revoked key")
         .expect("Revoked key should exist in backend");
 
@@ -40,18 +41,20 @@ fn test_authentication_validation_revoked_key() {
 
     let op = tree_with_revoked_key
         .new_transaction()
+        .await
         .expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
+    store.set("test", "value").await.expect("Failed to set value");
 
-    let result = op.commit();
+    let result = op.commit().await;
     assert!(result.is_err(), "Revoked key test: Operation should fail");
 }
 
-#[test]
-fn test_permission_checking_admin_operations() {
+#[tokio::test]
+async fn test_permission_checking_admin_operations() {
     let keys = create_auth_keys![
         ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("WRITE_KEY", Permission::Write(10), KeyStatus::Active),
@@ -61,13 +64,14 @@ fn test_permission_checking_admin_operations() {
             KeyStatus::Active
         )
     ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
 
     // Test with WRITE_KEY - should be able to write data
     let write_signing_key = db
         .backend()
         .get_private_key("WRITE_KEY")
+        .await
         .expect("Failed to get write key")
         .expect("Write key should exist in backend");
     let tree_with_write_key = eidetica::Database::open(
@@ -82,12 +86,14 @@ fn test_permission_checking_admin_operations() {
         &tree_with_write_key,
         "data",
         "Write key should be able to write data",
-    );
+    )
+    .await;
 
     // Test with SECONDARY_ADMIN_KEY - should be able to write data and modify settings
     let secondary_admin_signing_key = db
         .backend()
         .get_private_key("SECONDARY_ADMIN_KEY")
+        .await
         .expect("Failed to get secondary admin key")
         .expect("Secondary admin key should exist in backend");
     let tree_with_secondary_admin_key = eidetica::Database::open(
@@ -102,27 +108,30 @@ fn test_permission_checking_admin_operations() {
         &tree_with_secondary_admin_key,
         "data",
         "Secondary admin key should be able to write data",
-    );
+    )
+    .await;
     test_operation_succeeds(
         &tree_with_secondary_admin_key,
         "_settings",
         "Secondary admin key should be able to modify settings",
-    );
+    )
+    .await;
 
     // Test with WRITE_KEY trying to modify settings - should fail
     test_operation_fails(
         &tree_with_write_key,
         "_settings",
         "Write key should NOT be able to modify settings",
-    );
+    )
+    .await;
 }
 
-#[test]
-fn test_multiple_authenticated_entries() {
-    let db = auth_setup_db();
+#[tokio::test]
+async fn test_multiple_authenticated_entries() {
+    let db = auth_setup_db().await;
 
     // Generate a key for testing
-    let public_key = db.add_private_key("TEST_KEY").expect("Failed to add key");
+    let public_key = db.add_private_key("TEST_KEY").await.expect("Failed to add key");
 
     // Create a tree with authentication enabled
     let mut settings = Doc::new();
@@ -138,41 +147,46 @@ fn test_multiple_authenticated_entries() {
 
     let tree = db
         .new_database(settings, "TEST_KEY")
+        .await
         .expect("Failed to create tree");
 
     // Create multiple signed entries (should all succeed)
-    let op1 = tree.new_transaction().expect("Failed to create operation");
+    let op1 = tree.new_transaction().await.expect("Failed to create operation");
     let store1 = op1
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store1.set("entry", "first").expect("Failed to set value");
-    let entry_id1 = op1.commit().expect("Failed to commit first entry");
+    store1.set("entry", "first").await.expect("Failed to set value");
+    let entry_id1 = op1.commit().await.expect("Failed to commit first entry");
 
-    let op2 = tree.new_transaction().expect("Failed to create operation");
+    let op2 = tree.new_transaction().await.expect("Failed to create operation");
     let store2 = op2
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store2.set("entry", "second").expect("Failed to set value");
-    let entry_id2 = op2.commit().expect("Failed to commit second entry");
+    store2.set("entry", "second").await.expect("Failed to set value");
+    let entry_id2 = op2.commit().await.expect("Failed to commit second entry");
 
     // Verify both entries were stored correctly
-    let entry1 = tree.get_entry(&entry_id1).expect("Failed to get entry1");
+    let entry1 = tree.get_entry(&entry_id1).await.expect("Failed to get entry1");
     assert!(entry1.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id1)
+            .await
             .expect("Failed to verify entry1")
     );
 
-    let entry2 = tree.get_entry(&entry_id2).expect("Failed to get entry2");
+    let entry2 = tree.get_entry(&entry_id2).await.expect("Failed to get entry2");
     assert!(entry2.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id2)
+            .await
             .expect("Failed to verify entry2")
     );
 }
 
-#[test]
-fn test_entry_validation_with_corrupted_auth_section() {
+#[tokio::test]
+async fn test_entry_validation_with_corrupted_auth_section() {
     use eidetica::auth::validation::AuthValidator;
 
     let mut validator = AuthValidator::new();
@@ -192,7 +206,7 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Test with no auth section at all
     let empty_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &empty_auth_settings, None);
+    let result = validator.validate_entry(&entry, &empty_auth_settings, None).await;
     assert!(
         result.is_ok(),
         "Should allow unsigned when no auth configured"
@@ -204,7 +218,7 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Extract auth settings (will be empty since auth is not a Doc)
     let corrupted_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &corrupted_auth_settings, None);
+    let result = validator.validate_entry(&entry, &corrupted_auth_settings, None).await;
     assert!(result.is_ok(), "Should allow unsigned when auth is invalid");
 
     // Test with settings containing deleted auth section
@@ -213,25 +227,26 @@ fn test_entry_validation_with_corrupted_auth_section() {
 
     // Extract auth settings (will be empty since auth is deleted)
     let deleted_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &deleted_auth_settings, None);
+    let result = validator.validate_entry(&entry, &deleted_auth_settings, None).await;
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
 }
 
-#[test]
-fn test_entry_validation_with_mixed_key_states() {
+#[tokio::test]
+async fn test_entry_validation_with_mixed_key_states() {
     let keys = create_auth_keys![
         ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("ACTIVE_KEY", Permission::Write(10), KeyStatus::Active),
         ("REVOKED_KEY", Permission::Write(20), KeyStatus::Revoked),
     ];
 
-    let (db, public_keys) = setup_test_db_with_keys(&keys);
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys);
+    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
 
     // Test active key should work
     let active_signing_key = db
         .backend()
         .get_private_key("ACTIVE_KEY")
+        .await
         .expect("Failed to get active key")
         .expect("Active key should exist in backend");
     let tree_with_active_key = eidetica::Database::open(
@@ -247,12 +262,14 @@ fn test_entry_validation_with_mixed_key_states() {
         "data",
         true,
         "Active key should succeed",
-    );
+    )
+    .await;
 
     // Test revoked key should fail
     let revoked_signing_key = db
         .backend()
         .get_private_key("REVOKED_KEY")
+        .await
         .expect("Failed to get revoked key")
         .expect("Revoked key should exist in backend");
     let tree_with_revoked_key = eidetica::Database::open(
@@ -268,11 +285,12 @@ fn test_entry_validation_with_mixed_key_states() {
         "data",
         false,
         "Revoked key should fail",
-    );
+    )
+    .await;
 }
 
-#[test]
-fn test_entry_validation_cache_behavior() {
+#[tokio::test]
+async fn test_entry_validation_cache_behavior() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
 
@@ -306,7 +324,7 @@ fn test_entry_validation_cache_behavior() {
     };
 
     // Validate the entry - should work
-    let result1 = validator.validate_entry(&entry, &auth_settings_from_doc, None);
+    let result1 = validator.validate_entry(&entry, &auth_settings_from_doc, None).await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "First validation should succeed"
@@ -330,22 +348,22 @@ fn test_entry_validation_cache_behavior() {
     };
 
     // Validate with revoked key - should fail
-    let result2 = validator.validate_entry(&entry, &new_auth_settings_from_doc, None);
+    let result2 = validator.validate_entry(&entry, &new_auth_settings_from_doc, None).await;
     assert!(
         result2.is_ok() && !result2.unwrap(),
         "Validation with revoked key should fail"
     );
 
     // Validate with original settings again - should work (no stale cache)
-    let result3 = validator.validate_entry(&entry, &auth_settings_from_doc, None);
+    let result3 = validator.validate_entry(&entry, &auth_settings_from_doc, None).await;
     assert!(
         result3.is_ok() && result3.unwrap(),
         "Validation should work again with active key"
     );
 }
 
-#[test]
-fn test_entry_validation_with_malformed_keys() {
+#[tokio::test]
+async fn test_entry_validation_with_malformed_keys() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
 
@@ -380,7 +398,7 @@ fn test_entry_validation_with_malformed_keys() {
     };
 
     // Should validate successfully with correct settings
-    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None);
+    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None).await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -396,7 +414,7 @@ fn test_entry_validation_with_malformed_keys() {
     entry_with_wrong_sig.sig.sig = Some(wrong_signature);
 
     // Should fail validation because signature doesn't match the key in settings
-    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &auth_settings, None);
+    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &auth_settings, None).await;
     assert!(
         result_wrong_sig.is_err() || (result_wrong_sig.is_ok() && !result_wrong_sig.unwrap()),
         "Entry should fail validation with mismatched signature"
@@ -406,7 +424,7 @@ fn test_entry_validation_with_malformed_keys() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None);
+    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None).await;
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {
@@ -430,15 +448,15 @@ fn test_entry_validation_with_malformed_keys() {
         eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
     wrong_signature_entry.sig.sig = Some(wrong_signature);
 
-    let result3 = validator.validate_entry(&wrong_signature_entry, &auth_settings, None);
+    let result3 = validator.validate_entry(&wrong_signature_entry, &auth_settings, None).await;
     assert!(
         result3.is_ok() && !result3.unwrap(),
         "Entry with wrong key signature should fail validation"
     );
 }
 
-#[test]
-fn test_entry_validation_unsigned_entry_detection() {
+#[tokio::test]
+async fn test_entry_validation_unsigned_entry_detection() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
 
     // Create an unsigned entry
@@ -448,7 +466,7 @@ fn test_entry_validation_unsigned_entry_detection() {
 
     // Test with no auth settings
     let empty_auth_settings = AuthSettings::new();
-    let result1 = validator.validate_entry(&entry, &empty_auth_settings, None);
+    let result1 = validator.validate_entry(&entry, &empty_auth_settings, None).await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Unsigned entry should be valid when no auth configured"
@@ -465,15 +483,15 @@ fn test_entry_validation_unsigned_entry_detection() {
         _ => AuthSettings::new(),
     };
 
-    let result2 = validator.validate_entry(&entry, &auth_settings, None);
+    let result2 = validator.validate_entry(&entry, &auth_settings, None).await;
     assert!(
         result2.is_ok() && result2.unwrap(),
         "Unsigned entry should still be valid for backward compatibility"
     );
 }
 
-#[test]
-fn test_entry_validation_with_invalid_signatures() {
+#[tokio::test]
+async fn test_entry_validation_with_invalid_signatures() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
     let (_wrong_signing_key, wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -507,7 +525,7 @@ fn test_entry_validation_with_invalid_signatures() {
     };
 
     // Should validate successfully
-    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None);
+    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None).await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -517,7 +535,7 @@ fn test_entry_validation_with_invalid_signatures() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None);
+    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None).await;
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {

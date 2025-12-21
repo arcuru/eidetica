@@ -12,16 +12,16 @@ use super::helpers::*;
 
 // ===== ADD KEY TESTS =====
 
-#[test]
-fn test_add_key_to_passwordless_user() {
-    let (instance, username) = setup_instance_with_user("alice", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_key_to_passwordless_user() {
+    let (instance, username) = setup_instance_with_user("alice", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // User starts with 1 key (default key)
     assert_user_key_count(&user, 1);
 
     // Add a new key
-    let key_id = add_user_key(&mut user, Some("My Second Key"));
+    let key_id = add_user_key(&mut user, Some("My Second Key")).await;
 
     // Should now have 2 keys
     assert_user_key_count(&user, 2);
@@ -30,18 +30,18 @@ fn test_add_key_to_passwordless_user() {
     assert_user_has_key(&user, &key_id);
 }
 
-#[test]
-fn test_add_key_to_password_user() {
+#[tokio::test]
+async fn test_add_key_to_password_user() {
     let username = "bob";
     let password = "secure_password";
-    let (instance, _) = setup_instance_with_user(username, Some(password));
-    let mut user = login_user(&instance, username, Some(password));
+    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
+    let mut user = login_user(&instance, username, Some(password)).await;
 
     // User starts with 1 key (default key)
     assert_user_key_count(&user, 1);
 
     // Add a new key
-    let key_id = add_user_key(&mut user, Some("Additional Key"));
+    let key_id = add_user_key(&mut user, Some("Additional Key")).await;
 
     // Should now have 2 keys
     assert_user_key_count(&user, 2);
@@ -50,15 +50,15 @@ fn test_add_key_to_password_user() {
     assert_user_has_key(&user, &key_id);
 }
 
-#[test]
-fn test_add_multiple_keys() {
-    let (instance, username) = setup_instance_with_user("charlie", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_multiple_keys() {
+    let (instance, username) = setup_instance_with_user("charlie", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add 3 new keys
-    let key1 = add_user_key(&mut user, Some("Key 1"));
-    let key2 = add_user_key(&mut user, Some("Key 2"));
-    let key3 = add_user_key(&mut user, Some("Key 3"));
+    let key1 = add_user_key(&mut user, Some("Key 1")).await;
+    let key2 = add_user_key(&mut user, Some("Key 2")).await;
+    let key3 = add_user_key(&mut user, Some("Key 3")).await;
 
     // Should have 4 keys total (1 default + 3 new)
     assert_user_key_count(&user, 4);
@@ -69,26 +69,26 @@ fn test_add_multiple_keys() {
     assert_user_has_key(&user, &key3);
 }
 
-#[test]
-fn test_add_key_with_custom_display_name() {
-    let (instance, username) = setup_instance_with_user("diana", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_key_with_custom_display_name() {
+    let (instance, username) = setup_instance_with_user("diana", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add key with custom display name
-    let key_id = add_user_key(&mut user, Some("Work Laptop Key"));
+    let key_id = add_user_key(&mut user, Some("Work Laptop Key")).await;
 
     // Verify key was added
     assert_user_has_key(&user, &key_id);
     assert_user_key_count(&user, 2);
 }
 
-#[test]
-fn test_add_key_without_display_name() {
-    let (instance, username) = setup_instance_with_user("eve", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_key_without_display_name() {
+    let (instance, username) = setup_instance_with_user("eve", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add key without display name
-    let key_id = add_user_key(&mut user, None);
+    let key_id = add_user_key(&mut user, None).await;
 
     // Verify key was added
     assert_user_has_key(&user, &key_id);
@@ -97,24 +97,24 @@ fn test_add_key_without_display_name() {
 
 // ===== LIST KEYS TESTS =====
 
-#[test]
-fn test_list_keys_default() {
-    let (instance, username) = setup_instance_with_user("frank", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_list_keys_default() {
+    let (instance, username) = setup_instance_with_user("frank", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // List keys should return 1 default key
     let keys = user.list_keys().expect("Should list keys");
     assert_eq!(keys.len(), 1, "Should have 1 default key");
 }
 
-#[test]
-fn test_list_keys_after_adding() {
-    let (instance, username) = setup_instance_with_user("grace", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_list_keys_after_adding() {
+    let (instance, username) = setup_instance_with_user("grace", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add 2 keys
-    let key1 = add_user_key(&mut user, Some("Key 1"));
-    let key2 = add_user_key(&mut user, Some("Key 2"));
+    let key1 = add_user_key(&mut user, Some("Key 1")).await;
+    let key2 = add_user_key(&mut user, Some("Key 2")).await;
 
     // List should return 3 keys
     let keys = user.list_keys().expect("Should list keys");
@@ -125,13 +125,13 @@ fn test_list_keys_after_adding() {
     assert!(keys.contains(&key2), "Should contain key2");
 }
 
-#[test]
-fn test_list_keys_returns_key_ids() {
-    let (instance, username) = setup_instance_with_user("henry", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_list_keys_returns_key_ids() {
+    let (instance, username) = setup_instance_with_user("henry", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add a key
-    let added_key_id = add_user_key(&mut user, Some("Test Key"));
+    let added_key_id = add_user_key(&mut user, Some("Test Key")).await;
 
     // List keys
     let keys = user.list_keys().expect("Should list keys");
@@ -145,13 +145,13 @@ fn test_list_keys_returns_key_ids() {
 
 // ===== GET SIGNING KEY TESTS =====
 
-#[test]
-fn test_get_signing_key() {
-    let (instance, username) = setup_instance_with_user("iris", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_signing_key() {
+    let (instance, username) = setup_instance_with_user("iris", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add a key
-    let key_id = add_user_key(&mut user, Some("My Key"));
+    let key_id = add_user_key(&mut user, Some("My Key")).await;
 
     // Get the signing key
     let signing_key = user
@@ -166,10 +166,10 @@ fn test_get_signing_key() {
     );
 }
 
-#[test]
-fn test_get_default_signing_key() {
-    let (instance, username) = setup_instance_with_user("jack", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_default_signing_key() {
+    let (instance, username) = setup_instance_with_user("jack", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // Get the first (default) key
     let keys = user.list_keys().expect("Should list keys");
@@ -187,10 +187,10 @@ fn test_get_default_signing_key() {
     );
 }
 
-#[test]
-fn test_get_nonexistent_signing_key() {
-    let (instance, username) = setup_instance_with_user("kate", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_nonexistent_signing_key() {
+    let (instance, username) = setup_instance_with_user("kate", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // Try to get a key that doesn't exist
     let fake_key_id = "nonexistent_key_id";
@@ -202,13 +202,13 @@ fn test_get_nonexistent_signing_key() {
     );
 }
 
-#[test]
-fn test_get_public_key() {
-    let (instance, username) = setup_instance_with_user("laura", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_public_key() {
+    let (instance, username) = setup_instance_with_user("laura", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add a key
-    let key_id = add_user_key(&mut user, Some("Public Key Test"));
+    let key_id = add_user_key(&mut user, Some("Public Key Test")).await;
 
     // Get both the signing key and public key
     let signing_key = user
@@ -227,10 +227,10 @@ fn test_get_public_key() {
     assert!(!public_key.is_empty(), "Public key should not be empty");
 }
 
-#[test]
-fn test_get_public_key_for_default_key() {
-    let (instance, username) = setup_instance_with_user("mike", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_public_key_for_default_key() {
+    let (instance, username) = setup_instance_with_user("mike", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // Get the default key
     let default_key_id = user.get_default_key().expect("Should have default key");
@@ -244,10 +244,10 @@ fn test_get_public_key_for_default_key() {
     assert!(!public_key.is_empty(), "Public key should not be empty");
 }
 
-#[test]
-fn test_get_public_key_for_nonexistent_key() {
-    let (instance, username) = setup_instance_with_user("nancy", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_public_key_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("nancy", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // Try to get public key for a nonexistent key
     let fake_key_id = "nonexistent_key_id";
@@ -259,15 +259,15 @@ fn test_get_public_key_for_nonexistent_key() {
     );
 }
 
-#[test]
-fn test_get_public_key_multiple_keys() {
-    let (instance, username) = setup_instance_with_user("oscar", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_public_key_multiple_keys() {
+    let (instance, username) = setup_instance_with_user("oscar", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add multiple keys
-    let key1_id = add_user_key(&mut user, Some("Key 1"));
-    let key2_id = add_user_key(&mut user, Some("Key 2"));
-    let key3_id = add_user_key(&mut user, Some("Key 3"));
+    let key1_id = add_user_key(&mut user, Some("Key 1")).await;
+    let key2_id = add_user_key(&mut user, Some("Key 2")).await;
+    let key3_id = add_user_key(&mut user, Some("Key 3")).await;
 
     // Get public keys for all three
     let pubkey1 = user
@@ -296,21 +296,22 @@ fn test_get_public_key_multiple_keys() {
 
 // ===== KEY PERSISTENCE TESTS =====
 
-#[test]
-fn test_keys_persist_across_sessions() {
+#[tokio::test]
+async fn test_keys_persist_across_sessions() {
     let username = "leo";
-    let instance = setup_instance();
+    let instance = setup_instance().await;
 
     // First session: create user and add keys
     instance
         .create_user(username, None)
+        .await
         .expect("Failed to create user");
-    let mut user1 = login_user(&instance, username, None);
-    let key1 = add_user_key(&mut user1, Some("Session 1 Key"));
+    let mut user1 = login_user(&instance, username, None).await;
+    let key1 = add_user_key(&mut user1, Some("Session 1 Key")).await;
     user1.logout().expect("Logout should succeed");
 
     // Second session: verify keys persisted
-    let user2 = login_user(&instance, username, None);
+    let user2 = login_user(&instance, username, None).await;
     assert_user_key_count(&user2, 2); // Default + 1 added
     assert_user_has_key(&user2, &key1);
 
@@ -320,26 +321,27 @@ fn test_keys_persist_across_sessions() {
         .expect("Should get persisted signing key");
 }
 
-#[test]
-fn test_multiple_keys_persist() {
+#[tokio::test]
+async fn test_multiple_keys_persist() {
     let username = "mia";
     let password = "test_password";
-    let instance = setup_instance();
+    let instance = setup_instance().await;
 
     // First session: add multiple keys
     instance
         .create_user(username, Some(password))
+        .await
         .expect("Create user");
-    let mut user1 = login_user(&instance, username, Some(password));
+    let mut user1 = login_user(&instance, username, Some(password)).await;
 
-    let key1 = add_user_key(&mut user1, Some("Work Key"));
-    let key2 = add_user_key(&mut user1, Some("Home Key"));
-    let key3 = add_user_key(&mut user1, Some("Mobile Key"));
+    let key1 = add_user_key(&mut user1, Some("Work Key")).await;
+    let key2 = add_user_key(&mut user1, Some("Home Key")).await;
+    let key3 = add_user_key(&mut user1, Some("Mobile Key")).await;
 
     user1.logout().expect("Logout should succeed");
 
     // Second session: verify all keys persisted
-    let user2 = login_user(&instance, username, Some(password));
+    let user2 = login_user(&instance, username, Some(password)).await;
     assert_user_key_count(&user2, 4); // Default + 3 added
 
     assert_user_has_key(&user2, &key1);
@@ -349,14 +351,14 @@ fn test_multiple_keys_persist() {
 
 // ===== KEY ID UNIQUENESS TESTS =====
 
-#[test]
-fn test_key_ids_are_unique() {
-    let (instance, username) = setup_instance_with_user("noah", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_key_ids_are_unique() {
+    let (instance, username) = setup_instance_with_user("noah", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add keys with same display name
-    let key1 = add_user_key(&mut user, Some("Same Name"));
-    let key2 = add_user_key(&mut user, Some("Same Name"));
+    let key1 = add_user_key(&mut user, Some("Same Name")).await;
+    let key2 = add_user_key(&mut user, Some("Same Name")).await;
 
     // Both keys should exist with different IDs
     assert_ne!(key1, key2, "Keys should have different IDs");
@@ -366,13 +368,13 @@ fn test_key_ids_are_unique() {
 
 // ===== DATABASE ACCESS TESTS =====
 
-#[test]
-fn test_find_key_for_database() {
-    let (instance, username) = setup_instance_with_user("paul", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_find_key_for_database() {
+    let (instance, username) = setup_instance_with_user("paul", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create a database (uses first available key)
-    let database = create_named_database(&mut user, "test_db");
+    let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
     // Find key for database
@@ -381,10 +383,10 @@ fn test_find_key_for_database() {
     assert!(key.is_some(), "Should find a key for the database");
 }
 
-#[test]
-fn test_find_key_for_nonexistent_database() {
-    let (instance, username) = setup_instance_with_user("quinn", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_find_key_for_nonexistent_database() {
+    let (instance, username) = setup_instance_with_user("quinn", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     // Create a fake database ID
     use eidetica::entry::ID;
@@ -403,13 +405,13 @@ fn test_find_key_for_nonexistent_database() {
 
 // ===== GET DATABASE SIGKEY TESTS =====
 
-#[test]
-fn test_get_database_sigkey() {
-    let (instance, username) = setup_instance_with_user("rachel", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_database_sigkey() {
+    let (instance, username) = setup_instance_with_user("rachel", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create a database (uses first available key)
-    let database = create_named_database(&mut user, "test_db");
+    let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
     // Get the first key
@@ -424,13 +426,13 @@ fn test_get_database_sigkey() {
     assert!(sigkey.is_some(), "Should have sigkey mapping for database");
 }
 
-#[test]
-fn test_get_database_sigkey_for_unmapped_database() {
-    let (instance, username) = setup_instance_with_user("sam", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_database_sigkey_for_unmapped_database() {
+    let (instance, username) = setup_instance_with_user("sam", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Add a new key (won't be mapped to any database)
-    let key_id = add_user_key(&mut user, Some("Unmapped Key"));
+    let key_id = add_user_key(&mut user, Some("Unmapped Key")).await;
 
     // Create a fake database ID
     use eidetica::entry::ID;
@@ -447,13 +449,13 @@ fn test_get_database_sigkey_for_unmapped_database() {
     );
 }
 
-#[test]
-fn test_get_database_sigkey_for_nonexistent_key() {
-    let (instance, username) = setup_instance_with_user("tina", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_get_database_sigkey_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("tina", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create a database
-    let database = create_named_database(&mut user, "test_db");
+    let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
     // Try to get sigkey with nonexistent key
@@ -467,23 +469,24 @@ fn test_get_database_sigkey_for_nonexistent_key() {
 
 // ===== ADD DATABASE KEY MAPPING TESTS =====
 
-#[test]
-fn test_add_database_key_mapping() {
-    let (instance, username) = setup_instance_with_user("uma", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_database_key_mapping() {
+    let (instance, username) = setup_instance_with_user("uma", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Get the default key
     let keys = user.list_keys().expect("Should list keys");
     let default_key = keys[0].clone();
 
     // Add a new key
-    let extra_key = add_user_key(&mut user, Some("Extra Key"));
+    let extra_key = add_user_key(&mut user, Some("Extra Key")).await;
 
     // Create a database explicitly with the default key
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_db");
     let database = user
         .create_database(settings, &default_key)
+        .await
         .expect("Should create database");
     let db_id = database.root_id();
 
@@ -498,6 +501,7 @@ fn test_add_database_key_mapping() {
 
     // Add mapping manually for the extra key
     user.map_key(&extra_key, db_id, &extra_key)
+        .await
         .expect("Should add database key mapping");
 
     // Now the extra key should have a mapping
@@ -519,17 +523,17 @@ fn test_add_database_key_mapping() {
     );
 }
 
-#[test]
-fn test_add_database_key_mapping_for_nonexistent_key() {
-    let (instance, username) = setup_instance_with_user("victor", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_add_database_key_mapping_for_nonexistent_key() {
+    let (instance, username) = setup_instance_with_user("victor", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create a database
-    let database = create_named_database(&mut user, "test_db");
+    let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
     // Try to add mapping for nonexistent key
-    let result = user.map_key("nonexistent_key", db_id, "fake_sigkey");
+    let result = user.map_key("nonexistent_key", db_id, "fake_sigkey").await;
 
     assert!(
         result.is_err(),
@@ -539,15 +543,15 @@ fn test_add_database_key_mapping_for_nonexistent_key() {
 
 // ===== MULTI-KEY MULTI-DATABASE SCENARIOS =====
 
-#[test]
-fn test_one_key_multiple_databases() {
-    let (instance, username) = setup_instance_with_user("wendy", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_one_key_multiple_databases() {
+    let (instance, username) = setup_instance_with_user("wendy", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create 3 databases
-    let db1 = create_named_database(&mut user, "database_1");
-    let db2 = create_named_database(&mut user, "database_2");
-    let db3 = create_named_database(&mut user, "database_3");
+    let db1 = create_named_database(&mut user, "database_1").await;
+    let db2 = create_named_database(&mut user, "database_2").await;
+    let db3 = create_named_database(&mut user, "database_3").await;
 
     // Get the first key (used for all databases)
     let keys = user.list_keys().expect("Should list keys");
@@ -569,23 +573,25 @@ fn test_one_key_multiple_databases() {
     assert!(sigkey3.is_some(), "Should have mapping to db3");
 }
 
-#[test]
-fn test_multiple_keys_one_database() {
-    let (instance, username) = setup_instance_with_user("xander", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_multiple_keys_one_database() {
+    let (instance, username) = setup_instance_with_user("xander", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Create a database (uses first key)
-    let database = create_named_database(&mut user, "shared_db");
+    let database = create_named_database(&mut user, "shared_db").await;
     let db_id = database.root_id();
 
     // Add 2 more keys
-    let key2 = add_user_key(&mut user, Some("Key 2"));
-    let key3 = add_user_key(&mut user, Some("Key 3"));
+    let key2 = add_user_key(&mut user, Some("Key 2")).await;
+    let key3 = add_user_key(&mut user, Some("Key 3")).await;
 
     // Add mappings for the new keys to the same database
     user.map_key(&key2, db_id, &key2)
+        .await
         .expect("Should add mapping for key2");
     user.map_key(&key3, db_id, &key3)
+        .await
         .expect("Should add mapping for key3");
 
     // Verify all keys have mappings to the database
@@ -607,48 +613,55 @@ fn test_multiple_keys_one_database() {
     assert!(sigkey3.is_some(), "Key3 should have mapping");
 }
 
-#[test]
-fn test_complex_key_database_mappings() {
-    let (instance, username) = setup_instance_with_user("yara", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_complex_key_database_mappings() {
+    let (instance, username) = setup_instance_with_user("yara", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Get the default key
     let keys = user.list_keys().expect("Should list keys");
     let key1 = keys[0].clone();
 
     // Create 2 additional keys (3 total with default)
-    let key2 = add_user_key(&mut user, Some("Work Key"));
-    let key3 = add_user_key(&mut user, Some("Home Key"));
+    let key2 = add_user_key(&mut user, Some("Work Key")).await;
+    let key3 = add_user_key(&mut user, Some("Home Key")).await;
 
     // Create 3 databases explicitly with the default key
     let mut settings1 = eidetica::crdt::Doc::new();
     settings1.set("name", "work_db");
     let db1 = user
         .create_database(settings1, &key1)
+        .await
         .expect("Should create work_db");
 
     let mut settings2 = eidetica::crdt::Doc::new();
     settings2.set("name", "home_db");
     let db2 = user
         .create_database(settings2, &key1)
+        .await
         .expect("Should create home_db");
 
     let mut settings3 = eidetica::crdt::Doc::new();
     settings3.set("name", "shared_db");
     let db3 = user
         .create_database(settings3, &key1)
+        .await
         .expect("Should create shared_db");
 
     // Add specific manual mappings:
     // - key2 -> work_db and shared_db
     // - key3 -> home_db and shared_db
     user.map_key(&key2, db1.root_id(), &key2)
+        .await
         .expect("Map key2 to work_db");
     user.map_key(&key2, db3.root_id(), &key2)
+        .await
         .expect("Map key2 to shared_db");
     user.map_key(&key3, db2.root_id(), &key3)
+        .await
         .expect("Map key3 to home_db");
     user.map_key(&key3, db3.root_id(), &key3)
+        .await
         .expect("Map key3 to shared_db");
 
     // Verify key1 has all databases (created them)
@@ -714,24 +727,26 @@ fn test_complex_key_database_mappings() {
 
 // ===== MANUAL MAPPING PERSISTENCE TESTS =====
 
-#[test]
-fn test_manual_mappings_persist_across_sessions() {
+#[tokio::test]
+async fn test_manual_mappings_persist_across_sessions() {
     let username = "zara";
-    let instance = setup_instance();
+    let instance = setup_instance().await;
 
     // First session: create user, add key, create database, add mapping
     instance
         .create_user(username, None)
+        .await
         .expect("Failed to create user");
-    let mut user1 = login_user(&instance, username, None);
+    let mut user1 = login_user(&instance, username, None).await;
 
-    let extra_key = add_user_key(&mut user1, Some("Extra Key"));
-    let database = create_named_database(&mut user1, "persistent_db");
+    let extra_key = add_user_key(&mut user1, Some("Extra Key")).await;
+    let database = create_named_database(&mut user1, "persistent_db").await;
     let db_id = database.root_id().clone();
 
     // Add manual mapping
     user1
         .map_key(&extra_key, &db_id, &extra_key)
+        .await
         .expect("Should add mapping");
 
     // Verify mapping exists
@@ -743,7 +758,7 @@ fn test_manual_mappings_persist_across_sessions() {
     user1.logout().expect("Logout should succeed");
 
     // Second session: verify mapping persisted
-    let user2 = login_user(&instance, username, None);
+    let user2 = login_user(&instance, username, None).await;
 
     let sigkey_after = user2
         .key_mapping(&extra_key, &db_id)
@@ -758,63 +773,71 @@ fn test_manual_mappings_persist_across_sessions() {
     );
 }
 
-#[test]
-fn test_multiple_manual_mappings_persist() {
+#[tokio::test]
+async fn test_multiple_manual_mappings_persist() {
     let username = "aaron";
     let password = "password123";
-    let instance = setup_instance();
+    let instance = setup_instance().await;
 
     // First session: create complex mapping scenario
     instance
         .create_user(username, Some(password))
+        .await
         .expect("Create user");
-    let mut user1 = login_user(&instance, username, Some(password));
+    let mut user1 = login_user(&instance, username, Some(password)).await;
 
     // Get the default key
     let keys = user1.list_keys().expect("Should list keys");
     let key1 = keys[0].clone();
 
     // Create 2 extra keys
-    let key2 = add_user_key(&mut user1, Some("Key 2"));
-    let key3 = add_user_key(&mut user1, Some("Key 3"));
+    let key2 = add_user_key(&mut user1, Some("Key 2")).await;
+    let key3 = add_user_key(&mut user1, Some("Key 3")).await;
 
     // Create 3 databases explicitly with the default key
     let mut settings1 = eidetica::crdt::Doc::new();
     settings1.set("name", "db1");
     let db1 = user1
         .create_database(settings1, &key1)
+        .await
         .expect("Should create db1");
 
     let mut settings2 = eidetica::crdt::Doc::new();
     settings2.set("name", "db2");
     let db2 = user1
         .create_database(settings2, &key1)
+        .await
         .expect("Should create db2");
 
     let mut settings3 = eidetica::crdt::Doc::new();
     settings3.set("name", "db3");
     let db3 = user1
         .create_database(settings3, &key1)
+        .await
         .expect("Should create db3");
 
     // Add multiple manual mappings
     user1
         .map_key(&key2, db1.root_id(), &key2)
+        .await
         .expect("Map key2 to db1");
     user1
         .map_key(&key2, db2.root_id(), &key2)
+        .await
         .expect("Map key2 to db2");
     user1
         .map_key(&key3, db2.root_id(), &key3)
+        .await
         .expect("Map key3 to db2");
     user1
         .map_key(&key3, db3.root_id(), &key3)
+        .await
         .expect("Map key3 to db3");
 
     user1.logout().expect("Logout should succeed");
 
     // Second session: verify all mappings persisted
-    let user2 = login_user(&instance, username, Some(password));
+    let user2 = login_user(&instance, username, Some(password)).await;
 
     // Verify key2 mappings
     assert!(

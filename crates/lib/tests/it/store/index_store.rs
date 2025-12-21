@@ -21,152 +21,159 @@ struct TestRecord {
 // Basic Registry Functionality
 // ============================================================================
 
-#[test]
-fn test_index_store_register_subtree() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_store_register_subtree() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create a subtree - this will auto-register with default config
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Update the registration to custom values
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key2", "value2").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key2", "value2").await.unwrap();
 
     // Now update the index with custom type and config
     index
         .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .await
         .unwrap();
 
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Verify updated registration
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info = index.get_entry("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").await.unwrap();
     assert_eq!(info.type_id, "custom:v1");
     assert_eq!(info.config, r#"{"custom":"config"}"#);
 }
 
-#[test]
-fn test_index_store_get_subtree_info() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_store_get_subtree_info() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create and register multiple subtrees
-    let tx = database.new_transaction().unwrap();
-    let store1 = tx.get_store::<DocStore>("subtree1").unwrap();
-    store1.set("key", "value").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store1 = tx.get_store::<DocStore>("subtree1").await.unwrap();
+    store1.set("key", "value").await.unwrap();
 
-    let store2 = tx.get_store::<DocStore>("subtree2").unwrap();
-    store2.set("key", "value").unwrap();
+    let store2 = tx.get_store::<DocStore>("subtree2").await.unwrap();
+    store2.set("key", "value").await.unwrap();
 
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Retrieve and verify
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info1 = index.get_entry("subtree1").unwrap();
+    let info1 = index.get_entry("subtree1").await.unwrap();
     assert_eq!(info1.type_id, DocStore::type_id());
 
-    let info2 = index.get_entry("subtree2").unwrap();
+    let info2 = index.get_entry("subtree2").await.unwrap();
     assert_eq!(info2.type_id, DocStore::type_id());
 }
 
-#[test]
-fn test_index_store_contains_subtree() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_store_contains_subtree() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create a subtree
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("test_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("test_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Check existence
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("test_subtree"));
-    assert!(!index.contains("nonexistent"));
+    assert!(index.contains("test_subtree").await);
+    assert!(!index.contains("nonexistent").await);
 }
 
-#[test]
-fn test_index_store_list_subtrees() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_store_list_subtrees() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create multiple subtrees
-    let tx = database.new_transaction().unwrap();
-    let alpha = tx.get_store::<DocStore>("alpha").unwrap();
-    alpha.set("key", "value").unwrap();
-    let beta = tx.get_store::<DocStore>("beta").unwrap();
-    beta.set("key", "value").unwrap();
-    let gamma = tx.get_store::<DocStore>("gamma").unwrap();
-    gamma.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let alpha = tx.get_store::<DocStore>("alpha").await.unwrap();
+    alpha.set("key", "value").await.unwrap();
+    let beta = tx.get_store::<DocStore>("beta").await.unwrap();
+    beta.set("key", "value").await.unwrap();
+    let gamma = tx.get_store::<DocStore>("gamma").await.unwrap();
+    gamma.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // List and verify
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert!(subtrees.contains(&"alpha".to_string()));
     assert!(subtrees.contains(&"beta".to_string()));
     assert!(subtrees.contains(&"gamma".to_string()));
     assert_eq!(subtrees.len(), 3);
 }
 
-#[test]
-fn test_index_store_update_existing() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_store_update_existing() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree with default config
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Update config
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key2", "value2").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key2", "value2").await.unwrap();
 
     index
         .set_entry("my_subtree", DocStore::type_id(), r#"{"updated":"config"}"#)
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Verify update
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info = index.get_entry("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").await.unwrap();
     assert_eq!(info.config, r#"{"updated":"config"}"#);
 }
 
@@ -174,84 +181,87 @@ fn test_index_store_update_existing() {
 // Auto-Registration Behavior
 // ============================================================================
 
-#[test]
-fn test_auto_register_on_first_access_docstore() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_auto_register_on_first_access_docstore() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // First access to a new subtree
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_data").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_data").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify _index contains the registration
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info = index.get_entry("my_data").unwrap();
+    let info = index.get_entry("my_data").await.unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
     assert_eq!(info.config, "{}");
 }
 
-#[test]
-fn test_no_auto_register_for_system_subtrees() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_no_auto_register_for_system_subtrees() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Access system subtrees and user subtree
-    let tx = database.new_transaction().unwrap();
+    let tx = database.new_transaction().await.unwrap();
     let _settings = tx.get_settings().unwrap();
-    let user_store = tx.get_store::<DocStore>("user_data").unwrap();
-    user_store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let user_store = tx.get_store::<DocStore>("user_data").await.unwrap();
+    user_store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify only user subtree is in index, not system subtrees
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("user_data"));
+    assert!(index.contains("user_data").await);
     // System subtrees should NOT be auto-registered
-    assert!(!index.contains("_settings"));
-    assert!(!index.contains("_index"));
-    assert!(!index.contains("_root"));
+    assert!(!index.contains("_settings").await);
+    assert!(!index.contains("_index").await);
+    assert!(!index.contains("_root").await);
 }
 
-#[test]
-fn test_second_access_uses_existing_registration() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_second_access_uses_existing_registration() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // First access - auto-registers
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_data").unwrap();
-    store.set("key1", "value1").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_data").await.unwrap();
+    store.set("key1", "value1").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Second access - should use existing registration
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_data").unwrap();
-    store.set("key2", "value2").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_data").await.unwrap();
+    store.set("key2", "value2").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify still only one entry in index
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info = index.get_entry("my_data").unwrap();
+    let info = index.get_entry("my_data").await.unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
 
     // No duplicates in list
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     let count = subtrees.iter().filter(|s| *s == "my_data").count();
     assert_eq!(count, 1);
 }
@@ -260,86 +270,91 @@ fn test_second_access_uses_existing_registration() {
 // Architectural Constraint Enforcement
 // ============================================================================
 
-#[test]
-fn test_index_update_includes_target_subtree() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_update_includes_target_subtree() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree first
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Update index for this subtree
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key2", "value2").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key2", "value2").await.unwrap();
 
     index
         .set_entry("my_subtree", DocStore::type_id(), r#"{"new":"config"}"#)
+        .await
         .unwrap();
 
-    let entry_id = tx.commit().unwrap();
+    let entry_id = tx.commit().await.unwrap();
 
     // Verify Entry contains both _index and my_subtree SubTreeNodes
-    let entry = database.backend().unwrap().get(&entry_id).unwrap();
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
     let subtrees = entry.subtrees();
 
     assert!(subtrees.contains(&"_index".to_string()));
     assert!(subtrees.contains(&"my_subtree".to_string()));
 }
 
-#[test]
-fn test_auto_dummy_write_on_index_update() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_auto_dummy_write_on_index_update() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("target").unwrap();
-    store.set("original", "data").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("target").await.unwrap();
+    store.set("original", "data").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Update index without explicitly modifying target subtree
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
     // This should automatically add a dummy write to "target"
     index
         .set_entry("target", DocStore::type_id(), r#"{"modified":"config"}"#)
+        .await
         .unwrap();
 
-    let entry_id = tx.commit().unwrap();
+    let entry_id = tx.commit().await.unwrap();
 
     // Verify target subtree is in the Entry (due to automatic dummy write)
-    let entry = database.backend().unwrap().get(&entry_id).unwrap();
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
     assert!(entry.in_subtree("target"));
 }
 
-#[test]
-fn test_entry_has_both_index_and_subtree_nodes() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_entry_has_both_index_and_subtree_nodes() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree with auto-registration
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("test_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    let entry_id = tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("test_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    let entry_id = tx.commit().await.unwrap();
 
     // Verify Entry structure
-    let entry = database.backend().unwrap().get(&entry_id).unwrap();
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
     let subtrees = entry.subtrees();
 
     // Should have both _index and test_subtree
@@ -354,43 +369,45 @@ fn test_entry_has_both_index_and_subtree_nodes() {
     assert!(!subtree_data.is_empty());
 }
 
-#[test]
-fn test_manual_index_update_with_subtree_modification() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_manual_index_update_with_subtree_modification() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree initially
-    let tx = database.new_transaction().unwrap();
-    tx.get_store::<DocStore>("my_subtree").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Manually update both index and subtree in same transaction
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
 
     // Modify subtree
-    store.set("new_key", "new_value").unwrap();
+    store.set("new_key", "new_value").await.unwrap();
 
     // Update index metadata
     index
         .set_entry("my_subtree", "docstore:v2", r#"{"version":"2"}"#)
+        .await
         .unwrap();
 
-    let entry_id = tx.commit().unwrap();
+    let entry_id = tx.commit().await.unwrap();
 
     // Verify both are in Entry
-    let entry = database.backend().unwrap().get(&entry_id).unwrap();
+    let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
     assert!(entry.in_subtree("_index"));
     assert!(entry.in_subtree("my_subtree"));
 
     // Verify updated metadata
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
-    let info = index.get_entry("my_subtree").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
+    let info = index.get_entry("my_subtree").await.unwrap();
     assert_eq!(info.type_id, "docstore:v2");
 }
 
@@ -398,85 +415,88 @@ fn test_manual_index_update_with_subtree_modification() {
 // Integration Tests
 // ============================================================================
 
-#[test]
-fn test_multi_store_database_index_complete() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_multi_store_database_index_complete() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create database with multiple store types
-    let tx = database.new_transaction().unwrap();
+    let tx = database.new_transaction().await.unwrap();
 
-    let doc_store = tx.get_store::<DocStore>("documents").unwrap();
-    doc_store.set("doc1", "content").unwrap();
+    let doc_store = tx.get_store::<DocStore>("documents").await.unwrap();
+    doc_store.set("doc1", "content").await.unwrap();
 
-    let table_store = tx.get_store::<Table<TestRecord>>("records").unwrap();
+    let table_store = tx.get_store::<Table<TestRecord>>("records").await.unwrap();
     table_store
         .insert(TestRecord {
             id: 1,
             name: "test".to_string(),
         })
+        .await
         .unwrap();
 
-    let doc_store2 = tx.get_store::<DocStore>("metadata").unwrap();
-    doc_store2.set("key", "value").unwrap();
+    let doc_store2 = tx.get_store::<DocStore>("metadata").await.unwrap();
+    doc_store2.set("key", "value").await.unwrap();
 
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Verify all are registered with correct types
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let doc_info = index.get_entry("documents").unwrap();
+    let doc_info = index.get_entry("documents").await.unwrap();
     assert_eq!(doc_info.type_id, DocStore::type_id());
 
-    let table_info = index.get_entry("records").unwrap();
+    let table_info = index.get_entry("records").await.unwrap();
     assert_eq!(table_info.type_id, Table::<()>::type_id());
 
-    let meta_info = index.get_entry("metadata").unwrap();
+    let meta_info = index.get_entry("metadata").await.unwrap();
     assert_eq!(meta_info.type_id, DocStore::type_id());
 
     // Verify list is complete
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert_eq!(subtrees.len(), 3);
 }
 
-#[test]
-fn test_index_persists_across_transactions() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_persists_across_transactions() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Transaction 1: Create subtrees
-    let tx = database.new_transaction().unwrap();
-    let store1 = tx.get_store::<DocStore>("subtree1").unwrap();
-    store1.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store1 = tx.get_store::<DocStore>("subtree1").await.unwrap();
+    store1.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Transaction 2: Create more subtrees
-    let tx = database.new_transaction().unwrap();
-    let store2 = tx.get_store::<DocStore>("subtree2").unwrap();
-    store2.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store2 = tx.get_store::<DocStore>("subtree2").await.unwrap();
+    store2.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Transaction 3: Verify both are registered
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("subtree1"));
-    assert!(index.contains("subtree2"));
+    assert!(index.contains("subtree1").await);
+    assert!(index.contains("subtree2").await);
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert_eq!(subtrees.len(), 2);
 }
 
-#[test]
-fn test_read_index_from_viewer() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_read_index_from_viewer() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
     let database = Database::create(
@@ -485,36 +505,40 @@ fn test_read_index_from_viewer() {
         private_key.clone(),
         "test_key".to_string(),
     )
+    .await
     .unwrap();
 
     // Create some subtrees
-    let tx = database.new_transaction().unwrap();
-    let store1 = tx.get_store::<DocStore>("data1").unwrap();
-    store1.set("key", "value").unwrap();
-    let store2 = tx.get_store::<DocStore>("data2").unwrap();
-    store2.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store1 = tx.get_store::<DocStore>("data1").await.unwrap();
+    store1.set("key", "value").await.unwrap();
+    let store2 = tx.get_store::<DocStore>("data2").await.unwrap();
+    store2.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Read _index using viewer (read-only access)
-    let viewer = database.get_store_viewer::<DocStore>("_index").unwrap();
+    let viewer = database
+        .get_store_viewer::<DocStore>("_index")
+        .await
+        .unwrap();
 
     // Verify we can read the index data
-    let data1_info_value = viewer.get("data1").unwrap();
+    let data1_info_value = viewer.get("data1").await.unwrap();
     assert!(matches!(
         data1_info_value,
         eidetica::crdt::doc::Value::Doc(_)
     ));
 
-    let data2_info_value = viewer.get("data2").unwrap();
+    let data2_info_value = viewer.get("data2").await.unwrap();
     assert!(matches!(
         data2_info_value,
         eidetica::crdt::doc::Value::Doc(_)
     ));
 }
 
-#[test]
-fn test_index_survives_database_reload() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_survives_database_reload() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
     // Create database and add subtrees
@@ -524,14 +548,15 @@ fn test_index_survives_database_reload() {
         private_key.clone(),
         "test_key".to_string(),
     )
+    .await
     .unwrap();
 
     let root_id = database.root_id().clone();
 
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("persistent_data").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("persistent_data").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Drop database
     drop(database);
@@ -541,10 +566,13 @@ fn test_index_survives_database_reload() {
     let database = Database::open_readonly(root_id, &instance).unwrap();
 
     // Verify index is intact using viewer (read-only)
-    let viewer = database.get_store_viewer::<DocStore>("_index").unwrap();
+    let viewer = database
+        .get_store_viewer::<DocStore>("_index")
+        .await
+        .unwrap();
 
     // Check that persistent_data is registered
-    let data_info = viewer.get("persistent_data");
+    let data_info = viewer.get("persistent_data").await;
     assert!(data_info.is_ok(), "persistent_data should be in _index");
 }
 
@@ -552,96 +580,101 @@ fn test_index_survives_database_reload() {
 // Edge Cases and Error Handling
 // ============================================================================
 
-#[test]
-fn test_get_nonexistent_subtree_info() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_get_nonexistent_subtree_info() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
     // Try to get info for non-existent subtree
-    let result = index.get_entry("nonexistent");
+    let result = index.get_entry("nonexistent").await;
     assert!(result.is_err());
 }
 
-#[test]
-fn test_index_with_empty_database() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_index_with_empty_database() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Query empty index
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert!(subtrees.is_empty());
 }
 
-#[test]
-fn test_concurrent_index_updates() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_concurrent_index_updates() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Register multiple subtrees in single transaction
-    let tx = database.new_transaction().unwrap();
+    let tx = database.new_transaction().await.unwrap();
 
-    let store1 = tx.get_store::<DocStore>("subtree1").unwrap();
-    store1.set("key", "value").unwrap();
-    let store2 = tx.get_store::<DocStore>("subtree2").unwrap();
-    store2.set("key", "value").unwrap();
-    let store3 = tx.get_store::<Table<TestRecord>>("subtree3").unwrap();
+    let store1 = tx.get_store::<DocStore>("subtree1").await.unwrap();
+    store1.set("key", "value").await.unwrap();
+    let store2 = tx.get_store::<DocStore>("subtree2").await.unwrap();
+    store2.set("key", "value").await.unwrap();
+    let store3 = tx.get_store::<Table<TestRecord>>("subtree3").await.unwrap();
     store3
         .insert(TestRecord {
             id: 1,
             name: "test".to_string(),
         })
+        .await
         .unwrap();
-    let store4 = tx.get_store::<DocStore>("subtree4").unwrap();
-    store4.set("key", "value").unwrap();
+    let store4 = tx.get_store::<DocStore>("subtree4").await.unwrap();
+    store4.set("key", "value").await.unwrap();
 
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Verify all are registered
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("subtree1"));
-    assert!(index.contains("subtree2"));
-    assert!(index.contains("subtree3"));
-    assert!(index.contains("subtree4"));
+    assert!(index.contains("subtree1").await);
+    assert!(index.contains("subtree2").await);
+    assert!(index.contains("subtree3").await);
+    assert!(index.contains("subtree4").await);
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert_eq!(subtrees.len(), 4);
 }
 
-#[test]
-fn test_empty_config_is_valid() {
-    let instance = test_instance();
+#[tokio::test]
+async fn test_empty_config_is_valid() {
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree with default empty config
-    let tx = database.new_transaction().unwrap();
-    let _store = tx.get_store::<DocStore>("test").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let _store = tx.get_store::<DocStore>("test").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify empty config is stored and retrieved correctly
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    let info = index.get_entry("test").unwrap();
+    let info = index.get_entry("test").await.unwrap();
     assert_eq!(info.config, "{}");
 }
 
@@ -649,32 +682,34 @@ fn test_empty_config_is_valid() {
 // Architectural Constraint Tests
 // ============================================================================
 
-#[test]
-fn test_index_modification_forces_subtree_in_entry() {
+#[tokio::test]
+async fn test_index_modification_forces_subtree_in_entry() {
     // Verify that when _index is modified for a subtree, that subtree appears in the Entry
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create a subtree first
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    let _entry_id1 = tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    let _entry_id1 = tx.commit().await.unwrap();
 
     // Now update the index for that subtree
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
     index
         .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .await
         .unwrap();
-    let entry_id2 = tx.commit().unwrap();
+    let entry_id2 = tx.commit().await.unwrap();
 
     // Load the entry and verify both _index and my_subtree are present
     let backend = database.backend().unwrap();
-    let entry = backend.get(&entry_id2).unwrap();
+    let entry = backend.get(&entry_id2).await.unwrap();
 
     let subtrees = entry.subtrees();
     assert!(
@@ -687,24 +722,25 @@ fn test_index_modification_forces_subtree_in_entry() {
     );
 }
 
-#[test]
-fn test_auto_registration_includes_both_subtrees() {
+#[tokio::test]
+async fn test_auto_registration_includes_both_subtrees() {
     // Verify that auto-registration during commit includes both _index and the data subtree
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create a subtree - this triggers auto-registration
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("new_subtree").unwrap();
-    store.set("key", "value").unwrap();
-    let entry_id = tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("new_subtree").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    let entry_id = tx.commit().await.unwrap();
 
     // Load the entry and verify both _index and new_subtree are present
     let backend = database.backend().unwrap();
-    let entry = backend.get(&entry_id).unwrap();
+    let entry = backend.get(&entry_id).await.unwrap();
 
     let subtrees = entry.subtrees();
     assert!(
@@ -717,74 +753,76 @@ fn test_auto_registration_includes_both_subtrees() {
     );
 }
 
-#[test]
-fn test_accessing_store_registers_in_index() {
+#[tokio::test]
+async fn test_accessing_store_registers_in_index() {
     // Verify that calling get_store() registers the subtree in _index even without writing data
     // This is the expected behavior: accessing a store initializes it
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Get a store handle but don't write any data
-    let tx = database.new_transaction().unwrap();
-    let _store = tx.get_store::<DocStore>("my_subtree").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let _store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
     // No writes needed - accessing the store initializes it
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Verify the subtree IS registered in the index
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("my_subtree"));
+    assert!(index.contains("my_subtree").await);
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert!(subtrees.contains(&"my_subtree".to_string()));
 
     // Verify the type is correct
-    let info = index.get_entry("my_subtree").unwrap();
+    let info = index.get_entry("my_subtree").await.unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
 }
 
-#[test]
-fn test_multiple_stores_registered_on_access() {
+#[tokio::test]
+async fn test_multiple_stores_registered_on_access() {
     // Verify that accessing multiple stores registers all of them in _index
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Get multiple store handles - each access initializes the store
-    let tx = database.new_transaction().unwrap();
-    let _store1 = tx.get_store::<DocStore>("store1").unwrap();
-    let _store2 = tx.get_store::<Table<TestRecord>>("store2").unwrap();
-    let _store3 = tx.get_store::<DocStore>("store3").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let _store1 = tx.get_store::<DocStore>("store1").await.unwrap();
+    let _store2 = tx.get_store::<Table<TestRecord>>("store2").await.unwrap();
+    let _store3 = tx.get_store::<DocStore>("store3").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Verify all are registered with correct types
-    let tx = database.new_transaction().unwrap();
-    let index = tx.get_index().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let index = tx.get_index().await.unwrap();
 
-    assert!(index.contains("store1"));
-    assert!(index.contains("store2"));
-    assert!(index.contains("store3"));
+    assert!(index.contains("store1").await);
+    assert!(index.contains("store2").await);
+    assert!(index.contains("store3").await);
 
-    let subtrees = index.list().unwrap();
+    let subtrees = index.list().await.unwrap();
     assert_eq!(subtrees.len(), 3);
 
     // Verify types are correct
     assert_eq!(
-        index.get_entry("store1").unwrap().type_id,
+        index.get_entry("store1").await.unwrap().type_id,
         DocStore::type_id()
     );
     assert_eq!(
-        index.get_entry("store2").unwrap().type_id,
+        index.get_entry("store2").await.unwrap().type_id,
         Table::<()>::type_id()
     );
     assert_eq!(
-        index.get_entry("store3").unwrap().type_id,
+        index.get_entry("store3").await.unwrap().type_id,
         DocStore::type_id()
     );
 }
@@ -793,24 +831,25 @@ fn test_multiple_stores_registered_on_access() {
 // Type Mismatch Detection Tests
 // ============================================================================
 
-#[test]
-fn test_type_mismatch_docstore_as_table() {
+#[tokio::test]
+async fn test_type_mismatch_docstore_as_table() {
     // Register a subtree as DocStore, then try to access as Table
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree as DocStore
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<DocStore>("my_data").unwrap();
-    store.set("key", "value").unwrap();
-    tx.commit().unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("my_data").await.unwrap();
+    store.set("key", "value").await.unwrap();
+    tx.commit().await.unwrap();
 
     // Try to access as Table - should fail with TypeMismatch
-    let tx = database.new_transaction().unwrap();
-    let result: Result<Table<TestRecord>, _> = tx.get_store("my_data");
+    let tx = database.new_transaction().await.unwrap();
+    let result = tx.get_store::<Table<TestRecord>>("my_data").await;
 
     assert!(
         result.is_err(),
@@ -831,29 +870,31 @@ fn test_type_mismatch_docstore_as_table() {
     );
 }
 
-#[test]
-fn test_type_mismatch_table_as_docstore() {
+#[tokio::test]
+async fn test_type_mismatch_table_as_docstore() {
     // Register a subtree as Table, then try to access as DocStore
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtree as Table
-    let tx = database.new_transaction().unwrap();
-    let store = tx.get_store::<Table<TestRecord>>("records").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<Table<TestRecord>>("records").await.unwrap();
     store
         .insert(TestRecord {
             id: 1,
             name: "test".to_string(),
         })
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Try to access as DocStore - should fail with TypeMismatch
-    let tx = database.new_transaction().unwrap();
-    let result: Result<DocStore, _> = tx.get_store("records");
+    let tx = database.new_transaction().await.unwrap();
+    let result = tx.get_store::<DocStore>("records").await;
 
     assert!(
         result.is_err(),
@@ -866,33 +907,35 @@ fn test_type_mismatch_table_as_docstore() {
     );
 }
 
-#[test]
-fn test_correct_type_access_succeeds() {
+#[tokio::test]
+async fn test_correct_type_access_succeeds() {
     // Verify that accessing with correct type still works
-    let instance = test_instance();
+    let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database =
-        Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+        .await
+        .unwrap();
 
     // Create subtrees
-    let tx = database.new_transaction().unwrap();
-    let doc_store = tx.get_store::<DocStore>("documents").unwrap();
-    doc_store.set("key", "value").unwrap();
-    let table_store = tx.get_store::<Table<TestRecord>>("records").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let doc_store = tx.get_store::<DocStore>("documents").await.unwrap();
+    doc_store.set("key", "value").await.unwrap();
+    let table_store = tx.get_store::<Table<TestRecord>>("records").await.unwrap();
     table_store
         .insert(TestRecord {
             id: 1,
             name: "test".to_string(),
         })
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Access with correct types - should succeed
-    let tx = database.new_transaction().unwrap();
-    let doc_result = tx.get_store::<DocStore>("documents");
+    let tx = database.new_transaction().await.unwrap();
+    let doc_result = tx.get_store::<DocStore>("documents").await;
     assert!(doc_result.is_ok(), "DocStore access should succeed");
 
-    let table_result = tx.get_store::<Table<TestRecord>>("records");
+    let table_result = tx.get_store::<Table<TestRecord>>("records").await;
     assert!(table_result.is_ok(), "Table access should succeed");
 }

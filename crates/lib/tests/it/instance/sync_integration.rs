@@ -1,23 +1,24 @@
 use super::super::sync::helpers;
 
-#[test]
-fn test_instance_sync_initialization() {
-    let base_db = helpers::setup_instance_with_initialized();
+#[tokio::test]
+async fn test_instance_sync_initialization() {
+    let base_db = helpers::setup_instance_with_initialized().await;
 
     // Verify sync is initialized and accessible
-    let sync_ref = base_db.sync().expect("Sync should be initialized");
+    let sync_ref = base_db.sync().await.expect("Sync should be initialized");
 
     // Verify we can access the sync tree through Instance
     assert!(!sync_ref.sync_tree_root_id().to_string().is_empty());
 }
 
-#[test]
-fn test_instance_sync_load() {
-    let base_db = helpers::setup_instance_with_initialized();
+#[tokio::test]
+async fn test_instance_sync_load() {
+    let base_db = helpers::setup_instance_with_initialized().await;
 
     // Get the sync tree root ID for verification
     let sync_root_id = base_db
         .sync()
+        .await
         .expect("Sync should be initialized")
         .sync_tree_root_id()
         .clone();

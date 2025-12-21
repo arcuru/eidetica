@@ -29,9 +29,9 @@ struct ChatMessage {
 /// Helper function to check if global permissions are configured in auth settings.
 ///
 /// Returns true if global "*" permission exists and is configured with "*" pubkey.
-fn has_global_permission_configured(settings: &SettingsStore) -> bool {
+async fn has_global_permission_configured(settings: &SettingsStore) -> bool {
     // Use SettingsStore's get_auth_settings method
-    if let Ok(auth_settings) = settings.get_auth_settings() {
+    if let Ok(auth_settings) = settings.get_auth_settings().await {
         // Try to get the global "*" key
         if let Ok(global_key) = auth_settings.get_key(GLOBAL_PERMISSION_KEY) {
             global_key.pubkey() == GLOBAL_PERMISSION_KEY
@@ -56,18 +56,21 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n🧪 TEST: Starting chat app authenticated bootstrap test");
 
     // Setup server instance (like Device 1 creating a room)
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     // Add authentication key for server (like chat app does)
     server_instance
         .add_private_key(SERVER_KEY_NAME)
+        .await
         .expect("Failed to add server key");
 
     let server_pubkey = server_instance
         .get_formatted_public_key(SERVER_KEY_NAME)
+        .await
         .expect("Failed to get server public key");
     println!("📍 Server public key: {server_pubkey}");
 
@@ -101,6 +104,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     settings.set("auth", auth_doc);
     let server_database = server_instance
         .new_database(settings, SERVER_KEY_NAME)
+        .await
         .expect("Failed to create server database");
 
     let room_id = server_database.root_id().clone();
@@ -109,15 +113,18 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Enable sync for this database
     let server_sync = server_instance.sync().expect("Server should have sync");
     enable_sync_for_instance_database(&server_sync, &room_id)
+        .await
         .expect("Failed to enable sync for database");
 
     // Add some initial messages to the server's database
     {
         let op = server_database
             .new_transaction()
+            .await
             .expect("Failed to create transaction");
         let store = op
             .get_store::<Table<ChatMessage>>("messages")
+            .await
             .expect("Failed to get messages store");
 
         let msg = ChatMessage {
@@ -125,8 +132,8 @@ async fn test_chat_app_authenticated_bootstrap() {
             content: "Welcome to the chat room!".to_string(),
             timestamp: 1234567890,
         };
-        store.insert(msg).expect("Failed to insert message");
-        op.commit().expect("Failed to commit transaction");
+        store.insert(msg).await.expect("Failed to insert message");
+        op.commit().await.expect("Failed to commit transaction");
     }
 
     // Setup sync on server and get address
@@ -148,24 +155,27 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Setup client instance (like Device 2 joining the room)
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     // Add authentication key for client (different key name to avoid conflicts)
     client_instance
         .add_private_key(CLIENT_KEY_NAME)
+        .await
         .expect("Failed to add client key");
 
     let client_pubkey = client_instance
         .get_formatted_public_key(CLIENT_KEY_NAME)
+        .await
         .expect("Failed to get client public key");
     println!("📍 Client public key: {client_pubkey}");
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&room_id).is_err(),
+        client_instance.load_database(&room_id).await.is_err(),
         "Client should not have the database initially"
     );
 
@@ -203,12 +213,12 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n🔍 Verifying client can load the database...");
 
     // Debug: Check tips before loading
-    if let Ok(tips) = client_instance.backend().get_tips(&room_id) {
+    if let Ok(tips) = client_instance.backend().get_tips(&room_id).await {
         println!("🔍 Client tips before loading database: {tips:?}");
 
         // Check each tip to see what settings it has and their parents
         for tip_id in &tips {
-            if let Ok(entry) = client_instance.backend().get(tip_id) {
+            if let Ok(entry) = client_instance.backend().get(tip_id).await {
                 let parents = entry.parents().unwrap_or_default();
                 println!("🔍 Tip {tip_id} has parents: {parents:?}");
                 println!(
@@ -242,11 +252,12 @@ async fn test_chat_app_authenticated_bootstrap() {
     if let Ok(settings_tips) = client_instance
         .backend()
         .get_store_tips(&room_id, "_settings")
+        .await
     {
         println!("🔍 Client _settings subtree tips: {settings_tips:?}");
 
         for tip_id in &settings_tips {
-            if let Ok(entry) = client_instance.backend().get(tip_id)
+            if let Ok(entry) = client_instance.backend().get(tip_id).await
                 && let Ok(settings_data) = entry.data("_settings")
             {
                 println!(
@@ -262,6 +273,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     let signing_key = client_instance
         .backend()
         .get_private_key(CLIENT_KEY_NAME)
+        .await
         .expect("Failed to get client signing key")
         .expect("Client key should exist in backend");
 
@@ -286,22 +298,23 @@ async fn test_chat_app_authenticated_bootstrap() {
     {
         let settings = client_database
             .get_settings()
+            .await
             .expect("Failed to get database settings");
 
         // Debug: Print the entire settings
-        if let Ok(all_settings) = settings.get_all() {
+        if let Ok(all_settings) = settings.get_all().await {
             println!("🔍 Database settings: {all_settings:?}");
         }
 
         // Check if global permissions are configured
-        let has_global_permission = has_global_permission_configured(&settings);
+        let has_global_permission = has_global_permission_configured(&settings).await;
 
         if has_global_permission {
             println!("✅ Global '*' permission detected - bootstrap worked via global permission");
 
             // With global permissions, the client key should NOT be in auth settings initially
             // (but the bootstrap process via global permission should have worked)
-            match settings.get("auth") {
+            match settings.get("auth").await {
                 Ok(Value::Doc(auth_node)) => {
                     if auth_node.get(CLIENT_KEY_NAME).is_none() {
                         println!(
@@ -318,7 +331,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             println!("🔍 No global permission - checking for client key in auth settings");
 
             // Without global permissions, check that the client key was added
-            match settings.get("auth") {
+            match settings.get("auth").await {
                 Ok(value) => {
                     println!("✅ Auth value found - type: {value:?}");
 
@@ -374,12 +387,14 @@ async fn test_chat_app_authenticated_bootstrap() {
     {
         let op = client_database
             .new_transaction()
+            .await
             .expect("Failed to create client transaction");
         let store = op
             .get_store::<Table<ChatMessage>>("messages")
+            .await
             .expect("Failed to get messages store");
 
-        let messages = store.search(|_| true).expect("Failed to search messages");
+        let messages = store.search(|_| true).await.expect("Failed to search messages");
 
         println!("📬 Client found {} messages", messages.len());
         assert_eq!(messages.len(), 1, "Client should see the initial message");
@@ -393,7 +408,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     println!("\n✍️ Client attempting to add a message...");
     {
         // Create transaction using default auth
-        let op = match client_database.new_transaction() {
+        let op = match client_database.new_transaction().await {
             Ok(op) => {
                 println!("✅ Client created transaction successfully");
                 op
@@ -406,6 +421,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
         let store = op
             .get_store::<Table<ChatMessage>>("messages")
+            .await
             .expect("Failed to get messages store");
 
         let msg = ChatMessage {
@@ -414,7 +430,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             timestamp: 1234567891,
         };
 
-        match store.insert(msg.clone()) {
+        match store.insert(msg.clone()).await {
             Ok(_) => println!("✅ Client successfully inserted message"),
             Err(e) => {
                 println!("❌ Client failed to insert message: {e:?}");
@@ -422,7 +438,7 @@ async fn test_chat_app_authenticated_bootstrap() {
             }
         }
 
-        match op.commit() {
+        match op.commit().await {
             Ok(_) => println!("✅ Client successfully committed transaction"),
             Err(e) => {
                 println!("❌ Client failed to commit transaction: {e:?}");
@@ -433,11 +449,11 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Check client's tips and entries before sync
     println!("\n🔍 Client state before sync back:");
-    if let Ok(client_tips) = client_instance.backend().get_tips(&room_id) {
+    if let Ok(client_tips) = client_instance.backend().get_tips(&room_id).await {
         println!("  Client has {} tips: {:?}", client_tips.len(), client_tips);
 
         // Check what messages the client has
-        if let Ok(entries) = client_instance.backend().get_store(&room_id, "messages") {
+        if let Ok(entries) = client_instance.backend().get_store(&room_id, "messages").await {
             println!("  Client has {} entries in messages store", entries.len());
             for entry in &entries {
                 if let Ok(data) = entry.data("messages") {
@@ -465,12 +481,14 @@ async fn test_chat_app_authenticated_bootstrap() {
     {
         let op = server_database
             .new_transaction()
+            .await
             .expect("Failed to create server transaction");
         let store = op
             .get_store::<Table<ChatMessage>>("messages")
+            .await
             .expect("Failed to get messages store");
 
-        let messages = store.search(|_| true).expect("Failed to search messages");
+        let messages = store.search(|_| true).await.expect("Failed to search messages");
 
         println!("📬 Server found {} messages", messages.len());
 
@@ -517,14 +535,16 @@ async fn test_global_key_bootstrap() {
     println!("\n🧪 TEST: Starting global key bootstrap test");
 
     // Setup similar to above but use '*' key
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     // Add a key for creating the database
     server_instance
         .add_private_key("admin_key")
+        .await
         .expect("Failed to add admin key");
 
     // Create database with global write permission
@@ -534,6 +554,7 @@ async fn test_global_key_bootstrap() {
     // Add admin key to auth settings as well (required for database creation)
     let admin_pubkey = server_instance
         .get_formatted_public_key("admin_key")
+        .await
         .expect("Failed to get admin public key");
 
     // Add global write permission to auth settings
@@ -565,6 +586,7 @@ async fn test_global_key_bootstrap() {
 
     let server_database = server_instance
         .new_database(settings, "admin_key")
+        .await
         .expect("Failed to create server database");
 
     let room_id = server_database.root_id().clone();
@@ -573,6 +595,7 @@ async fn test_global_key_bootstrap() {
     // Enable sync for this database
     let server_sync = server_instance.sync().expect("Server should have sync");
     enable_sync_for_instance_database(&server_sync, &room_id)
+        .await
         .expect("Failed to enable sync for database");
 
     // Setup sync on server
@@ -592,14 +615,16 @@ async fn test_global_key_bootstrap() {
     };
 
     // Setup client
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     // Add a private key for the client to use with global permissions
     client_instance
         .add_private_key("*")
+        .await
         .expect("Failed to add client key");
 
     // Client syncs without authentication (relies on global '*' permission)
@@ -623,6 +648,7 @@ async fn test_global_key_bootstrap() {
     let signing_key = client_instance
         .backend()
         .get_private_key("*")
+        .await
         .expect("Failed to get global signing key")
         .expect("Global key should exist in backend");
 
@@ -640,9 +666,11 @@ async fn test_global_key_bootstrap() {
         // The transaction will automatically include the public key in the signature
         let op = client_database
             .new_transaction()
+            .await
             .expect("Should create transaction with global permission");
         let store = op
             .get_store::<Table<ChatMessage>>("messages")
+            .await
             .expect("Failed to get messages store");
 
         let msg = ChatMessage {
@@ -653,8 +681,9 @@ async fn test_global_key_bootstrap() {
 
         store
             .insert(msg)
+            .await
             .expect("Should insert with global permission");
-        op.commit().expect("Should commit with global permission");
+        op.commit().await.expect("Should commit with global permission");
     }
 
     println!("✅ TEST COMPLETED: Global key bootstrap works!");
@@ -675,18 +704,21 @@ async fn test_multiple_databases_sync() {
     println!("\n🧪 TEST: Starting multiple databases sync test");
 
     // Setup server with multiple databases
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key(SERVER_KEY_NAME)
+        .await
         .expect("Failed to add server key");
 
     // Get server public key for auth configuration
     let server_pubkey = server_instance
         .get_formatted_public_key(SERVER_KEY_NAME)
+        .await
         .expect("Failed to get server public key");
 
     // Create three different databases (chat rooms)
@@ -726,6 +758,7 @@ async fn test_multiple_databases_sync() {
 
         let database = server_instance
             .new_database(settings, SERVER_KEY_NAME)
+            .await
             .expect("Failed to create database");
         room_ids.push(database.root_id().clone());
         println!("🏠 Created room {} with ID: {}", i, database.root_id());
@@ -735,6 +768,7 @@ async fn test_multiple_databases_sync() {
     let server_sync = server_instance.sync().expect("Server should have sync");
     for room_id in &room_ids {
         enable_sync_for_instance_database(&server_sync, room_id)
+            .await
             .expect("Failed to enable sync for database");
     }
 
@@ -755,13 +789,15 @@ async fn test_multiple_databases_sync() {
     };
 
     // Setup client
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key(CLIENT_KEY_NAME)
+        .await
         .expect("Failed to add client key");
 
     // Bootstrap each database
@@ -793,12 +829,14 @@ async fn test_multiple_databases_sync() {
     for (i, room_id) in room_ids.iter().enumerate() {
         let database = client_instance
             .load_database(room_id)
+            .await
             .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
 
         // Verify room name
-        let settings = database.get_settings().expect("Failed to get settings");
+        let settings = database.get_settings().await.expect("Failed to get settings");
         let name = settings
             .get_string("name")
+            .await
             .expect("Failed to get room name");
         assert_eq!(name, format!("Room {}", i + 1));
         println!("✅ Successfully loaded {name}");

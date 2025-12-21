@@ -28,7 +28,7 @@ use crate::helpers::test_instance;
 /// Create a server instance with a user who owns a database
 ///
 /// Returns: (Instance, User, Database, Sync, tree_id, user_key_id)
-fn setup_user_with_database() -> eidetica::Result<(
+async fn setup_user_with_database() -> eidetica::Result<(
     Instance,
     eidetica::user::User,
     eidetica::Database,
@@ -36,14 +36,16 @@ fn setup_user_with_database() -> eidetica::Result<(
     eidetica::entry::ID,
     String,
 )> {
-    let instance = test_instance();
+    let instance = test_instance().await;
 
     // Create and login user
     instance
         .create_user("alice", None)
+        .await
         .expect("Failed to create user");
     let mut user = instance
         .login_user("alice", None)
+        .await
         .expect("Failed to login user");
 
     // Get the default key (earliest created key)
@@ -55,6 +57,7 @@ fn setup_user_with_database() -> eidetica::Result<(
 
     let database = user
         .create_database(settings, &user_key_id)
+        .await
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
@@ -62,22 +65,27 @@ fn setup_user_with_database() -> eidetica::Result<(
     let device_key_name = "_device_key";
     let device_pubkey = instance
         .get_formatted_public_key(device_key_name)
+        .await
         .expect("Failed to get device public key");
 
     // Add _device_key as Admin to the database
     let tx = database
         .new_transaction()
+        .await
         .expect("Failed to create transaction");
     let settings_store = tx.get_settings().expect("Failed to get settings store");
     let device_auth_key = AuthKey::active(device_pubkey, Permission::Admin(0))
         .expect("Failed to create device auth key");
     settings_store
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .expect("Failed to set device key");
-    tx.commit().expect("Failed to commit device key");
+    tx.commit().await.expect("Failed to commit device key");
 
     // Create sync instance
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone())
+        .await
+        .expect("Failed to create sync");
 
     // Enable sync for this database
     use eidetica::user::types::{SyncSettings, TrackedDatabase};
@@ -91,10 +99,12 @@ fn setup_user_with_database() -> eidetica::Result<(
             properties: Default::default(),
         },
     })
+    .await
     .expect("Failed to add database to user preferences");
 
     // Sync the user database to update combined settings
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .expect("Failed to sync user database");
 
     Ok((instance, user, database, sync, tree_id, user_key_id))
@@ -144,7 +154,7 @@ async fn create_pending_request(
 /// * `user_key_id` - The user's key ID (public key string)
 /// * `user` - The user who owns the key (for getting the signing key)
 /// * `permission` - The permission level to grant
-fn grant_user_permission_on_database(
+async fn grant_user_permission_on_database(
     database: &eidetica::Database,
     user_key_id: &str,
     user: &eidetica::user::User,
@@ -157,10 +167,12 @@ fn grant_user_permission_on_database(
     let pubkey = format_public_key(&signing_key.verifying_key());
 
     // Update database auth settings using SettingsStore API
-    let tx = database.new_transaction()?;
+    let tx = database.new_transaction().await?;
     let settings_store = tx.get_settings()?;
-    settings_store.set_auth_key(user_key_id, AuthKey::active(pubkey, permission)?)?;
-    tx.commit()?;
+    settings_store
+        .set_auth_key(user_key_id, AuthKey::active(pubkey, permission)?)
+        .await?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -169,8 +181,9 @@ fn grant_user_permission_on_database(
 
 #[tokio::test]
 async fn test_user_approve_bootstrap_request() {
-    let (_instance, user, database, sync, tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, database, sync, tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -182,18 +195,21 @@ async fn test_user_approve_bootstrap_request() {
     // Verify request is pending
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 1);
     println!("✅ Bootstrap request created and pending");
 
     // User approves the request using their key
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await
         .expect("Failed to approve bootstrap request");
     println!("✅ User successfully approved bootstrap request");
 
     // Verify request is now approved
     let (_, approved_request) = sync
         .get_bootstrap_request(&request_id)
+        .await
         .expect("Failed to get bootstrap request")
         .expect("Bootstrap request not found");
 
@@ -205,12 +221,15 @@ async fn test_user_approve_bootstrap_request() {
     // Verify the key was added to the target database
     let transaction = database
         .new_transaction()
+        .await
         .expect("Failed to create transaction");
     let settings_store = transaction
         .get_store::<DocStore>(SETTINGS)
+        .await
         .expect("Failed to get settings store");
     let auth_doc = settings_store
         .get_node("auth")
+        .await
         .expect("Failed to get auth settings");
     let auth_settings = AuthSettings::from_doc(auth_doc);
     let added_key = auth_settings
@@ -224,14 +243,16 @@ async fn test_user_approve_bootstrap_request() {
     // No more pending requests
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 0);
 }
 
 #[tokio::test]
 async fn test_user_reject_bootstrap_request() {
-    let (_instance, user, database, sync, tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, database, sync, tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -243,17 +264,20 @@ async fn test_user_reject_bootstrap_request() {
     // Verify request is pending
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 1);
 
     // User rejects the request
     user.reject_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await
         .expect("Failed to reject bootstrap request");
     println!("✅ User successfully rejected bootstrap request");
 
     // Verify request is now rejected
     let (_, rejected_request) = sync
         .get_bootstrap_request(&request_id)
+        .await
         .expect("Failed to get bootstrap request")
         .expect("Bootstrap request not found");
 
@@ -265,13 +289,15 @@ async fn test_user_reject_bootstrap_request() {
     // Verify the key was NOT added to the target database
     let transaction = database
         .new_transaction()
+        .await
         .expect("Failed to create transaction");
     let settings_store = transaction
         .get_store::<DocStore>(SETTINGS)
+        .await
         .expect("Failed to get settings store");
 
     // Check that the key doesn't exist in auth settings
-    let auth_result = settings_store.get_node("auth");
+    let auth_result = settings_store.get_node("auth").await;
     if let Ok(auth_doc) = auth_result {
         let auth_settings = AuthSettings::from_doc(auth_doc);
         assert!(
@@ -284,14 +310,16 @@ async fn test_user_reject_bootstrap_request() {
     // No more pending requests
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 0);
 }
 
 #[tokio::test]
 async fn test_user_approve_with_nonexistent_key() {
-    let (_instance, user, _database, sync, tree_id, _user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, tree_id, _user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -301,7 +329,9 @@ async fn test_user_approve_with_nonexistent_key() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Try to approve with a key the user doesn't own
-    let result = user.approve_bootstrap_request(&sync, &request_id, "nonexistent_key");
+    let result = user
+        .approve_bootstrap_request(&sync, &request_id, "nonexistent_key")
+        .await;
 
     assert!(result.is_err(), "Approval should fail with nonexistent key");
     let error_msg = result.unwrap_err().to_string();
@@ -314,8 +344,9 @@ async fn test_user_approve_with_nonexistent_key() {
 
 #[tokio::test]
 async fn test_user_reject_with_nonexistent_key() {
-    let (_instance, user, _database, sync, tree_id, _user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, tree_id, _user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -325,7 +356,9 @@ async fn test_user_reject_with_nonexistent_key() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Try to reject with a key the user doesn't own
-    let result = user.reject_bootstrap_request(&sync, &request_id, "nonexistent_key");
+    let result = user
+        .reject_bootstrap_request(&sync, &request_id, "nonexistent_key")
+        .await;
 
     assert!(
         result.is_err(),
@@ -341,11 +374,14 @@ async fn test_user_reject_with_nonexistent_key() {
 
 #[tokio::test]
 async fn test_user_approve_nonexistent_request() {
-    let (_instance, user, _database, sync, _tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, _tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Try to approve a request that doesn't exist
-    let result = user.approve_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id);
+    let result = user
+        .approve_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -361,11 +397,14 @@ async fn test_user_approve_nonexistent_request() {
 
 #[tokio::test]
 async fn test_user_reject_nonexistent_request() {
-    let (_instance, user, _database, sync, _tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, _tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Try to reject a request that doesn't exist
-    let result = user.reject_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id);
+    let result = user
+        .reject_bootstrap_request(&sync, "nonexistent_request_id", &user_key_id)
+        .await;
 
     assert!(
         result.is_err(),
@@ -381,8 +420,9 @@ async fn test_user_reject_nonexistent_request() {
 
 #[tokio::test]
 async fn test_user_cannot_approve_twice() {
-    let (_instance, user, _database, sync, tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -393,10 +433,13 @@ async fn test_user_cannot_approve_twice() {
 
     // Approve once
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await
         .expect("First approval should succeed");
 
     // Try to approve again
-    let result = user.approve_bootstrap_request(&sync, &request_id, &user_key_id);
+    let result = user
+        .approve_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await;
 
     assert!(result.is_err(), "Second approval should fail");
     let error_msg = result.unwrap_err().to_string();
@@ -409,8 +452,9 @@ async fn test_user_cannot_approve_twice() {
 
 #[tokio::test]
 async fn test_user_cannot_reject_after_approval() {
-    let (_instance, user, _database, sync, tree_id, user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, tree_id, user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Create a client requesting access
     let (_client_key, client_pubkey) = create_client_key();
@@ -421,10 +465,13 @@ async fn test_user_cannot_reject_after_approval() {
 
     // Approve first
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await
         .expect("Approval should succeed");
 
     // Try to reject after approval
-    let result = user.reject_bootstrap_request(&sync, &request_id, &user_key_id);
+    let result = user
+        .reject_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await;
 
     assert!(result.is_err(), "Rejection should fail after approval");
     let error_msg = result.unwrap_err().to_string();
@@ -438,12 +485,14 @@ async fn test_user_cannot_reject_after_approval() {
 #[tokio::test]
 async fn test_multiple_users() {
     // Create instances with 2 users
-    let instance = test_instance();
+    let instance = test_instance().await;
     instance
         .create_user("alice", None)
+        .await
         .expect("Failed to create alice");
     let mut alice = instance
         .login_user("alice", None)
+        .await
         .expect("Failed to login alice");
     let alice_key = alice
         .get_default_key()
@@ -451,9 +500,11 @@ async fn test_multiple_users() {
 
     instance
         .create_user("bob", None)
+        .await
         .expect("Failed to create bob");
     let mut bob = instance
         .login_user("bob", None)
+        .await
         .expect("Failed to login bob");
     let bob_key = bob
         .get_default_key()
@@ -464,6 +515,7 @@ async fn test_multiple_users() {
     alice_db_settings.set("name", "Alice's Database");
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
+        .await
         .expect("Failed to create Alice's database");
     let alice_tree_id = alice_db.root_id().clone();
 
@@ -472,6 +524,7 @@ async fn test_multiple_users() {
     bob_db_settings.set("name", "Bob's Database");
     let bob_db = bob
         .create_database(bob_db_settings, &bob_key)
+        .await
         .expect("Failed to create Bob's database");
     let bob_tree_id = bob_db.root_id().clone();
 
@@ -479,9 +532,11 @@ async fn test_multiple_users() {
     let device_key_name = "_device_key";
     let device_pubkey = instance
         .get_formatted_public_key(device_key_name)
+        .await
         .expect("Failed to get device public key");
     let alice_tx = alice_db
         .new_transaction()
+        .await
         .expect("Failed to create Alice transaction");
     let alice_settings = alice_tx
         .get_settings()
@@ -493,12 +548,17 @@ async fn test_multiple_users() {
     .expect("Failed to create device auth key");
     alice_settings
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .expect("Failed to set Alice device key");
-    alice_tx.commit().expect("Failed to commit Alice auth");
+    alice_tx
+        .commit()
+        .await
+        .expect("Failed to commit Alice auth");
 
     // Add _device_key to Bob's database for sync
     let bob_tx = bob_db
         .new_transaction()
+        .await
         .expect("Failed to create Bob transaction");
     let bob_settings = bob_tx.get_settings().expect("Failed to get Bob's settings");
     let device_auth_key =
@@ -506,8 +566,9 @@ async fn test_multiple_users() {
             .expect("Failed to create device auth key");
     bob_settings
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .expect("Failed to set Bob device key");
-    bob_tx.commit().expect("Failed to commit Bob auth");
+    bob_tx.commit().await.expect("Failed to commit Bob auth");
 
     // Enable sync for Alice's database
     use eidetica::user::types::{SyncSettings, TrackedDatabase};
@@ -522,6 +583,7 @@ async fn test_multiple_users() {
                 properties: Default::default(),
             },
         })
+        .await
         .expect("Failed to add Alice's database preferences");
 
     // Enable sync for Bob's database
@@ -535,15 +597,20 @@ async fn test_multiple_users() {
             properties: Default::default(),
         },
     })
+    .await
     .expect("Failed to add Bob's database preferences");
 
     // Create sync instance
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync object");
+    let sync = Sync::new(instance.clone())
+        .await
+        .expect("Failed to create sync object");
 
     // Sync both users to propagate combined settings
     sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .await
         .expect("Failed to sync Alice's user data");
     sync.sync_user(bob.user_uuid(), bob.user_database().root_id())
+        .await
         .expect("Failed to sync Bob's user data");
 
     // Client requests access to Alice's database
@@ -558,15 +625,18 @@ async fn test_multiple_users() {
     // Alice approves her database request
     alice
         .approve_bootstrap_request(&sync, &alice_request_id, &alice_key)
+        .await
         .expect("Alice should approve her request");
 
     // Bob rejects his database request
     bob.reject_bootstrap_request(&sync, &bob_request_id, &bob_key)
+        .await
         .expect("Bob should reject his request");
 
     // Verify Alice's request is approved
     let (_, alice_request) = sync
         .get_bootstrap_request(&alice_request_id)
+        .await
         .expect("Failed to get Alice's request")
         .expect("Alice's request not found");
     assert!(matches!(
@@ -577,6 +647,7 @@ async fn test_multiple_users() {
     // Verify Bob's request is rejected
     let (_, bob_request) = sync
         .get_bootstrap_request(&bob_request_id)
+        .await
         .expect("Failed to get Bob's request")
         .expect("Bob's request not found");
     assert!(matches!(bob_request.status, RequestStatus::Rejected { .. }));
@@ -584,12 +655,15 @@ async fn test_multiple_users() {
     // Verify key added to Alice's database
     let alice_tx = alice_db
         .new_transaction()
+        .await
         .expect("Failed to create Alice transaction");
     let alice_settings = alice_tx
         .get_store::<DocStore>(SETTINGS)
+        .await
         .expect("Failed to get Alice's settings");
     let alice_auth = alice_settings
         .get_node("auth")
+        .await
         .expect("Failed to get Alice's auth");
     let alice_auth_settings = AuthSettings::from_doc(alice_auth);
     assert!(alice_auth_settings.get_key("laptop_key").is_ok());
@@ -597,12 +671,15 @@ async fn test_multiple_users() {
     // Verify key NOT added to Bob's database
     let bob_tx = bob_db
         .new_transaction()
+        .await
         .expect("Failed to create Bob transaction");
     let bob_settings = bob_tx
         .get_store::<DocStore>(SETTINGS)
+        .await
         .expect("Failed to get Bob's settings");
     let bob_auth = bob_settings
         .get_node("auth")
+        .await
         .expect("Failed to get Bob's auth");
     let bob_auth_settings = AuthSettings::from_doc(bob_auth);
     assert!(bob_auth_settings.get_key("laptop_key").is_err());
@@ -612,12 +689,14 @@ async fn test_multiple_users() {
 
 #[tokio::test]
 async fn test_user_list_pending_bootstrap_requests() {
-    let (_instance, user, _database, sync, tree_id, _user_key_id) =
-        setup_user_with_database().expect("Failed to setup test");
+    let (_instance, user, _database, sync, tree_id, _user_key_id) = setup_user_with_database()
+        .await
+        .expect("Failed to setup test");
 
     // Initially no pending requests
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 0);
 
@@ -633,6 +712,7 @@ async fn test_user_list_pending_bootstrap_requests() {
     // List pending requests
     let pending = user
         .pending_bootstrap_requests(&sync)
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending.len(), 2);
 
@@ -648,12 +728,14 @@ async fn test_user_list_pending_bootstrap_requests() {
 #[tokio::test]
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
-    let instance = test_instance();
+    let instance = test_instance().await;
     instance
         .create_user("alice", None)
+        .await
         .expect("Failed to create alice");
     let mut alice = instance
         .login_user("alice", None)
+        .await
         .expect("Failed to login alice");
     let alice_key = alice
         .get_default_key()
@@ -663,6 +745,7 @@ async fn test_user_without_admin_cannot_modify() {
     db_settings.set("name", "Alice's Database");
     let alice_db = alice
         .create_database(db_settings, &alice_key)
+        .await
         .expect("Failed to create Alice's database");
     let tree_id = alice_db.root_id().clone();
 
@@ -670,9 +753,11 @@ async fn test_user_without_admin_cannot_modify() {
     let device_key_name = "_device_key";
     let device_pubkey = instance
         .get_formatted_public_key(device_key_name)
+        .await
         .expect("Failed to get device public key");
     let alice_tx = alice_db
         .new_transaction()
+        .await
         .expect("Failed to create Alice transaction");
     let alice_settings = alice_tx
         .get_settings()
@@ -681,8 +766,12 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to create device auth key");
     alice_settings
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .expect("Failed to set Alice device key");
-    alice_tx.commit().expect("Failed to commit Alice auth");
+    alice_tx
+        .commit()
+        .await
+        .expect("Failed to commit Alice auth");
 
     // Enable sync for Alice's database
     use eidetica::user::types::{SyncSettings, TrackedDatabase};
@@ -697,32 +786,41 @@ async fn test_user_without_admin_cannot_modify() {
                 properties: Default::default(),
             },
         })
+        .await
         .expect("Failed to add Alice's database preferences");
 
     // Create Bob and add a key for him
     instance
         .create_user("bob", None)
+        .await
         .expect("Failed to create bob");
     let mut bob = instance
         .login_user("bob", None)
+        .await
         .expect("Failed to login bob");
     let bob_key = bob
         .add_private_key(Some("Bob's Key"))
+        .await
         .expect("Failed to add Bob's key");
 
     // Grant Bob Write permission (NOT Admin) on Alice's database using helper
     grant_user_permission_on_database(&alice_db, &bob_key, &bob, Permission::Write(10))
+        .await
         .expect("Failed to grant Bob write permission");
 
     // Update Bob's key mapping to include Alice's database
     bob.map_key(&bob_key, &tree_id, &bob_key)
+        .await
         .expect("Failed to update Bob's key mapping");
 
     // Create a sync instance and bootstrap request
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone())
+        .await
+        .expect("Failed to create sync");
 
     // Sync Alice's user data to propagate combined settings
     sync.sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .await
         .expect("Failed to sync Alice's user data");
 
     let (_client_key, client_pubkey) = create_client_key();
@@ -730,7 +828,9 @@ async fn test_user_without_admin_cannot_modify() {
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
     // Bob (who only has Write permission, not Admin) tries to reject the request
-    let result = bob.reject_bootstrap_request(&sync, &request_id, &bob_key);
+    let result = bob
+        .reject_bootstrap_request(&sync, &request_id, &bob_key)
+        .await;
 
     // Should fail because Bob doesn't have Admin permission
     assert!(
@@ -746,7 +846,9 @@ async fn test_user_without_admin_cannot_modify() {
     println!("✅ User without Admin permission correctly cannot reject bootstrap requests");
 
     // Now confirm that Bob cannot approve the request either
-    let result = bob.approve_bootstrap_request(&sync, &request_id, &bob_key);
+    let result = bob
+        .approve_bootstrap_request(&sync, &request_id, &bob_key)
+        .await;
 
     // Should fail because Bob doesn't have Admin permission
     assert!(

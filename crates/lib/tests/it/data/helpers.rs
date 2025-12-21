@@ -17,31 +17,34 @@ type Node = Doc;
 // ===== BASIC SETUP HELPERS =====
 
 /// Create a database with a test key and return both Instance and tree
-pub fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
-    let instance = test_instance();
-    instance.create_user("test_user", None)?;
-    let mut user = instance.login_user("test_user", None)?;
+pub async fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
+    let instance = test_instance().await;
+    instance.create_user("test_user", None).await?;
+    let mut user = instance.login_user("test_user", None).await?;
     let default_key = user.get_default_key()?;
 
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "test_tree");
 
-    let tree = user.create_database(settings, &default_key)?;
+    let tree = user.create_database(settings, &default_key).await?;
     Ok((instance, tree))
 }
 
 /// Setup a Doc subtree for testing
-pub fn setup_dict_subtree(op: &Transaction, subtree_name: &str) -> eidetica::Result<DocStore> {
-    op.get_store::<DocStore>(subtree_name)
+pub async fn setup_dict_subtree(
+    op: &Transaction,
+    subtree_name: &str,
+) -> eidetica::Result<DocStore> {
+    op.get_store::<DocStore>(subtree_name).await
 }
 
 /// Create a complete test environment with DB, tree, operation, and Doc
-pub fn setup_complete_test_env(
+pub async fn setup_complete_test_env(
     subtree_name: &str,
 ) -> eidetica::Result<(Instance, Database, Transaction, DocStore)> {
-    let (db, tree) = setup_db_and_tree()?;
-    let op = tree.new_transaction()?;
-    let dict = setup_dict_subtree(&op, subtree_name)?;
+    let (db, tree) = setup_db_and_tree().await?;
+    let op = tree.new_transaction().await?;
+    let dict = setup_dict_subtree(&op, subtree_name).await?;
     Ok((db, tree, op, dict))
 }
 
@@ -180,23 +183,27 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
-pub fn setup_path_test_dict(op: &Transaction) -> eidetica::Result<DocStore> {
-    setup_dict_subtree(op, "path_test_store")
+pub async fn setup_path_test_dict(op: &Transaction) -> eidetica::Result<DocStore> {
+    setup_dict_subtree(op, "path_test_store").await
 }
 
 /// Test value editor basic functionality
-pub fn test_editor_basic_set_get(dict: &DocStore, key: &str, value: Value) -> eidetica::Result<()> {
+pub async fn test_editor_basic_set_get(
+    dict: &DocStore,
+    key: &str,
+    value: Value,
+) -> eidetica::Result<()> {
     let editor = dict.get_value_mut(key);
-    editor.set(value.clone())?;
+    editor.set(value.clone()).await?;
 
-    let retrieved = editor.get()?;
+    let retrieved = editor.get().await?;
     assert_eq!(retrieved, value, "Editor set/get mismatch for key '{key}'");
 
     Ok(())
 }
 
 /// Test nested editor operations
-pub fn test_nested_editor_operations(
+pub async fn test_nested_editor_operations(
     dict: &DocStore,
     path: &[&str],
     value: Value,
@@ -207,8 +214,8 @@ pub fn test_nested_editor_operations(
         editor = editor.get_value_mut(segment);
     }
 
-    editor.set(value.clone())?;
-    let retrieved = editor.get()?;
+    editor.set(value.clone()).await?;
+    let retrieved = editor.get().await?;
     assert_eq!(
         retrieved, value,
         "Nested editor set/get mismatch at path {path:?}"
@@ -218,9 +225,13 @@ pub fn test_nested_editor_operations(
 }
 
 /// Test path-based operations
-pub fn test_path_operations(dict: &DocStore, path: &[&str], value: Value) -> eidetica::Result<()> {
-    dict.set_at_path(path, value.clone())?;
-    let retrieved = dict.get_at_path(path)?;
+pub async fn test_path_operations(
+    dict: &DocStore,
+    path: &[&str],
+    value: Value,
+) -> eidetica::Result<()> {
+    dict.set_at_path(path, value.clone()).await?;
+    let retrieved = dict.get_at_path(path).await?;
     assert_eq!(retrieved, value, "Path operation mismatch at {path:?}");
 
     Ok(())

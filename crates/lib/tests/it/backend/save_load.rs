@@ -7,8 +7,8 @@ use eidetica::{
     backend::{BackendImpl, database::InMemory},
 };
 
-#[test]
-fn test_in_memory_backend_save_and_load() {
+#[tokio::test]
+async fn test_in_memory_backend_save_and_load() {
     // Create a temporary file path
     let temp_dir = env!("CARGO_MANIFEST_DIR");
     let file_path = PathBuf::from(temp_dir).join("test_backend_save.json");
@@ -19,7 +19,7 @@ fn test_in_memory_backend_save_and_load() {
         let entry = Entry::root_builder()
             .build()
             .expect("Root entry should build successfully");
-        backend.put_verified(entry).unwrap();
+        backend.put_verified(entry).await.unwrap();
 
         // Save to file
         let save_result = backend.save_to_file(&file_path);
@@ -35,15 +35,15 @@ fn test_in_memory_backend_save_and_load() {
     let loaded_backend = load_result.unwrap();
 
     // Verify data was loaded correctly
-    let roots = loaded_backend.all_roots().unwrap();
+    let roots = loaded_backend.all_roots().await.unwrap();
     assert_eq!(roots.len(), 1);
 
     // Cleanup
     fs::remove_file(file_path).unwrap();
 }
 
-#[test]
-fn test_load_non_existent_file() {
+#[tokio::test]
+async fn test_load_non_existent_file() {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data/non_existent_file.json");
     // Ensure file does not exist
@@ -53,11 +53,11 @@ fn test_load_non_existent_file() {
     let backend = InMemory::load_from_file(&path);
 
     // Verify it's empty
-    assert_eq!(backend.unwrap().all_roots().unwrap().len(), 0);
+    assert_eq!(backend.unwrap().all_roots().await.unwrap().len(), 0);
 }
 
-#[test]
-fn test_load_invalid_file() {
+#[tokio::test]
+async fn test_load_invalid_file() {
     // Ensure target directory exists
     let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
     fs::create_dir_all(&test_dir).unwrap();
@@ -79,8 +79,8 @@ fn test_load_invalid_file() {
     fs::remove_file(&path).unwrap();
 }
 
-#[test]
-fn test_save_load_with_various_entries() {
+#[tokio::test]
+async fn test_save_load_with_various_entries() {
     // Create a temporary file path
     let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
     fs::create_dir_all(&test_dir).unwrap();
@@ -94,7 +94,7 @@ fn test_save_load_with_various_entries() {
         .build()
         .expect("Root entry should build successfully");
     let root_id = root_entry.id();
-    backend.put_verified(root_entry).unwrap();
+    backend.put_verified(root_entry).await.unwrap();
 
     // Child 1
     let child1 = Entry::builder(root_id.clone())
@@ -103,7 +103,7 @@ fn test_save_load_with_various_entries() {
         .build()
         .expect("Child entry should build successfully");
     let child1_id = child1.id();
-    backend.put_verified(child1).unwrap();
+    backend.put_verified(child1).await.unwrap();
 
     // Child 2
     let child2 = Entry::builder(root_id.clone())
@@ -112,7 +112,7 @@ fn test_save_load_with_various_entries() {
         .build()
         .expect("Child entry should build successfully");
     let child2_id = child2.id();
-    backend.put_verified(child2).unwrap();
+    backend.put_verified(child2).await.unwrap();
 
     // Grandchild (child of child1)
     let grandchild = Entry::builder(root_id.clone())
@@ -120,7 +120,7 @@ fn test_save_load_with_various_entries() {
         .build()
         .expect("Grandchild entry should build successfully");
     let grandchild_id = grandchild.id();
-    backend.put_verified(grandchild).unwrap();
+    backend.put_verified(grandchild).await.unwrap();
 
     // Entry with subtree
     let entry_with_subtree = Entry::builder(root_id.clone())
@@ -129,7 +129,7 @@ fn test_save_load_with_various_entries() {
         .build()
         .expect("Entry with subtree should build successfully");
     let entry_with_subtree_id = entry_with_subtree.id();
-    backend.put_verified(entry_with_subtree).unwrap();
+    backend.put_verified(entry_with_subtree).await.unwrap();
 
     // Save to file
     backend.save_to_file(&file_path).unwrap();
@@ -140,32 +140,32 @@ fn test_save_load_with_various_entries() {
     // Verify loaded data
 
     // Check we have the correct root
-    let loaded_roots = loaded_backend.all_roots().unwrap();
+    let loaded_roots = loaded_backend.all_roots().await.unwrap();
     assert_eq!(loaded_roots.len(), 1);
     assert_eq!(loaded_roots[0], root_id);
 
     // Check we can retrieve all entries
-    let loaded_tree = loaded_backend.get_tree(&root_id).unwrap();
+    let loaded_tree = loaded_backend.get_tree(&root_id).await.unwrap();
     assert_eq!(loaded_tree.len(), 5); // root + 2 children + grandchild + entry_with_subtree
 
     // Check specific entries can be retrieved
-    let _loaded_root = loaded_backend.get(&root_id).unwrap();
+    let _loaded_root = loaded_backend.get(&root_id).await.unwrap();
     // Entry is a pure data structure - it shouldn't know about settings
     // Settings logic is handled by Transaction
 
-    let _loaded_grandchild = loaded_backend.get(&grandchild_id).unwrap();
+    let _loaded_grandchild = loaded_backend.get(&grandchild_id).await.unwrap();
     // Entry is a pure data structure - it shouldn't know about settings
     // Settings logic is handled by Transaction
 
-    let loaded_entry_with_subtree = loaded_backend.get(&entry_with_subtree_id).unwrap();
+    let loaded_entry_with_subtree = loaded_backend.get(&entry_with_subtree_id).await.unwrap();
     assert_eq!(
         loaded_entry_with_subtree.data("subtree1").unwrap(),
         "subtree_data"
     );
 
     // Check tips match
-    let orig_tips = backend.get_tips(&root_id).unwrap();
-    let loaded_tips = loaded_backend.get_tips(&root_id).unwrap();
+    let orig_tips = backend.get_tips(&root_id).await.unwrap();
+    let loaded_tips = loaded_backend.get_tips(&root_id).await.unwrap();
     assert_eq!(orig_tips.len(), loaded_tips.len());
 
     // Should have 3 tips (grandchild, entry_with_subtree, and child2)
@@ -178,8 +178,8 @@ fn test_save_load_with_various_entries() {
     fs::remove_file(file_path).unwrap();
 }
 
-#[test]
-fn test_load_wrong_version_fails() {
+#[tokio::test]
+async fn test_load_wrong_version_fails() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join("wrong_version.json");
 
@@ -200,8 +200,8 @@ fn test_load_wrong_version_fails() {
     );
 }
 
-#[test]
-fn test_load_missing_version_defaults_to_v0() {
+#[tokio::test]
+async fn test_load_missing_version_defaults_to_v0() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join("missing_version.json");
 

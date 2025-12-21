@@ -47,17 +47,20 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
 
-    let device1_instance = test_instance();
+    let device1_instance = test_instance().await;
     device1_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on device1");
 
     device1_instance
         .add_private_key(CHAT_APP_KEY)
+        .await
         .expect("Failed to add device1 key");
 
     let _device1_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
+        .await
         .expect("Failed to get device1 public key");
 
     // Create database with simple settings like the chat app
@@ -68,6 +71,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Include device1 admin key for initial database creation
     let device1_admin_pubkey = device1_instance
         .get_formatted_public_key(CHAT_APP_KEY)
+        .await
         .expect("Failed to get device1 public key");
     auth_doc
         .set_json(
@@ -94,6 +98,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     let device1_database = device1_instance
         .new_database(settings, CHAT_APP_KEY)
+        .await
         .expect("Failed to create database on device1");
 
     let room_id = device1_database.root_id().clone();
@@ -106,10 +111,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("💬 Device 1 adding: {}", message_a.content);
 
     {
-        let op = device1_database.new_transaction()?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-        messages_store.insert(message_a.clone())?;
-        op.commit()?;
+        let op = device1_database.new_transaction().await?;
+        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        messages_store.insert(message_a.clone()).await?;
+        op.commit().await?;
     }
 
     // Start server on device 1
@@ -131,13 +136,15 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let device2_instance = test_instance();
+    let device2_instance = test_instance().await;
     device2_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on device2");
 
     device2_instance
         .add_private_key(CHAT_APP_KEY)
+        .await
         .expect("Failed to add device2 key");
 
     // Bootstrap sync from device 1 to device 2
@@ -169,6 +176,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     let signing_key = device2_instance
         .backend()
         .get_private_key(CHAT_APP_KEY)
+        .await
         .expect("Failed to get device2 signing key")
         .expect("Device2 key should exist in backend");
 
@@ -182,9 +190,9 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Check device 2 has message A
     {
-        let op = device2_database.new_transaction()?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true)?;
+        let op = device2_database.new_transaction().await?;
+        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
         let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
         println!(
             "📋 Device 2 messages after bootstrap: {} messages",
@@ -211,10 +219,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("💬 Device 2 adding: {}", message_b.content);
 
     {
-        let op = device2_database.new_transaction()?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-        messages_store.insert(message_b.clone())?;
-        op.commit()?;
+        let op = device2_database.new_transaction().await?;
+        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        messages_store.insert(message_b.clone()).await?;
+        op.commit().await?;
     }
 
     // === STEP 4: Device 2 syncs back to Device 1 ===
@@ -234,9 +242,9 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Verify device 1 now has both messages
     {
-        let op = device1_database.new_transaction()?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true)?;
+        let op = device1_database.new_transaction().await?;
+        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
         let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
         println!(
             "📋 Device 1 messages after sync back: {} messages",
@@ -260,12 +268,14 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .backend()
         .expect("Failed to get backend")
         .get_tips(&room_id)
+        .await
         .expect("Failed to get tips");
     println!("🔍 Device 1 current tree tips before adding C: {current_tips:?}");
     let current_subtree_tips = device1_database
         .backend()
         .expect("Failed to get backend")
         .get_store_tips(&room_id, "messages")
+        .await
         .expect("Failed to get store tips");
     println!("🔍 Device 1 current messages store tips before adding C: {current_subtree_tips:?}");
 
@@ -275,6 +285,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .backend()
         .expect("Failed to get backend")
         .get_tree(&room_id)
+        .await
         .expect("Failed to get tree entries");
     for (i, entry) in all_entries.iter().enumerate() {
         let parents = entry.parents().unwrap_or_default();
@@ -303,11 +314,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // This is where the "no common ancestor" error should occur
     let add_result = {
-        let op = device1_database.new_transaction()?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-        let insert_result = messages_store.insert(message_c.clone());
+        let op = device1_database.new_transaction().await?;
+        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let insert_result = messages_store.insert(message_c.clone()).await;
         match insert_result {
-            Ok(_primary_key) => match op.commit() {
+            Ok(_primary_key) => match op.commit().await {
                 Ok(_commit_id) => {
                     println!("✅ Message C added successfully (no error occurred)");
                     Ok(())
@@ -329,9 +340,9 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             println!("🎉 SUCCESS: No common ancestor error did not occur - BUG IS FIXED!");
 
             // Check final message count
-            let op = device1_database.new_transaction()?;
-            let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
-            let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true)?;
+            let op = device1_database.new_transaction().await?;
+            let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+            let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
             let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
             println!("📋 Device 1 final messages: {} messages", messages.len());
             for msg in &messages {

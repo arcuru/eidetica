@@ -10,77 +10,79 @@ use super::helpers::*;
 
 // ===== PASSWORD EDGE CASES =====
 
-#[test]
-fn test_empty_password_different_from_no_password() {
-    let instance = setup_instance();
+#[tokio::test]
+async fn test_empty_password_different_from_no_password() {
+    let instance = setup_instance().await;
     let username = "alice";
 
     // Create user with empty password (different from passwordless)
     instance
         .create_user(username, Some(""))
+        .await
         .expect("Create with empty password");
 
     // Should require empty password to login
-    let result = instance.login_user(username, None);
+    let result = instance.login_user(username, None).await;
     assert!(result.is_err(), "Empty password is not same as no password");
 
     // Should succeed with empty password
     let _user = instance
         .login_user(username, Some(""))
+        .await
         .expect("Login with empty password");
 }
 
-#[test]
-fn test_case_sensitive_passwords() {
+#[tokio::test]
+async fn test_case_sensitive_passwords() {
     let username = "bob";
     let password = "MyPassword";
-    let (instance, _) = setup_instance_with_user(username, Some(password));
+    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
     // Wrong case should fail
-    let result = instance.login_user(username, Some("mypassword"));
+    let result = instance.login_user(username, Some("mypassword")).await;
     assert!(result.is_err(), "Passwords should be case-sensitive");
 
-    let result = instance.login_user(username, Some("MYPASSWORD"));
+    let result = instance.login_user(username, Some("MYPASSWORD")).await;
     assert!(result.is_err(), "Passwords should be case-sensitive");
 }
 
-#[test]
-fn test_special_characters_in_password() {
+#[tokio::test]
+async fn test_special_characters_in_password() {
     let username = "alice";
     let password = "p@ssw0rd!#$%^&*()";
-    let (instance, _) = setup_instance_with_user(username, Some(password));
+    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
-    let _user = login_user(&instance, username, Some(password));
+    let _user = login_user(&instance, username, Some(password)).await;
 }
 
-#[test]
-fn test_unicode_in_password() {
+#[tokio::test]
+async fn test_unicode_in_password() {
     let username = "alice";
     let password = "密码🔒パスワード";
-    let (instance, _) = setup_instance_with_user(username, Some(password));
+    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
 
-    let _user = login_user(&instance, username, Some(password));
+    let _user = login_user(&instance, username, Some(password)).await;
 }
 
-#[test]
-fn test_long_password() {
+#[tokio::test]
+async fn test_long_password() {
     let username = "alice";
     let password = "a".repeat(1000); // Very long password
-    let (instance, _) = setup_instance_with_user(username, Some(&password));
+    let (instance, _) = setup_instance_with_user(username, Some(&password)).await;
 
-    let _user = login_user(&instance, username, Some(&password));
+    let _user = login_user(&instance, username, Some(&password)).await;
 }
 
 // ===== KEY ISOLATION AND UNIQUENESS =====
 
-#[test]
-fn test_key_ids_are_unique_per_user() {
+#[tokio::test]
+async fn test_key_ids_are_unique_per_user() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]);
+        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
-    let alice = login_user(&instance, "alice", None);
-    let bob = login_user(&instance, "bob", None);
-    let charlie = login_user(&instance, "charlie", None);
+    let alice = login_user(&instance, "alice", None).await;
+    let bob = login_user(&instance, "bob", None).await;
+    let charlie = login_user(&instance, "charlie", None).await;
 
     let alice_keys = alice.list_keys().expect("Alice keys");
     let bob_keys = bob.list_keys().expect("Bob keys");
@@ -99,16 +101,17 @@ fn test_key_ids_are_unique_per_user() {
     }
 }
 
-#[test]
-fn test_user_list_keys_only_shows_own_keys() {
-    let (_instance, mut user1, mut user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_user_list_keys_only_shows_own_keys() {
+    let (_instance, mut user1, mut user2, _, _) =
+        setup_two_passwordless_users("alice", "bob").await;
 
     // Alice adds keys
-    let alice_key1 = add_user_key(&mut user1, Some("Alice Key 1"));
-    let alice_key2 = add_user_key(&mut user1, Some("Alice Key 2"));
+    let alice_key1 = add_user_key(&mut user1, Some("Alice Key 1")).await;
+    let alice_key2 = add_user_key(&mut user1, Some("Alice Key 2")).await;
 
     // Bob adds keys
-    let bob_key1 = add_user_key(&mut user2, Some("Bob Key 1"));
+    let bob_key1 = add_user_key(&mut user2, Some("Bob Key 1")).await;
 
     // Alice should only see her keys
     let alice_keys = user1.list_keys().expect("Alice keys");
@@ -138,15 +141,15 @@ fn test_user_list_keys_only_shows_own_keys() {
     );
 }
 
-#[test]
-fn test_generated_keys_are_unique() {
-    let (instance, username) = setup_instance_with_user("alice", None);
-    let mut user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_generated_keys_are_unique() {
+    let (instance, username) = setup_instance_with_user("alice", None).await;
+    let mut user = login_user(&instance, &username, None).await;
 
     // Generate multiple keys
-    let key1 = add_user_key(&mut user, None);
-    let key2 = add_user_key(&mut user, None);
-    let key3 = add_user_key(&mut user, None);
+    let key1 = add_user_key(&mut user, None).await;
+    let key2 = add_user_key(&mut user, None).await;
+    let key3 = add_user_key(&mut user, None).await;
 
     // All keys should be different
     assert_ne!(key1, key2, "Keys should be unique");
@@ -154,13 +157,14 @@ fn test_generated_keys_are_unique() {
     assert_ne!(key1, key3, "Keys should be unique");
 }
 
-#[test]
-fn test_keys_from_different_users_are_unique() {
-    let (_instance, mut user1, mut user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_keys_from_different_users_are_unique() {
+    let (_instance, mut user1, mut user2, _, _) =
+        setup_two_passwordless_users("alice", "bob").await;
 
     // Generate keys for both users
-    let alice_key = add_user_key(&mut user1, Some("Alice Key"));
-    let bob_key = add_user_key(&mut user2, Some("Bob Key"));
+    let alice_key = add_user_key(&mut user1, Some("Alice Key")).await;
+    let bob_key = add_user_key(&mut user2, Some("Bob Key")).await;
 
     // Keys should be different even with same display name
     assert_ne!(
@@ -171,21 +175,21 @@ fn test_keys_from_different_users_are_unique() {
 
 // ===== PERMISSION BOUNDARY TESTS =====
 
-#[test]
-fn test_invalid_key_id_fails() {
-    let (instance, username) = setup_instance_with_user("alice", None);
-    let user = login_user(&instance, &username, None);
+#[tokio::test]
+async fn test_invalid_key_id_fails() {
+    let (instance, username) = setup_instance_with_user("alice", None).await;
+    let user = login_user(&instance, &username, None).await;
 
     let result = user.get_signing_key("invalid_key_id");
     assert!(result.is_err(), "Getting invalid key should fail");
 }
 
-#[test]
-fn test_cannot_use_another_users_database_key() {
-    let (_instance, mut user1, user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_cannot_use_another_users_database_key() {
+    let (_instance, mut user1, user2, _, _) = setup_two_passwordless_users("alice", "bob").await;
 
     // Alice creates a database
-    let alice_db = create_named_database(&mut user1, "Alice DB");
+    let alice_db = create_named_database(&mut user1, "Alice DB").await;
     let db_id = alice_db.root_id();
 
     // Bob tries to find a key for Alice's database
@@ -198,16 +202,16 @@ fn test_cannot_use_another_users_database_key() {
     );
 }
 
-#[test]
-fn test_database_access_requires_key() {
-    let (_instance, mut user1, user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_database_access_requires_key() {
+    let (_instance, mut user1, user2, _, _) = setup_two_passwordless_users("alice", "bob").await;
 
     // Alice creates a database
-    let alice_db = create_named_database(&mut user1, "Alice's Private DB");
+    let alice_db = create_named_database(&mut user1, "Alice's Private DB").await;
     let db_id = alice_db.root_id();
 
     // Bob tries to load the database
-    let result = user2.open_database(db_id);
+    let result = user2.open_database(db_id).await;
 
     // Bob should not be able to load without proper bootstrap
     assert!(result.is_err(), "User without key should not load database");
@@ -215,17 +219,17 @@ fn test_database_access_requires_key() {
 
 // ===== SESSION SECURITY =====
 
-#[test]
-fn test_multiple_sessions_see_persisted_changes() {
-    let (instance, username) = setup_instance_with_user("alice", None);
+#[tokio::test]
+async fn test_multiple_sessions_see_persisted_changes() {
+    let (instance, username) = setup_instance_with_user("alice", None).await;
 
     // Session 1: Add a key
-    let mut user1 = login_user(&instance, &username, None);
-    let key1 = add_user_key(&mut user1, Some("Key from session 1"));
+    let mut user1 = login_user(&instance, &username, None).await;
+    let key1 = add_user_key(&mut user1, Some("Key from session 1")).await;
     user1.logout().expect("Logout session 1");
 
     // Session 2: Should see the key that was persisted
-    let user2 = login_user(&instance, &username, None);
+    let user2 = login_user(&instance, &username, None).await;
     let user2_keys = user2.list_keys().expect("User2 keys");
 
     assert!(

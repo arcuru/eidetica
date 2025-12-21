@@ -16,13 +16,13 @@ async fn test_client_polling_for_pending_status() {
     info!("Testing client polling for pending bootstrap request status");
 
     // Setup server with manual approval
-    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (_client_instance, client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client().await;
 
     // Client attempts bootstrap (should be pending due to manual approval)
     client_sync.enable_http_transport().await.unwrap();
@@ -40,6 +40,7 @@ async fn test_client_polling_for_pending_status() {
     // Verify request is stored on server side
     let pending_requests = server_sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 1);
     let (_, request) = &pending_requests[0];
@@ -58,13 +59,13 @@ async fn test_client_retry_after_pending() {
     info!("Testing client retry behavior after pending approval");
 
     // Setup server with manual approval
-    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, client_sync) = setup_simple_client();
+    let (client_instance, client_sync) = setup_simple_client().await;
 
     // First attempt - should be pending
     client_sync.enable_http_transport().await.unwrap();
@@ -76,11 +77,14 @@ async fn test_client_retry_after_pending() {
     // Get the pending request and approve it
     let pending_requests = server_sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 1);
     let (request_id, _) = &pending_requests[0];
 
-    approve_request(&server_sync, request_id, "server_admin").expect("Failed to approve request");
+    approve_request(&server_sync, request_id, "server_admin")
+        .await
+        .expect("Failed to approve request");
 
     // Client retries - should now succeed
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -103,7 +107,7 @@ async fn test_client_retry_after_pending() {
 
     // Verify client can load the database
     assert!(
-        client_instance.load_database(&tree_id).is_ok(),
+        client_instance.load_database(&tree_id).await.is_ok(),
         "Client should be able to load database after successful bootstrap"
     );
 
@@ -119,13 +123,13 @@ async fn test_duplicate_bootstrap_requests() {
     info!("Testing duplicate bootstrap requests from same client");
 
     // Setup server with manual approval
-    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (_client_instance, client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client().await;
 
     // First bootstrap attempt
     client_sync.enable_http_transport().await.unwrap();
@@ -137,6 +141,7 @@ async fn test_duplicate_bootstrap_requests() {
     // Verify one pending request
     let pending_requests = server_sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 1);
 
@@ -149,6 +154,7 @@ async fn test_duplicate_bootstrap_requests() {
     // Should still only have one pending request (no duplicates)
     let pending_requests_after = server_sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
 
     // Note: Current implementation may create duplicate requests
@@ -171,13 +177,13 @@ async fn test_client_behavior_after_rejection() {
     info!("Testing client behavior after bootstrap request rejection");
 
     // Setup server with manual approval
-    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, client_sync) = setup_simple_client();
+    let (client_instance, client_sync) = setup_simple_client().await;
 
     // Bootstrap attempt - should be pending
     client_sync.enable_http_transport().await.unwrap();
@@ -189,12 +195,14 @@ async fn test_client_behavior_after_rejection() {
     // Get the pending request and reject it
     let pending_requests = server_sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 1);
     let (request_id, _) = &pending_requests[0];
 
     server_sync
         .reject_bootstrap_request(request_id, "server_admin")
+        .await
         .expect("Failed to reject request");
 
     // Client attempts bootstrap again - should still fail
@@ -207,7 +215,7 @@ async fn test_client_behavior_after_rejection() {
 
     // Client should not be able to access the database
     assert!(
-        client_instance.load_database(&tree_id).is_err(),
+        client_instance.load_database(&tree_id).await.is_err(),
         "Client should not have access to database after rejection"
     );
 
@@ -223,7 +231,7 @@ async fn test_client_different_permission_requests() {
     info!("Testing client bootstrap with different permission levels");
 
     // Setup server with manual approval
-    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server();
+    let (_server_instance, _database, server_sync, tree_id) = setup_manual_approval_server().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
@@ -237,7 +245,7 @@ async fn test_client_different_permission_requests() {
 
     for (i, permission) in permission_levels.iter().enumerate() {
         let client_key = format!("client_key_{i}");
-        let (_client_instance, client_sync) = setup_bootstrap_client(&client_key);
+        let (_client_instance, client_sync) = setup_bootstrap_client(&client_key).await;
 
         client_sync.enable_http_transport().await.unwrap();
 
@@ -251,6 +259,7 @@ async fn test_client_different_permission_requests() {
         // Verify request is stored with correct permission
         let pending_requests = server_sync
             .pending_bootstrap_requests()
+            .await
             .expect("Failed to list pending requests");
 
         let matching_request = pending_requests
@@ -276,7 +285,7 @@ async fn test_client_connection_error_handling() {
     info!("Testing client connection error handling");
 
     // Setup client
-    let (_client_instance, client_sync) = setup_simple_client();
+    let (_client_instance, client_sync) = setup_simple_client().await;
     client_sync.enable_http_transport().await.unwrap();
 
     // Try to connect to non-existent server

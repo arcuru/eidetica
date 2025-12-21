@@ -20,7 +20,7 @@ use eidetica::{
 async fn test_bootstrap_pending_error_structure() {
     println!("\n🧪 TEST: BootstrapPending error contains expected fields");
 
-    let (_instance, _database, sync, tree_id) = setup_manual_approval_server();
+    let (_instance, _database, sync, tree_id) = setup_manual_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Generate a test public key
@@ -57,7 +57,7 @@ async fn test_bootstrap_pending_error_structure() {
     }
 
     // Verify the request was stored in the sync database
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         1,
@@ -76,14 +76,15 @@ async fn test_bootstrap_pending_error_propagation() {
     println!("\n🧪 TEST: BootstrapPending error propagates through sync_with_peer");
 
     // Setup server with manual approval
-    let server_instance = setup_instance_with_initialized();
-    server_instance.add_private_key("server_key").unwrap();
+    let server_instance = setup_instance_with_initialized().await;
+    server_instance.add_private_key("server_key").await.unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Manual Approval DB");
 
     let database = server_instance
         .new_database(settings, "server_key")
+        .await
         .unwrap();
     let tree_id = database.root_id().clone();
 
@@ -94,8 +95,8 @@ async fn test_bootstrap_pending_error_propagation() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client (sync already initialized by setup_instance_with_initialized)
-    let client_instance = setup_instance_with_initialized();
-    client_instance.add_private_key("client_key").unwrap();
+    let client_instance = setup_instance_with_initialized().await;
+    client_instance.add_private_key("client_key").await.unwrap();
 
     let client_sync = client_instance.sync().unwrap();
     client_sync.enable_http_transport().await.unwrap();
@@ -184,9 +185,9 @@ async fn test_iroh_transport_concurrent_access() {
 
     println!("\n🧪 TEST: Iroh transport concurrent access (thread safety)");
 
-    let instance = setup_instance_with_initialized();
+    let instance = setup_instance_with_initialized().await;
     let sync = Arc::new(tokio::sync::Mutex::new(
-        eidetica::sync::Sync::new(instance.clone()).unwrap(),
+        eidetica::sync::Sync::new(instance.clone()).await.unwrap(),
     ));
 
     // Enable Iroh transport
@@ -258,8 +259,8 @@ async fn test_iroh_transport_concurrent_access() {
 async fn test_http_address_with_http_transport() {
     println!("\n🧪 TEST: HTTP address auto-detection with HTTP transport");
 
-    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server();
-    let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
+    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server().await;
+    let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable HTTP transport on client
     client_sync.enable_http_transport().await.unwrap();
@@ -300,8 +301,8 @@ async fn test_http_address_with_http_transport() {
 async fn test_iroh_address_detection() {
     println!("\n🧪 TEST: Iroh JSON address detection");
 
-    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server();
-    let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
+    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server().await;
+    let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable Iroh transport on client
     client_sync.enable_iroh_transport().await.unwrap();
@@ -350,8 +351,8 @@ async fn test_unauthenticated_sync_should_fail() {
     println!("\n🔒 SECURITY TEST: Unauthenticated client should not access authenticated database");
 
     // Setup server with authenticated database
-    let server_instance = setup_instance_with_initialized();
-    server_instance.add_private_key("server_key").unwrap();
+    let server_instance = setup_instance_with_initialized().await;
+    server_instance.add_private_key("server_key").await.unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Secure Database");
@@ -359,12 +360,13 @@ async fn test_unauthenticated_sync_should_fail() {
     // Create database - this will auto-configure auth with server_key as Admin
     let database = server_instance
         .new_database(settings, "server_key")
+        .await
         .unwrap();
     let tree_id = database.root_id().clone();
 
     // Verify auth is configured by checking if server_key exists
-    let db_settings = database.get_settings().unwrap();
-    let auth_settings = db_settings.get_auth_settings().unwrap();
+    let db_settings = database.get_settings().await.unwrap();
+    let auth_settings = db_settings.get_auth_settings().await.unwrap();
     let server_key_auth = auth_settings.get_key("server_key");
     assert!(
         server_key_auth.is_ok(),
@@ -374,35 +376,40 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Add some sensitive data to the database using a store
     use eidetica::store::DocStore;
-    let tx = database.new_transaction().unwrap();
-    let secrets_store = tx.get_store::<DocStore>("secrets").unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let secrets_store = tx.get_store::<DocStore>("secrets").await.unwrap();
     let mut secret_doc = eidetica::crdt::Doc::new();
     secret_doc.set("password", "super_secret_123");
-    secrets_store.set("admin", secret_doc).unwrap();
-    tx.commit().unwrap();
+    secrets_store.set("admin", secret_doc).await.unwrap();
+    tx.commit().await.unwrap();
     println!("✅ Added sensitive data to database");
 
     // Start sync server (sync already initialized by setup_instance_with_initialized)
     let server_sync = server_instance.sync().unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&server_sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&server_sync, &tree_id)
+        .await
+        .unwrap();
 
     let server_addr = start_sync_server(&server_sync).await;
     println!("✅ Server started at {server_addr}");
 
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
-    let client_instance = setup_instance_with_initialized();
+    let client_instance = setup_instance_with_initialized().await;
     client_instance
         .add_private_key("unauthorized_client_key")
+        .await
         .unwrap();
 
     // Verify client key is NOT in server's auth settings
     let client_pubkey = client_instance
         .get_formatted_public_key("unauthorized_client_key")
+        .await
         .unwrap();
-    let sigkeys =
-        eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_pubkey).unwrap();
+    let sigkeys = eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_pubkey)
+        .await
+        .unwrap();
     assert!(
         sigkeys.is_empty(),
         "Client key should NOT be authorized in database"
@@ -423,7 +430,7 @@ async fn test_unauthenticated_sync_should_fail() {
         Ok(_) => {
             // Sync should NOT succeed without authentication!
             // Check if client actually received the data
-            let can_read_data = client_instance.backend().get(&tree_id).is_ok();
+            let can_read_data = client_instance.backend().get(&tree_id).await.is_ok();
 
             if can_read_data {
                 panic!(

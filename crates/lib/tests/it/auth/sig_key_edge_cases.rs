@@ -19,28 +19,28 @@ use eidetica::{
 use crate::helpers::test_instance;
 
 /// Test SigKey with empty delegation path
-#[test]
-fn test_empty_delegation_path() -> Result<()> {
+#[tokio::test]
+async fn test_empty_delegation_path() -> Result<()> {
     let empty_delegation = SigKey::DelegationPath(vec![]);
 
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
-    let db = test_instance();
+    let db = test_instance().await;
 
-    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(&db)).await;
     assert!(result.is_err());
 
     Ok(())
 }
 
 /// Test SigKey::Direct with empty key ID
-#[test]
-fn test_direct_key_empty_id() -> Result<()> {
-    let db = test_instance();
+#[tokio::test]
+async fn test_direct_key_empty_id() -> Result<()> {
+    let db = test_instance().await;
 
     // Add private key with empty ID to storage
-    let admin_key = db.add_private_key("")?;
+    let admin_key = db.add_private_key("").await?;
 
     // Create tree with empty key ID
     let mut auth = Doc::new();
@@ -54,14 +54,14 @@ fn test_direct_key_empty_id() -> Result<()> {
     settings.set("auth", auth);
 
     // This should work - empty key is technically valid
-    let tree = db.new_database(settings, "")?;
+    let tree = db.new_database(settings, "").await?;
 
     // Test resolving empty key ID
     let empty_key = SigKey::Direct("".to_string());
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings()?.get_auth_settings()?;
+    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
-    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(&db)).await;
     assert!(
         result.is_ok(),
         "Failed to resolve empty key: {:?}",
@@ -72,8 +72,8 @@ fn test_direct_key_empty_id() -> Result<()> {
 }
 
 /// Test delegation path with null tips in intermediate step
-#[test]
-fn test_delegation_with_null_tips_intermediate() -> Result<()> {
+#[tokio::test]
+async fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     let delegation_path = SigKey::DelegationPath(vec![
         DelegationStep {
             key: "intermediate".to_string(),
@@ -87,9 +87,9 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
-    let db = test_instance();
+    let db = test_instance().await;
 
-    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db)).await;
     // Should error because intermediate steps need tips
     assert!(result.is_err());
 
@@ -97,8 +97,8 @@ fn test_delegation_with_null_tips_intermediate() -> Result<()> {
 }
 
 /// Test delegation path with duplicate tips
-#[test]
-fn test_delegation_with_duplicate_tips() -> Result<()> {
+#[tokio::test]
+async fn test_delegation_with_duplicate_tips() -> Result<()> {
     let duplicate_tips = vec![
         ID::from("tip1"),
         ID::from("tip2"),
@@ -128,8 +128,8 @@ fn test_delegation_with_duplicate_tips() -> Result<()> {
 }
 
 /// Test delegation path with extremely long key names
-#[test]
-fn test_delegation_with_long_key_names() -> Result<()> {
+#[tokio::test]
+async fn test_delegation_with_long_key_names() -> Result<()> {
     let long_key = "a".repeat(10000); // Very long key name
 
     let delegation_path = SigKey::DelegationPath(vec![
@@ -152,8 +152,8 @@ fn test_delegation_with_long_key_names() -> Result<()> {
 }
 
 /// Test delegation path with unicode characters
-#[test]
-fn test_delegation_with_unicode_keys() -> Result<()> {
+#[tokio::test]
+async fn test_delegation_with_unicode_keys() -> Result<()> {
     let unicode_keys = vec!["🔑_key", "キー", "مفتاح", "ключ", "कुंजी", "🚀💻🔐"];
 
     for unicode_key in unicode_keys {
@@ -178,8 +178,8 @@ fn test_delegation_with_unicode_keys() -> Result<()> {
 }
 
 /// Test SigInfo with signature but missing key
-#[test]
-fn test_sig_info_with_signature_no_key() {
+#[tokio::test]
+async fn test_sig_info_with_signature_no_key() {
     let sig_info = SigInfo::builder()
         .key(SigKey::Direct("".to_string())) // Empty key
         .sig("fake_signature")
@@ -192,8 +192,8 @@ fn test_sig_info_with_signature_no_key() {
 }
 
 /// Test SigInfo with key but no signature
-#[test]
-fn test_sig_info_with_key_no_signature() {
+#[tokio::test]
+async fn test_sig_info_with_key_no_signature() {
     let sig_info = SigInfo::builder()
         .key(SigKey::Direct("valid_key".to_string()))
         .build(); // No signature
@@ -205,8 +205,8 @@ fn test_sig_info_with_key_no_signature() {
 }
 
 /// Test very deep delegation path (not exceeding limit but close)
-#[test]
-fn test_deep_delegation_path_performance() -> Result<()> {
+#[tokio::test]
+async fn test_deep_delegation_path_performance() -> Result<()> {
     // Create a delegation path with 9 levels (just under the limit of 10)
     let mut delegation_steps = Vec::new();
 
@@ -237,8 +237,8 @@ fn test_deep_delegation_path_performance() -> Result<()> {
 }
 
 /// Test delegation path with invalid JSON structure
-#[test]
-fn test_delegation_path_invalid_json() {
+#[tokio::test]
+async fn test_delegation_path_invalid_json() {
     let invalid_json_cases = vec![
         r#"{"DelegationPath": "not_an_array"}"#,
         r#"{"DelegationPath": [{"key": "test"}]}"#, // Missing tips field structure
@@ -254,12 +254,12 @@ fn test_delegation_path_invalid_json() {
 }
 
 /// Test circular delegation detection (simplified version)
-#[test]
-fn test_circular_delegation_simple() -> Result<()> {
-    let db = test_instance();
+#[tokio::test]
+async fn test_circular_delegation_simple() -> Result<()> {
+    let db = test_instance().await;
 
     // Add private key to storage
-    let admin_key = db.add_private_key("admin")?;
+    let admin_key = db.add_private_key("admin").await?;
 
     // Create a tree that delegates to itself
     let mut auth = Doc::new();
@@ -271,8 +271,8 @@ fn test_circular_delegation_simple() -> Result<()> {
 
     let mut settings = Doc::new();
     settings.set("auth", auth);
-    let tree = db.new_database(settings, "admin")?;
-    let tree_tips = tree.get_tips()?;
+    let tree = db.new_database(settings, "admin").await?;
+    let tree_tips = tree.get_tips().await?;
 
     // Create delegation path that references the same tree
     let circular_delegation = SigKey::DelegationPath(vec![
@@ -287,14 +287,14 @@ fn test_circular_delegation_simple() -> Result<()> {
     ]);
 
     // Add self-referencing delegation to the tree
-    let op = tree.new_transaction()?.with_auth("admin");
-    let _dict = op.get_store::<eidetica::store::DocStore>("_settings")?;
+    let op = tree.new_transaction().await?.with_auth("admin");
+    let _dict = op.get_store::<eidetica::store::DocStore>("_settings").await?;
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash
-    let auth_settings = tree.get_settings()?.get_auth_settings()?;
+    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
     let mut validator = AuthValidator::new();
-    let result = validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(&db)).await;
 
     // Should either work or fail gracefully (not crash)
     match result {
@@ -306,8 +306,8 @@ fn test_circular_delegation_simple() -> Result<()> {
 }
 
 /// Test delegation step serialization edge cases
-#[test]
-fn test_delegation_step_serialization_edge_cases() -> Result<()> {
+#[tokio::test]
+async fn test_delegation_step_serialization_edge_cases() -> Result<()> {
     let edge_cases = vec![
         // Normal case
         DelegationStep {

@@ -193,9 +193,9 @@ mod tests {
         instance::LegacyInstanceOps, sync::DEVICE_KEY_NAME,
     };
 
-    fn create_test_sync_tree() -> (Instance, Database) {
+    async fn create_test_sync_tree() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend).expect("Failed to create test instance");
+        let instance = Instance::open(backend).await.expect("Failed to create test instance");
 
         // Create sync tree similar to how Sync::new does it
         let mut sync_settings = crate::crdt::Doc::new();
@@ -204,6 +204,7 @@ mod tests {
 
         let database = instance
             .new_database(sync_settings, DEVICE_KEY_NAME)
+            .await
             .unwrap();
 
         (instance, database)
@@ -225,19 +226,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_store_and_get_request() {
-        let (_instance, sync_tree) = create_test_sync_tree();
-        let op = sync_tree.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_store_and_get_request() {
+        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
         let request = create_test_request();
 
         // Store the request and get the generated UUID
-        let request_id = manager.store_request(request.clone()).unwrap();
+        let request_id = manager.store_request(request.clone()).await.unwrap();
 
         // Retrieve the request
-        let retrieved = manager.get_request(&request_id).unwrap().unwrap();
+        let retrieved = manager.get_request(&request_id).await.unwrap().unwrap();
         assert_eq!(retrieved.tree_id, request.tree_id);
         assert_eq!(retrieved.requesting_pubkey, request.requesting_pubkey);
         assert_eq!(retrieved.requesting_key_name, request.requesting_key_name);
@@ -246,10 +247,10 @@ mod tests {
         assert_eq!(retrieved.peer_address, request.peer_address);
     }
 
-    #[test]
-    fn test_list_requests() {
-        let (_instance, sync_tree) = create_test_sync_tree();
-        let op = sync_tree.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_list_requests() {
+        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
         // Store multiple requests
@@ -261,15 +262,15 @@ mod tests {
             approval_time: current_timestamp(),
         };
 
-        manager.store_request(request1).unwrap();
-        manager.store_request(request2).unwrap();
+        manager.store_request(request1).await.unwrap();
+        manager.store_request(request2).await.unwrap();
 
         // Get pending requests
-        let pending_requests = manager.pending_requests().unwrap();
+        let pending_requests = manager.pending_requests().await.unwrap();
         assert_eq!(pending_requests.len(), 1);
 
         // Get approved requests
-        let approved_requests = manager.approved_requests().unwrap();
+        let approved_requests = manager.approved_requests().await.unwrap();
         assert_eq!(approved_requests.len(), 1);
 
         // Verify statuses
@@ -283,16 +284,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_update_status() {
-        let (_instance, sync_tree) = create_test_sync_tree();
-        let op = sync_tree.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_update_status() {
+        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
         let request = create_test_request();
 
         // Store the request and get the generated UUID
-        let request_id = manager.store_request(request).unwrap();
+        let request_id = manager.store_request(request).await.unwrap();
 
         // Update status to approved
         let new_status = RequestStatus::Approved {
@@ -301,20 +302,21 @@ mod tests {
         };
         manager
             .update_status(&request_id, new_status.clone())
+            .await
             .unwrap();
 
         // Verify status was updated
-        let updated_request = manager.get_request(&request_id).unwrap().unwrap();
+        let updated_request = manager.get_request(&request_id).await.unwrap().unwrap();
         assert_eq!(updated_request.status, new_status);
     }
 
-    #[test]
-    fn test_get_nonexistent_request() {
-        let (_instance, sync_tree) = create_test_sync_tree();
-        let op = sync_tree.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_get_nonexistent_request() {
+        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
-        let result = manager.get_request("nonexistent").unwrap();
+        let result = manager.get_request("nonexistent").await.unwrap();
         assert!(result.is_none());
     }
 }

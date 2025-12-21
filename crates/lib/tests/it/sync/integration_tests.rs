@@ -6,7 +6,7 @@ use super::helpers::*;
 async fn test_sync_with_http_transport() {
     use eidetica::Entry;
 
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
 
     // Enable HTTP transport
     sync.enable_http_transport().await.unwrap();
@@ -35,8 +35,8 @@ async fn test_multiple_sync_instances_communication() {
     use eidetica::Entry;
 
     // Create two separate sync instances
-    let (_base_db1, sync_server) = setup();
-    let (_base_db2, sync_client) = setup();
+    let (_base_db1, sync_server) = setup().await;
+    let (_base_db2, sync_client) = setup().await;
 
     // Enable HTTP transport on both
     sync_server.enable_http_transport().await.unwrap();
@@ -69,8 +69,8 @@ async fn test_send_entries_http() {
     use eidetica::Entry;
 
     // Create two separate sync instances
-    let (_base_db1, sync_server) = setup();
-    let (_base_db2, sync_client) = setup();
+    let (_base_db1, sync_server) = setup().await;
+    let (_base_db2, sync_client) = setup().await;
 
     // Enable HTTP transport on both
     sync_server.enable_http_transport().await.unwrap();
@@ -108,7 +108,7 @@ async fn test_send_entries_http() {
 async fn test_sync_without_transport_enabled() {
     use eidetica::Entry;
 
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
 
     // Attempting to send entries without enabling transport should fail
     let entry = Entry::root_builder()
@@ -129,7 +129,7 @@ async fn test_sync_without_transport_enabled() {
 
 #[tokio::test]
 async fn test_sync_server_without_transport_enabled() {
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
 
     // Attempting to start server without enabling transport should fail
     let result = sync.start_server("127.0.0.1:8085").await;
@@ -147,7 +147,7 @@ async fn test_sync_server_without_transport_enabled() {
 async fn test_sync_connect_to_invalid_address() {
     use eidetica::Entry;
 
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
     sync.enable_http_transport().await.unwrap();
 
     // Try to send entries to a non-existent server

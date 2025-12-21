@@ -24,7 +24,7 @@ use crate::helpers::setup_empty_db;
 /// Test that peers are automatically registered when they send a handshake request
 #[tokio::test]
 async fn test_handshake_automatically_registers_peer() {
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
     let instance = sync.instance().expect("Failed to get instance");
     let sync_tree_id = sync.sync_tree_root_id().clone();
 
@@ -36,7 +36,7 @@ async fn test_handshake_automatically_registers_peer() {
     let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Verify peer doesn't exist yet
-    assert!(sync.get_peer_info(&peer_pubkey).unwrap().is_none());
+    assert!(sync.get_peer_info(&peer_pubkey).await.unwrap().is_none());
 
     // Create handshake request with listen addresses
     let listen_addresses = vec![
@@ -68,7 +68,7 @@ async fn test_handshake_automatically_registers_peer() {
     assert!(matches!(response, SyncResponse::Handshake(_)));
 
     // Verify peer was automatically registered
-    let peer_info = sync.get_peer_info(&peer_pubkey).unwrap();
+    let peer_info = sync.get_peer_info(&peer_pubkey).await.unwrap();
     assert!(peer_info.is_some());
 
     let peer_info = peer_info.unwrap();
@@ -76,7 +76,7 @@ async fn test_handshake_automatically_registers_peer() {
     assert_eq!(peer_info.display_name, Some("Test Peer".to_string()));
 
     // Verify addresses were added (both advertised and remote)
-    let all_addresses = sync.get_peer_addresses(&peer_pubkey, None).unwrap();
+    let all_addresses = sync.get_peer_addresses(&peer_pubkey, None).await.unwrap();
     assert_eq!(all_addresses.len(), 3); // 2 advertised + 1 remote
 
     // Check that all expected addresses are present
@@ -95,7 +95,7 @@ async fn test_handshake_automatically_registers_peer() {
 /// Test that duplicate handshakes don't cause errors
 #[tokio::test]
 async fn test_duplicate_handshakes_handled_gracefully() {
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
     let instance = sync.instance().expect("Failed to get instance");
     let sync_tree_id = sync.sync_tree_root_id().clone();
 
@@ -128,7 +128,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     assert!(matches!(response2, SyncResponse::Handshake(_)));
 
     // Peer should still exist and be registered only once
-    let peers = sync.list_peers().unwrap();
+    let peers = sync.list_peers().await.unwrap();
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].pubkey, peer_pubkey);
 }
@@ -136,7 +136,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
 /// Test that handshake works without advertised addresses
 #[tokio::test]
 async fn test_handshake_without_listen_addresses() {
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
     let instance = sync.instance().expect("Failed to get instance");
     let sync_tree_id = sync.sync_tree_root_id().clone();
 
@@ -167,10 +167,10 @@ async fn test_handshake_without_listen_addresses() {
     assert!(matches!(response, SyncResponse::Handshake(_)));
 
     // Peer should still be registered with just the remote address
-    let peer_info = sync.get_peer_info(&peer_pubkey).unwrap().unwrap();
+    let peer_info = sync.get_peer_info(&peer_pubkey).await.unwrap().unwrap();
     assert_eq!(peer_info.pubkey, peer_pubkey);
 
-    let addresses = sync.get_peer_addresses(&peer_pubkey, None).unwrap();
+    let addresses = sync.get_peer_addresses(&peer_pubkey, None).await.unwrap();
     assert_eq!(addresses.len(), 1);
     assert!(addresses.contains(&remote_address));
 }
@@ -178,16 +178,16 @@ async fn test_handshake_without_listen_addresses() {
 /// Test that tree/peer relationship is tracked during bootstrap sync
 #[tokio::test]
 async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create a test database
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Enable sync for this database
@@ -201,10 +201,12 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -215,7 +217,9 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Register the peer first (would normally happen during handshake)
-    sync.register_peer(&peer_pubkey, Some("Test Peer")).unwrap();
+    sync.register_peer(&peer_pubkey, Some("Test Peer"))
+        .await
+        .unwrap();
 
     // Create bootstrap request (empty tips)
     let sync_request = SyncTreeRequest {
@@ -238,31 +242,32 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     // Verify tree/peer relationship was tracked
     assert!(
         sync.is_tree_synced_with_peer(&peer_pubkey, &tree_id)
+            .await
             .unwrap()
     );
 
     // Verify peer can be found in tree's peer list
-    let tree_peers = sync.get_tree_peers(&tree_id).unwrap();
+    let tree_peers = sync.get_tree_peers(&tree_id).await.unwrap();
     assert!(tree_peers.contains(&peer_pubkey));
 
     // Verify tree can be found in peer's tree list
-    let peer_trees = sync.get_peer_trees(&peer_pubkey).unwrap();
+    let peer_trees = sync.get_peer_trees(&peer_pubkey).await.unwrap();
     assert!(peer_trees.contains(&tree_id.to_string()));
 }
 
 /// Test that tree/peer relationship is tracked during incremental sync
 #[tokio::test]
 async fn test_incremental_sync_tracks_tree_peer_relationship() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create a test database with some content
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Enable sync
@@ -276,19 +281,25 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     // Add an entry to the database
-    let tx = db.new_transaction().unwrap();
-    let store = tx.get_store::<eidetica::store::DocStore>("test").unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let store = tx
+        .get_store::<eidetica::store::DocStore>("test")
+        .await
+        .unwrap();
     store
         .set_path(eidetica::crdt::doc::path!("key"), "value")
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
     let handler = SyncHandlerImpl::new(instance.clone(), sync_tree_id);
@@ -298,10 +309,12 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Register the peer first (would normally happen during handshake)
-    sync.register_peer(&peer_pubkey, Some("Test Peer")).unwrap();
+    sync.register_peer(&peer_pubkey, Some("Test Peer"))
+        .await
+        .unwrap();
 
     // Get current tips for incremental sync
-    let tips = instance.backend().get_tips(&tree_id).unwrap();
+    let tips = instance.backend().get_tips(&tree_id).await.unwrap();
 
     // Create incremental sync request (non-empty tips)
     let sync_request = SyncTreeRequest {
@@ -324,6 +337,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     // Verify tree/peer relationship was tracked
     assert!(
         sync.is_tree_synced_with_peer(&peer_pubkey, &tree_id)
+            .await
             .unwrap()
     );
 }
@@ -331,15 +345,15 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
 /// Test that unauthorized keys are rejected when requested_permission is not specified
 #[tokio::test]
 async fn test_relationship_tracking_skipped_without_peer_pubkey() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     user.track_database(TrackedDatabase {
@@ -352,10 +366,12 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -365,7 +381,9 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Register the peer first (would normally happen during handshake)
-    sync.register_peer(&peer_pubkey, Some("Test Peer")).unwrap();
+    sync.register_peer(&peer_pubkey, Some("Test Peer"))
+        .await
+        .unwrap();
 
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
@@ -400,6 +418,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     assert!(
         !sync
             .is_tree_synced_with_peer(&peer_pubkey, &tree_id)
+            .await
             .unwrap()
     );
 }
@@ -407,21 +426,21 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
 /// Test that multiple trees can be tracked with the same peer
 #[tokio::test]
 async fn test_multiple_trees_tracked_with_same_peer() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create two test databases
     let mut settings1 = Doc::new();
     settings1.set("name", "test_database_1");
-    let db1 = user.create_database(settings1, &key_id).unwrap();
+    let db1 = user.create_database(settings1, &key_id).await.unwrap();
     let tree_id1 = db1.root_id().clone();
 
     let mut settings2 = Doc::new();
     settings2.set("name", "test_database_2");
-    let db2 = user.create_database(settings2, &key_id).unwrap();
+    let db2 = user.create_database(settings2, &key_id).await.unwrap();
     let tree_id2 = db2.root_id().clone();
 
     // Enable sync for both
@@ -435,6 +454,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     user.track_database(TrackedDatabase {
@@ -447,10 +467,12 @@ async fn test_multiple_trees_tracked_with_same_peer() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -460,7 +482,9 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Register the peer first (would normally happen during handshake)
-    sync.register_peer(&peer_pubkey, Some("Test Peer")).unwrap();
+    sync.register_peer(&peer_pubkey, Some("Test Peer"))
+        .await
+        .unwrap();
 
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
@@ -490,7 +514,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let _response2 = handler.handle_request(&request2, &context).await;
 
     // Verify both trees are tracked
-    let peer_trees = sync.get_peer_trees(&peer_pubkey).unwrap();
+    let peer_trees = sync.get_peer_trees(&peer_pubkey).await.unwrap();
     assert_eq!(peer_trees.len(), 2);
     assert!(peer_trees.contains(&tree_id1.to_string()));
     assert!(peer_trees.contains(&tree_id2.to_string()));
@@ -499,7 +523,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
 /// Test that HTTP transport correctly captures remote address in RequestContext
 #[tokio::test]
 async fn test_http_transport_request_context() {
-    let (_base_db, sync) = setup();
+    let (_base_db, sync) = setup().await;
     let instance = sync.instance().expect("Failed to get instance");
     let sync_tree_id = sync.sync_tree_root_id().clone();
 
@@ -542,10 +566,13 @@ async fn test_http_transport_request_context() {
     assert!(matches!(response, SyncResponse::Handshake(_)));
 
     // Verify peer was registered with an HTTP address
-    let peer_info = sync.get_peer_info(&peer_pubkey).unwrap();
+    let peer_info = sync.get_peer_info(&peer_pubkey).await.unwrap();
     assert!(peer_info.is_some());
 
-    let addresses = sync.get_peer_addresses(&peer_pubkey, Some("http")).unwrap();
+    let addresses = sync
+        .get_peer_addresses(&peer_pubkey, Some("http"))
+        .await
+        .unwrap();
     assert!(
         !addresses.is_empty(),
         "Peer should have at least one HTTP address"
@@ -558,15 +585,15 @@ async fn test_http_transport_request_context() {
 /// Test that sync requests fail without peer identifiers
 #[tokio::test]
 async fn test_sync_without_peer_identifier_works() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     user.track_database(TrackedDatabase {
@@ -579,10 +606,12 @@ async fn test_sync_without_peer_identifier_works() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -613,16 +642,16 @@ async fn test_sync_without_peer_identifier_works() {
 /// Test auto-detection of permissions when requested_permission is None - authorized key
 #[tokio::test]
 async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create database with auth
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Get the user's actual key (the one that's authorized as Admin)
@@ -639,10 +668,12 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -685,16 +716,16 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
 /// Test that bootstrap rejects unauthorized keys when requested_permission is None
 #[tokio::test]
 async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create database with auth (only user's key is authorized)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Enable sync
@@ -708,10 +739,12 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -754,26 +787,29 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
 /// Test auto-detection using global wildcard permission
 #[tokio::test]
 async fn test_bootstrap_auto_detects_global_wildcard_permission() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Add global wildcard permission with Read access
     {
-        let tx = db.new_transaction().unwrap();
+        let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
         let global_auth_key =
             eidetica::auth::types::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap();
-        settings_store.set_auth_key("*", global_auth_key).unwrap();
-        tx.commit().unwrap();
+        settings_store
+            .set_auth_key("*", global_auth_key)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
 
     // Enable sync
@@ -787,10 +823,12 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -835,11 +873,11 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
 /// Test that highest permission is used when key has multiple permissions
 #[tokio::test]
 async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
-    let instance = setup_empty_db();
-    instance.enable_sync().unwrap();
-    instance.create_user("test_user", None).unwrap();
-    let mut user = instance.login_user("test_user", None).unwrap();
-    let key_id = user.add_private_key(Some("test_key")).unwrap();
+    let instance = setup_empty_db().await;
+    instance.enable_sync().await.unwrap();
+    instance.create_user("test_user", None).await.unwrap();
+    let mut user = instance.login_user("test_user", None).await.unwrap();
+    let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Generate a key that will have both direct and global permissions
     let (_, special_verifying_key) = generate_keypair();
@@ -848,12 +886,12 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
-    let db = user.create_database(settings, &key_id).unwrap();
+    let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
     // Add both the special key (Write) and global '*' (Read)
     {
-        let tx = db.new_transaction().unwrap();
+        let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
 
         // Add the special key directly with Write(5) permission
@@ -864,14 +902,18 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         .unwrap();
         settings_store
             .set_auth_key("special_key", special_auth_key)
+            .await
             .unwrap();
 
         // Add global wildcard with Read permission
         let global_auth_key =
             eidetica::auth::types::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap();
-        settings_store.set_auth_key("*", global_auth_key).unwrap();
+        settings_store
+            .set_auth_key("*", global_auth_key)
+            .await
+            .unwrap();
 
-        tx.commit().unwrap();
+        tx.commit().await.unwrap();
     }
 
     // Enable sync
@@ -885,10 +927,12 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
             properties: Default::default(),
         },
     })
+    .await
     .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
+        .await
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();

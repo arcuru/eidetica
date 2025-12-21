@@ -27,7 +27,7 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_manual_approval_stores_pending_request() {
-    let (_instance, _database, sync, tree_id) = setup_manual_approval_server();
+    let (_instance, _database, sync, tree_id) = setup_manual_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be stored as pending
@@ -42,9 +42,9 @@ async fn test_manual_approval_stores_pending_request() {
     println!("✅ Bootstrap request stored as pending: {request_id}");
 
     // Verify the request was stored in sync database
-    assert_request_stored(&sync, 1);
+    assert_request_stored(&sync, 1).await;
 
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     let (_, stored_request) = &pending_requests[0];
     assert_eq!(stored_request.tree_id, tree_id);
     assert_eq!(stored_request.requesting_pubkey, test_key);
@@ -60,7 +60,7 @@ async fn test_manual_approval_stores_pending_request() {
 
 #[tokio::test]
 async fn test_auto_approve_still_works() {
-    let (_instance, _user, _key_id, _database, sync, tree_id) = setup_auto_approval_server();
+    let (_instance, _user, _key_id, _database, sync, tree_id) = setup_auto_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be auto-approved
@@ -87,14 +87,14 @@ async fn test_auto_approve_still_works() {
     }
 
     // Should have no pending requests since it was auto-approved
-    assert_request_stored(&sync, 0);
+    assert_request_stored(&sync, 0).await;
 
     println!("✅ Auto-approval still works when policy allows it");
 }
 
 #[tokio::test]
 async fn test_approve_bootstrap_request() {
-    let (_instance, database, sync, tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, tree_id) = setup_manual_approval_server().await;
 
     // Server already has admin key from setup_manual_approval_server
 
@@ -111,10 +111,11 @@ async fn test_approve_bootstrap_request() {
     .await;
 
     // Verify request is pending
-    assert_request_stored(&sync, 1);
+    assert_request_stored(&sync, 1).await;
 
     // Approve the request using User API
     approve_request(&sync, &request_id, "server_admin")
+        .await
         .expect("Failed to approve bootstrap request");
 
     println!("✅ Bootstrap request approved successfully");
@@ -122,6 +123,7 @@ async fn test_approve_bootstrap_request() {
     // Verify request is now approved
     let (_, approved_request) = sync
         .get_bootstrap_request(&request_id)
+        .await
         .expect("Failed to get bootstrap request")
         .expect("Bootstrap request not found");
 
@@ -135,12 +137,14 @@ async fn test_approve_bootstrap_request() {
     // Verify the key was added to the target database
     let transaction = database
         .new_transaction()
+        .await
         .expect("Failed to create transaction");
     let settings_store = transaction
         .get_settings()
         .expect("Failed to create settings store");
     let added_key = settings_store
         .get_auth_key("laptop_key")
+        .await
         .expect("Failed to get auth key");
 
     assert_eq!(added_key.pubkey(), &test_key);
@@ -155,13 +159,14 @@ async fn test_approve_bootstrap_request() {
     // No more pending requests
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 0);
 }
 
 #[tokio::test]
 async fn test_reject_bootstrap_request() {
-    let (_instance, database, sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Create sync handler
@@ -192,11 +197,13 @@ async fn test_reject_bootstrap_request() {
     // Verify request is pending
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 1);
 
     // Reject the request
     sync.reject_bootstrap_request(&request_id, "_device_key")
+        .await
         .expect("Failed to reject bootstrap request");
 
     println!("✅ Bootstrap request rejected successfully");
@@ -204,6 +211,7 @@ async fn test_reject_bootstrap_request() {
     // Verify request is now rejected
     let (_, rejected_request) = sync
         .get_bootstrap_request(&request_id)
+        .await
         .expect("Failed to get bootstrap request")
         .expect("Bootstrap request not found");
 
@@ -217,11 +225,12 @@ async fn test_reject_bootstrap_request() {
     // Verify the key was NOT added to the target database
     let transaction = database
         .new_transaction()
+        .await
         .expect("Failed to create transaction");
     let settings_store = transaction
         .get_settings()
         .expect("Failed to create settings store");
-    let key_result = settings_store.get_auth_key("laptop_key");
+    let key_result = settings_store.get_auth_key("laptop_key").await;
     assert!(
         key_result.is_err(),
         "Key should not have been added to database"
@@ -232,13 +241,14 @@ async fn test_reject_bootstrap_request() {
     // No more pending requests
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(pending_requests.len(), 0);
 }
 
 #[tokio::test]
 async fn test_list_bootstrap_requests_by_status() {
-    let (_instance, database, sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Server already has admin key from setup_manual_approval_server
@@ -268,10 +278,12 @@ async fn test_list_bootstrap_requests_by_status() {
     };
 
     // Approve the request using User API
-    approve_request(&sync, &request_id, "server_admin").expect("Failed to approve request");
+    approve_request(&sync, &request_id, "server_admin")
+        .await
+        .expect("Failed to approve request");
 
     // Try to approve again - should fail
-    let result = approve_request(&sync, &request_id, "server_admin");
+    let result = approve_request(&sync, &request_id, "server_admin").await;
     assert!(result.is_err());
     assert!(
         result
@@ -281,7 +293,9 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Try to reject already approved request - should fail
-    let result = sync.reject_bootstrap_request(&request_id, "server_admin");
+    let result = sync
+        .reject_bootstrap_request(&request_id, "server_admin")
+        .await;
     assert!(result.is_err());
     assert!(
         result
@@ -295,7 +309,7 @@ async fn test_list_bootstrap_requests_by_status() {
 
 #[tokio::test]
 async fn test_duplicate_bootstrap_requests_same_client() {
-    let (_instance, database, sync, _tree_id_from_setup) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id_from_setup) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Create sync handler
@@ -344,6 +358,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     // Check how many pending requests we have
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
 
     // Document current behavior - may create duplicates or reuse existing
@@ -374,10 +389,10 @@ async fn test_duplicate_bootstrap_requests_same_client() {
 
 #[tokio::test]
 async fn test_approval_with_nonexistent_request_id() {
-    let (_instance, _database, sync, _tree_id) = setup_manual_approval_server();
+    let (_instance, _database, sync, _tree_id) = setup_manual_approval_server().await;
 
     // Try to approve a request that doesn't exist
-    let result = approve_request(&sync, "nonexistent_request_id", "server_admin");
+    let result = approve_request(&sync, "nonexistent_request_id", "server_admin").await;
 
     assert!(
         result.is_err(),
@@ -391,7 +406,9 @@ async fn test_approval_with_nonexistent_request_id() {
     );
 
     // Try to reject a request that doesn't exist
-    let result = sync.reject_bootstrap_request("nonexistent_request_id", "server_admin");
+    let result = sync
+        .reject_bootstrap_request("nonexistent_request_id", "server_admin")
+        .await;
 
     assert!(
         result.is_err(),
@@ -409,7 +426,7 @@ async fn test_approval_with_nonexistent_request_id() {
 
 #[tokio::test]
 async fn test_malformed_permission_requests() {
-    let (_instance, database, sync, _tree_id_from_setup) = setup_manual_approval_server();
+    let (_instance, database, sync, _tree_id_from_setup) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Create sync handler
@@ -460,6 +477,7 @@ async fn test_malformed_permission_requests() {
     // Verify all requests were stored
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(
         pending_requests.len(),
@@ -475,12 +493,13 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     println!("\n🧪 TEST: Bootstrap with global permission auto-approval");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     // Create database with global '*' permission for Write(10) and admin key
@@ -515,14 +534,21 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     settings.set("auth", auth_doc);
 
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
 
     let sync_handler = create_test_sync_handler(&sync);
 
@@ -552,7 +578,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     }
 
     // Verify NO pending requests were created (global permission bypasses storage)
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         0,
@@ -603,7 +629,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     }
 
     // Verify one pending request was created for the Admin request
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         1,
@@ -618,12 +644,13 @@ async fn test_global_permission_overrides_manual_policy() {
     println!("\n🧪 TEST: Global permission overrides manual approval policy");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     // Create database with manual approval policy (bootstrap_auto_approve: false)
@@ -666,14 +693,21 @@ async fn test_global_permission_overrides_manual_policy() {
 
     settings.set("auth", auth_doc);
 
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
 
     let sync_handler = create_test_sync_handler(&sync);
 
@@ -702,7 +736,7 @@ async fn test_global_permission_overrides_manual_policy() {
     }
 
     // Verify NO pending requests were created (global permission bypasses manual policy)
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         0,
@@ -732,7 +766,7 @@ async fn test_global_permission_overrides_manual_policy() {
     }
 
     // Verify one pending request was created for the Write request
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         1,
@@ -749,12 +783,13 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     println!("\n🧪 TEST: Bootstrap with existing specific key permission");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     let test_key = generate_public_key();
@@ -791,14 +826,21 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
 
     settings.set("auth", auth_doc);
 
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
 
     let sync_handler = create_test_sync_handler(&sync);
 
@@ -823,9 +865,9 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     }
 
     // Verify no duplicate key was added by checking auth settings
-    let transaction = database.new_transaction().unwrap();
+    let transaction = database.new_transaction().await.unwrap();
     let settings = transaction.get_settings().unwrap();
-    let auth_doc = settings.get_auth_doc_for_validation().unwrap();
+    let auth_doc = settings.get_auth_doc_for_validation().await.unwrap();
 
     // Should have exactly 2 keys (admin + existing test key)
     let key_count = auth_doc.keys().count();
@@ -852,12 +894,13 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     println!("\n🧪 TEST: Bootstrap with existing global permission - no duplicate key");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     let test_key = generate_public_key();
@@ -894,14 +937,21 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 
     settings.set("auth", auth_doc);
 
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
 
     let sync_handler = create_test_sync_handler(&sync);
 
@@ -926,9 +976,9 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     }
 
     // Verify no new key was added - should still only have admin + global key
-    let transaction = database.new_transaction().unwrap();
+    let transaction = database.new_transaction().await.unwrap();
     let settings = transaction.get_settings().unwrap();
-    let auth_doc = settings.get_auth_doc_for_validation().unwrap();
+    let auth_doc = settings.get_auth_doc_for_validation().await.unwrap();
 
     // Should have exactly 2 keys (admin + global "*" key)
     let key_count = auth_doc.keys().count();
@@ -975,12 +1025,13 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     println!("\n🧪 TEST: Global permission bootstrap client entry creation bug");
 
     // Setup server instance with global permission
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     // Create database with global '*' permission allowing Write(5)
@@ -1014,20 +1065,26 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         .unwrap();
 
     settings.set("auth", auth_doc);
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup client instance
-    let client_instance = setup_instance_with_initialized();
+    let client_instance = setup_instance_with_initialized().await;
     let client_key = "client_key";
-    client_instance.add_private_key(client_key).unwrap();
+    client_instance.add_private_key(client_key).await.unwrap();
 
     let client_pubkey = client_instance
         .get_formatted_public_key(client_key)
+        .await
         .unwrap();
 
     // Set up sync system and handler
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Client bootstraps via global permission - this should succeed
@@ -1090,12 +1147,13 @@ async fn test_global_permission_enables_transactions() {
     println!("\n🧪 TEST: Global permission enables transaction commits");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized();
+    let server_instance = setup_instance_with_initialized().await;
     let server_key = "server_admin";
-    server_instance.add_private_key(server_key).unwrap();
+    server_instance.add_private_key(server_key).await.unwrap();
 
     let server_pubkey = server_instance
         .get_formatted_public_key(server_key)
+        .await
         .unwrap();
 
     // Create database with global Write(10) permission
@@ -1130,24 +1188,32 @@ async fn test_global_permission_enables_transactions() {
 
     settings.set("auth", auth_doc);
 
-    let database = server_instance.new_database(settings, server_key).unwrap();
+    let database = server_instance
+        .new_database(settings, server_key)
+        .await
+        .unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone()).unwrap();
+    let sync = eidetica::sync::Sync::new(server_instance.clone())
+        .await
+        .unwrap();
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
 
     let sync_handler = create_test_sync_handler(&sync);
 
     // Setup client instance
-    let client_instance = setup_instance_with_initialized();
+    let client_instance = setup_instance_with_initialized().await;
     let client_key_name = "client_device";
-    client_instance.add_private_key(client_key_name).unwrap();
+    client_instance.add_private_key(client_key_name).await.unwrap();
 
     let client_pubkey = client_instance
         .get_formatted_public_key(client_key_name)
+        .await
         .unwrap();
 
     println!("🔍 Testing bootstrap with global permission");
@@ -1172,7 +1238,7 @@ async fn test_global_permission_enables_transactions() {
     }
 
     // Verify NO pending requests were created (global permission bypasses storage)
-    let pending_requests = sync.pending_bootstrap_requests().unwrap();
+    let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(
         pending_requests.len(),
         0,
@@ -1180,8 +1246,8 @@ async fn test_global_permission_enables_transactions() {
     );
 
     // Verify client key was NOT added to auth settings (global permission used instead)
-    let db_settings = database.get_settings().unwrap();
-    match db_settings.get("auth") {
+    let db_settings = database.get_settings().await.unwrap();
+    match db_settings.get("auth").await {
         Ok(eidetica::crdt::doc::Value::Doc(auth_node)) => {
             // Client key should NOT be present
             assert!(
@@ -1197,16 +1263,18 @@ async fn test_global_permission_enables_transactions() {
 
     // Test 2: Client can commit transactions using global permission
     // First, copy the root entry from server to client backend so client can load the database
-    let root_entry = server_instance.backend().get(&tree_id).unwrap();
+    let root_entry = server_instance.backend().get(&tree_id).await.unwrap();
     client_instance
         .backend()
         .put(eidetica::backend::VerificationStatus::Verified, root_entry)
+        .await
         .unwrap();
 
     // Load the database on client side with the client's signing key
     let client_signing_key = client_instance
         .backend()
         .get_private_key(client_key_name)
+        .await
         .expect("Failed to get client signing key")
         .expect("Client key should exist in backend");
 
@@ -1214,8 +1282,10 @@ async fn test_global_permission_enables_transactions() {
     // This will return global "*" since the client is using global permissions
     let client_pubkey = client_instance
         .get_formatted_public_key(client_key_name)
+        .await
         .unwrap();
     let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_pubkey)
+        .await
         .expect("Should find valid SigKeys");
 
     // Should have at least one SigKey (global "*")
@@ -1238,24 +1308,26 @@ async fn test_global_permission_enables_transactions() {
     .expect("Client should be able to load database");
 
     // Create a transaction and commit data
-    let transaction = client_db.new_transaction().unwrap();
+    let transaction = client_db.new_transaction().await.unwrap();
     let store = transaction
         .get_store::<Table<TestData>>("test_data")
+        .await
         .unwrap();
 
     store
         .insert(TestData {
             message: "Test from client with global permission".to_string(),
         })
+        .await
         .unwrap();
 
     // This should succeed now with global permission fallback
-    match transaction.commit() {
+    match transaction.commit().await {
         Ok(entry_id) => {
             println!("✅ Transaction committed successfully: {entry_id}");
 
             // Verify the entry was created with global "*" key in SigInfo
-            let entry = client_instance.backend().get(&entry_id).unwrap();
+            let entry = client_instance.backend().get(&entry_id).await.unwrap();
             match &entry.sig.key {
                 eidetica::auth::types::SigKey::Direct(key_name) => {
                     assert_eq!(

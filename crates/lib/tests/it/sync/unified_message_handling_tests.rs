@@ -27,8 +27,8 @@ async fn test_unified_message_handling() {
         .expect("Entry should build successfully");
 
     // Create a Sync instance for testing
-    let db = test_instance();
-    let sync = Sync::new(db.clone()).unwrap();
+    let db = test_instance().await;
+    let sync = Sync::new(db.clone()).await.unwrap();
 
     // Test single entry request directly through shared handler
     let single_request = SyncRequest::SendEntries(vec![single_entry.clone()]);
@@ -52,7 +52,7 @@ async fn test_unified_message_handling() {
 
     // Test HTTP transport uses same logic
     let mut http_transport = HttpTransport::new().unwrap();
-    let (_instance, handler) = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler().await;
     http_transport
         .start_server("127.0.0.1:0", handler)
         .await
@@ -91,7 +91,7 @@ async fn test_http_v0_json_endpoint() {
     let mut transport = HttpTransport::new().unwrap();
 
     // Start server
-    let (_instance, handler) = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler().await;
     transport
         .start_server("127.0.0.1:0", handler)
         .await
@@ -154,7 +154,7 @@ async fn test_http_v0_json_endpoint() {
 async fn test_iroh_transport_handler_integration() {
     // Create Iroh transport and verify it starts with a handler
     let mut iroh_transport = IrohTransport::new().unwrap();
-    let (_instance, handler) = super::helpers::setup_test_handler();
+    let (_instance, handler) = super::helpers::setup_test_handler().await;
 
     // Test that server can start with a handler (this validates the architecture)
     iroh_transport.start_server("", handler).await.unwrap();

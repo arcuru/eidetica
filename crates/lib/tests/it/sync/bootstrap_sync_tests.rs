@@ -19,21 +19,22 @@ async fn test_bootstrap_sync_from_zero_state() {
         server_database,
         test_tree_id,
         server_sync,
-    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database");
+    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database").await;
 
     // Add some test data to the database
     let test_entry_id = {
-        let tx = server_database.new_transaction().unwrap();
+        let tx = server_database.new_transaction().await.unwrap();
         let store = tx
             .get_store::<eidetica::store::DocStore>("messages")
+            .await
             .unwrap();
-        store.set("msg1", "Hello from server!").unwrap();
-        store.set("msg2", "Second message").unwrap();
-        tx.commit().unwrap()
+        store.set("msg1", "Hello from server!").await.unwrap();
+        store.set("msg2", "Second message").await.unwrap();
+        tx.commit().await.unwrap()
     };
 
     // Debug server state
-    let server_tips = server_instance.backend().get_tips(&test_tree_id).unwrap();
+    let server_tips = server_instance.backend().get_tips(&test_tree_id).await.unwrap();
     println!("🧪 DEBUG: Server tips: {server_tips:?}");
 
     // Start server
@@ -41,11 +42,11 @@ async fn test_bootstrap_sync_from_zero_state() {
 
     // Setup client
     let (client_instance, _client_user, _client_key_id, client_sync) =
-        setup_sync_enabled_client("client_user", "client_key");
+        setup_sync_enabled_client("client_user", "client_key").await;
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&test_tree_id).is_err(),
+        client_instance.load_database(&test_tree_id).await.is_err(),
         "Client should not have the database initially"
     );
 
@@ -65,18 +66,19 @@ async fn test_bootstrap_sync_from_zero_state() {
     let root_client = client_instance
         .backend()
         .get(&test_tree_id)
+        .await
         .expect("Client should have the root entry");
     assert_eq!(root_client.id(), test_tree_id, "Root entry should match");
 
     // Check if client also has test entry
-    let entry_result = client_instance.backend().get(&test_entry_id);
+    let entry_result = client_instance.backend().get(&test_entry_id).await;
     println!(
         "🧪 DEBUG: Client has test entry: {:?}",
         entry_result.is_ok()
     );
 
     // Verify client has tips
-    let tips = client_instance.backend().get_tips(&test_tree_id);
+    let tips = client_instance.backend().get_tips(&test_tree_id).await;
     println!("🧪 DEBUG: Client tips result: {tips:?}");
     match tips {
         Ok(tip_vec) => {
@@ -112,14 +114,14 @@ async fn test_incremental_sync_after_bootstrap() {
         server_database,
         test_tree_id,
         server_sync,
-    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database");
+    ) = setup_public_sync_enabled_server("server_user", "server_key", "test_database").await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
     let (client_instance, _client_user, _client_key_id, client_sync) =
-        setup_sync_enabled_client("client_user", "client_key");
+        setup_sync_enabled_client("client_user", "client_key").await;
 
     // Bootstrap client
     client_sync.enable_http_transport().await.unwrap();
@@ -132,18 +134,19 @@ async fn test_incremental_sync_after_bootstrap() {
 
     // Verify client has bootstrapped tree
     assert!(
-        client_instance.backend().get(&test_tree_id).is_ok(),
+        client_instance.backend().get(&test_tree_id).await.is_ok(),
         "Client should have the tree"
     );
 
     // Add new content to server AFTER bootstrap
     let entry2_id = {
-        let tx = server_database.new_transaction().unwrap();
-        let store = tx.get_store::<DocStore>("messages").unwrap();
+        let tx = server_database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("messages").await.unwrap();
         store
             .set("post_bootstrap", "After bootstrap message")
+            .await
             .unwrap();
-        tx.commit().unwrap()
+        tx.commit().await.unwrap()
     };
 
     // Now do incremental sync (client already has the tree)
@@ -156,14 +159,14 @@ async fn test_incremental_sync_after_bootstrap() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify client received the new entry
-    let entry2_client_result = client_instance.backend().get(&entry2_id);
+    let entry2_client_result = client_instance.backend().get(&entry2_id).await;
     assert!(
         entry2_client_result.is_ok(),
         "Client should have received the new entry"
     );
 
     // Verify tips have been updated
-    let tips = client_instance.backend().get_tips(&test_tree_id).unwrap();
+    let tips = client_instance.backend().get_tips(&test_tree_id).await.unwrap();
     assert!(
         tips.contains(&entry2_id),
         "Client tips should include the new entry"
@@ -178,8 +181,8 @@ async fn test_incremental_sync_after_bootstrap() {
 /// Test error handling when trying to bootstrap a non-existent tree
 #[tokio::test]
 async fn test_bootstrap_nonexistent_tree() {
-    let (_server_instance, server_sync) = setup();
-    let (_client_instance, client_sync) = setup();
+    let (_server_instance, server_sync) = setup().await;
+    let (_client_instance, client_sync) = setup().await;
 
     // Start server (with no databases)
     server_sync.enable_http_transport().await.unwrap();
@@ -209,8 +212,8 @@ async fn test_bootstrap_nonexistent_tree() {
 /// Test the discover_peer_trees API (placeholder test since it's not fully implemented)
 #[tokio::test]
 async fn test_discover_peer_trees_placeholder() {
-    let (_server_instance, server_sync) = setup();
-    let (_client_instance, client_sync) = setup();
+    let (_server_instance, server_sync) = setup().await;
+    let (_client_instance, client_sync) = setup().await;
 
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
@@ -234,8 +237,8 @@ async fn test_discover_peer_trees_placeholder() {
 /// Test bootstrap behavior with malformed request data
 #[tokio::test]
 async fn test_bootstrap_malformed_request_data() {
-    let (_server_instance, server_sync) = setup();
-    let (_client_instance, client_sync) = setup();
+    let (_server_instance, server_sync) = setup().await;
+    let (_client_instance, client_sync) = setup().await;
 
     // Create a valid tree on server
     let root_entry = create_test_tree_entry();
@@ -245,6 +248,7 @@ async fn test_bootstrap_malformed_request_data() {
         .backend()
         .expect("Failed to get backend")
         .put_verified(root_entry)
+        .await
         .unwrap();
 
     // Start server
@@ -289,8 +293,8 @@ async fn test_bootstrap_malformed_request_data() {
 /// Test bootstrap with conflicting tree IDs
 #[tokio::test]
 async fn test_bootstrap_conflicting_tree_ids() {
-    let (_server_instance, server_sync) = setup();
-    let (_client_instance, client_sync) = setup();
+    let (_server_instance, server_sync) = setup().await;
+    let (_client_instance, client_sync) = setup().await;
 
     // Create a tree on server
     let root_entry = create_test_tree_entry();
@@ -300,6 +304,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
         .backend()
         .expect("Failed to get backend")
         .put_verified(root_entry)
+        .await
         .unwrap();
 
     // Start server

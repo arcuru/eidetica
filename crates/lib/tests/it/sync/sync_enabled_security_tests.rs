@@ -20,17 +20,17 @@ use super::helpers;
 #[tokio::test]
 async fn test_bootstrap_rejected_when_sync_disabled() {
     // Create server with database but NO sync enabled
-    let server_instance = helpers::setup_instance_with_initialized();
-    server_instance.create_user("server_user", None).unwrap();
-    let mut server_user = server_instance.login_user("server_user", None).unwrap();
-    let server_key_id = server_user.add_private_key(Some("server_key")).unwrap();
+    let server_instance = helpers::setup_instance_with_initialized().await;
+    server_instance.create_user("server_user", None).await.unwrap();
+    let mut server_user = server_instance.login_user("server_user", None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some("server_key")).await.unwrap();
 
     // Create database (user.create_database adds the user's key automatically)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
     let server_database = server_user
-        .create_database(settings, &server_key_id)
+        .create_database(settings, &server_key_id).await
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
@@ -45,7 +45,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
                 interval_seconds: None,
                 properties: Default::default(),
             },
-        })
+        }).await
         .unwrap();
 
     // Update sync configuration to reflect disabled state
@@ -54,7 +54,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
         .sync_user(
             server_user.user_uuid(),
             server_user.user_database().root_id(),
-        )
+        ).await
         .unwrap();
 
     // Enable HTTP transport and start server
@@ -63,7 +63,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client that will attempt to bootstrap
-    let (client_instance, client_sync) = helpers::setup();
+    let (client_instance, client_sync) = helpers::setup().await;
     client_sync.enable_http_transport().await.unwrap();
 
     // Attempt to sync - should be rejected as "Tree not found"
@@ -85,7 +85,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 
     // Verify database was NOT synced to client
     assert!(
-        client_instance.backend().get(&tree_id).is_err(),
+        client_instance.backend().get(&tree_id).await.is_err(),
         "Database should not exist on client after rejected bootstrap"
     );
 
@@ -97,16 +97,17 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 #[tokio::test]
 async fn test_incremental_sync_rejected_when_sync_disabled() {
     // Create server with database and sync initially ENABLED
-    let server_instance = helpers::setup_instance_with_initialized();
-    server_instance.create_user("server_user", None).unwrap();
-    let mut server_user = server_instance.login_user("server_user", None).unwrap();
-    let server_key_id = server_user.add_private_key(Some("server_key")).unwrap();
+    let server_instance = helpers::setup_instance_with_initialized().await;
+    server_instance.create_user("server_user", None).await.unwrap();
+    let mut server_user = server_instance.login_user("server_user", None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some("server_key")).await.unwrap();
 
     // Create database with wildcard "*" permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
     let device_key = server_instance
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap();
     let mut settings = Doc::new();
@@ -115,6 +116,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
         .get_formatted_public_key("_device_key")
+        .await
         .unwrap();
     auth_settings
         .add_key(
@@ -133,6 +135,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         device_key,
         "_device_key".to_string(),
     )
+    .await
     .unwrap();
     let tree_id = server_database.root_id().clone();
 
@@ -147,7 +150,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
                 interval_seconds: None,
                 properties: Default::default(),
             },
-        })
+        }).await
         .unwrap();
 
     let server_sync = server_instance.sync().unwrap();
@@ -155,7 +158,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .sync_user(
             server_user.user_uuid(),
             server_user.user_database().root_id(),
-        )
+        ).await
         .unwrap();
 
     // Enable HTTP transport and start server
@@ -164,7 +167,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and perform initial bootstrap (should succeed)
-    let (client_instance, client_sync) = helpers::setup();
+    let (client_instance, client_sync) = helpers::setup().await;
     client_sync.enable_http_transport().await.unwrap();
 
     let result = client_sync
@@ -177,7 +180,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Verify database was bootstrapped to client
     assert!(
-        client_instance.backend().get(&tree_id).is_ok(),
+        client_instance.backend().get(&tree_id).await.is_ok(),
         "Database should exist on client after bootstrap"
     );
 
@@ -186,6 +189,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let client_tips = client_instance
         .backend()
         .get_tips(client_db.root_id())
+        .await
         .unwrap();
 
     // NOW disable sync on the server
@@ -199,22 +203,22 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
                 interval_seconds: None,
                 properties: Default::default(),
             },
-        })
+        }).await
         .unwrap();
 
     server_sync
         .sync_user(
             server_user.user_uuid(),
             server_user.user_database().root_id(),
-        )
+        ).await
         .unwrap();
 
     // Make a change on the server
     {
-        let tx = server_database.new_transaction().unwrap();
-        let doc_store = tx.get_store::<eidetica::store::DocStore>("data").unwrap();
-        doc_store.set("key", "value").unwrap();
-        tx.commit().unwrap();
+        let tx = server_database.new_transaction().await.unwrap();
+        let doc_store = tx.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+        doc_store.set("key", "value").await.unwrap();
+        tx.commit().await.unwrap();
     }
 
     // Attempt incremental sync - should be rejected
@@ -253,16 +257,17 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 #[tokio::test]
 async fn test_sync_succeeds_when_enabled() {
     // Create server with database and sync ENABLED
-    let server_instance = helpers::setup_instance_with_initialized();
-    server_instance.create_user("server_user", None).unwrap();
-    let mut server_user = server_instance.login_user("server_user", None).unwrap();
-    let server_key_id = server_user.add_private_key(Some("server_key")).unwrap();
+    let server_instance = helpers::setup_instance_with_initialized().await;
+    server_instance.create_user("server_user", None).await.unwrap();
+    let mut server_user = server_instance.login_user("server_user", None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some("server_key")).await.unwrap();
 
     // Create database with wildcard "*" permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
     let device_key = server_instance
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap();
     let mut settings = Doc::new();
@@ -271,6 +276,7 @@ async fn test_sync_succeeds_when_enabled() {
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
         .get_formatted_public_key("_device_key")
+        .await
         .unwrap();
     auth_settings
         .add_key(
@@ -289,15 +295,16 @@ async fn test_sync_succeeds_when_enabled() {
         device_key,
         "_device_key".to_string(),
     )
+    .await
     .unwrap();
     let tree_id = server_database.root_id().clone();
 
     // Add test data
     {
-        let tx = server_database.new_transaction().unwrap();
-        let doc_store = tx.get_store::<DocStore>("data").unwrap();
-        doc_store.set("test_key", "test_value").unwrap();
-        tx.commit().unwrap();
+        let tx = server_database.new_transaction().await.unwrap();
+        let doc_store = tx.get_store::<DocStore>("data").await.unwrap();
+        doc_store.set("test_key", "test_value").await.unwrap();
+        tx.commit().await.unwrap();
     }
 
     // Add database with sync ENABLED
@@ -311,7 +318,7 @@ async fn test_sync_succeeds_when_enabled() {
                 interval_seconds: None,
                 properties: Default::default(),
             },
-        })
+        }).await
         .unwrap();
 
     let server_sync = server_instance.sync().unwrap();
@@ -319,7 +326,7 @@ async fn test_sync_succeeds_when_enabled() {
         .sync_user(
             server_user.user_uuid(),
             server_user.user_database().root_id(),
-        )
+        ).await
         .unwrap();
 
     // Enable HTTP transport and start server
@@ -328,7 +335,7 @@ async fn test_sync_succeeds_when_enabled() {
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and sync
-    let (client_instance, client_sync) = helpers::setup();
+    let (client_instance, client_sync) = helpers::setup().await;
     client_sync.enable_http_transport().await.unwrap();
 
     let result = client_sync
@@ -340,9 +347,9 @@ async fn test_sync_succeeds_when_enabled() {
 
     // Verify data was synced
     let client_db = Database::open_readonly(tree_id.clone(), &client_instance).unwrap();
-    let doc_store = client_db.get_store_viewer::<DocStore>("data").unwrap();
+    let doc_store = client_db.get_store_viewer::<DocStore>("data").await.unwrap();
     assert_eq!(
-        doc_store.get_string("test_key").unwrap(),
+        doc_store.get_string("test_key").await.unwrap(),
         "test_value",
         "Data should be synced to client"
     );

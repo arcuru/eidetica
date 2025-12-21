@@ -14,7 +14,7 @@ use eidetica::{
 };
 
 /// Helper to create and store an entry with subtree data
-fn create_subtree_entry(
+async fn create_subtree_entry(
     backend: &InMemory,
     tree_id: &ID,
     parent_id: &ID,
@@ -27,7 +27,7 @@ fn create_subtree_entry(
         .build()
         .expect("Entry should build successfully");
     let id = entry.id();
-    backend.put_verified(entry).unwrap();
+    backend.put_verified(entry).await.unwrap();
     id
 }
 
@@ -42,8 +42,8 @@ fn assert_entry_heights(heights: &HashMap<ID, usize>, expected_heights: &[(&ID, 
     }
 }
 
-#[test]
-fn test_calculate_entry_height() {
+#[tokio::test]
+async fn test_calculate_entry_height() {
     let backend = InMemory::new();
 
     // Create root entry
@@ -51,7 +51,7 @@ fn test_calculate_entry_height() {
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
-    backend.put_verified(root).unwrap();
+    backend.put_verified(root).await.unwrap();
 
     // Create a complex tree structure:
     // root -> A -> B -> C\
@@ -59,13 +59,13 @@ fn test_calculate_entry_height() {
     //     \-> E -> F --->/
 
     // Create main branch: A -> B -> C
-    let id_a = create_subtree_entry(&backend, &root_id, &root_id, "branch", "a");
-    let id_b = create_subtree_entry(&backend, &root_id, &id_a, "branch", "b");
-    let id_c = create_subtree_entry(&backend, &root_id, &id_b, "branch", "c");
+    let id_a = create_subtree_entry(&backend, &root_id, &root_id, "branch", "a").await;
+    let id_b = create_subtree_entry(&backend, &root_id, &id_a, "branch", "b").await;
+    let id_c = create_subtree_entry(&backend, &root_id, &id_b, "branch", "c").await;
 
     // Create side branch: E -> F
-    let id_e = create_subtree_entry(&backend, &root_id, &root_id, "branch", "e");
-    let id_f = create_subtree_entry(&backend, &root_id, &id_e, "branch", "f");
+    let id_e = create_subtree_entry(&backend, &root_id, &root_id, "branch", "e").await;
+    let id_f = create_subtree_entry(&backend, &root_id, &id_e, "branch", "f").await;
 
     // Create merge entry D with both C and F as parents
     let entry_d = Entry::builder(root_id.clone())
@@ -75,22 +75,23 @@ fn test_calculate_entry_height() {
         .build()
         .expect("Entry should build successfully");
     let id_d = entry_d.id();
-    backend.put_verified(entry_d).unwrap();
+    backend.put_verified(entry_d).await.unwrap();
 
     // Check that the tree was created correctly
     // by verifying the tip is entry D
-    let tips = backend.get_tips(&root_id).unwrap();
+    let tips = backend.get_tips(&root_id).await.unwrap();
     assert_eq!(tips.len(), 1);
     assert_eq!(tips[0], id_d);
 
     // Check the full tree contains all 7 entries
     let tree = backend
         .get_tree_from_tips(&root_id, std::slice::from_ref(&id_d))
+        .await
         .unwrap();
     assert_eq!(tree.len(), 7, "Tree should contain all 7 entries");
 
     // Calculate heights map and verify correct heights
-    let heights = backend.calculate_heights(&root_id, None).unwrap();
+    let heights = backend.calculate_heights(&root_id, None).await.unwrap();
 
     // Verify all heights using helper function
     assert_entry_heights(
@@ -107,8 +108,8 @@ fn test_calculate_entry_height() {
     );
 }
 
-#[test]
-fn test_calculate_subtree_height() {
+#[tokio::test]
+async fn test_calculate_subtree_height() {
     let backend = InMemory::new();
 
     // Create root entry
@@ -116,7 +117,7 @@ fn test_calculate_subtree_height() {
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
-    backend.put_verified(root).unwrap();
+    backend.put_verified(root).await.unwrap();
 
     // A
     let entry_a = Entry::builder(root_id.clone())
@@ -130,6 +131,7 @@ fn test_calculate_subtree_height() {
             eidetica::backend::VerificationStatus::Verified,
             entry_a.clone(),
         )
+        .await
         .unwrap();
 
     // B (after A in main tree)
@@ -146,6 +148,7 @@ fn test_calculate_subtree_height() {
             eidetica::backend::VerificationStatus::Verified,
             entry_b.clone(),
         )
+        .await
         .unwrap();
 
     // C (after B in main tree)
@@ -162,10 +165,11 @@ fn test_calculate_subtree_height() {
             eidetica::backend::VerificationStatus::Verified,
             entry_c.clone(),
         )
+        .await
         .unwrap();
 
     // Calculate heights for main tree
-    let main_heights = backend.calculate_heights(&root_id, None).unwrap();
+    let main_heights = backend.calculate_heights(&root_id, None).await.unwrap();
 
     // Main tree: root -> A -> B -> C
     assert_eq!(main_heights.get(&root_id).unwrap_or(&9999), &0);
@@ -174,7 +178,7 @@ fn test_calculate_subtree_height() {
     assert_eq!(main_heights.get(&id_c).unwrap_or(&9999), &3);
 
     // Calculate heights for subtree
-    let sub_heights = backend.calculate_heights(&root_id, Some("sub1")).unwrap();
+    let sub_heights = backend.calculate_heights(&root_id, Some("sub1")).await.unwrap();
 
     // Subtree structure:
     // A   B
@@ -185,8 +189,8 @@ fn test_calculate_subtree_height() {
     assert_eq!(sub_heights.get(&id_c).unwrap(), &1);
 }
 
-#[test]
-fn test_sort_entries() {
+#[tokio::test]
+async fn test_sort_entries() {
     let backend = InMemory::new();
 
     // Create a simple tree with mixed order
@@ -213,10 +217,10 @@ fn test_sort_entries() {
         .expect("Entry should build successfully");
 
     // Store all entries in backend
-    backend.put_verified(root.clone()).unwrap();
-    backend.put_verified(entry_a.clone()).unwrap();
-    backend.put_verified(entry_b.clone()).unwrap();
-    backend.put_verified(entry_c.clone()).unwrap();
+    backend.put_verified(root.clone()).await.unwrap();
+    backend.put_verified(entry_a.clone()).await.unwrap();
+    backend.put_verified(entry_b.clone()).await.unwrap();
+    backend.put_verified(entry_c.clone()).await.unwrap();
 
     // Create a vector with entries in random order
     let mut entries = vec![
@@ -229,6 +233,7 @@ fn test_sort_entries() {
     // Sort the entries
     backend
         .sort_entries_by_height(&root_id, &mut entries)
+        .await
         .unwrap();
 
     // Check the sorted order: root, A, B, C (by height)
@@ -241,6 +246,7 @@ fn test_sort_entries() {
     let mut empty_entries = Vec::new();
     backend
         .sort_entries_by_height(&root_id, &mut empty_entries)
+        .await
         .unwrap();
     assert!(empty_entries.is_empty());
 }

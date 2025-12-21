@@ -18,8 +18,8 @@ fn create_test_auth_with_key(key_name: &str, auth_key: &AuthKey) -> AuthSettings
     AuthSettings::from_doc(auth_section)
 }
 
-#[test]
-fn test_basic_key_resolution() {
+#[tokio::test]
+async fn test_basic_key_resolution() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
 
@@ -31,13 +31,14 @@ fn test_basic_key_resolution() {
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
     let resolved = validator
         .resolve_sig_key(&sig_key, &settings, None)
+        .await
         .unwrap();
     assert_eq!(resolved.effective_permission, Permission::Write(10));
     assert_eq!(resolved.key_status, KeyStatus::Active);
 }
 
-#[test]
-fn test_revoked_key_validation() {
+#[tokio::test]
+async fn test_revoked_key_validation() {
     let mut validator = AuthValidator::new();
     let (_signing_key, verifying_key) = generate_keypair();
 
@@ -46,12 +47,12 @@ fn test_revoked_key_validation() {
 
     let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
     let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
-    let resolved = validator.resolve_sig_key(&sig_key, &settings, None);
+    let resolved = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(resolved.is_ok());
 }
 
-#[test]
-fn test_permission_levels() {
+#[tokio::test]
+async fn test_permission_levels() {
     let validator = AuthValidator::new();
 
     let admin_auth = crate::auth::types::ResolvedAuth {
@@ -109,8 +110,8 @@ fn test_permission_levels() {
     );
 }
 
-#[test]
-fn test_entry_validation_success() {
+#[tokio::test]
+async fn test_entry_validation_success() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
@@ -136,18 +137,18 @@ fn test_entry_validation_success() {
     entry.sig.sig = Some(signature);
 
     // Validate the entry
-    let result = validator.validate_entry(&entry, &settings, None);
+    let result = validator.validate_entry(&entry, &settings, None).await;
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
 
-#[test]
-fn test_missing_key() {
+#[tokio::test]
+async fn test_missing_key() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new(); // Empty auth settings
 
     let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None);
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None).await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -156,8 +157,8 @@ fn test_missing_key() {
     }
 }
 
-#[test]
-fn test_delegated_tree_requires_backend() {
+#[tokio::test]
+async fn test_delegated_tree_requires_backend() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
 
@@ -172,7 +173,7 @@ fn test_delegated_tree_requires_backend() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None);
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None).await;
     assert!(result.is_err());
     assert!(
         result
@@ -182,8 +183,8 @@ fn test_delegated_tree_requires_backend() {
     );
 }
 
-#[test]
-fn test_validate_entry_with_auth_info_against_empty_settings() {
+#[tokio::test]
+async fn test_validate_entry_with_auth_info_against_empty_settings() {
     let mut validator = AuthValidator::new();
     let (signing_key, _verifying_key) = generate_keypair();
 
@@ -201,15 +202,15 @@ fn test_validate_entry_with_auth_info_against_empty_settings() {
 
     // Validate against empty settings (no auth configuration)
     let empty_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &empty_auth_settings, None);
+    let result = validator.validate_entry(&entry, &empty_auth_settings, None).await;
 
     // Should succeed because there's no auth configuration to validate against
     assert!(result.is_ok(), "Validation failed: {:?}", result.err());
     assert!(result.unwrap(), "Expected validation to return true");
 }
 
-#[test]
-fn test_entry_validation_with_revoked_key() {
+#[tokio::test]
+async fn test_entry_validation_with_revoked_key() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
@@ -239,13 +240,13 @@ fn test_entry_validation_with_revoked_key() {
     entry.sig.sig = Some(signature);
 
     // Validation should fail with revoked key
-    let result = validator.validate_entry(&entry, &settings, None);
+    let result = validator.validate_entry(&entry, &settings, None).await;
     assert!(result.is_ok()); // validate_entry returns Ok(bool)
     assert!(!result.unwrap()); // But the validation should return false for revoked keys
 }
 
-#[test]
-fn test_performance_optimizations() {
+#[tokio::test]
+async fn test_performance_optimizations() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
 
@@ -256,11 +257,11 @@ fn test_performance_optimizations() {
     let sig_key = SigKey::Direct("PERF_KEY".to_string());
 
     // Test that resolution works correctly
-    let result1 = validator.resolve_sig_key(&sig_key, &settings, None);
+    let result1 = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(result1.is_ok());
 
     // Multiple resolutions should work consistently
-    let result2 = validator.resolve_sig_key(&sig_key, &settings, None);
+    let result2 = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(result2.is_ok());
 
     // Results should be identical
@@ -276,8 +277,8 @@ fn test_performance_optimizations() {
     validator.clear_cache();
 }
 
-#[test]
-fn test_basic_delegated_tree_resolution() {
+#[tokio::test]
+async fn test_basic_delegated_tree_resolution() {
     let mut validator = AuthValidator::new();
 
     // Create a simple direct key resolution test
@@ -288,7 +289,7 @@ fn test_basic_delegated_tree_resolution() {
     let settings = create_test_auth_with_key("DIRECT_KEY", &auth_key);
 
     let sig_key = SigKey::Direct("DIRECT_KEY".to_string());
-    let result = validator.resolve_sig_key(&sig_key, &settings, None);
+    let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
 
     match result {
         Ok(resolved) => {
@@ -301,8 +302,8 @@ fn test_basic_delegated_tree_resolution() {
     }
 }
 
-#[test]
-fn test_complete_delegation_workflow() {
+#[tokio::test]
+async fn test_complete_delegation_workflow() {
     use crate::{
         Instance,
         auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
@@ -311,7 +312,7 @@ fn test_complete_delegation_workflow() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = Instance::open(backend).await.expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
@@ -342,7 +343,7 @@ fn test_complete_delegation_workflow() {
         .unwrap();
     delegated_settings.set("auth", delegated_auth);
 
-    let delegated_tree = db.new_database(delegated_settings, "_device_key").unwrap();
+    let delegated_tree = db.new_database(delegated_settings, "_device_key").await.unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -364,7 +365,7 @@ fn test_complete_delegation_workflow() {
         .unwrap();
 
     // Get the actual tips from the delegated tree
-    let delegated_tips = delegated_tree.get_tips().unwrap();
+    let delegated_tips = delegated_tree.get_tips().await.unwrap();
 
     // Add delegation reference
     main_auth
@@ -384,12 +385,13 @@ fn test_complete_delegation_workflow() {
         .unwrap();
 
     main_settings.set("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "_device_key").unwrap();
+    let main_tree = db.new_database(main_settings, "_device_key").await.unwrap();
 
     // Test delegation resolution
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree
         .get_settings()
+        .await
         .unwrap()
         .get_auth_settings()
         .unwrap();
@@ -405,7 +407,7 @@ fn test_complete_delegation_workflow() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&db)).await;
 
     // Should succeed with permission clamping (Admin -> Write due to bounds)
     assert!(
@@ -418,8 +420,8 @@ fn test_complete_delegation_workflow() {
     assert_eq!(resolved.key_status, KeyStatus::Active);
 }
 
-#[test]
-fn test_delegated_tree_requires_tips() {
+#[tokio::test]
+async fn test_delegated_tree_requires_tips() {
     use crate::{
         Instance,
         auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
@@ -428,7 +430,7 @@ fn test_delegated_tree_requires_tips() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = Instance::open(backend).await.expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
@@ -441,7 +443,7 @@ fn test_delegated_tree_requires_tips() {
 
     // Create a simple delegated tree
     let delegated_settings = Doc::new();
-    let delegated_tree = db.new_database(delegated_settings, "_device_key").unwrap();
+    let delegated_tree = db.new_database(delegated_settings, "_device_key").await.unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -490,7 +492,7 @@ fn test_delegated_tree_requires_tips() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db)).await;
 
     // Should fail because tips are required for delegated tree resolution
     assert!(result.is_err());
@@ -501,8 +503,8 @@ fn test_delegated_tree_requires_tips() {
     );
 }
 
-#[test]
-fn test_nested_delegation_with_permission_clamping() {
+#[tokio::test]
+async fn test_nested_delegation_with_permission_clamping() {
     use crate::{
         Instance,
         auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
@@ -511,7 +513,7 @@ fn test_nested_delegation_with_permission_clamping() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Failed to create test instance");
+    let db = Instance::open(backend).await.expect("Failed to create test instance");
 
     // Use the default user's device key for all operations
     let main_key = db
@@ -544,8 +546,8 @@ fn test_nested_delegation_with_permission_clamping() {
         )
         .unwrap();
     user_settings.set("auth", user_auth);
-    let user_tree = db.new_database(user_settings, "_device_key").unwrap();
-    let user_tips = user_tree.get_tips().unwrap();
+    let user_tree = db.new_database(user_settings, "_device_key").await.unwrap();
+    let user_tips = user_tree.get_tips().await.unwrap();
 
     // 2. Create intermediate delegated tree that delegates to user tree
     let mut intermediate_settings = Doc::new();
@@ -586,8 +588,9 @@ fn test_nested_delegation_with_permission_clamping() {
     intermediate_settings.set("auth", intermediate_auth);
     let intermediate_tree = db
         .new_database(intermediate_settings, "_device_key")
+        .await
         .unwrap();
-    let intermediate_tips = intermediate_tree.get_tips().unwrap();
+    let intermediate_tips = intermediate_tree.get_tips().await.unwrap();
 
     // 3. Create main tree that delegates to intermediate tree
     let mut main_settings = Doc::new();
@@ -627,12 +630,13 @@ fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
 
     main_settings.set("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "_device_key").unwrap();
+    let main_tree = db.new_database(main_settings, "_device_key").await.unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree
         .get_settings()
+        .await
         .unwrap()
         .get_auth_settings()
         .unwrap();
@@ -656,7 +660,7 @@ fn test_nested_delegation_with_permission_clamping() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&db));
+    let result = validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&db)).await;
 
     // Should succeed with multi-level permission clamping:
     // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)
@@ -677,8 +681,8 @@ fn test_nested_delegation_with_permission_clamping() {
     assert_eq!(resolved.key_status, KeyStatus::Active);
 }
 
-#[test]
-fn test_delegation_depth_limit() {
+#[tokio::test]
+async fn test_delegation_depth_limit() {
     // Test that excessive delegation depth is prevented
     let mut validator = AuthValidator::new();
 
@@ -692,7 +696,8 @@ fn test_delegation_depth_limit() {
     let result =
         validator
             .resolver
-            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9);
+            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9)
+            .await;
     // Should fail due to missing auth configuration, not depth limit
     assert!(result.is_err());
     let error = result.unwrap_err();
@@ -706,7 +711,8 @@ fn test_delegation_depth_limit() {
     let result =
         validator
             .resolver
-            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10);
+            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10)
+            .await;
     assert!(result.is_err());
     let error = result.unwrap_err();
     assert!(error.to_string().contains("Maximum delegation depth"));
@@ -715,8 +721,8 @@ fn test_delegation_depth_limit() {
 
 // ===== GLOBAL PERMISSION TESTS =====
 
-#[test]
-fn test_global_permission_with_pubkey_field() {
+#[tokio::test]
+async fn test_global_permission_with_pubkey_field() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
@@ -742,7 +748,7 @@ fn test_global_permission_with_pubkey_field() {
     entry.sig.sig = Some(signature);
 
     // Validation should succeed
-    let result = validator.validate_entry(&entry, &settings, None);
+    let result = validator.validate_entry(&entry, &settings, None).await;
     assert!(result.is_ok(), "Validation failed: {:?}", result.err());
     assert!(
         result.unwrap(),
@@ -750,8 +756,8 @@ fn test_global_permission_with_pubkey_field() {
     );
 }
 
-#[test]
-fn test_global_permission_without_pubkey_fails() {
+#[tokio::test]
+async fn test_global_permission_without_pubkey_fails() {
     let mut validator = AuthValidator::new();
     let (signing_key, _) = generate_keypair();
 
@@ -775,15 +781,15 @@ fn test_global_permission_without_pubkey_fails() {
     entry.sig.sig = Some(signature);
 
     // Validation should fail due to missing pubkey
-    let result = validator.validate_entry(&entry, &settings, None);
+    let result = validator.validate_entry(&entry, &settings, None).await;
     assert!(
         result.is_err(),
         "Expected validation to fail without pubkey field"
     );
 }
 
-#[test]
-fn test_global_permission_resolver() {
+#[tokio::test]
+async fn test_global_permission_resolver() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
 
@@ -798,7 +804,7 @@ fn test_global_permission_resolver() {
 
     // Test with pubkey provided - should succeed now that we implemented global permissions
     let result =
-        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey));
+        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey)).await;
 
     assert!(
         result.is_ok(),
@@ -810,8 +816,8 @@ fn test_global_permission_resolver() {
     assert_eq!(resolved.effective_permission, Permission::Write(10));
 }
 
-#[test]
-fn test_global_permission_insufficient_perms() {
+#[tokio::test]
+async fn test_global_permission_insufficient_perms() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
 
@@ -829,7 +835,7 @@ fn test_global_permission_insufficient_perms() {
     let actual_pubkey = format_public_key(&verifying_key);
 
     let result =
-        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey));
+        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey)).await;
     assert!(result.is_ok(), "Resolution should succeed");
 
     let resolved = result.unwrap();
@@ -856,8 +862,8 @@ fn test_global_permission_insufficient_perms() {
     // For now, this documents the expected behavior
 }
 
-#[test]
-fn test_global_permission_vs_specific_key() {
+#[tokio::test]
+async fn test_global_permission_vs_specific_key() {
     let mut validator = AuthValidator::new();
     let (signing_key1, verifying_key1) = generate_keypair();
     let (signing_key2, verifying_key2) = generate_keypair();
@@ -888,7 +894,7 @@ fn test_global_permission_vs_specific_key() {
     let signature1 = sign_entry(&entry1, &signing_key1).unwrap();
     entry1.sig.sig = Some(signature1);
 
-    let result1 = validator.validate_entry(&entry1, &auth_settings, None);
+    let result1 = validator.validate_entry(&entry1, &auth_settings, None).await;
     assert!(result1.is_ok(), "Specific key validation should work");
 
     // Test 2: Entry using global permission should also work
@@ -903,7 +909,7 @@ fn test_global_permission_vs_specific_key() {
     entry2.sig.sig = Some(signature2);
 
     // Global permissions should now work with the pubkey field
-    let result2 = validator.validate_entry(&entry2, &auth_settings, None);
+    let result2 = validator.validate_entry(&entry2, &auth_settings, None).await;
     assert!(
         result2.is_ok(),
         "Global permission validation should work: {:?}",

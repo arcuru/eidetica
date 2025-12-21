@@ -26,11 +26,20 @@ use crate::helpers::setup_empty_db;
 #[tokio::test]
 async fn test_server_automatically_tracks_peers_that_sync_trees() {
     // ===== Setup Server =====
-    let server_instance = setup_empty_db();
-    server_instance.enable_sync().unwrap();
-    server_instance.create_user("server_user", None).unwrap();
-    let mut server_user = server_instance.login_user("server_user", None).unwrap();
-    let server_key_id = server_user.add_private_key(Some("server_key")).unwrap();
+    let server_instance = setup_empty_db().await;
+    server_instance.enable_sync().await.unwrap();
+    server_instance
+        .create_user("server_user", None)
+        .await
+        .unwrap();
+    let mut server_user = server_instance
+        .login_user("server_user", None)
+        .await
+        .unwrap();
+    let server_key_id = server_user
+        .add_private_key(Some("server_key"))
+        .await
+        .unwrap();
 
     let server_sync = server_instance.sync().unwrap();
 
@@ -38,6 +47,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let device_key = server_instance
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap();
     let mut db_settings = Doc::new();
@@ -46,6 +56,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let mut auth_settings = AuthSettings::new();
     let device_pubkey = server_instance
         .get_formatted_public_key("_device_key")
+        .await
         .unwrap();
     auth_settings
         .add_key(
@@ -64,6 +75,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         device_key,
         "_device_key".to_string(),
     )
+    .await
     .unwrap();
     let tree_id = server_db.root_id().clone();
 
@@ -79,6 +91,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
                 properties: Default::default(),
             },
         })
+        .await
         .unwrap();
 
     // Update sync configuration
@@ -87,11 +100,12 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
             server_user.user_uuid(),
             server_user.user_database().root_id(),
         )
+        .await
         .unwrap();
 
     // ===== Setup Client =====
-    let client_instance = setup_empty_db();
-    client_instance.enable_sync().unwrap();
+    let client_instance = setup_empty_db().await;
+    client_instance.enable_sync().await.unwrap();
 
     let client_sync = client_instance.sync().unwrap();
 
@@ -99,12 +113,13 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     client_sync.enable_http_transport().await.unwrap();
 
     // Get client's device public key
-    let client_pubkey = client_sync.get_device_public_key().unwrap();
+    let client_pubkey = client_sync.get_device_public_key().await.unwrap();
 
     // IMPORTANT: Server needs to know about the client peer for tracking to work
     // (This would normally happen via handshake, but we're testing just the sync request)
     server_sync
         .register_peer(&client_pubkey, Some("Test Client"))
+        .await
         .unwrap();
 
     // Start server
@@ -117,9 +132,10 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let server_addr = http_transport.get_server_address().unwrap();
 
     // Register server as a peer and add its address
-    let server_pubkey = server_sync.get_device_public_key().unwrap();
+    let server_pubkey = server_sync.get_device_public_key().await.unwrap();
     client_sync
         .register_peer(&server_pubkey, Some("Test Server"))
+        .await
         .unwrap();
     client_sync
         .add_peer_address(
@@ -129,11 +145,15 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
                 address: server_addr,
             },
         )
+        .await
         .unwrap();
 
     // ===== THE KEY TEST: Client syncs a tree with the server =====
     // Client sets up its side of the relationship (this is normal/expected)
-    client_sync.add_tree_sync(&server_pubkey, &tree_id).unwrap();
+    client_sync
+        .add_tree_sync(&server_pubkey, &tree_id)
+        .await
+        .unwrap();
 
     // Now client syncs - this will send a SyncTreeRequest to the server
     // Server automatically tracks when it sees the sync request
@@ -144,7 +164,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // ===== VERIFICATION: Server should have automatically tracked this relationship =====
 
-    let peer_trees = server_sync.get_peer_trees(&client_pubkey).unwrap();
+    let peer_trees = server_sync.get_peer_trees(&client_pubkey).await.unwrap();
 
     assert!(
         peer_trees.contains(&tree_id.to_string()),
@@ -159,6 +179,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     assert!(
         client_sync
             .is_tree_synced_with_peer(&server_pubkey, &tree_id)
+            .await
             .unwrap(),
         "Client should have tracked that it's syncing tree {tree_id} with server {server_pubkey}"
     );

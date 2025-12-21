@@ -9,8 +9,8 @@ use super::helpers::*;
 
 // ===== CONCURRENT DATABASE CREATION =====
 
-#[test]
-fn test_many_users_create_databases() {
+#[tokio::test]
+async fn test_many_users_create_databases() {
     let user_count = 5;
     let (instance, _) = setup_instance_with_users(&[
         ("user1", None),
@@ -18,14 +18,15 @@ fn test_many_users_create_databases() {
         ("user3", None),
         ("user4", None),
         ("user5", None),
-    ]);
+    ])
+    .await;
 
     let mut databases = Vec::new();
 
     for i in 1..=user_count {
         let username = format!("user{i}");
-        let mut user = login_user(&instance, &username, None);
-        let db = create_named_database(&mut user, &format!("Database {i}"));
+        let mut user = login_user(&instance, &username, None).await;
+        let db = create_named_database(&mut user, &format!("Database {i}")).await;
         databases.push(db);
     }
 
@@ -43,9 +44,9 @@ fn test_many_users_create_databases() {
 
 // ===== USER ISOLATION TESTS =====
 
-#[test]
-fn test_user_cannot_access_another_users_key() {
-    let (_instance, user1, user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_user_cannot_access_another_users_key() {
+    let (_instance, user1, user2, _, _) = setup_two_passwordless_users("alice", "bob").await;
 
     // Get Alice's key ID
     let alice_keys = user1.list_keys().expect("Alice should have keys");
@@ -61,15 +62,16 @@ fn test_user_cannot_access_another_users_key() {
     );
 }
 
-#[test]
-fn test_users_have_independent_key_lists() {
-    let (_instance, mut user1, mut user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_users_have_independent_key_lists() {
+    let (_instance, mut user1, mut user2, _, _) =
+        setup_two_passwordless_users("alice", "bob").await;
 
     // Alice adds a key
-    let _alice_new_key = add_user_key(&mut user1, Some("Alice New Key"));
+    let _alice_new_key = add_user_key(&mut user1, Some("Alice New Key")).await;
 
     // Bob adds a key
-    let _bob_new_key = add_user_key(&mut user2, Some("Bob New Key"));
+    let _bob_new_key = add_user_key(&mut user2, Some("Bob New Key")).await;
 
     // Alice should have 2 keys, Bob should have 2 keys
     assert_user_key_count(&user1, 2);
@@ -90,12 +92,12 @@ fn test_users_have_independent_key_lists() {
 
 // ===== DATABASE SHARING TESTS (via Bootstrap) =====
 
-#[test]
-fn test_database_created_by_one_user() {
-    let (_instance, mut user1, _user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_database_created_by_one_user() {
+    let (_instance, mut user1, _user2, _, _) = setup_two_passwordless_users("alice", "bob").await;
 
     // Alice creates a database
-    let alice_db = create_named_database(&mut user1, "Alice's Database");
+    let alice_db = create_named_database(&mut user1, "Alice's Database").await;
 
     // Verify Alice can find the key for it
     let key = user1
@@ -107,15 +109,15 @@ fn test_database_created_by_one_user() {
 
 // ===== CONCURRENT LOGIN TESTS =====
 
-#[test]
-fn test_multiple_simultaneous_logins() {
-    let (instance, _) = setup_instance_with_users(&[("alice", None), ("bob", None)]);
+#[tokio::test]
+async fn test_multiple_simultaneous_logins() {
+    let (instance, _) = setup_instance_with_users(&[("alice", None), ("bob", None)]).await;
 
     // Simulate simultaneous logins
-    let alice1 = login_user(&instance, "alice", None);
-    let bob1 = login_user(&instance, "bob", None);
-    let alice2 = login_user(&instance, "alice", None);
-    let bob2 = login_user(&instance, "bob", None);
+    let alice1 = login_user(&instance, "alice", None).await;
+    let bob1 = login_user(&instance, "bob", None).await;
+    let alice2 = login_user(&instance, "alice", None).await;
+    let bob2 = login_user(&instance, "bob", None).await;
 
     // All should have valid keys
     assert_user_key_count(&alice1, 1);
@@ -126,13 +128,13 @@ fn test_multiple_simultaneous_logins() {
 
 // ===== USER ENUMERATION TESTS =====
 
-#[test]
-fn test_list_users() {
+#[tokio::test]
+async fn test_list_users() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]);
+        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // List all users
-    let users = instance.list_users().expect("Should list users");
+    let users = instance.list_users().await.expect("Should list users");
 
     // Should have all 3 users
     assert_eq!(users.len(), 3, "Should have 3 users");
@@ -141,11 +143,11 @@ fn test_list_users() {
     assert!(users.contains(&"charlie".to_string()));
 }
 
-#[test]
-fn test_list_users_empty_instance() {
-    let instance = setup_instance();
+#[tokio::test]
+async fn test_list_users_empty_instance() {
+    let instance = setup_instance().await;
 
-    let users = instance.list_users().expect("Should list users");
+    let users = instance.list_users().await.expect("Should list users");
 
     // Should be empty in unified mode (no implicit user)
     assert!(users.is_empty(), "New unified instance should have 0 users");
@@ -153,48 +155,66 @@ fn test_list_users_empty_instance() {
 
 // ===== CONCURRENT DATABASE OPERATIONS =====
 
-#[test]
-fn test_users_modify_own_databases_concurrently() {
-    let (_instance, mut user1, mut user2, _, _) = setup_two_passwordless_users("alice", "bob");
+#[tokio::test]
+async fn test_users_modify_own_databases_concurrently() {
+    let (_instance, mut user1, mut user2, _, _) =
+        setup_two_passwordless_users("alice", "bob").await;
 
     // Each creates a database
-    let alice_db = create_named_database(&mut user1, "Alice DB");
-    let bob_db = create_named_database(&mut user2, "Bob DB");
+    let alice_db = create_named_database(&mut user1, "Alice DB").await;
+    let bob_db = create_named_database(&mut user2, "Bob DB").await;
 
     // Each writes to their database
     use eidetica::store::DocStore;
 
-    let alice_tx = alice_db.new_transaction().expect("Alice transaction");
+    let alice_tx = alice_db.new_transaction().await.expect("Alice transaction");
     {
-        let alice_store = alice_tx.get_store::<DocStore>("data").expect("Alice store");
-        alice_store.set("key", "alice_value").expect("Alice write");
+        let alice_store = alice_tx
+            .get_store::<DocStore>("data")
+            .await
+            .expect("Alice store");
+        alice_store
+            .set("key", "alice_value")
+            .await
+            .expect("Alice write");
     }
-    alice_tx.commit().expect("Alice commit");
+    alice_tx.commit().await.expect("Alice commit");
 
-    let bob_tx = bob_db.new_transaction().expect("Bob transaction");
+    let bob_tx = bob_db.new_transaction().await.expect("Bob transaction");
     {
-        let bob_store = bob_tx.get_store::<DocStore>("data").expect("Bob store");
-        bob_store.set("key", "bob_value").expect("Bob write");
+        let bob_store = bob_tx
+            .get_store::<DocStore>("data")
+            .await
+            .expect("Bob store");
+        bob_store.set("key", "bob_value").await.expect("Bob write");
     }
-    bob_tx.commit().expect("Bob commit");
+    bob_tx.commit().await.expect("Bob commit");
 
     // Verify data is independent
-    let alice_tx2 = alice_db.new_transaction().expect("Alice read transaction");
+    let alice_tx2 = alice_db
+        .new_transaction()
+        .await
+        .expect("Alice read transaction");
     let alice_store2 = alice_tx2
         .get_store::<DocStore>("data")
+        .await
         .expect("Alice read store");
-    let alice_value = alice_store2.get("key").expect("Alice read");
+    let alice_value = alice_store2.get("key").await.expect("Alice read");
     assert_eq!(
         alice_value.as_text(),
         Some("alice_value"),
         "Alice's data should be preserved"
     );
 
-    let bob_tx2 = bob_db.new_transaction().expect("Bob read transaction");
+    let bob_tx2 = bob_db
+        .new_transaction()
+        .await
+        .expect("Bob read transaction");
     let bob_store2 = bob_tx2
         .get_store::<DocStore>("data")
+        .await
         .expect("Bob read store");
-    let bob_value = bob_store2.get("key").expect("Bob read");
+    let bob_value = bob_store2.get("key").await.expect("Bob read");
     assert_eq!(
         bob_value.as_text(),
         Some("bob_value"),

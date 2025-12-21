@@ -41,8 +41,8 @@ use eidetica::{
 // ===== BASIC SETUP HELPERS =====
 
 /// Create a database with a single test key
-pub fn setup_db() -> Instance {
-    crate::helpers::test_instance()
+pub async fn setup_db() -> Instance {
+    crate::helpers::test_instance().await
 }
 
 /// Create an instance with user and tree with a test key using User API
@@ -53,15 +53,16 @@ pub fn setup_db() -> Instance {
 ///
 /// Note: `key_name` is stored in the UserKey metadata but NOT in the database's auth settings.
 /// For delegation to work with friendly names, use `configure_database_auth()` to add aliases.
-pub fn setup_user_and_tree_with_key(
+pub async fn setup_user_and_tree_with_key(
     username: &str,
     key_name: &str,
 ) -> (Instance, User, Database, String) {
-    let (instance, mut user) = crate::helpers::test_instance_with_user(username);
+    let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
 
     // Add a key with the specified display name
     let key_id = user
         .add_private_key(Some(key_name))
+        .await
         .expect("Failed to add key");
 
     // Create database with that key - automatically bootstraps auth with:
@@ -70,6 +71,7 @@ pub fn setup_user_and_tree_with_key(
     // - Status: Active
     let tree = user
         .create_database(Doc::new(), &key_id)
+        .await
         .expect("Failed to create tree");
 
     (instance, user, tree, key_id)
@@ -90,11 +92,11 @@ pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> Aut
 
 /// Create a user with multiple keys pre-configured for testing using User API
 /// Returns (instance, user, key_ids) where key_ids[i] corresponds to key_names[i]
-pub fn setup_test_user_with_keys(
+pub async fn setup_test_user_with_keys(
     username: &str,
     key_names: &[&str],
 ) -> (Instance, User, Vec<String>) {
-    let (instance, mut user) = crate::helpers::test_instance_with_user(username);
+    let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
 
     let mut key_ids = Vec::new();
 
@@ -109,6 +111,7 @@ pub fn setup_test_user_with_keys(
         for key_name in key_names.iter().skip(1) {
             let key_id = user
                 .add_private_key(Some(key_name))
+                .await
                 .expect("Failed to add key");
             key_ids.push(key_id);
         }
@@ -137,11 +140,11 @@ pub fn setup_test_user_with_keys(
 /// # Arguments
 /// * `database` - The database to configure
 /// * `auth_config` - Array of (display_name, key_id, permission, status) tuples
-pub fn configure_database_auth(
+pub async fn configure_database_auth(
     database: &Database,
     auth_config: &[(&str, &str, Permission, KeyStatus)],
 ) -> eidetica::Result<()> {
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
     {
         let settings = op.get_settings()?;
         settings.update_auth_settings(|auth| {
@@ -155,21 +158,21 @@ pub fn configure_database_auth(
                 auth.add_key(*display_name, auth_key)?;
             }
             Ok(())
-        })?;
+        }).await?;
     }
-    op.commit()?;
+    op.commit().await?;
     Ok(())
 }
 
 /// Create a DB with keys pre-configured for testing (uses deprecated API for auth testing)
-pub fn setup_test_db_with_keys(
+pub async fn setup_test_db_with_keys(
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (Instance, Vec<VerifyingKey>) {
-    let db = crate::helpers::test_instance();
+    let db = crate::helpers::test_instance().await;
 
     let mut public_keys = Vec::new();
     for (key_name, _permission, _status) in keys {
-        let public_key = db.add_private_key(key_name).expect("Failed to add key");
+        let public_key = db.add_private_key(key_name).await.expect("Failed to add key");
         public_keys.push(public_key);
     }
 
@@ -178,7 +181,7 @@ pub fn setup_test_db_with_keys(
 
 /// Create a tree with auth settings pre-configured (uses deprecated API for auth testing)
 #[allow(deprecated)]
-pub fn setup_authenticated_tree(
+pub async fn setup_authenticated_tree(
     db: &Instance,
     keys: &[(&str, Permission, KeyStatus)],
     public_keys: &[VerifyingKey],
@@ -211,6 +214,7 @@ pub fn setup_authenticated_tree(
         });
 
     db.new_database(settings, admin_key)
+        .await
         .expect("Failed to create tree")
 }
 
@@ -228,14 +232,14 @@ pub fn setup_authenticated_tree(
 /// Auth settings will contain:
 /// - `auth[key_id] = AuthKey(pubkey, Admin(0))` - Bootstrap entry (public key string name)
 /// - `auth[friendly_name] = AuthKey(pubkey, specified_perm)` - Friendly name alias for each key
-pub fn setup_complete_auth_environment_with_user(
+pub async fn setup_complete_auth_environment_with_user(
     username: &str,
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (Instance, User, Database, Vec<String>) {
     // Extract key display names
     let key_names: Vec<&str> = keys.iter().map(|(name, _, _)| *name).collect();
 
-    let (instance, mut user, key_ids) = setup_test_user_with_keys(username, &key_names);
+    let (instance, mut user, key_ids) = setup_test_user_with_keys(username, &key_names).await;
 
     // Find an Admin key for tree creation
     let admin_key_idx = keys
@@ -247,6 +251,7 @@ pub fn setup_complete_auth_environment_with_user(
     // Create database - automatically bootstraps auth with admin key as Admin(0)
     let database = user
         .create_database(Doc::new(), admin_key_id)
+        .await
         .expect("Failed to create database");
 
     // Add friendly name aliases for ALL keys
@@ -261,7 +266,7 @@ pub fn setup_complete_auth_environment_with_user(
         })
         .collect();
 
-    configure_database_auth(&database, &auth_config).expect("Failed to configure auth");
+    configure_database_auth(&database, &auth_config).await.expect("Failed to configure auth");
 
     (instance, user, database, key_ids)
 }
@@ -281,7 +286,7 @@ pub fn setup_complete_auth_environment_with_user(
 /// Auth settings will contain both:
 /// - `auth[key_id] = AuthKey(pubkey, Admin(0))` - Bootstrap entry
 /// - `auth[friendly_name] = AuthKey(pubkey, specified_perm)` - Friendly name alias for each key
-pub fn create_delegated_tree_with_user(
+pub async fn create_delegated_tree_with_user(
     user: &mut User,
     keys: &[(&str, Permission, KeyStatus)],
 ) -> eidetica::Result<(Database, Vec<String>)> {
@@ -294,7 +299,7 @@ pub fn create_delegated_tree_with_user(
             user.get_default_key()?
         } else {
             // Create additional keys
-            user.add_private_key(Some(key_name))?
+            user.add_private_key(Some(key_name)).await?
         };
         key_ids.push(key_id);
     }
@@ -307,7 +312,7 @@ pub fn create_delegated_tree_with_user(
     let admin_key_id = &key_ids[admin_key_idx];
 
     // Create database - automatically bootstraps auth with admin key as Admin(0)
-    let database = user.create_database(Doc::new(), admin_key_id)?;
+    let database = user.create_database(Doc::new(), admin_key_id).await?;
 
     // Add friendly name aliases for ALL keys
     // Bootstrap added: auth[key_id] = AuthKey(pubkey, Admin(0))
@@ -321,18 +326,18 @@ pub fn create_delegated_tree_with_user(
         })
         .collect();
 
-    configure_database_auth(&database, &auth_config)?;
+    configure_database_auth(&database, &auth_config).await?;
 
     Ok((database, key_ids))
 }
 
 /// Create delegation reference for a tree
-pub fn create_delegation_ref(
+pub async fn create_delegation_ref(
     tree: &Database,
     max_permission: Permission,
     min_permission: Option<Permission>,
 ) -> eidetica::Result<DelegatedTreeRef> {
-    let tips = tree.get_tips()?;
+    let tips = tree.get_tips().await?;
     Ok(DelegatedTreeRef {
         permission_bounds: PermissionBounds {
             max: max_permission,
@@ -375,8 +380,8 @@ impl DelegationChain {
     /// Each database only contains the bootstrap entry with the public key string as the name.
     /// The `create_chain_delegation()` method uses hardcoded delegation step names
     /// (`"delegate_level_{i}"`) that won't match any keys in the auth settings.
-    pub fn new_with_user(username: &str, levels: usize) -> eidetica::Result<Self> {
-        let (db, mut user) = crate::helpers::test_instance_with_user(username);
+    pub async fn new_with_user(username: &str, levels: usize) -> eidetica::Result<Self> {
+        let (db, mut user) = crate::helpers::test_instance_with_user(username).await;
         let mut trees = Vec::new();
         let mut keys = Vec::new(); // Will store display names
 
@@ -388,7 +393,7 @@ impl DelegationChain {
                 user.get_default_key()?
             } else {
                 // Add new key for subsequent levels
-                user.add_private_key(Some(&display_name))?
+                user.add_private_key(Some(&display_name)).await?
             };
 
             keys.push(display_name.clone()); // Store display name for delegation paths
@@ -398,7 +403,7 @@ impl DelegationChain {
             // - Permission: Admin(0)
             // - Status: Active
             // Note: Bootstrap always uses Admin(0), not the level-specific Admin(i)
-            let database = user.create_database(Doc::new(), &key_id)?;
+            let database = user.create_database(Doc::new(), &key_id).await?;
 
             trees.push(database);
         }
@@ -406,11 +411,11 @@ impl DelegationChain {
         Ok(DelegationChain { db, trees, keys })
     }
 
-    pub fn create_chain_delegation(&self, final_key: &str) -> SigKey {
+    pub async fn create_chain_delegation(&self, final_key: &str) -> SigKey {
         let mut steps = Vec::new();
 
         for (i, tree) in self.trees.iter().enumerate() {
-            let tips = tree.get_tips().expect("Failed to get tips");
+            let tips = tree.get_tips().await.expect("Failed to get tips");
             steps.push(DelegationStep {
                 key: format!("delegate_level_{i}"),
                 tips: Some(tips),
@@ -429,31 +434,33 @@ impl DelegationChain {
 // ===== ASSERTION HELPERS =====
 
 /// Test that an operation succeeds
-pub fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree.new_transaction().expect("Failed to create operation");
+pub async fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_name: &str) {
+    let op = tree.new_transaction().await.expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
+    store.set("test", "value").await.expect("Failed to set value");
 
-    let result = op.commit();
+    let result = op.commit().await;
     assert!(result.is_ok(), "{test_name}: Operation should succeed");
 }
 
 /// Test that an operation fails
-pub fn test_operation_fails(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree.new_transaction().expect("Failed to create operation");
+pub async fn test_operation_fails(tree: &Database, subtree_name: &str, test_name: &str) {
+    let op = tree.new_transaction().await.expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").expect("Failed to set value");
+    store.set("test", "value").await.expect("Failed to set value");
 
-    let result = op.commit();
+    let result = op.commit().await;
     assert!(result.is_err(), "{test_name}: Operation should fail");
 }
 
 /// Assert that permission resolution works correctly
-pub fn assert_permission_resolution(
+pub async fn assert_permission_resolution(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     auth_settings: &AuthSettings,
@@ -463,6 +470,7 @@ pub fn assert_permission_resolution(
 ) {
     let result = validator
         .resolve_sig_key(sig_key, auth_settings, instance)
+        .await
         .expect("Permission resolution should succeed");
 
     assert_eq!(
@@ -476,14 +484,14 @@ pub fn assert_permission_resolution(
 }
 
 /// Assert that permission resolution fails with expected error pattern
-pub fn assert_permission_resolution_fails(
+pub async fn assert_permission_resolution_fails(
     validator: &mut AuthValidator,
     sig_key: &SigKey,
     auth_settings: &AuthSettings,
     instance: Option<&Instance>,
     expected_error_pattern: &str,
 ) {
-    let result = validator.resolve_sig_key(sig_key, auth_settings, instance);
+    let result = validator.resolve_sig_key(sig_key, auth_settings, instance).await;
     assert!(
         result.is_err(),
         "Permission resolution should fail for {sig_key:?}"
@@ -497,22 +505,24 @@ pub fn assert_permission_resolution_fails(
 }
 
 /// Test operation permissions for a specific subtree
-pub fn assert_operation_permissions(
+pub async fn assert_operation_permissions(
     tree: &Database,
 
     subtree_name: &str,
     should_succeed: bool,
     test_description: &str,
 ) {
-    let op = tree.new_transaction().expect("Failed to create operation");
+    let op = tree.new_transaction().await.expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
+        .await
         .expect("Failed to get subtree");
     store
         .set("test", test_description)
+        .await
         .expect("Failed to set value");
 
-    let result = op.commit();
+    let result = op.commit().await;
     if should_succeed {
         assert!(
             result.is_ok(),

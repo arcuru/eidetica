@@ -14,25 +14,25 @@ use super::helpers::*;
 use crate::helpers::*;
 
 #[cfg(feature = "y-crdt")]
-#[test]
-fn test_ydoc_basic_text_operations() {
-    let ctx = TestContext::new().with_database();
+#[tokio::test]
+async fn test_ydoc_basic_text_operations() {
+    let ctx = TestContext::new().with_database().await;
 
     // Use helper to create YDoc with text
-    create_ydoc_text_operation(ctx.database(), "yrs_text", "Hello, World!");
+    create_ydoc_text_operation(ctx.database(), "yrs_text", "Hello, World!").await;
 
     // Verify using helper
-    assert_ydoc_text_content(ctx.database(), "yrs_text", "Hello, World!");
+    assert_ydoc_text_content(ctx.database(), "yrs_text", "Hello, World!").await;
 }
 
 #[cfg(feature = "y-crdt")]
-#[test]
-fn test_ydoc_incremental_updates_save_diffs_only() {
-    let ctx = TestContext::new().with_database();
+#[tokio::test]
+async fn test_ydoc_incremental_updates_save_diffs_only() {
+    let ctx = TestContext::new().with_database().await;
 
     // Use helper to test incremental updates
     let (first_diff_size, second_diff_size) =
-        test_ydoc_incremental_updates(ctx.database(), "yrs_diff_test");
+        test_ydoc_incremental_updates(ctx.database(), "yrs_diff_test").await;
 
     // Print the actual diff sizes for verification
     println!("First diff size: {first_diff_size}, Second diff size: {second_diff_size}");
@@ -54,6 +54,7 @@ fn test_ydoc_incremental_updates_save_diffs_only() {
     let viewer = ctx
         .database()
         .get_store_viewer::<YDoc>("yrs_diff_test")
+        .await
         .expect("Failed to get YDoc viewer");
 
     viewer
@@ -76,35 +77,38 @@ fn test_ydoc_incremental_updates_save_diffs_only() {
 
             Ok(())
         })
+        .await
         .expect("Failed to verify final text content");
 }
 
 #[cfg(feature = "y-crdt")]
-#[test]
-fn test_ydoc_map_operations() {
-    let ctx = TestContext::new().with_database();
+#[tokio::test]
+async fn test_ydoc_map_operations() {
+    let ctx = TestContext::new().with_database().await;
 
     // Use helper to create YDoc with map data
     let map_data = &[("key1", "value1"), ("key2", "42"), ("key3", "true")];
-    create_ydoc_map_operation(ctx.database(), "yrs_map", map_data);
+    create_ydoc_map_operation(ctx.database(), "yrs_map", map_data).await;
 
     // Verify using helper
-    assert_ydoc_map_content(ctx.database(), "yrs_map", map_data);
+    assert_ydoc_map_content(ctx.database(), "yrs_map", map_data).await;
 }
 
 #[cfg(feature = "y-crdt")]
-#[test]
-fn test_ydoc_multiple_operations_with_diffs() {
-    let ctx = TestContext::new().with_database();
+#[tokio::test]
+async fn test_ydoc_multiple_operations_with_diffs() {
+    let ctx = TestContext::new().with_database().await;
 
     // Operation 1: Create initial state
     let op1 = ctx
         .database()
         .new_transaction()
+        .await
         .expect("Op1: Failed to start");
     {
         let ydoc = op1
             .get_store::<YDoc>("yrs_multi")
+            .await
             .expect("Op1: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -116,18 +120,21 @@ fn test_ydoc_multiple_operations_with_diffs() {
             text.insert(&mut txn, 0, "Version 1 notes");
             Ok(())
         })
+        .await
         .expect("Op1: Failed to perform operations");
     }
-    op1.commit().expect("Op1: Failed to commit");
+    op1.commit().await.expect("Op1: Failed to commit");
 
     // Operation 2: Update existing data
     let op2 = ctx
         .database()
         .new_transaction()
+        .await
         .expect("Op2: Failed to start");
     {
         let ydoc = op2
             .get_store::<YDoc>("yrs_multi")
+            .await
             .expect("Op2: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -141,18 +148,21 @@ fn test_ydoc_multiple_operations_with_diffs() {
             text.insert(&mut txn, text_len, " - Updated in v2");
             Ok(())
         })
+        .await
         .expect("Op2: Failed to perform operations");
     }
-    op2.commit().expect("Op2: Failed to commit");
+    op2.commit().await.expect("Op2: Failed to commit");
 
     // Operation 3: Add more data
     let op3 = ctx
         .database()
         .new_transaction()
+        .await
         .expect("Op3: Failed to start");
     {
         let ydoc = op3
             .get_store::<YDoc>("yrs_multi")
+            .await
             .expect("Op3: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
@@ -162,14 +172,16 @@ fn test_ydoc_multiple_operations_with_diffs() {
             map.insert(&mut txn, "features", vec!["diff_saving", "crdt_support"]);
             Ok(())
         })
+        .await
         .expect("Op3: Failed to perform operations");
     }
-    op3.commit().expect("Op3: Failed to commit");
+    op3.commit().await.expect("Op3: Failed to commit");
 
     // Verify final state
     let viewer = ctx
         .database()
         .get_store_viewer::<YDoc>("yrs_multi")
+        .await
         .expect("Failed to get YDoc viewer");
 
     viewer
@@ -197,13 +209,14 @@ fn test_ydoc_multiple_operations_with_diffs() {
 
             Ok(())
         })
+        .await
         .expect("Failed to verify final state");
 }
 
 #[cfg(feature = "y-crdt")]
-#[test]
-fn test_ydoc_apply_external_update() {
-    let ctx = TestContext::new().with_database();
+#[tokio::test]
+async fn test_ydoc_apply_external_update() {
+    let ctx = TestContext::new().with_database().await;
 
     // Create external update using helper
     let external_update = create_external_ydoc_update("External change");
@@ -212,21 +225,25 @@ fn test_ydoc_apply_external_update() {
     let op = ctx
         .database()
         .new_transaction()
+        .await
         .expect("Failed to start operation");
     {
         let ydoc = op
             .get_store::<YDoc>("yrs_external")
+            .await
             .expect("Failed to get YDoc");
 
         ydoc.apply_update(&external_update)
+            .await
             .expect("Failed to apply external update");
     }
-    op.commit().expect("Failed to commit operation");
+    op.commit().await.expect("Failed to commit operation");
 
     // Verify the external update was applied
     let viewer = ctx
         .database()
         .get_store_viewer::<YDoc>("yrs_external")
+        .await
         .expect("Failed to get YDoc viewer");
 
     viewer
@@ -237,5 +254,6 @@ fn test_ydoc_apply_external_update() {
             assert_eq!(content, "External change");
             Ok(())
         })
+        .await
         .expect("Failed to verify external update");
 }

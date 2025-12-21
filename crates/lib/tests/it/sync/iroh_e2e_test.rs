@@ -17,8 +17,8 @@ use super::helpers;
 #[tokio::test]
 async fn test_iroh_e2e_basic_local() {
     // Setup with disabled relays for reliable local testing
-    let (base_db1, sync1) = helpers::setup();
-    let (_base_db2, sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup().await;
+    let (_base_db2, sync2) = helpers::setup().await;
 
     let transport1 = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
@@ -48,16 +48,17 @@ async fn test_iroh_e2e_basic_local() {
     // Setup peer relationship
     let _addr1 = sync1.get_server_address().await.unwrap();
     let addr2 = sync2.get_server_address().await.unwrap();
-    let _pubkey1 = sync1.get_device_public_key().unwrap();
-    let pubkey2 = sync2.get_device_public_key().unwrap();
+    let _pubkey1 = sync1.get_device_public_key().await.unwrap();
+    let pubkey2 = sync2.get_device_public_key().await.unwrap();
 
-    sync1.register_peer(&pubkey2, Some("peer2")).unwrap();
+    sync1.register_peer(&pubkey2, Some("peer2")).await.unwrap();
     sync1
         .add_peer_address(&pubkey2, Address::iroh(&addr2))
+        .await
         .unwrap();
 
     // Add authentication key
-    base_db1.add_private_key("basic_test_key").unwrap();
+    base_db1.add_private_key("basic_test_key").await.unwrap();
 
     // Create a small set of test entries for functional testing
     let mut entries = Vec::new();
@@ -66,7 +67,7 @@ async fn test_iroh_e2e_basic_local() {
             .set_subtree_data("data", format!(r#"{{"test": {i}}}"#))
             .build()
             .expect("Entry should build successfully");
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
         entries.push(entry);
     }
 
@@ -96,8 +97,8 @@ async fn test_iroh_e2e_basic_local() {
 #[ignore = "Slow test: Includes intentional network timeouts (10-30+ seconds)"]
 async fn test_iroh_e2e_resilience() {
     // Setup nodes with local transport
-    let (base_db1, sync1) = helpers::setup();
-    let (_base_db2, sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup().await;
+    let (_base_db2, sync2) = helpers::setup().await;
 
     let transport1 = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
@@ -125,13 +126,14 @@ async fn test_iroh_e2e_resilience() {
 
     let _addr1 = sync1.get_server_address().await.unwrap();
     let addr2 = sync2.get_server_address().await.unwrap();
-    let _pubkey1 = sync1.get_device_public_key().unwrap();
-    let pubkey2 = sync2.get_device_public_key().unwrap();
+    let _pubkey1 = sync1.get_device_public_key().await.unwrap();
+    let pubkey2 = sync2.get_device_public_key().await.unwrap();
 
     // Register peers
-    sync1.register_peer(&pubkey2, None).unwrap();
+    sync1.register_peer(&pubkey2, None).await.unwrap();
     sync1
         .add_peer_address(&pubkey2, Address::iroh(&addr2))
+        .await
         .unwrap();
 
     // Create test entries
@@ -139,7 +141,7 @@ async fn test_iroh_e2e_resilience() {
         .set_subtree_data("data", r#"{"test": "resilience_1"}"#)
         .build()
         .expect("Entry should build successfully");
-    base_db1.backend().put_verified(entry1.clone()).unwrap();
+    base_db1.backend().put_verified(entry1.clone()).await.unwrap();
 
     // First sync should succeed
     let result = sync1
@@ -155,7 +157,7 @@ async fn test_iroh_e2e_resilience() {
         .set_subtree_data("data", r#"{"test": "resilience_2"}"#)
         .build()
         .expect("Entry should build successfully");
-    base_db1.backend().put_verified(entry2.clone()).unwrap();
+    base_db1.backend().put_verified(entry2.clone()).await.unwrap();
 
     // This sync should fail (node 2 is down)
     // Note: This will timeout and may take 10-30 seconds depending on transport settings
@@ -189,6 +191,7 @@ async fn test_iroh_e2e_resilience() {
     // Update peer address
     sync1
         .add_peer_address(&pubkey2, Address::iroh(&addr2_new))
+        .await
         .unwrap();
 
     // Retry sync - should succeed now
@@ -233,8 +236,8 @@ async fn test_iroh_e2e_with_relays() {
     println!();
 
     // Create two independent databases with sync engines
-    let (base_db1, sync1) = helpers::setup();
-    let (base_db2, sync2) = helpers::setup();
+    let (base_db1, sync1) = helpers::setup().await;
+    let (base_db2, sync2) = helpers::setup().await;
 
     // Enable Iroh transport with production relays (default)
     println!("🔧 Enabling Iroh transport with production relay servers...");
@@ -276,19 +279,21 @@ async fn test_iroh_e2e_with_relays() {
     println!("📍 Node 2 address (with relay info): {addr2}");
 
     // Get public keys for peer registration
-    let pubkey1 = sync1.get_device_public_key().unwrap();
-    let pubkey2 = sync2.get_device_public_key().unwrap();
+    let pubkey1 = sync1.get_device_public_key().await.unwrap();
+    let pubkey2 = sync2.get_device_public_key().await.unwrap();
 
     // Register peers
     println!("👥 Registering peers for P2P communication...");
-    sync1.register_peer(&pubkey2, Some("relay_peer2")).unwrap();
+    sync1.register_peer(&pubkey2, Some("relay_peer2")).await.unwrap();
     sync1
         .add_peer_address(&pubkey2, Address::iroh(&addr2))
+        .await
         .unwrap();
 
-    sync2.register_peer(&pubkey1, Some("relay_peer1")).unwrap();
+    sync2.register_peer(&pubkey1, Some("relay_peer1")).await.unwrap();
     sync2
         .add_peer_address(&pubkey1, Address::iroh(&addr1))
+        .await
         .unwrap();
 
     // Create test entries
@@ -298,7 +303,7 @@ async fn test_iroh_e2e_with_relays() {
             .set_subtree_data("data", format!(r#"{{"test": "relay_{i}"}}"#))
             .build()
             .expect("Entry should build successfully");
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
         entries.push(entry);
     }
 
@@ -327,7 +332,7 @@ async fn test_iroh_e2e_with_relays() {
             println!("🔍 Verifying entries arrived at destination...");
             let mut synced_count = 0;
             for entry in &entries {
-                if base_db2.backend().get(&entry.id()).is_ok() {
+                if base_db2.backend().get(&entry.id()).await.is_ok() {
                     synced_count += 1;
                 }
             }

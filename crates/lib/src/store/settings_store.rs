@@ -281,55 +281,55 @@ mod tests {
         instance::LegacyInstanceOps,
     };
 
-    fn create_test_database() -> (Instance, Database) {
+    async fn create_test_database() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend).expect("Failed to create test instance");
+        let instance = Instance::open(backend).await.expect("Failed to create test instance");
 
-        let database = instance.new_database_default("_device_key").unwrap();
+        let database = instance.new_database_default("_device_key").await.unwrap();
 
         // Set initial database name using transaction
-        let transaction = database.new_transaction().unwrap();
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
-        settings_store.set_name("test_db").unwrap();
-        transaction.commit().unwrap();
+        settings_store.set_name("test_db").await.unwrap();
+        transaction.commit().await.unwrap();
 
         (instance, database)
     }
 
-    #[test]
-    fn test_settings_store_creation() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_settings_store_creation() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Should be able to create successfully
         assert!(settings_store.as_doc_store().name() == "_settings");
     }
 
-    #[test]
-    fn test_name_operations() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_name_operations() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Should be able to get the initial name
-        let name = settings_store.get_name().unwrap();
+        let name = settings_store.get_name().await.unwrap();
         assert_eq!(name, "test_db");
 
         // Should be able to set a new name
-        settings_store.set_name("updated_name").unwrap();
-        let updated_name = settings_store.get_name().unwrap();
+        settings_store.set_name("updated_name").await.unwrap();
+        let updated_name = settings_store.get_name().await.unwrap();
         assert_eq!(updated_name, "updated_name");
     }
 
-    #[test]
-    fn test_auth_settings_integration() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_auth_settings_integration() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Get the initial auth settings (may contain a default key from database creation)
-        let initial_auth_settings = settings_store.get_auth_settings().unwrap();
+        let initial_auth_settings = settings_store.get_auth_settings().await.unwrap();
         let initial_key_count = initial_auth_settings.get_all_keys().unwrap().len();
 
         // Should be able to add an auth key
@@ -337,24 +337,25 @@ mod tests {
 
         settings_store
             .set_auth_key("new_test_key", auth_key.clone())
+            .await
             .unwrap();
 
         // Should be able to retrieve the key
-        let retrieved_key = settings_store.get_auth_key("new_test_key").unwrap();
+        let retrieved_key = settings_store.get_auth_key("new_test_key").await.unwrap();
         assert_eq!(retrieved_key.pubkey(), auth_key.pubkey());
         assert_eq!(retrieved_key.permissions(), auth_key.permissions());
         assert_eq!(retrieved_key.status(), auth_key.status());
 
         // Should have one more key than initially
-        let final_auth_settings = settings_store.get_auth_settings().unwrap();
+        let final_auth_settings = settings_store.get_auth_settings().await.unwrap();
         let final_key_count = final_auth_settings.get_all_keys().unwrap().len();
         assert_eq!(final_key_count, initial_key_count + 1);
     }
 
-    #[test]
-    fn test_auth_key_operations() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_auth_key_operations() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         let auth_key = AuthKey::active(generate_public_key(), Permission::Write(5)).unwrap();
@@ -362,25 +363,26 @@ mod tests {
         // Add key
         settings_store
             .set_auth_key("laptop", auth_key.clone())
+            .await
             .unwrap();
 
         // Verify key exists
-        let retrieved = settings_store.get_auth_key("laptop").unwrap();
+        let retrieved = settings_store.get_auth_key("laptop").await.unwrap();
         assert_eq!(retrieved.pubkey(), auth_key.pubkey());
         assert_eq!(retrieved.status(), &KeyStatus::Active);
 
         // Revoke key
-        settings_store.revoke_auth_key("laptop").unwrap();
+        settings_store.revoke_auth_key("laptop").await.unwrap();
 
         // Verify key is revoked
-        let revoked_key = settings_store.get_auth_key("laptop").unwrap();
+        let revoked_key = settings_store.get_auth_key("laptop").await.unwrap();
         assert_eq!(revoked_key.status(), &KeyStatus::Revoked);
     }
 
-    #[test]
-    fn test_update_auth_settings_closure() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_update_auth_settings_closure() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Use the closure-based update
@@ -393,43 +395,44 @@ mod tests {
                 auth.add_key("writer", key2)?;
                 Ok(())
             })
+            .await
             .unwrap();
 
         // Verify both keys were added (plus any existing keys from database creation)
-        let auth_settings = settings_store.get_auth_settings().unwrap();
+        let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let all_keys = auth_settings.get_all_keys().unwrap();
         assert!(all_keys.len() >= 2); // At least the two we added
         assert!(all_keys.contains_key("admin"));
         assert!(all_keys.contains_key("writer"));
     }
 
-    #[test]
-    fn test_auth_doc_for_validation() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_auth_doc_for_validation() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Add a key
         let valid_pubkey = generate_public_key();
         let auth_key = AuthKey::active(valid_pubkey.clone(), Permission::Read).unwrap();
-        settings_store.set_auth_key("validator", auth_key).unwrap();
+        settings_store.set_auth_key("validator", auth_key).await.unwrap();
 
         // Get auth doc for validation
-        let auth_doc = settings_store.get_auth_doc_for_validation().unwrap();
+        let auth_doc = settings_store.get_auth_doc_for_validation().await.unwrap();
 
         // Should contain the key
         let validator_key: AuthKey = auth_doc.get_json("validator").unwrap();
         assert_eq!(validator_key.pubkey(), &valid_pubkey);
     }
 
-    #[test]
-    fn test_error_handling() {
-        let (_instance, database) = create_test_database();
-        let transaction = database.new_transaction().unwrap();
+    #[tokio::test]
+    async fn test_error_handling() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Getting non-existent auth key should return KeyNotFound error
-        let result = settings_store.get_auth_key("nonexistent");
+        let result = settings_store.get_auth_key("nonexistent").await;
         assert!(result.is_err());
         if let Err(crate::Error::Auth(auth_err)) = result {
             assert!(auth_err.is_key_not_found());
@@ -438,7 +441,7 @@ mod tests {
         }
 
         // Revoking non-existent key should fail
-        let revoke_result = settings_store.revoke_auth_key("nonexistent");
+        let revoke_result = settings_store.revoke_auth_key("nonexistent").await;
         assert!(revoke_result.is_err());
     }
 }

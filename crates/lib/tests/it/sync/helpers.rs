@@ -21,22 +21,27 @@ use iroh::RelayMode;
 // ===== SETUP HELPERS =====
 
 /// Create an Instance with authentication key
-pub fn setup_db() -> Instance {
-    let (instance, _user) = crate::helpers::setup_db();
+pub async fn setup_db() -> Instance {
+    let (instance, _user) = crate::helpers::setup_db().await;
     instance
 }
 
 /// Create a new Sync instance with standard setup
-pub fn setup() -> (Instance, Sync) {
-    let base_db = setup_db();
-    let sync = Sync::new(base_db.clone()).expect("Failed to create Sync");
+pub async fn setup() -> (Instance, Sync) {
+    let base_db = setup_db().await;
+    let sync = Sync::new(base_db.clone())
+        .await
+        .expect("Failed to create Sync");
     (base_db, sync)
 }
 
 /// Create Instance with initialized sync module
-pub fn setup_instance_with_initialized() -> Instance {
-    let (instance, _user) = crate::helpers::setup_db();
-    instance.enable_sync().expect("Failed to initialize sync");
+pub async fn setup_instance_with_initialized() -> Instance {
+    let (instance, _user) = crate::helpers::setup_db().await;
+    instance
+        .enable_sync()
+        .await
+        .expect("Failed to initialize sync");
     instance
 }
 
@@ -44,9 +49,11 @@ pub fn setup_instance_with_initialized() -> Instance {
 ///
 /// Returns (Instance, Handler) where the Instance must be kept alive
 /// for the handler's WeakInstance to remain valid.
-pub fn setup_test_handler() -> (Instance, Arc<dyn SyncHandler>) {
-    let base_db = setup_db();
-    let sync = Sync::new(base_db.clone()).expect("Failed to create Sync");
+pub async fn setup_test_handler() -> (Instance, Arc<dyn SyncHandler>) {
+    let base_db = setup_db().await;
+    let sync = Sync::new(base_db.clone())
+        .await
+        .expect("Failed to create Sync");
     let handler = Arc::new(SyncHandlerImpl::new(
         base_db.clone(),
         sync.sync_tree_root_id().clone(),
@@ -72,14 +79,14 @@ pub async fn handle_request(
 // ===== ASSERTION HELPERS =====
 
 /// Assert that a setting has the expected value
-pub fn assert_setting(sync: &Sync, key: &str, expected_value: &str) {
-    let actual_value = sync.get_setting(key).expect("Failed to get setting");
+pub async fn assert_setting(sync: &Sync, key: &str, expected_value: &str) {
+    let actual_value = sync.get_setting(key).await.expect("Failed to get setting");
     assert_eq!(actual_value, Some(expected_value.to_string()));
 }
 
 /// Assert that a setting does not exist
-pub fn assert_setting_not_found(sync: &Sync, key: &str) {
-    let actual_value = sync.get_setting(key).expect("Failed to get setting");
+pub async fn assert_setting_not_found(sync: &Sync, key: &str) {
+    let actual_value = sync.get_setting(key).await.expect("Failed to get setting");
     assert_eq!(actual_value, None);
 }
 
@@ -91,17 +98,18 @@ pub fn assert_trees_equal(sync1: &Sync, sync2: &Sync) {
 // ===== OPERATION HELPERS =====
 
 /// Set multiple settings on a sync instance
-pub fn set_multiple_settings(sync: &Sync, settings: &[(&str, &str)]) {
+pub async fn set_multiple_settings(sync: &Sync, settings: &[(&str, &str)]) {
     for (key, value) in settings {
         sync.set_setting(*key, *value)
+            .await
             .unwrap_or_else(|_| panic!("Failed to set setting: {key} = {value}"));
     }
 }
 
 /// Assert multiple settings have expected values
-pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
+pub async fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
     for (key, expected_value) in expected {
-        assert_setting(sync, key, expected_value);
+        assert_setting(sync, key, expected_value).await;
     }
 }
 
@@ -128,7 +136,7 @@ pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
 ///     test_sync_with_any_transport(HttpTransportFactory).await.unwrap();
 /// }
 /// ```
-#[async_trait]
+#[async_trait(?Send)]
 pub trait TransportFactory: Send + std::marker::Sync {
     /// Create a sync instance with this transport enabled
     async fn create_sync(&self, instance: Instance) -> Result<Sync>;
@@ -152,10 +160,10 @@ pub trait TransportFactory: Send + std::marker::Sync {
 /// Factory for HTTP transport instances
 pub struct HttpTransportFactory;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl TransportFactory for HttpTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
-        let sync = Sync::new(instance)?;
+        let sync = Sync::new(instance).await?;
         sync.enable_http_transport().await?;
         Ok(sync)
     }
@@ -172,10 +180,10 @@ impl TransportFactory for HttpTransportFactory {
 /// Factory for Iroh transport instances (relay disabled for fast local testing)
 pub struct IrohTransportFactory;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl TransportFactory for IrohTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
-        let sync = Sync::new(instance)?;
+        let sync = Sync::new(instance).await?;
         let transport = IrohTransport::builder()
             .relay_mode(RelayMode::Disabled)
             .build()?;
@@ -205,12 +213,13 @@ use eidetica::{
 ///
 /// # Returns
 /// (Instance, Database, Sync, tree_id)
-pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    let instance = crate::helpers::test_instance();
+pub async fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
+    let instance = crate::helpers::test_instance().await;
 
     // Add server admin key
     instance
         .add_private_key("server_admin")
+        .await
         .expect("Failed to add server admin key");
 
     // Create database with manual approval (no global wildcard permission)
@@ -222,6 +231,7 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
     // Add server admin key to auth settings
     let server_pubkey = instance
         .get_formatted_public_key("server_admin")
+        .await
         .expect("Failed to get server public key");
 
     auth_doc
@@ -238,6 +248,7 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
     // Add device key to auth settings for sync handler operations
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
+        .await
         .expect("Failed to get device public key");
 
     auth_doc
@@ -255,14 +266,19 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
 
     let database = instance
         .new_database(settings, "server_admin")
+        .await
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
     // Create sync instance
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone())
+        .await
+        .expect("Failed to create sync");
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).expect("Failed to enable sync for database");
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .expect("Failed to enable sync for database");
 
     (instance, database, sync, tree_id)
 }
@@ -271,12 +287,13 @@ pub fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::en
 ///
 /// # Returns
 /// (Instance, Database, Sync, tree_id)
-pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    let instance = crate::helpers::test_instance();
+pub async fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
+    let instance = crate::helpers::test_instance().await;
 
     // Add server admin key
     instance
         .add_private_key("server_admin")
+        .await
         .expect("Failed to add server admin key");
 
     // Create database with global wildcard permission
@@ -288,6 +305,7 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
     // Add server admin key to auth settings
     let server_pubkey = instance
         .get_formatted_public_key("server_admin")
+        .await
         .expect("Failed to get server public key");
 
     auth_doc
@@ -304,6 +322,7 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
     // Add device key to auth settings for sync handler operations
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
+        .await
         .expect("Failed to get device public key");
 
     auth_doc
@@ -333,14 +352,19 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
 
     let database = instance
         .new_database(settings, "server_admin")
+        .await
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
     // Create sync instance
-    let sync = Sync::new(instance.clone()).expect("Failed to create sync");
+    let sync = Sync::new(instance.clone())
+        .await
+        .expect("Failed to create sync");
 
     // Enable sync for this database
-    enable_sync_for_instance_database(&sync, &tree_id).expect("Failed to enable sync for database");
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .expect("Failed to enable sync for database");
 
     (instance, database, sync, tree_id)
 }
@@ -348,7 +372,7 @@ pub fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::en
 /// Create a server with auto approval (auto_approve = true)
 ///
 /// Returns (Instance, User, key_id, Database, Arc<Sync>, tree_id)
-pub fn setup_auto_approval_server() -> (
+pub async fn setup_auto_approval_server() -> (
     Instance,
     User,
     String,
@@ -357,7 +381,8 @@ pub fn setup_auto_approval_server() -> (
     eidetica::entry::ID,
 ) {
     let (instance, user, key_id, database, tree_id, sync) =
-        setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database");
+        setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database")
+            .await;
 
     (instance, user, key_id, database, sync, tree_id)
 }
@@ -385,24 +410,25 @@ pub async fn start_sync_server(sync: &Sync) -> String {
 ///
 /// # Returns
 /// (Instance, Arc<Sync>)
-pub fn setup_bootstrap_client(key_name: &str) -> (Instance, Arc<Sync>) {
-    let instance = crate::helpers::test_instance();
+pub async fn setup_bootstrap_client(key_name: &str) -> (Instance, Arc<Sync>) {
+    let instance = crate::helpers::test_instance().await;
 
     // Add the key directly to the instance (not through User API)
     instance
         .add_private_key(key_name)
+        .await
         .expect("Failed to add client key");
 
     // Initialize sync
-    instance.enable_sync().expect("Failed to enable sync");
+    instance.enable_sync().await.expect("Failed to enable sync");
     let sync = instance.sync().expect("Sync should be initialized");
 
     (instance, sync)
 }
 
 /// Create a simple client with default key name
-pub fn setup_simple_client() -> (Instance, Arc<Sync>) {
-    setup_bootstrap_client("client_key")
+pub async fn setup_simple_client() -> (Instance, Arc<Sync>) {
+    setup_bootstrap_client("client_key").await
 }
 
 /// Create a SyncTreeRequest for bootstrap testing
@@ -441,8 +467,9 @@ pub async fn create_pending_bootstrap_request(
 }
 
 /// Approve a bootstrap request using a specific approver key
-pub fn approve_request(sync: &Sync, request_id: &str, approver_key: &str) -> Result<()> {
+pub async fn approve_request(sync: &Sync, request_id: &str, approver_key: &str) -> Result<()> {
     sync.approve_bootstrap_request(request_id, approver_key)
+        .await
 }
 
 /// Create a standard test tree entry
@@ -465,9 +492,10 @@ pub fn assert_bootstrap_pending(response: &SyncResponse) -> &str {
 }
 
 /// Assert that sync has expected number of pending requests
-pub fn assert_request_stored(sync: &Sync, expected_count: usize) {
+pub async fn assert_request_stored(sync: &Sync, expected_count: usize) {
     let pending_requests = sync
         .pending_bootstrap_requests()
+        .await
         .expect("Failed to list pending requests");
     assert_eq!(
         pending_requests.len(),
@@ -495,45 +523,52 @@ use eidetica::user::User;
 /// Uses global wildcard permission for automatic bootstrap approval.
 ///
 /// Returns (Instance, User, key_id: String, Database, TreeId)
-pub fn setup_server_with_bootstrap_database(
+pub async fn setup_server_with_bootstrap_database(
     username: &str,
     key_name: &str,
     db_name: &str,
 ) -> (Instance, User, String, Database, eidetica::entry::ID) {
-    let server_instance = setup_instance_with_initialized();
-    server_instance.create_user(username, None).unwrap();
-    let mut server_user = server_instance.login_user(username, None).unwrap();
-    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+    let server_instance = setup_instance_with_initialized().await;
+    server_instance.create_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
     settings.set("name", db_name);
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
+        .await
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
     // Add global wildcard permission for automatic bootstrap approval
-    set_global_wildcard_permission(&server_database).unwrap();
+    set_global_wildcard_permission(&server_database)
+        .await
+        .unwrap();
     // Add _device_key to the database's auth configuration so sync handler can modify the database
     let device_key_name = "_device_key";
     let device_pubkey = server_instance
         .get_formatted_public_key(device_key_name)
+        .await
         .unwrap();
 
     // Add _device_key as Admin to the database
-    let tx = server_database.new_transaction().unwrap();
+    let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
     let device_auth_key =
         eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
             .unwrap();
     settings_store
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Add bootstrap auto-approval policy
-    set_global_wildcard_permission(&server_database).unwrap();
+    set_global_wildcard_permission(&server_database)
+        .await
+        .unwrap();
 
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
@@ -548,6 +583,7 @@ pub fn setup_server_with_bootstrap_database(
                 properties: Default::default(),
             },
         })
+        .await
         .unwrap();
 
     // Sync the user database to update combined settings
@@ -555,6 +591,7 @@ pub fn setup_server_with_bootstrap_database(
         server_user.user_uuid(),
         server_user.user_database().root_id(),
     )
+    .await
     .unwrap();
 
     (
@@ -570,15 +607,22 @@ pub fn setup_server_with_bootstrap_database(
 ///
 /// Creates a user with name format "client_user_{index}" and key "client_key_{index}"
 /// Returns (Instance, User, key_id: String)
-pub fn setup_indexed_client(index: usize) -> (Instance, User, String) {
-    let client_instance = setup_instance_with_initialized();
+pub async fn setup_indexed_client(index: usize) -> (Instance, User, String) {
+    let client_instance = setup_instance_with_initialized().await;
     let client_username = format!("client_user_{index}");
-    client_instance.create_user(&client_username, None).unwrap();
-    let mut client_user = client_instance.login_user(&client_username, None).unwrap();
+    client_instance
+        .create_user(&client_username, None)
+        .await
+        .unwrap();
+    let mut client_user = client_instance
+        .login_user(&client_username, None)
+        .await
+        .unwrap();
 
     let client_key_display_name = format!("client_key_{index}");
     let client_key_id = client_user
         .add_private_key(Some(&client_key_display_name))
+        .await
         .unwrap();
 
     (client_instance, client_user, client_key_id)
@@ -613,7 +657,7 @@ pub async fn request_and_map_database_access(
 
     // Establish database-key mapping
     // Use the same key_id as the SigKey identifier (common pattern)
-    user.map_key(key_id, tree_id, key_id)?;
+    user.map_key(key_id, tree_id, key_id).await?;
 
     Ok(())
 }
@@ -652,17 +696,19 @@ pub async fn request_database_access_default(
 /// // Allow only Read requests
 /// set_global_wildcard_permission_with_level(&db, Permission::Read)?;
 /// ```
-pub fn set_global_wildcard_permission_with_level(
+pub async fn set_global_wildcard_permission_with_level(
     database: &Database,
     permission: eidetica::auth::Permission,
 ) -> Result<()> {
-    let tx = database.new_transaction()?;
+    let tx = database.new_transaction().await?;
     let db_settings = tx.get_settings()?;
-    db_settings.set_auth_key(
-        "*",
-        eidetica::auth::types::AuthKey::active("*".to_string(), permission).unwrap(),
-    )?;
-    tx.commit()?;
+    db_settings
+        .set_auth_key(
+            "*",
+            eidetica::auth::types::AuthKey::active("*".to_string(), permission).unwrap(),
+        )
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -672,8 +718,8 @@ pub fn set_global_wildcard_permission_with_level(
 /// - All Write requests (Write(1), Write(5), Write(100), etc.)
 /// - All Read requests
 /// - But denies Admin requests.
-pub fn set_global_wildcard_permission(database: &Database) -> Result<()> {
-    set_global_wildcard_permission_with_level(database, eidetica::auth::Permission::Write(0))
+pub async fn set_global_wildcard_permission(database: &Database) -> Result<()> {
+    set_global_wildcard_permission_with_level(database, eidetica::auth::Permission::Write(0)).await
 }
 
 // ===== SYNC-ENABLED DATABASE HELPERS =====
@@ -691,7 +737,7 @@ use eidetica::user::types::{SyncSettings, TrackedDatabase};
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
-pub fn setup_sync_enabled_server(
+pub async fn setup_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
@@ -703,16 +749,17 @@ pub fn setup_sync_enabled_server(
     eidetica::entry::ID,
     Arc<Sync>,
 ) {
-    let server_instance = setup_instance_with_initialized();
-    server_instance.create_user(username, None).unwrap();
-    let mut server_user = server_instance.login_user(username, None).unwrap();
-    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+    let server_instance = setup_instance_with_initialized().await;
+    server_instance.create_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     let mut settings = Doc::new();
     settings.set("name", db_name);
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
+        .await
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
@@ -721,18 +768,20 @@ pub fn setup_sync_enabled_server(
     let device_key_name = "_device_key";
     let device_pubkey = server_instance
         .get_formatted_public_key(device_key_name)
+        .await
         .unwrap();
 
     // Add _device_key as Admin to the database
-    let tx = server_database.new_transaction().unwrap();
+    let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
     let device_auth_key =
         eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
             .unwrap();
     settings_store
         .set_auth_key(device_key_name, device_auth_key)
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
@@ -747,6 +796,7 @@ pub fn setup_sync_enabled_server(
                 properties: Default::default(),
             },
         })
+        .await
         .unwrap();
 
     // Sync the user database to update combined settings
@@ -754,6 +804,7 @@ pub fn setup_sync_enabled_server(
         server_user.user_uuid(),
         server_user.user_database().root_id(),
     )
+    .await
     .unwrap();
 
     (
@@ -772,7 +823,7 @@ pub fn setup_sync_enabled_server(
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
-pub fn setup_sync_enabled_server_with_auto_approve(
+pub async fn setup_sync_enabled_server_with_auto_approve(
     username: &str,
     key_name: &str,
     db_name: &str,
@@ -785,10 +836,10 @@ pub fn setup_sync_enabled_server_with_auto_approve(
     Arc<Sync>,
 ) {
     let (instance, user, key_id, database, tree_id, sync) =
-        setup_sync_enabled_server(username, key_name, db_name);
+        setup_sync_enabled_server(username, key_name, db_name).await;
 
     // Add bootstrap auto-approval policy
-    set_global_wildcard_permission(&database).unwrap();
+    set_global_wildcard_permission(&database).await.unwrap();
 
     (instance, user, key_id, database, tree_id, sync)
 }
@@ -797,14 +848,14 @@ pub fn setup_sync_enabled_server_with_auto_approve(
 ///
 /// # Returns
 /// (Instance, User, key_id, Arc<Sync>)
-pub fn setup_sync_enabled_client(
+pub async fn setup_sync_enabled_client(
     username: &str,
     key_name: &str,
 ) -> (Instance, User, String, Arc<Sync>) {
-    let client_instance = setup_instance_with_initialized();
-    client_instance.create_user(username, None).unwrap();
-    let mut client_user = client_instance.login_user(username, None).unwrap();
-    let client_key_id = client_user.add_private_key(Some(key_name)).unwrap();
+    let client_instance = setup_instance_with_initialized().await;
+    client_instance.create_user(username, None).await.unwrap();
+    let mut client_user = client_instance.login_user(username, None).await.unwrap();
+    let client_key_id = client_user.add_private_key(Some(key_name)).await.unwrap();
 
     let sync = client_instance.sync().expect("Sync should be initialized");
 
@@ -817,7 +868,7 @@ pub fn setup_sync_enabled_client(
 /// instead of user.create_database().
 ///
 /// TODO: This should go away eventually or be replaced by the User API
-pub fn enable_sync_for_instance_database(
+pub async fn enable_sync_for_instance_database(
     sync: &Sync,
     database_id: &eidetica::entry::ID,
 ) -> Result<()> {
@@ -828,7 +879,8 @@ pub fn enable_sync_for_instance_database(
     let instance = sync.instance()?;
     let signing_key = instance
         .backend()
-        .get_private_key("_device_key")?
+        .get_private_key("_device_key")
+        .await?
         .ok_or_else(|| {
             eidetica::Error::Sync(eidetica::sync::error::SyncError::DeviceKeyNotFound {
                 key_name: "_device_key".to_string(),
@@ -842,8 +894,8 @@ pub fn enable_sync_for_instance_database(
         "_device_key".to_string(),
     )?;
 
-    let tx = sync_database.new_transaction()?;
-    let database_users = tx.get_store::<DocStore>("database_users")?;
+    let tx = sync_database.new_transaction().await?;
+    let database_users = tx.get_store::<DocStore>("database_users").await?;
 
     // Create enabled sync settings
     let settings = SyncSettings {
@@ -860,12 +912,14 @@ pub fn enable_sync_for_instance_database(
         ))
     })?;
 
-    database_users.set_path(
-        eidetica::path!(&db_id_str, "combined_settings"),
-        settings_json,
-    )?;
+    database_users
+        .set_path(
+            eidetica::path!(&db_id_str, "combined_settings"),
+            settings_json,
+        )
+        .await?;
 
-    tx.commit()?;
+    tx.commit().await?;
 
     Ok(())
 }
@@ -877,7 +931,7 @@ pub fn enable_sync_for_instance_database(
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
-pub fn setup_public_sync_enabled_server(
+pub async fn setup_public_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
@@ -889,10 +943,10 @@ pub fn setup_public_sync_enabled_server(
     eidetica::entry::ID,
     Arc<Sync>,
 ) {
-    let server_instance = setup_instance_with_initialized();
-    server_instance.create_user(username, None).unwrap();
-    let mut server_user = server_instance.login_user(username, None).unwrap();
-    let server_key_id = server_user.add_private_key(Some(key_name)).unwrap();
+    let server_instance = setup_instance_with_initialized().await;
+    server_instance.create_user(username, None).await.unwrap();
+    let mut server_user = server_instance.login_user(username, None).await.unwrap();
+    let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
     // Create database settings with wildcard "*" permission for public access
     let mut settings = Doc::new();
@@ -902,6 +956,7 @@ pub fn setup_public_sync_enabled_server(
     let mut auth_settings = eidetica::auth::AuthSettings::new();
     let device_pubkey = server_instance
         .get_formatted_public_key("_device_key")
+        .await
         .unwrap();
 
     // Add device key for database operations
@@ -934,6 +989,7 @@ pub fn setup_public_sync_enabled_server(
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
+        .await
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
@@ -950,6 +1006,7 @@ pub fn setup_public_sync_enabled_server(
                 properties: Default::default(),
             },
         })
+        .await
         .unwrap();
 
     // Sync the user database to update combined settings
@@ -957,6 +1014,7 @@ pub fn setup_public_sync_enabled_server(
         server_user.user_uuid(),
         server_user.user_database().root_id(),
     )
+    .await
     .unwrap();
 
     (

@@ -12,24 +12,32 @@ use eidetica::store::DocStore;
 
 // ===== MULTI-USER COLLABORATION SCENARIOS =====
 
-#[test]
-fn test_independent_users_coexist() {
+#[tokio::test]
+async fn test_independent_users_coexist() {
     let (instance, _) = setup_instance_with_users(&[
         ("alice", None),
         ("bob", Some("bob_pass")),
         ("charlie", None),
-    ]);
+    ])
+    .await;
 
     // All users login and create databases
-    let mut alice = instance.login_user("alice", None).expect("Alice login");
+    let mut alice = instance
+        .login_user("alice", None)
+        .await
+        .expect("Alice login");
     let mut bob = instance
         .login_user("bob", Some("bob_pass"))
+        .await
         .expect("Bob login");
-    let mut charlie = instance.login_user("charlie", None).expect("Charlie login");
+    let mut charlie = instance
+        .login_user("charlie", None)
+        .await
+        .expect("Charlie login");
 
-    let alice_db = create_named_database(&mut alice, "Alice DB");
-    let bob_db = create_named_database(&mut bob, "Bob DB");
-    let charlie_db = create_named_database(&mut charlie, "Charlie DB");
+    let alice_db = create_named_database(&mut alice, "Alice DB").await;
+    let bob_db = create_named_database(&mut bob, "Bob DB").await;
+    let charlie_db = create_named_database(&mut charlie, "Charlie DB").await;
 
     // Each writes their own data
     for (db, data) in [
@@ -37,65 +45,78 @@ fn test_independent_users_coexist() {
         (&bob_db, "bob_data"),
         (&charlie_db, "charlie_data"),
     ] {
-        let tx = db.new_transaction().expect("Transaction");
+        let tx = db.new_transaction().await.expect("Transaction");
         {
-            let store = tx.get_store::<DocStore>("data").expect("Store");
-            store.set("owner", data).expect("Write");
+            let store = tx.get_store::<DocStore>("data").await.expect("Store");
+            store.set("owner", data).await.expect("Write");
         }
-        tx.commit().expect("Commit");
+        tx.commit().await.expect("Commit");
     }
 
     // Verify data is independent
-    let alice_tx = alice_db.new_transaction().expect("Alice tx");
-    let alice_store = alice_tx.get_store::<DocStore>("data").expect("Alice store");
+    let alice_tx = alice_db.new_transaction().await.expect("Alice tx");
+    let alice_store = alice_tx
+        .get_store::<DocStore>("data")
+        .await
+        .expect("Alice store");
     assert_eq!(
-        alice_store.get("owner").expect("Read").as_text(),
+        alice_store.get("owner").await.expect("Read").as_text(),
         Some("alice_data")
     );
 
-    let bob_tx = bob_db.new_transaction().expect("Bob tx");
-    let bob_store = bob_tx.get_store::<DocStore>("data").expect("Bob store");
+    let bob_tx = bob_db.new_transaction().await.expect("Bob tx");
+    let bob_store = bob_tx
+        .get_store::<DocStore>("data")
+        .await
+        .expect("Bob store");
     assert_eq!(
-        bob_store.get("owner").expect("Read").as_text(),
+        bob_store.get("owner").await.expect("Read").as_text(),
         Some("bob_data")
     );
 
-    let charlie_tx = charlie_db.new_transaction().expect("Charlie tx");
+    let charlie_tx = charlie_db.new_transaction().await.expect("Charlie tx");
     let charlie_store = charlie_tx
         .get_store::<DocStore>("data")
+        .await
         .expect("Charlie store");
     assert_eq!(
-        charlie_store.get("owner").expect("Read").as_text(),
+        charlie_store.get("owner").await.expect("Read").as_text(),
         Some("charlie_data")
     );
 }
 
 // ===== REALISTIC MULTI-DEVICE SCENARIOS =====
 
-#[test]
-fn test_multi_device_key_management_and_database_access() {
-    let (instance, username) = setup_instance_with_user("alice", None);
+#[tokio::test]
+async fn test_multi_device_key_management_and_database_access() {
+    let (instance, username) = setup_instance_with_user("alice", None).await;
 
     // Session 1: Desktop - Create user's first database with default key
-    let mut user1 = instance.login_user(&username, None).expect("Desktop login");
+    let mut user1 = instance
+        .login_user(&username, None)
+        .await
+        .expect("Desktop login");
     let default_key = user1.get_default_key().expect("Get default key");
 
-    let db1 = create_named_database(&mut user1, "Shared Notes");
+    let db1 = create_named_database(&mut user1, "Shared Notes").await;
     let db1_id = db1.root_id().clone();
 
     // Desktop writes some data
-    let tx = db1.new_transaction().expect("Desktop write");
+    let tx = db1.new_transaction().await.expect("Desktop write");
     {
-        let store = tx.get_store::<DocStore>("notes").expect("Store");
-        store.set("note1", "Desktop note").expect("Write");
+        let store = tx.get_store::<DocStore>("notes").await.expect("Store");
+        store.set("note1", "Desktop note").await.expect("Write");
     }
-    tx.commit().expect("Commit");
+    tx.commit().await.expect("Commit");
 
     user1.logout().expect("Desktop logout");
 
     // Session 2: Laptop - User adds laptop key and creates another database
-    let mut user2 = instance.login_user(&username, None).expect("Laptop login");
-    let laptop_key = add_user_key(&mut user2, Some("Laptop"));
+    let mut user2 = instance
+        .login_user(&username, None)
+        .await
+        .expect("Laptop login");
+    let laptop_key = add_user_key(&mut user2, Some("Laptop")).await;
 
     let db2 = user2
         .create_database(
@@ -106,23 +127,30 @@ fn test_multi_device_key_management_and_database_access() {
             },
             &laptop_key,
         )
+        .await
         .expect("Create laptop database");
     let db2_id = db2.root_id().clone();
 
     // Laptop can also access the shared database (created with default key)
-    let db1_from_laptop = user2.open_database(&db1_id).expect("Load shared db");
-    let tx2 = db1_from_laptop.new_transaction().expect("Laptop read");
-    let store2 = tx2.get_store::<DocStore>("notes").expect("Store");
+    let db1_from_laptop = user2.open_database(&db1_id).await.expect("Load shared db");
+    let tx2 = db1_from_laptop
+        .new_transaction()
+        .await
+        .expect("Laptop read");
+    let store2 = tx2.get_store::<DocStore>("notes").await.expect("Store");
     assert_eq!(
-        store2.get("note1").expect("Read").as_text(),
+        store2.get("note1").await.expect("Read").as_text(),
         Some("Desktop note")
     );
 
     user2.logout().expect("Laptop logout");
 
     // Session 3: Phone - User adds phone key and verifies access to both databases
-    let mut user3 = instance.login_user(&username, None).expect("Phone login");
-    let _phone_key = add_user_key(&mut user3, Some("Phone"));
+    let mut user3 = instance
+        .login_user(&username, None)
+        .await
+        .expect("Phone login");
+    let _phone_key = add_user_key(&mut user3, Some("Phone")).await;
 
     // Phone should have 3 keys now (default, laptop, phone)
     assert_user_key_count(&user3, 3);
@@ -132,28 +160,36 @@ fn test_multi_device_key_management_and_database_access() {
     // Phone can access both databases through their respective keys
     let db1_from_phone = user3
         .open_database(&db1_id)
+        .await
         .expect("Load shared db from phone");
-    assert_database_name(&db1_from_phone, "Shared Notes");
+    assert_database_name(&db1_from_phone, "Shared Notes").await;
 
     let db2_from_phone = user3
         .open_database(&db2_id)
+        .await
         .expect("Load laptop db from phone");
-    assert_database_name(&db2_from_phone, "Laptop Work");
+    assert_database_name(&db2_from_phone, "Laptop Work").await;
 }
 
-#[test]
-fn test_team_scenario_multiple_users_own_databases() {
+#[tokio::test]
+async fn test_team_scenario_multiple_users_own_databases() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]);
+        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // Each team member creates their own project database
-    let mut alice = instance.login_user("alice", None).expect("Alice login");
-    let mut bob = instance.login_user("bob", None).expect("Bob login");
-    let mut charlie = instance.login_user("charlie", None).expect("Charlie login");
+    let mut alice = instance
+        .login_user("alice", None)
+        .await
+        .expect("Alice login");
+    let mut bob = instance.login_user("bob", None).await.expect("Bob login");
+    let mut charlie = instance
+        .login_user("charlie", None)
+        .await
+        .expect("Charlie login");
 
-    let alice_project = create_named_database(&mut alice, "Frontend");
-    let bob_project = create_named_database(&mut bob, "Backend");
-    let charlie_project = create_named_database(&mut charlie, "Database");
+    let alice_project = create_named_database(&mut alice, "Frontend").await;
+    let bob_project = create_named_database(&mut bob, "Backend").await;
+    let charlie_project = create_named_database(&mut charlie, "Database").await;
 
     // Each adds project-specific data
     for (db, component, progress) in [
@@ -161,49 +197,64 @@ fn test_team_scenario_multiple_users_own_databases() {
         (&bob_project, "API", 50),
         (&charlie_project, "Schema", 90),
     ] {
-        let tx = db.new_transaction().expect("Transaction");
+        let tx = db.new_transaction().await.expect("Transaction");
         {
-            let store = tx.get_store::<DocStore>("status").expect("Store");
-            store.set("component", component).expect("Write component");
-            store.set("progress", progress).expect("Write progress");
+            let store = tx.get_store::<DocStore>("status").await.expect("Store");
+            store
+                .set("component", component)
+                .await
+                .expect("Write component");
+            store
+                .set("progress", progress)
+                .await
+                .expect("Write progress");
         }
-        tx.commit().expect("Commit");
+        tx.commit().await.expect("Commit");
     }
 
     // Verify each has their own data
-    let alice_tx = alice_project.new_transaction().expect("Alice tx");
+    let alice_tx = alice_project.new_transaction().await.expect("Alice tx");
     let alice_store = alice_tx
         .get_store::<DocStore>("status")
+        .await
         .expect("Alice store");
     assert_eq!(
-        alice_store.get("component").expect("Read").as_text(),
+        alice_store.get("component").await.expect("Read").as_text(),
         Some("React")
     );
-    assert_eq!(alice_store.get("progress").expect("Read"), 75);
+    assert_eq!(alice_store.get("progress").await.expect("Read"), 75);
 
-    let bob_tx = bob_project.new_transaction().expect("Bob tx");
-    let bob_store = bob_tx.get_store::<DocStore>("status").expect("Bob store");
+    let bob_tx = bob_project.new_transaction().await.expect("Bob tx");
+    let bob_store = bob_tx
+        .get_store::<DocStore>("status")
+        .await
+        .expect("Bob store");
     assert_eq!(
-        bob_store.get("component").expect("Read").as_text(),
+        bob_store.get("component").await.expect("Read").as_text(),
         Some("API")
     );
-    assert_eq!(bob_store.get("progress").expect("Read"), 50);
+    assert_eq!(bob_store.get("progress").await.expect("Read"), 50);
 
-    let charlie_tx = charlie_project.new_transaction().expect("Charlie tx");
+    let charlie_tx = charlie_project.new_transaction().await.expect("Charlie tx");
     let charlie_store = charlie_tx
         .get_store::<DocStore>("status")
+        .await
         .expect("Charlie store");
     assert_eq!(
-        charlie_store.get("component").expect("Read").as_text(),
+        charlie_store
+            .get("component")
+            .await
+            .expect("Read")
+            .as_text(),
         Some("Schema")
     );
-    assert_eq!(charlie_store.get("progress").expect("Read"), 90);
+    assert_eq!(charlie_store.get("progress").await.expect("Read"), 90);
 }
 
 // ===== GLOBAL PERMISSION COLLABORATIVE DATABASE SCENARIOS =====
 
-#[test]
-fn test_collaborative_database_with_global_permissions() {
+#[tokio::test]
+async fn test_collaborative_database_with_global_permissions() {
     use eidetica::{
         Database,
         auth::{
@@ -219,10 +270,10 @@ fn test_collaborative_database_with_global_permissions() {
     // Setup two users on the same instance
     let alice_name = "alice";
     let bob_name = "bob";
-    let (instance, _) = setup_instance_with_users(&[(alice_name, None), (bob_name, None)]);
+    let (instance, _) = setup_instance_with_users(&[(alice_name, None), (bob_name, None)]).await;
 
     // Alice logs in and creates a database with global Write(10) permission
-    let mut alice = login_user(&instance, alice_name, None);
+    let mut alice = login_user(&instance, alice_name, None).await;
     let alice_key = alice.get_default_key().expect("Alice get default key");
 
     let mut alice_db_settings = Doc::new();
@@ -250,32 +301,38 @@ fn test_collaborative_database_with_global_permissions() {
     // Create the new database with alice_key as the owner
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
+        .await
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
 
     // Alice writes initial data
     {
-        let tx = alice_db.new_transaction().expect("Alice transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
-        store.set("project", "Eidetica").expect("Write project");
+        let tx = alice_db.new_transaction().await.expect("Alice transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+        store
+            .set("project", "Eidetica")
+            .await
+            .expect("Write project");
         store
             .set("status", "Alice started the workspace")
+            .await
             .expect("Write status");
-        tx.commit().expect("Alice commits");
+        tx.commit().await.expect("Alice commits");
     }
     println!("✅ Alice created database with global Write(10) permission and added initial data");
 
     alice.logout().expect("Alice logout");
 
     // Bob logs in and discovers he can access the database
-    let mut bob = login_user(&instance, bob_name, None);
+    let mut bob = login_user(&instance, bob_name, None).await;
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob discovers available SigKeys for his public key
     let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
 
-    let sigkeys =
-        Database::find_sigkeys(&instance, &db_id, &bob_pubkey).expect("Bob discovers SigKeys");
+    let sigkeys = Database::find_sigkeys(&instance, &db_id, &bob_pubkey)
+        .await
+        .expect("Bob discovers SigKeys");
 
     // Should find the global "*" permission
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
@@ -296,24 +353,28 @@ fn test_collaborative_database_with_global_permissions() {
 
     // Bob adds the database key mapping to his user preferences
     bob.map_key(&bob_key, &db_id, "*")
+        .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
-    let bob_db = bob.open_database(&db_id).expect("Bob loads database");
-    assert_database_name(&bob_db, "Team Workspace");
+    let bob_db = bob.open_database(&db_id).await.expect("Bob loads database");
+    assert_database_name(&bob_db, "Team Workspace").await;
     println!("✅ Bob successfully loaded the database");
 
     // Bob reads Alice's data
     {
-        let tx = bob_db.new_transaction().expect("Bob read transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        let tx = bob_db
+            .new_transaction()
+            .await
+            .expect("Bob read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
         assert_eq!(
-            store.get("project").expect("Read").as_text(),
+            store.get("project").await.expect("Read").as_text(),
             Some("Eidetica")
         );
         assert_eq!(
-            store.get("status").expect("Read").as_text(),
+            store.get("status").await.expect("Read").as_text(),
             Some("Alice started the workspace")
         );
     }
@@ -321,37 +382,48 @@ fn test_collaborative_database_with_global_permissions() {
 
     // Bob makes changes (Write permission allows this)
     {
-        let tx = bob_db.new_transaction().expect("Bob write transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
-        store.set("contributor", "Bob").expect("Write contributor");
+        let tx = bob_db
+            .new_transaction()
+            .await
+            .expect("Bob write transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+        store
+            .set("contributor", "Bob")
+            .await
+            .expect("Write contributor");
         store
             .set("status", "Bob joined and contributed")
+            .await
             .expect("Update status");
-        tx.commit().expect("Bob commits changes");
+        tx.commit().await.expect("Bob commits changes");
     }
     println!("✅ Bob committed changes successfully");
 
     bob.logout().expect("Bob logout");
 
     // Alice logs back in and sees Bob's changes
-    let alice2 = login_user(&instance, alice_name, None);
+    let alice2 = login_user(&instance, alice_name, None).await;
     let alice_db2 = alice2
         .open_database(&db_id)
+        .await
         .expect("Alice reloads database");
 
     {
-        let tx = alice_db2.new_transaction().expect("Alice read transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        let tx = alice_db2
+            .new_transaction()
+            .await
+            .expect("Alice read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
         assert_eq!(
-            store.get("project").expect("Read").as_text(),
+            store.get("project").await.expect("Read").as_text(),
             Some("Eidetica")
         );
         assert_eq!(
-            store.get("contributor").expect("Read").as_text(),
+            store.get("contributor").await.expect("Read").as_text(),
             Some("Bob")
         );
         assert_eq!(
-            store.get("status").expect("Read").as_text(),
+            store.get("status").await.expect("Read").as_text(),
             Some("Bob joined and contributed")
         );
     }
@@ -379,17 +451,20 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === ALICE'S INSTANCE (Server) ===
     println!("\n👤 Setting up Alice's instance...");
-    let alice_instance = test_instance();
+    let alice_instance = test_instance().await;
     alice_instance
         .enable_sync()
+        .await
         .expect("Failed to enable sync for Alice");
 
     // Create Alice's user account
     alice_instance
         .create_user("alice", None)
+        .await
         .expect("Failed to create Alice");
     let mut alice = alice_instance
         .login_user("alice", None)
+        .await
         .expect("Failed to login Alice");
     let alice_key = alice.get_default_key().expect("Alice get default key");
 
@@ -419,18 +494,23 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     // Create the new database with alice_key as the owner
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
+        .await
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
 
     // Alice writes initial data
     {
-        let tx = alice_db.new_transaction().expect("Alice transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
-        store.set("project", "Eidetica").expect("Write project");
+        let tx = alice_db.new_transaction().await.expect("Alice transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+        store
+            .set("project", "Eidetica")
+            .await
+            .expect("Write project");
         store
             .set("status", "Alice started the workspace")
+            .await
             .expect("Write status");
-        tx.commit().expect("Alice commits");
+        tx.commit().await.expect("Alice commits");
     }
     println!("✅ Alice created database {db_id} with global Write(10) permission");
 
@@ -447,12 +527,14 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
                 properties: Default::default(),
             },
         })
+        .await
         .expect("Failed to add database to Alice's preferences");
 
     // Sync the user database to update combined settings
     let alice_sync = alice_instance.sync().expect("Alice should have sync");
     alice_sync
         .sync_user(alice.user_uuid(), alice.user_database().root_id())
+        .await
         .expect("Failed to sync Alice's user database");
 
     // Alice starts sync server
@@ -478,17 +560,20 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // === BOB'S INSTANCE (Client) ===
     println!("\n👤 Setting up Bob's instance (separate from Alice)...");
-    let bob_instance = test_instance();
+    let bob_instance = test_instance().await;
     bob_instance
         .enable_sync()
+        .await
         .expect("Failed to enable sync for Bob");
 
     // Create Bob's user account
     bob_instance
         .create_user("bob", None)
+        .await
         .expect("Failed to create Bob");
     let mut bob = bob_instance
         .login_user("bob", None)
+        .await
         .expect("Failed to login Bob");
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
@@ -515,8 +600,9 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("\n🔍 Bob discovering available SigKeys...");
     let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
 
-    let sigkeys =
-        Database::find_sigkeys(&bob_instance, &db_id, &bob_pubkey).expect("Bob discovers SigKeys");
+    let sigkeys = Database::find_sigkeys(&bob_instance, &db_id, &bob_pubkey)
+        .await
+        .expect("Bob discovers SigKeys");
 
     // Should find the global "*" permission
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
@@ -531,23 +617,27 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Bob adds the database key mapping to his user preferences
     bob.map_key(&bob_key, &db_id, "*")
+        .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
 
     // Bob loads the database
-    let bob_db = bob.open_database(&db_id).expect("Bob loads database");
+    let bob_db = bob.open_database(&db_id).await.expect("Bob loads database");
     println!("✅ Bob successfully loaded the database");
 
     // Bob reads Alice's data
     {
-        let tx = bob_db.new_transaction().expect("Bob read transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        let tx = bob_db
+            .new_transaction()
+            .await
+            .expect("Bob read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
         assert_eq!(
-            store.get("project").expect("Read").as_text(),
+            store.get("project").await.expect("Read").as_text(),
             Some("Eidetica")
         );
         assert_eq!(
-            store.get("status").expect("Read").as_text(),
+            store.get("status").await.expect("Read").as_text(),
             Some("Alice started the workspace")
         );
     }
@@ -555,13 +645,20 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Bob makes changes
     {
-        let tx = bob_db.new_transaction().expect("Bob write transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
-        store.set("contributor", "Bob").expect("Write contributor");
+        let tx = bob_db
+            .new_transaction()
+            .await
+            .expect("Bob write transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
+        store
+            .set("contributor", "Bob")
+            .await
+            .expect("Write contributor");
         store
             .set("status", "Bob joined and contributed")
+            .await
             .expect("Update status");
-        tx.commit().expect("Bob commits changes");
+        tx.commit().await.expect("Bob commits changes");
     }
     println!("✅ Bob committed changes successfully");
 
@@ -584,25 +681,30 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("\n🔍 Alice logging back in to verify Bob's changes...");
     let alice2 = alice_instance
         .login_user("alice", None)
+        .await
         .expect("Alice re-login");
     let alice_db2 = alice2
         .open_database(&db_id)
+        .await
         .expect("Alice reloads database");
 
     {
-        let tx = alice_db2.new_transaction().expect("Alice read transaction");
-        let store = tx.get_store::<DocStore>("team_notes").expect("Store");
+        let tx = alice_db2
+            .new_transaction()
+            .await
+            .expect("Alice read transaction");
+        let store = tx.get_store::<DocStore>("team_notes").await.expect("Store");
         assert_eq!(
-            store.get("project").expect("Read").as_text(),
+            store.get("project").await.expect("Read").as_text(),
             Some("Eidetica")
         );
         assert_eq!(
-            store.get("contributor").expect("Read").as_text(),
+            store.get("contributor").await.expect("Read").as_text(),
             Some("Bob"),
             "Alice should see Bob's contribution"
         );
         assert_eq!(
-            store.get("status").expect("Read").as_text(),
+            store.get("status").await.expect("Read").as_text(),
             Some("Bob joined and contributed"),
             "Alice should see Bob's status update"
         );

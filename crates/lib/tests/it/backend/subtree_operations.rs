@@ -2,8 +2,8 @@ use eidetica::entry::{Entry, ID};
 
 use super::helpers::test_backend;
 
-#[test]
-fn test_backend_subtree_operations() {
+#[tokio::test]
+async fn test_backend_subtree_operations() {
     let backend = test_backend();
 
     // Create a root entry with a subtree
@@ -12,7 +12,7 @@ fn test_backend_subtree_operations() {
         .build()
         .expect("Entry should build successfully");
     let root_id = root_entry.id();
-    backend.put_verified(root_entry).unwrap();
+    backend.put_verified(root_entry).await.unwrap();
 
     // Create child entry with subtree
     let child_entry = Entry::builder(root_id.clone())
@@ -22,24 +22,24 @@ fn test_backend_subtree_operations() {
         .build()
         .expect("Entry should build successfully");
     let child_id = child_entry.id();
-    backend.put_verified(child_entry).unwrap();
+    backend.put_verified(child_entry).await.unwrap();
 
     // Test get_store_tips
-    let subtree_tips_result = backend.get_store_tips(&root_id, "subtree1");
+    let subtree_tips_result = backend.get_store_tips(&root_id, "subtree1").await;
     assert!(subtree_tips_result.is_ok());
     let subtree_tips = subtree_tips_result.unwrap();
     assert_eq!(subtree_tips.len(), 1);
     assert_eq!(subtree_tips[0], child_id);
 
     // Test get_subtree
-    let subtree_result = backend.get_store(&root_id, "subtree1");
+    let subtree_result = backend.get_store(&root_id, "subtree1").await;
     assert!(subtree_result.is_ok());
     let subtree = subtree_result.unwrap();
     assert_eq!(subtree.len(), 2); // root + child
 }
 
-#[test]
-fn test_backend_get_store_from_tips() {
+#[tokio::test]
+async fn test_backend_get_store_from_tips() {
     let backend = test_backend();
     let subtree_name = "my_subtree";
 
@@ -54,14 +54,14 @@ fn test_backend_get_store_from_tips() {
         .build()
         .expect("Entry should build successfully");
     let root_entry_id = entry_root.id();
-    backend.put_verified(entry_root).unwrap();
+    backend.put_verified(entry_root).await.unwrap();
 
     let e1 = Entry::builder(root_entry_id.clone())
         .add_parent(root_entry_id.clone())
         .build()
         .expect("Entry should build successfully");
     let e1_id = e1.id();
-    backend.put_verified(e1).unwrap();
+    backend.put_verified(e1).await.unwrap();
 
     let e2a = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
@@ -70,7 +70,7 @@ fn test_backend_get_store_from_tips() {
         .build()
         .expect("Entry should build successfully");
     let e2a_id = e2a.id();
-    backend.put_verified(e2a).unwrap();
+    backend.put_verified(e2a).await.unwrap();
 
     let e2b = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
@@ -79,11 +79,12 @@ fn test_backend_get_store_from_tips() {
         .build()
         .expect("Entry should build successfully");
     let e2b_id = e2b.id();
-    backend.put_verified(e2b).unwrap();
+    backend.put_verified(e2b).await.unwrap();
 
     // --- Test with single tip e2a ---
     let subtree_e2a = backend
         .get_store_from_tips(&root_entry_id, subtree_name, std::slice::from_ref(&e2a_id))
+        .await
         .expect("Failed to get subtree from tip e2a");
     // Should contain root and e2a (which have the subtree), but not e1 (no subtree) or e2b (not in history of tip e2a)
     assert_eq!(
@@ -108,6 +109,7 @@ fn test_backend_get_store_from_tips() {
             subtree_name,
             &[e2a_id.clone(), e2b_id.clone()],
         )
+        .await
         .expect("Failed to get subtree from tips e2a, e2b");
     // Should contain root, e2a, e2b (all have the subtree)
     assert_eq!(
@@ -132,6 +134,7 @@ fn test_backend_get_store_from_tips() {
     // the result should be empty.
     let subtree_bad_name = backend
         .get_store_from_tips(&root_entry_id, "bad_name", std::slice::from_ref(&e2a_id))
+        .await
         .expect("Getting subtree with bad name should succeed");
     assert!(
         subtree_bad_name.is_empty(),
@@ -141,6 +144,7 @@ fn test_backend_get_store_from_tips() {
     // --- Test with non-existent tip ---
     let subtree_bad_tip = backend
         .get_store_from_tips(&root_entry_id, subtree_name, &["bad_tip_id".into()])
+        .await
         .expect("Failed to get subtree with non-existent tip");
     assert!(
         subtree_bad_tip.is_empty(),
@@ -153,6 +157,7 @@ fn test_backend_get_store_from_tips() {
     let bad_root_id_2: ID = "bad_root".into();
     let subtree_bad_root = backend
         .get_store_from_tips(&bad_root_id_2, subtree_name, std::slice::from_ref(&e1_id))
+        .await
         .expect("Failed to get subtree with non-existent root");
     assert!(
         subtree_bad_root.is_empty(),
@@ -163,6 +168,7 @@ fn test_backend_get_store_from_tips() {
     // This function should get the full subtree from current tips
     let full_subtree = backend
         .get_store(&root_entry_id, subtree_name)
+        .await
         .expect("Failed to get full subtree");
     assert_eq!(
         full_subtree.len(),
@@ -176,8 +182,8 @@ fn test_backend_get_store_from_tips() {
     assert!(full_subtree_ids.contains(&e2b_id));
 }
 
-#[test]
-fn test_get_store_tips() {
+#[tokio::test]
+async fn test_get_store_tips() {
     let backend = test_backend();
 
     // Create a tree with subtrees
@@ -190,6 +196,7 @@ fn test_get_store_tips() {
             eidetica::backend::VerificationStatus::Verified,
             root.clone(),
         )
+        .await
         .unwrap();
 
     // Add entry A with subtree "sub1"
@@ -199,10 +206,10 @@ fn test_get_store_tips() {
         .build()
         .expect("Entry should build successfully");
     let id_a = entry_a.id();
-    backend.put_verified(entry_a).unwrap();
+    backend.put_verified(entry_a).await.unwrap();
 
     // Initially, A is the only tip in subtree "sub1"
-    let sub1_tips = backend.get_store_tips(&root_id, "sub1").unwrap();
+    let sub1_tips = backend.get_store_tips(&root_id, "sub1").await.unwrap();
     assert_eq!(sub1_tips.len(), 1);
     assert_eq!(sub1_tips[0], id_a);
 
@@ -214,10 +221,10 @@ fn test_get_store_tips() {
         .build()
         .expect("Entry should build successfully");
     let id_b = entry_b.id();
-    backend.put_verified(entry_b).unwrap();
+    backend.put_verified(entry_b).await.unwrap();
 
     // Now B is the only tip in subtree "sub1"
-    let sub1_tips = backend.get_store_tips(&root_id, "sub1").unwrap();
+    let sub1_tips = backend.get_store_tips(&root_id, "sub1").await.unwrap();
     assert_eq!(sub1_tips.len(), 1);
     assert_eq!(sub1_tips[0], id_b);
 
@@ -228,15 +235,15 @@ fn test_get_store_tips() {
         .build()
         .expect("Entry should build successfully");
     let id_c = entry_c.id();
-    backend.put_verified(entry_c).unwrap();
+    backend.put_verified(entry_c).await.unwrap();
 
     // Check tips for subtree "sub1" (should still be just B)
-    let sub1_tips = backend.get_store_tips(&root_id, "sub1").unwrap();
+    let sub1_tips = backend.get_store_tips(&root_id, "sub1").await.unwrap();
     assert_eq!(sub1_tips.len(), 1);
     assert_eq!(sub1_tips[0], id_b);
 
     // Check tips for subtree "sub2" (should be just C)
-    let sub2_tips = backend.get_store_tips(&root_id, "sub2").unwrap();
+    let sub2_tips = backend.get_store_tips(&root_id, "sub2").await.unwrap();
     assert_eq!(sub2_tips.len(), 1);
     assert_eq!(sub2_tips[0], id_c);
 
@@ -251,14 +258,14 @@ fn test_get_store_tips() {
         .build()
         .expect("Entry should build successfully");
     let id_d = entry_d.id();
-    backend.put_verified(entry_d).unwrap();
+    backend.put_verified(entry_d).await.unwrap();
 
     // Now D should be the tip for both subtrees
-    let sub1_tips = backend.get_store_tips(&root_id, "sub1").unwrap();
+    let sub1_tips = backend.get_store_tips(&root_id, "sub1").await.unwrap();
     assert_eq!(sub1_tips.len(), 1);
     assert_eq!(sub1_tips[0], id_d);
 
-    let sub2_tips = backend.get_store_tips(&root_id, "sub2").unwrap();
+    let sub2_tips = backend.get_store_tips(&root_id, "sub2").await.unwrap();
     assert_eq!(sub2_tips.len(), 1);
     assert_eq!(sub2_tips[0], id_d);
 }

@@ -36,82 +36,82 @@ pub struct SimpleRecord {
 // ===== DICT OPERATION HELPERS =====
 
 /// Create and commit a basic Doc operation with key-value data
-pub fn create_dict_operation(
+pub async fn create_dict_operation(
     tree: &eidetica::Database,
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let op = tree.new_transaction().unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
 
     for (key, value) in data {
-        dict.set(*key, *value).unwrap();
+        dict.set(*key, *value).await.unwrap();
     }
 
-    op.commit().unwrap()
+    op.commit().await.unwrap()
 }
 
 /// Create Doc operation with nested Map values
-pub fn create_dict_with_nested_map(
+pub async fn create_dict_with_nested_map(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> eidetica::entry::ID {
-    let op = tree.new_transaction().unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
 
     // Set regular string
-    dict.set("key1", "value1").unwrap();
+    dict.set("key1", "value1").await.unwrap();
 
     // Set nested map
     let mut nested = Doc::new();
     nested.set("inner", "nested_value");
-    dict.set_value("key2", Value::Doc(nested)).unwrap();
+    dict.set_value("key2", Value::Doc(nested)).await.unwrap();
 
-    op.commit().unwrap()
+    op.commit().await.unwrap()
 }
 
 /// Create Doc operation with List values
-pub fn create_dict_with_list(
+pub async fn create_dict_with_list(
     tree: &eidetica::Database,
     subtree_name: &str,
     list_items: &[&str],
 ) -> eidetica::entry::ID {
-    let op = tree.new_transaction().unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
 
     let mut fruits = eidetica::crdt::doc::List::new();
     for item in list_items {
         fruits.push(Value::Text(item.to_string()));
     }
 
-    dict.set_list("fruits", fruits).unwrap();
-    op.commit().unwrap()
+    dict.set_list("fruits", fruits).await.unwrap();
+    op.commit().await.unwrap()
 }
 
 /// Test multiple Doc operations across commits
-pub fn test_dict_persistence(
+pub async fn test_dict_persistence(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> Vec<eidetica::entry::ID> {
     let mut entry_ids = Vec::new();
 
     // Op 1: Initial data
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = tree.new_transaction().await.unwrap();
     {
-        let dict = op1.get_store::<DocStore>(subtree_name).unwrap();
-        dict.set("key_a", "val_a").unwrap();
-        dict.set("key_b", "val_b").unwrap();
+        let dict = op1.get_store::<DocStore>(subtree_name).await.unwrap();
+        dict.set("key_a", "val_a").await.unwrap();
+        dict.set("key_b", "val_b").await.unwrap();
     }
-    entry_ids.push(op1.commit().unwrap());
+    entry_ids.push(op1.commit().await.unwrap());
 
     // Op 2: Update one, add another
-    let op2 = tree.new_transaction().unwrap();
+    let op2 = tree.new_transaction().await.unwrap();
     {
-        let dict = op2.get_store::<DocStore>(subtree_name).unwrap();
-        dict.set("key_b", "val_b_updated").unwrap();
-        dict.set("key_c", "val_c").unwrap();
+        let dict = op2.get_store::<DocStore>(subtree_name).await.unwrap();
+        dict.set("key_b", "val_b_updated").await.unwrap();
+        dict.set("key_c", "val_c").await.unwrap();
     }
-    entry_ids.push(op2.commit().unwrap());
+    entry_ids.push(op2.commit().await.unwrap());
 
     entry_ids
 }
@@ -119,37 +119,46 @@ pub fn test_dict_persistence(
 // ===== DICT VERIFICATION HELPERS =====
 
 /// Verify Doc has expected key-value pairs using viewer
-pub fn assert_dict_viewer_data(
+pub async fn assert_dict_viewer_data(
     tree: &eidetica::Database,
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
+    let viewer = tree
+        .get_store_viewer::<DocStore>(subtree_name)
+        .await
+        .unwrap();
     for (key, expected_value) in expected_data {
-        assert_dict_value(&viewer, key, expected_value);
+        assert_dict_value(&viewer, key, expected_value).await;
     }
 }
 
 /// Verify Doc viewer shows correct number of entries
-pub fn assert_dict_viewer_count(
+pub async fn assert_dict_viewer_count(
     tree: &eidetica::Database,
     subtree_name: &str,
     expected_count: usize,
 ) {
-    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
-    let all_data = viewer.get_all().unwrap();
+    let viewer = tree
+        .get_store_viewer::<DocStore>(subtree_name)
+        .await
+        .unwrap();
+    let all_data = viewer.get_all().await.unwrap();
     assert_eq!(all_data.len(), expected_count);
 }
 
 /// Verify Doc viewer List operations
-pub fn assert_dict_list_data(
+pub async fn assert_dict_list_data(
     tree: &eidetica::Database,
     subtree_name: &str,
     list_key: &str,
     expected_items: &[&str],
 ) {
-    let viewer = tree.get_store_viewer::<DocStore>(subtree_name).unwrap();
-    let list = viewer.get_as::<List>(list_key).unwrap();
+    let viewer = tree
+        .get_store_viewer::<DocStore>(subtree_name)
+        .await
+        .unwrap();
+    let list = viewer.get_as::<List>(list_key).await.unwrap();
 
     assert_eq!(list.len(), expected_items.len());
     for (i, expected_item) in expected_items.iter().enumerate() {
@@ -158,8 +167,8 @@ pub fn assert_dict_list_data(
 }
 
 /// Verify nested Map structure in DocStore
-pub fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&str, &str)]) {
-    match dict.get(map_key).unwrap() {
+pub async fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&str, &str)]) {
+    match dict.get(map_key).await.unwrap() {
         Value::Doc(map) => {
             for (key, expected_value) in nested_data {
                 match map.get(key) {
@@ -176,13 +185,13 @@ pub fn assert_dict_nested_map(dict: &DocStore, map_key: &str, nested_data: &[(&s
 
 #[cfg(feature = "y-crdt")]
 /// Create YDoc operation with text content
-pub fn create_ydoc_text_operation(
+pub async fn create_ydoc_text_operation(
     tree: &eidetica::Database,
     subtree_name: &str,
     text_content: &str,
 ) -> eidetica::entry::ID {
-    let op = tree.new_transaction().unwrap();
-    let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let ydoc = op.get_store::<YDoc>(subtree_name).await.unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let text = doc.get_or_insert_text("document");
@@ -190,20 +199,21 @@ pub fn create_ydoc_text_operation(
         text.insert(&mut txn, 0, text_content);
         Ok(())
     })
+    .await
     .unwrap();
 
-    op.commit().unwrap()
+    op.commit().await.unwrap()
 }
 
 #[cfg(feature = "y-crdt")]
 /// Create YDoc operation with map data
-pub fn create_ydoc_map_operation(
+pub async fn create_ydoc_map_operation(
     tree: &eidetica::Database,
     subtree_name: &str,
     map_data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let op = tree.new_transaction().unwrap();
-    let ydoc = op.get_store::<YDoc>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let ydoc = op.get_store::<YDoc>(subtree_name).await.unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let map = doc.get_or_insert_map("root");
@@ -213,21 +223,22 @@ pub fn create_ydoc_map_operation(
         }
         Ok(())
     })
+    .await
     .unwrap();
 
-    op.commit().unwrap()
+    op.commit().await.unwrap()
 }
 
 #[cfg(feature = "y-crdt")]
 /// Test incremental YDoc updates and verify diff sizes
-pub fn test_ydoc_incremental_updates(
+pub async fn test_ydoc_incremental_updates(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> (usize, usize) {
     // Large initial content
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = tree.new_transaction().await.unwrap();
     let first_diff_size = {
-        let ydoc = op1.get_store::<YDoc>(subtree_name).unwrap();
+        let ydoc = op1.get_store::<YDoc>(subtree_name).await.unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
@@ -236,41 +247,43 @@ pub fn test_ydoc_incremental_updates(
             text.insert(&mut txn, 0, &large_content);
             Ok(())
         })
+        .await
         .unwrap();
 
         let local_diff: eidetica::store::YrsBinary = op1.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
-    op1.commit().unwrap();
+    op1.commit().await.unwrap();
 
     // Small incremental change
-    let op2 = tree.new_transaction().unwrap();
+    let op2 = tree.new_transaction().await.unwrap();
     let second_diff_size = {
-        let ydoc = op2.get_store::<YDoc>(subtree_name).unwrap();
+        let ydoc = op2.get_store::<YDoc>(subtree_name).await.unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
             text.insert(&mut txn, 12, " SMALL_CHANGE");
             Ok(())
         })
+        .await
         .unwrap();
 
         let local_diff: eidetica::store::YrsBinary = op2.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
-    op2.commit().unwrap();
+    op2.commit().await.unwrap();
 
     (first_diff_size, second_diff_size)
 }
 
 #[cfg(feature = "y-crdt")]
 /// Verify YDoc text content using viewer
-pub fn assert_ydoc_text_content(
+pub async fn assert_ydoc_text_content(
     tree: &eidetica::Database,
     subtree_name: &str,
     expected_text: &str,
 ) {
-    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).await.unwrap();
     viewer
         .with_doc(|doc| {
             let text = doc.get_or_insert_text("document");
@@ -279,17 +292,18 @@ pub fn assert_ydoc_text_content(
             assert_eq!(content, expected_text);
             Ok(())
         })
+        .await
         .unwrap();
 }
 
 #[cfg(feature = "y-crdt")]
 /// Verify YDoc map content using viewer
-pub fn assert_ydoc_map_content(
+pub async fn assert_ydoc_map_content(
     tree: &eidetica::Database,
     subtree_name: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).unwrap();
+    let viewer = tree.get_store_viewer::<YDoc>(subtree_name).await.unwrap();
     viewer
         .with_doc(|doc| {
             let map = doc.get_or_insert_map("root");
@@ -303,6 +317,7 @@ pub fn assert_ydoc_map_content(
             }
             Ok(())
         })
+        .await
         .unwrap();
 }
 
@@ -322,53 +337,62 @@ pub fn create_external_ydoc_update(content: &str) -> Vec<u8> {
 // ===== TABLE OPERATION HELPERS =====
 
 /// Create and commit a Table operation with TestRecord data
-pub fn create_table_operation(
+pub async fn create_table_operation(
     tree: &eidetica::Database,
     subtree_name: &str,
     records: &[TestRecord],
 ) -> Vec<String> {
-    let op = tree.new_transaction().unwrap();
-    let table = op.get_store::<Table<TestRecord>>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let table = op
+        .get_store::<Table<TestRecord>>(subtree_name)
+        .await
+        .unwrap();
 
     let mut keys = Vec::new();
     for record in records {
-        let key = table.insert(record.clone()).unwrap();
+        let key = table.insert(record.clone()).await.unwrap();
         keys.push(key);
     }
 
-    op.commit().unwrap();
+    op.commit().await.unwrap();
     keys
 }
 
 /// Create Table operation with SimpleRecord data
-pub fn create_simple_table_operation(
+pub async fn create_simple_table_operation(
     tree: &eidetica::Database,
     subtree_name: &str,
     values: &[i32],
 ) -> Vec<String> {
-    let op = tree.new_transaction().unwrap();
-    let table = op.get_store::<Table<SimpleRecord>>(subtree_name).unwrap();
+    let op = tree.new_transaction().await.unwrap();
+    let table = op
+        .get_store::<Table<SimpleRecord>>(subtree_name)
+        .await
+        .unwrap();
 
     let mut keys = Vec::new();
     for value in values {
         let record = SimpleRecord { value: *value };
-        let key = table.insert(record).unwrap();
+        let key = table.insert(record).await.unwrap();
         keys.push(key);
     }
 
-    op.commit().unwrap();
+    op.commit().await.unwrap();
     keys
 }
 
 /// Test Table multi-operation workflow
-pub fn test_table_multi_operations(
+pub async fn test_table_multi_operations(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> (String, String, String) {
     // Op 1: Insert initial records
-    let op1 = tree.new_transaction().unwrap();
+    let op1 = tree.new_transaction().await.unwrap();
     let (key1, key2) = {
-        let table = op1.get_store::<Table<TestRecord>>(subtree_name).unwrap();
+        let table = op1
+            .get_store::<Table<TestRecord>>(subtree_name)
+            .await
+            .unwrap();
 
         let record1 = TestRecord {
             name: "Initial User 1".to_string(),
@@ -381,16 +405,19 @@ pub fn test_table_multi_operations(
             email: "user2@initial.com".to_string(),
         };
 
-        let k1 = table.insert(record1).unwrap();
-        let k2 = table.insert(record2).unwrap();
+        let k1 = table.insert(record1).await.unwrap();
+        let k2 = table.insert(record2).await.unwrap();
         (k1, k2)
     };
-    op1.commit().unwrap();
+    op1.commit().await.unwrap();
 
     // Op 2: Update and add
-    let op2 = tree.new_transaction().unwrap();
+    let op2 = tree.new_transaction().await.unwrap();
     let key3 = {
-        let table = op2.get_store::<Table<TestRecord>>(subtree_name).unwrap();
+        let table = op2
+            .get_store::<Table<TestRecord>>(subtree_name)
+            .await
+            .unwrap();
 
         // Update existing
         let updated_record1 = TestRecord {
@@ -398,7 +425,7 @@ pub fn test_table_multi_operations(
             age: 21,
             email: "user1@updated.com".to_string(),
         };
-        table.set(&key1, updated_record1).unwrap();
+        table.set(&key1, updated_record1).await.unwrap();
 
         // Add new
         let record3 = TestRecord {
@@ -406,9 +433,9 @@ pub fn test_table_multi_operations(
             age: 30,
             email: "user3@new.com".to_string(),
         };
-        table.insert(record3).unwrap()
+        table.insert(record3).await.unwrap()
     };
-    op2.commit().unwrap();
+    op2.commit().await.unwrap();
 
     (key1, key2, key3)
 }
@@ -416,7 +443,7 @@ pub fn test_table_multi_operations(
 // ===== TABLE VERIFICATION HELPERS =====
 
 /// Verify Table record using viewer
-pub fn assert_table_record(
+pub async fn assert_table_record(
     tree: &eidetica::Database,
     subtree_name: &str,
     key: &str,
@@ -424,13 +451,14 @@ pub fn assert_table_record(
 ) {
     let viewer = tree
         .get_store_viewer::<Table<TestRecord>>(subtree_name)
+        .await
         .unwrap();
-    let record = viewer.get(key).unwrap();
+    let record = viewer.get(key).await.unwrap();
     assert_eq!(record, *expected_record);
 }
 
 /// Verify Table search results
-pub fn assert_table_search_count<F>(
+pub async fn assert_table_search_count<F>(
     tree: &eidetica::Database,
     subtree_name: &str,
     predicate: F,
@@ -440,8 +468,9 @@ pub fn assert_table_search_count<F>(
 {
     let viewer = tree
         .get_store_viewer::<Table<TestRecord>>(subtree_name)
+        .await
         .unwrap();
-    let results = viewer.search(predicate).unwrap();
+    let results = viewer.search(predicate).await.unwrap();
     assert_eq!(results.len(), expected_count);
 }
 
@@ -459,12 +488,13 @@ pub fn assert_valid_uuids(keys: &[String]) {
 }
 
 /// Verify that a Table record does not exist (has been deleted)
-pub fn assert_table_record_deleted(tree: &eidetica::Database, subtree_name: &str, key: &str) {
+pub async fn assert_table_record_deleted(tree: &eidetica::Database, subtree_name: &str, key: &str) {
     let viewer = tree
         .get_store_viewer::<Table<TestRecord>>(subtree_name)
+        .await
         .unwrap();
     assert!(
-        viewer.get(key).is_err(),
+        viewer.get(key).await.is_err(),
         "Record with key '{key}' should have been deleted"
     );
 }
@@ -498,66 +528,74 @@ pub fn create_test_records() -> Vec<TestRecord> {
 }
 
 /// Test concurrent Table modifications with merging
-pub fn test_table_concurrent_modifications(
+pub async fn test_table_concurrent_modifications(
     tree: &eidetica::Database,
     subtree_name: &str,
 ) -> (String, TestRecord) {
     // Create base entry
-    let op_base = tree.new_transaction().unwrap();
+    let op_base = tree.new_transaction().await.unwrap();
     let key1 = {
         let table = op_base
             .get_store::<Table<TestRecord>>(subtree_name)
+            .await
             .unwrap();
         let record = TestRecord {
             name: "Original User".to_string(),
             age: 25,
             email: "original@test.com".to_string(),
         };
-        table.insert(record).unwrap()
+        table.insert(record).await.unwrap()
     };
-    let base_entry_id = op_base.commit().unwrap();
+    let base_entry_id = op_base.commit().await.unwrap();
 
     // Branch A: Concurrent modification
     let op_branch_a = tree
         .new_transaction_with_tips([base_entry_id.clone()])
+        .await
         .unwrap();
     {
         let table = op_branch_a
             .get_store::<Table<TestRecord>>(subtree_name)
+            .await
             .unwrap();
         let updated_record = TestRecord {
             name: "Updated by Branch A".to_string(),
             age: 26,
             email: "updated_a@test.com".to_string(),
         };
-        table.set(&key1, updated_record).unwrap();
-        op_branch_a.commit().unwrap();
+        table.set(&key1, updated_record).await.unwrap();
+        op_branch_a.commit().await.unwrap();
     }
 
     // Branch B: Parallel modification
-    let op_branch_b = tree.new_transaction_with_tips([base_entry_id]).unwrap();
+    let op_branch_b = tree
+        .new_transaction_with_tips([base_entry_id])
+        .await
+        .unwrap();
     {
         let table = op_branch_b
             .get_store::<Table<TestRecord>>(subtree_name)
+            .await
             .unwrap();
         let updated_record = TestRecord {
             name: "Updated by Branch B".to_string(),
             age: 27,
             email: "updated_b@test.com".to_string(),
         };
-        table.set(&key1, updated_record).unwrap();
-        op_branch_b.commit().unwrap();
+        table.set(&key1, updated_record).await.unwrap();
+        op_branch_b.commit().await.unwrap();
     }
 
     // Get merged result
-    let op_merge = tree.new_transaction().unwrap();
+    let op_merge = tree.new_transaction().await.unwrap();
     let merged_record = {
         let table = op_merge
             .get_store::<Table<TestRecord>>(subtree_name)
+            .await
             .unwrap();
-        table.get(&key1).unwrap()
+        table.get(&key1).await.unwrap()
     };
-    op_merge.commit().unwrap();
+    op_merge.commit().await.unwrap();
 
     (key1, merged_record)
 }
@@ -567,97 +605,104 @@ pub fn test_table_concurrent_modifications(
 use eidetica::store::PasswordStore;
 
 /// Initialize a PasswordStore with DocStore wrapper
-pub fn init_password_store_docstore(tree: &eidetica::Database, store_name: &str, password: &str) {
-    let tx = tree.new_transaction().unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+pub async fn init_password_store_docstore(
+    tree: &eidetica::Database,
+    store_name: &str,
+    password: &str,
+) {
+    let tx = tree.new_transaction().await.unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted
         .initialize(password, DocStore::type_id(), "{}")
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 }
 
 /// Open an existing PasswordStore and return it
 /// Caller must commit the transaction when done
-pub fn open_password_store(
+pub async fn open_password_store(
     tx: &eidetica::Transaction,
     store_name: &str,
     password: &str,
 ) -> PasswordStore {
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted.open(password).unwrap();
     encrypted
 }
 
 /// Create and initialize a PasswordStore wrapping DocStore, add data, and commit
-pub fn create_password_docstore_with_data(
+pub async fn create_password_docstore_with_data(
     tree: &eidetica::Database,
     store_name: &str,
     password: &str,
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let tx = tree.new_transaction().unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    let tx = tree.new_transaction().await.unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted
         .initialize(password, DocStore::type_id(), "{}")
+        .await
         .unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
     for (key, value) in data {
-        docstore.set(*key, *value).unwrap();
+        docstore.set(*key, *value).await.unwrap();
     }
 
-    tx.commit().unwrap()
+    tx.commit().await.unwrap()
 }
 
 /// Open a PasswordStore, add data to the wrapped DocStore, and commit
-pub fn add_data_to_password_docstore(
+pub async fn add_data_to_password_docstore(
     tree: &eidetica::Database,
     store_name: &str,
     password: &str,
     data: &[(&str, &str)],
 ) -> eidetica::entry::ID {
-    let tx = tree.new_transaction().unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    let tx = tree.new_transaction().await.unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted.open(password).unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
     for (key, value) in data {
-        docstore.set(*key, *value).unwrap();
+        docstore.set(*key, *value).await.unwrap();
     }
 
-    tx.commit().unwrap()
+    tx.commit().await.unwrap()
 }
 
 /// Verify data in an encrypted DocStore
-pub fn assert_password_docstore_data(
+pub async fn assert_password_docstore_data(
     tree: &eidetica::Database,
     store_name: &str,
     password: &str,
     expected_data: &[(&str, &str)],
 ) {
-    let tx = tree.new_transaction().unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).unwrap();
+    let tx = tree.new_transaction().await.unwrap();
+    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted.open(password).unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().unwrap();
+    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
     for (key, expected_value) in expected_data {
-        let value = docstore.get(key).unwrap();
+        let value = docstore.get(key).await.unwrap();
         assert_eq!(value.as_text(), Some(*expected_value));
     }
 }
 
 /// Set invalid PasswordStore config in the index for error testing
-pub fn set_invalid_password_store_config(
+pub async fn set_invalid_password_store_config(
     tree: &eidetica::Database,
     store_name: &str,
     invalid_config: &str,
 ) {
-    let tx = tree.new_transaction().unwrap();
-    let index_store = tx.get_index().unwrap();
+    let tx = tree.new_transaction().await.unwrap();
+    let index_store = tx.get_index().await.unwrap();
     index_store
         .set_entry(store_name, PasswordStore::type_id(), invalid_config)
+        .await
         .unwrap();
-    tx.commit().unwrap();
+    tx.commit().await.unwrap();
 }
 
 // Common invalid configs for error testing

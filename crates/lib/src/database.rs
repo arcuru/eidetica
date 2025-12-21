@@ -884,10 +884,10 @@ mod tests {
     use super::*;
     use crate::{auth::crypto::generate_keypair, backend::database::InMemory};
 
-    #[test]
-    fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
+    #[tokio::test]
+    async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
         // Create instance
-        let instance = Instance::open(Box::new(InMemory::new()))?;
+        let instance = Instance::open(Box::new(InMemory::new())).await?;
 
         // Generate a test key
         let (signing_key, public_key) = generate_keypair();
@@ -917,10 +917,10 @@ mod tests {
         settings.set("auth", auth_settings.as_doc().clone());
 
         // Create database
-        let db = Database::create(settings, &instance, signing_key, "key_admin".to_string())?;
+        let db = Database::create(settings, &instance, signing_key, "key_admin".to_string()).await?;
 
         // Call find_sigkeys
-        let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str)?;
+        let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str).await?;
 
         // Verify we got all 4 keys
         assert_eq!(results.len(), 4, "Should find all 4 keys");

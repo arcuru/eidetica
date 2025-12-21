@@ -17,8 +17,8 @@ use eidetica::{
 use crate::helpers::test_instance;
 
 /// Helper to create a database with global "*" permission configured
-fn setup_database_with_global_permission() -> (Instance, eidetica::Database, String) {
-    let instance = test_instance();
+async fn setup_database_with_global_permission() -> (Instance, eidetica::Database, String) {
+    let instance = test_instance().await;
 
     // Generate a keypair for the client using global permission
     let (signing_key, verifying_key) = generate_keypair();
@@ -28,6 +28,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
     instance
         .backend()
         .store_private_key("*", signing_key)
+        .await
         .expect("Failed to store private key");
 
     // Create database settings with global "*" permission
@@ -52,6 +53,7 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
     instance
         .backend()
         .store_private_key("admin_key", admin_signing_key)
+        .await
         .expect("Failed to store admin key");
 
     // Add admin key to auth settings for database creation
@@ -67,21 +69,23 @@ fn setup_database_with_global_permission() -> (Instance, eidetica::Database, Str
 
     let database = instance
         .new_database(settings, "admin_key")
+        .await
         .expect("Failed to create database");
 
     (instance, database, public_key_str)
 }
 
-#[test]
-fn test_level_1_transaction_builds_entry_with_pubkey() {
+#[tokio::test]
+async fn test_level_1_transaction_builds_entry_with_pubkey() {
     println!("🧪 LEVEL 1: Testing transaction builds entry with pubkey for global permission");
 
-    let (instance, database, expected_pubkey) = setup_database_with_global_permission();
+    let (instance, database, expected_pubkey) = setup_database_with_global_permission().await;
 
     // Load database with the global permission key
     let signing_key = instance
         .backend()
         .get_private_key("*")
+        .await
         .expect("Failed to get global key")
         .expect("Global key should exist in backend");
 
@@ -96,20 +100,25 @@ fn test_level_1_transaction_builds_entry_with_pubkey() {
     // Create a transaction
     let transaction = database_with_global_key
         .new_transaction()
+        .await
         .expect("Should create transaction with global permission");
 
     // Add some data to the transaction
     let store = transaction
         .get_store::<DocStore>("test_data")
+        .await
         .expect("Failed to get test store");
-    store.set("key", "value").expect("Failed to set test data");
+    store
+        .set("key", "value")
+        .await
+        .expect("Failed to set test data");
 
     // Build the entry but don't commit yet
     // We need to access the transaction internals to get the built entry
     // This is tricky since Transaction doesn't expose the built entry directly
 
     // For now, let's try to commit and catch what happens
-    match transaction.commit() {
+    match transaction.commit().await {
         Ok(_) => {
             println!(
                 "✅ LEVEL 1 PASSED: Transaction with global permission committed successfully"

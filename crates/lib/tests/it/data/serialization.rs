@@ -9,8 +9,8 @@ use eidetica::crdt::{Doc, doc::Value};
 
 use super::helpers::*;
 
-#[test]
-fn test_doc_serialization() {
+#[tokio::test]
+async fn test_doc_serialization() {
     // Test serialization and deserialization of Doc
     let mut map = eidetica::crdt::Doc::new();
 
@@ -45,8 +45,8 @@ fn test_doc_serialization() {
     assert_path_deleted(&deserialized, &["deleted_key"]);
 }
 
-#[test]
-fn test_serialization_complex_nested_structure() {
+#[tokio::test]
+async fn test_serialization_complex_nested_structure() {
     let complex_map = create_complex_nested_structure();
 
     // Test roundtrip on complex structure
@@ -65,8 +65,8 @@ fn test_serialization_complex_nested_structure() {
     assert_text_value(deserialized.get("top_key").unwrap(), "top_value");
 }
 
-#[test]
-fn test_serialization_mixed_doc() {
+#[tokio::test]
+async fn test_serialization_mixed_doc() {
     let mixed_map = create_mixed_map();
 
     // Test roundtrip
@@ -89,8 +89,8 @@ fn test_serialization_mixed_doc() {
     assert_path_deleted(&deserialized, &["deleted_val"]);
 }
 
-#[test]
-fn test_serialization_empty_doc() {
+#[tokio::test]
+async fn test_serialization_empty_doc() {
     let empty_map = eidetica::crdt::Doc::new();
 
     test_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
@@ -101,8 +101,8 @@ fn test_serialization_empty_doc() {
     assert_eq!(deserialized.len(), 0, "Empty map should remain empty");
 }
 
-#[test]
-fn test_serialization_tombstone_only_doc() {
+#[tokio::test]
+async fn test_serialization_tombstone_only_doc() {
     let mut tombstone_map = eidetica::crdt::Doc::new();
     tombstone_map.remove("tombstone1");
     tombstone_map.remove("tombstone2");

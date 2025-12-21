@@ -5,8 +5,8 @@ use eidetica::{
 
 use super::helpers::test_backend;
 
-#[test]
-fn test_verification_status_basic_operations() {
+#[tokio::test]
+async fn test_verification_status_basic_operations() {
     let backend = test_backend();
 
     // Create a test entry
@@ -18,38 +18,44 @@ fn test_verification_status_basic_operations() {
     // Test storing with different verification statuses
     backend
         .put_verified(entry.clone())
+        .await
         .expect("Failed to put verified entry");
 
     // Test getting verification status
     let status = backend
         .get_verification_status(&entry_id)
+        .await
         .expect("Failed to get status");
     assert_eq!(status, VerificationStatus::Verified);
 
     // Test updating verification status
     backend
         .update_verification_status(&entry_id, VerificationStatus::Failed)
+        .await
         .expect("Failed to update status");
     let updated_status = backend
         .get_verification_status(&entry_id)
+        .await
         .expect("Failed to get updated status");
     assert_eq!(updated_status, VerificationStatus::Failed);
 
     // Test getting entries by verification status
     let failed_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
         .expect("Failed to get failed entries");
     assert_eq!(failed_entries.len(), 1);
     assert_eq!(failed_entries[0], entry_id);
 
     let verified_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
         .expect("Failed to get verified entries");
     assert_eq!(verified_entries.len(), 0); // Should be empty since we updated to Failed
 }
 
-#[test]
-fn test_verification_status_default_behavior() {
+#[tokio::test]
+async fn test_verification_status_default_behavior() {
     let backend = test_backend();
 
     // Create a test entry
@@ -59,24 +65,26 @@ fn test_verification_status_default_behavior() {
     let entry_id = entry.id();
 
     // Store with Verified (default)
-    backend.put_verified(entry).expect("Failed to put entry");
+    backend.put_verified(entry).await.expect("Failed to put entry");
 
     // Status should be Verified
     let status = backend
         .get_verification_status(&entry_id)
+        .await
         .expect("Failed to get status");
     assert_eq!(status, VerificationStatus::Verified);
 
     // Should appear in verified entries
     let verified_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
         .expect("Failed to get verified entries");
     assert_eq!(verified_entries.len(), 1);
     assert_eq!(verified_entries[0], entry_id);
 }
 
-#[test]
-fn test_verification_status_multiple_entries() {
+#[tokio::test]
+async fn test_verification_status_multiple_entries() {
     let backend = test_backend();
 
     // Create multiple test entries
@@ -95,15 +103,17 @@ fn test_verification_status_multiple_entries() {
     let entry3_id = entry3.id();
 
     // Store with different statuses
-    backend.put_verified(entry1).expect("Failed to put entry1");
-    backend.put_verified(entry2).expect("Failed to put entry2");
+    backend.put_verified(entry1).await.expect("Failed to put entry1");
+    backend.put_verified(entry2).await.expect("Failed to put entry2");
     backend
         .put_unverified(entry3)
+        .await
         .expect("Failed to put entry3");
 
     // Test filtering by status
     let verified_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
         .expect("Failed to get verified entries");
     assert_eq!(verified_entries.len(), 2);
     assert!(verified_entries.contains(&entry1_id));
@@ -111,32 +121,33 @@ fn test_verification_status_multiple_entries() {
 
     let failed_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
         .expect("Failed to get failed entries");
     assert_eq!(failed_entries.len(), 1);
     assert_eq!(failed_entries[0], entry3_id);
 }
 
-#[test]
-fn test_verification_status_not_found_errors() {
+#[tokio::test]
+async fn test_verification_status_not_found_errors() {
     let backend = test_backend();
 
     let nonexistent_id: ID = "nonexistent".into();
 
     // Test getting status for nonexistent entry
-    let result = backend.get_verification_status(&nonexistent_id);
+    let result = backend.get_verification_status(&nonexistent_id).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 
     // Test updating status for nonexistent entry
     let mutable_backend = backend;
     let result =
-        mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified);
+        mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }
 
-#[test]
-fn test_verification_status_serialization() {
+#[tokio::test]
+async fn test_verification_status_serialization() {
     let backend = InMemory::new();
 
     // Create test entries with different verification statuses
@@ -150,9 +161,10 @@ fn test_verification_status_serialization() {
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
 
-    backend.put_verified(entry1).expect("Failed to put entry1");
+    backend.put_verified(entry1).await.expect("Failed to put entry1");
     backend
         .put_unverified(entry2)
+        .await
         .expect("Failed to put entry2");
 
     // Save and load
@@ -166,9 +178,11 @@ fn test_verification_status_serialization() {
     // Verify statuses are preserved
     let status1 = loaded_backend
         .get_verification_status(&entry1_id)
+        .await
         .expect("Failed to get status1");
     let status2 = loaded_backend
         .get_verification_status(&entry2_id)
+        .await
         .expect("Failed to get status2");
 
     assert_eq!(status1, VerificationStatus::Verified);
@@ -178,8 +192,8 @@ fn test_verification_status_serialization() {
     std::fs::remove_file(temp_file).ok();
 }
 
-#[test]
-fn test_backend_verification_helpers() {
+#[tokio::test]
+async fn test_backend_verification_helpers() {
     let backend = test_backend();
 
     // Test the convenience methods
@@ -200,38 +214,42 @@ fn test_backend_verification_helpers() {
     // Test put_verified convenience method
     backend
         .put_verified(entry1)
+        .await
         .expect("Failed to put verified entry");
     assert_eq!(
-        backend.get_verification_status(&id1).unwrap(),
+        backend.get_verification_status(&id1).await.unwrap(),
         VerificationStatus::Verified
     );
 
     // Test put_unverified convenience method
     backend
         .put_unverified(entry2)
+        .await
         .expect("Failed to put unverified entry");
     assert_eq!(
-        backend.get_verification_status(&id2).unwrap(),
+        backend.get_verification_status(&id2).await.unwrap(),
         VerificationStatus::Failed // Currently maps to Failed
     );
 
     // Test explicit put method for comparison
     backend
         .put_verified(entry3)
+        .await
         .expect("Failed to put with explicit status");
     assert_eq!(
-        backend.get_verification_status(&id3).unwrap(),
+        backend.get_verification_status(&id3).await.unwrap(),
         VerificationStatus::Verified
     );
 
     // Test that all entries are retrievable
-    assert!(backend.get(&id1).is_ok());
-    assert!(backend.get(&id2).is_ok());
-    assert!(backend.get(&id3).is_ok());
+    assert!(backend.get(&id1).await.is_ok());
+    assert!(backend.get(&id2).await.is_ok());
+    assert!(backend.get(&id3).await.is_ok());
 
     // Test get_entries_by_verification_status
     let verified_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
         .unwrap();
     assert_eq!(verified_entries.len(), 2); // id1 and id3
     assert!(verified_entries.contains(&id1));
@@ -239,6 +257,7 @@ fn test_backend_verification_helpers() {
 
     let failed_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
         .unwrap();
     assert_eq!(failed_entries.len(), 1); // id2
     assert!(failed_entries.contains(&id2));

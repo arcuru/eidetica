@@ -856,165 +856,165 @@ mod tests {
     use super::*;
     use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};
 
-    #[test]
-    fn test_create_user() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_create_user() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend)).await?;
 
         // Create user with password
-        let user_uuid = instance.create_user("alice", Some("password123")).unwrap();
+        let user_uuid = instance.create_user("alice", Some("password123")).await.unwrap();
 
         assert!(!user_uuid.is_empty());
 
         // Verify user appears in list
-        let users = instance.list_users().unwrap();
+        let users = instance.list_users().await.unwrap();
         assert_eq!(users.len(), 1);
         assert_eq!(users[0], "alice");
         Ok(())
     }
 
-    #[test]
-    fn test_login_user() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_login_user() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend)).await?;
 
         // Create user
-        instance.create_user("alice", Some("password123")).unwrap();
+        instance.create_user("alice", Some("password123")).await.unwrap();
 
         // Login user
-        let user = instance.login_user("alice", Some("password123")).unwrap();
+        let user = instance.login_user("alice", Some("password123")).await.unwrap();
         assert_eq!(user.username(), "alice");
 
         // Invalid password should fail
-        let result = instance.login_user("alice", Some("wrong_password"));
+        let result = instance.login_user("alice", Some("wrong_password")).await;
         assert!(result.is_err());
         Ok(())
     }
 
-    #[test]
-    fn test_new_database() {
+    #[tokio::test]
+    async fn test_new_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
 
         // Create database with deprecated API
         let mut settings = Doc::new();
         settings.set("name", "test_db");
 
-        let database = instance.new_database(settings, "_device_key").unwrap();
-        assert_eq!(database.get_name().unwrap(), "test_db");
+        let database = instance.new_database(settings, "_device_key").await.unwrap();
+        assert_eq!(database.get_name().await.unwrap(), "test_db");
     }
 
-    #[test]
-    fn test_new_database_default() {
+    #[tokio::test]
+    async fn test_new_database_default() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
 
         // Create database with default settings
-        let database = instance.new_database_default("_device_key").unwrap();
-        let settings = database.get_settings().unwrap();
+        let database = instance.new_database_default("_device_key").await.unwrap();
+        let settings = database.get_settings().await.unwrap();
 
         // Should have auto-generated database_id
         assert!(settings.get_string("database_id").is_ok());
     }
 
-    #[test]
-    fn test_new_database_without_key_fails() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_new_database_without_key_fails() -> Result<(), Error> {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend)).await?;
 
         // Create database requires a signing key
         let mut settings = Doc::new();
         settings.set("name", "test_db");
 
         // This will succeed if a valid key is provided, but we're testing without a valid key
-        let result = instance.new_database(settings, "nonexistent_key");
+        let result = instance.new_database(settings, "nonexistent_key").await;
         assert!(result.is_err());
         Ok(())
     }
 
-    #[test]
-    fn test_load_database() {
+    #[tokio::test]
+    async fn test_load_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
 
         // Create a database
         let mut settings = Doc::new();
         settings.set("name", "test_db");
-        let database = instance.new_database(settings, "_device_key").unwrap();
+        let database = instance.new_database(settings, "_device_key").await.unwrap();
         let root_id = database.root_id().clone();
 
         // Load the database
-        let loaded_database = instance.load_database(&root_id).unwrap();
-        assert_eq!(loaded_database.get_name().unwrap(), "test_db");
+        let loaded_database = instance.load_database(&root_id).await.unwrap();
+        assert_eq!(loaded_database.get_name().await.unwrap(), "test_db");
     }
 
-    #[test]
-    fn test_all_databases() {
+    #[tokio::test]
+    async fn test_all_databases() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
 
         // Create multiple databases
         let mut settings1 = Doc::new();
         settings1.set("name", "db1");
-        instance.new_database(settings1, "_device_key").unwrap();
+        instance.new_database(settings1, "_device_key").await.unwrap();
 
         let mut settings2 = Doc::new();
         settings2.set("name", "db2");
-        instance.new_database(settings2, "_device_key").unwrap();
+        instance.new_database(settings2, "_device_key").await.unwrap();
 
         // Get all databases (should include system databases + user databases)
-        let databases = instance.all_databases().unwrap();
+        let databases = instance.all_databases().await.unwrap();
         assert!(databases.len() >= 2); // At least our 2 databases + system databases
     }
 
-    #[test]
-    fn test_find_database() {
+    #[tokio::test]
+    async fn test_find_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
 
         // Create database with name
         let mut settings = Doc::new();
         settings.set("name", "my_special_db");
-        instance.new_database(settings, "_device_key").unwrap();
+        instance.new_database(settings, "_device_key").await.unwrap();
 
         // Find by name
-        let found = instance.find_database("my_special_db").unwrap();
+        let found = instance.find_database("my_special_db").await.unwrap();
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].get_name().unwrap(), "my_special_db");
+        assert_eq!(found[0].get_name().await.unwrap(), "my_special_db");
 
         // Not found
-        let result = instance.find_database("nonexistent");
+        let result = instance.find_database("nonexistent").await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_instance_load_new_backend() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_new_backend() -> Result<(), Error> {
         // Test that Instance::load() creates new system state for empty backend
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))?;
+        let instance = Instance::open(Box::new(backend)).await?;
 
         // Verify device key was created
-        assert!(instance.device_id().is_ok());
+        assert!(instance.device_id().await.is_ok());
 
         // Verify we can create and login a user
-        instance.create_user("alice", None)?;
-        let user = instance.login_user("alice", None)?;
+        instance.create_user("alice", None).await?;
+        let user = instance.login_user("alice", None).await?;
         assert_eq!(user.username(), "alice");
 
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_existing_backend() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_existing_backend() -> Result<(), Error> {
         // Use a temporary file path for testing
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_instance_load.json");
 
         // Create an instance and user, then save the backend
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        instance1.create_user("bob", None)?;
-        let mut user1 = instance1.login_user("bob", None)?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        instance1.create_user("bob", None).await?;
+        let mut user1 = instance1.login_user("bob", None).await?;
 
         // Get the default key (earliest created key)
         let default_key = user1.get_default_key()?;
@@ -1022,7 +1022,7 @@ mod tests {
         // Create a user database to verify it persists
         let mut settings = Doc::new();
         settings.set("name", "bob_database");
-        user1.create_database(settings, &default_key)?;
+        user1.create_database(settings, &default_key).await?;
 
         // Save the backend to file
         let backend_guard = instance1.backend();
@@ -1036,15 +1036,15 @@ mod tests {
 
         // Load a new backend from the saved file
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
 
         // Verify the user still exists
-        let users = instance2.list_users()?;
+        let users = instance2.list_users().await?;
         assert_eq!(users.len(), 1);
         assert_eq!(users[0], "bob");
 
         // Verify we can login the existing user
-        let user2 = instance2.login_user("bob", None)?;
+        let user2 = instance2.login_user("bob", None).await?;
         assert_eq!(user2.username(), "bob");
 
         // Clean up the temporary file
@@ -1055,16 +1055,16 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_device_id_persistence() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
         // Test that device_id remains the same across reloads
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_device_id.json");
 
         // Create instance and get device_id
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        let device_id1 = instance1.device_id_string()?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let device_id1 = instance1.device_id_string().await?;
 
         // Save backend
         let backend_guard = instance1.backend();
@@ -1075,8 +1075,8 @@ mod tests {
 
         // Load backend and verify device_id is the same
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
-        let device_id2 = instance2.device_id_string()?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let device_id2 = instance2.device_id_string().await?;
 
         assert_eq!(
             device_id1, device_id2,
@@ -1091,17 +1091,17 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_with_password_protected_users() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_with_password_protected_users() -> Result<(), Error> {
         // Test that password-protected users work correctly after reload
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_password_users.json");
 
         // Create instance with password-protected user
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        instance1.create_user("secure_alice", Some("secret123"))?;
-        let user1 = instance1.login_user("secure_alice", Some("secret123"))?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        instance1.create_user("secure_alice", Some("secret123")).await?;
+        let user1 = instance1.login_user("secure_alice", Some("secret123")).await?;
         assert_eq!(user1.username(), "secure_alice");
         drop(user1);
 
@@ -1114,18 +1114,18 @@ mod tests {
 
         // Reload and verify password still works
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
 
         // Correct password should work
-        let user2 = instance2.login_user("secure_alice", Some("secret123"))?;
+        let user2 = instance2.login_user("secure_alice", Some("secret123")).await?;
         assert_eq!(user2.username(), "secure_alice");
 
         // Wrong password should fail
-        let result = instance2.login_user("secure_alice", Some("wrong_password"));
+        let result = instance2.login_user("secure_alice", Some("wrong_password")).await;
         assert!(result.is_err(), "Login with wrong password should fail");
 
         // No password should fail
-        let result = instance2.login_user("secure_alice", None);
+        let result = instance2.login_user("secure_alice", None).await;
         assert!(
             result.is_err(),
             "Login without password should fail for password-protected user"
@@ -1139,26 +1139,26 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_multiple_users() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_multiple_users() -> Result<(), Error> {
         // Test that multiple users persist correctly
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_multiple_users.json");
 
         // Create instance with multiple users (mix of passwordless and password-protected)
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
 
-        instance1.create_user("alice", None)?;
-        instance1.create_user("bob", Some("bobpass"))?;
-        instance1.create_user("charlie", None)?;
-        instance1.create_user("diana", Some("dianapass"))?;
+        instance1.create_user("alice", None).await?;
+        instance1.create_user("bob", Some("bobpass")).await?;
+        instance1.create_user("charlie", None).await?;
+        instance1.create_user("diana", Some("dianapass")).await?;
 
         // Verify all users can login
-        instance1.login_user("alice", None)?;
-        instance1.login_user("bob", Some("bobpass"))?;
-        instance1.login_user("charlie", None)?;
-        instance1.login_user("diana", Some("dianapass"))?;
+        instance1.login_user("alice", None).await?;
+        instance1.login_user("bob", Some("bobpass")).await?;
+        instance1.login_user("charlie", None).await?;
+        instance1.login_user("diana", Some("dianapass")).await?;
 
         // Save backend
         let backend_guard = instance1.backend();
@@ -1169,9 +1169,9 @@ mod tests {
 
         // Reload and verify all users still exist and can login
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
 
-        let users = instance2.list_users()?;
+        let users = instance2.list_users().await?;
         assert_eq!(users.len(), 4, "All 4 users should be present after reload");
         assert!(users.contains(&"alice".to_string()));
         assert!(users.contains(&"bob".to_string()));
@@ -1179,10 +1179,10 @@ mod tests {
         assert!(users.contains(&"diana".to_string()));
 
         // Verify login still works for all users
-        instance2.login_user("alice", None)?;
-        instance2.login_user("bob", Some("bobpass"))?;
-        instance2.login_user("charlie", None)?;
-        instance2.login_user("diana", Some("dianapass"))?;
+        instance2.login_user("alice", None).await?;
+        instance2.login_user("bob", Some("bobpass")).await?;
+        instance2.login_user("charlie", None).await?;
+        instance2.login_user("diana", Some("dianapass")).await?;
 
         // Clean up
         if path.exists() {
@@ -1192,17 +1192,17 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_user_databases_persist() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_user_databases_persist() -> Result<(), Error> {
         // Test that user-created databases persist across reloads
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_user_dbs.json");
 
         // Create instance, user, and multiple databases
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        instance1.create_user("eve", None)?;
-        let mut user1 = instance1.login_user("eve", None)?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        instance1.create_user("eve", None).await?;
+        let mut user1 = instance1.login_user("eve", None).await?;
 
         // Get the default key (earliest created key)
         let default_key = user1.get_default_key()?;
@@ -1211,13 +1211,13 @@ mod tests {
         let mut settings1 = Doc::new();
         settings1.set("name", "database_one");
         settings1.set("purpose", "testing");
-        let db1 = user1.create_database(settings1, &default_key)?;
+        let db1 = user1.create_database(settings1, &default_key).await?;
         let db1_root = db1.root_id().clone();
 
         let mut settings2 = Doc::new();
         settings2.set("name", "database_two");
         settings2.set("purpose", "production");
-        let db2 = user1.create_database(settings2, &default_key)?;
+        let db2 = user1.create_database(settings2, &default_key).await?;
         let db2_root = db2.root_id().clone();
 
         drop(db1);
@@ -1233,18 +1233,18 @@ mod tests {
 
         // Reload and verify databases still exist
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
-        let _user2 = instance2.login_user("eve", None)?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let _user2 = instance2.login_user("eve", None).await?;
 
         // Load databases by root_id and verify their settings
-        let loaded_db1 = instance2.load_database(&db1_root)?;
-        assert_eq!(loaded_db1.get_name()?, "database_one");
-        let settings1_doc = loaded_db1.get_settings()?;
+        let loaded_db1 = instance2.load_database(&db1_root).await?;
+        assert_eq!(loaded_db1.get_name().await?, "database_one");
+        let settings1_doc = loaded_db1.get_settings().await?;
         assert_eq!(settings1_doc.get_string("purpose")?, "testing");
 
-        let loaded_db2 = instance2.load_database(&db2_root)?;
-        assert_eq!(loaded_db2.get_name()?, "database_two");
-        let settings2_doc = loaded_db2.get_settings()?;
+        let loaded_db2 = instance2.load_database(&db2_root).await?;
+        assert_eq!(loaded_db2.get_name().await?, "database_two");
+        let settings2_doc = loaded_db2.get_settings().await?;
         assert_eq!(settings2_doc.get_string("purpose")?, "production");
 
         // Clean up
@@ -1255,17 +1255,17 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_idempotency() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_idempotency() -> Result<(), Error> {
         // Test that loading the same backend multiple times gives consistent results
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_idempotency.json");
 
         // Create and save initial state
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        instance1.create_user("frank", None)?;
-        let device_id1 = instance1.device_id_string()?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        instance1.create_user("frank", None).await?;
+        let device_id1 = instance1.device_id_string().await?;
 
         let backend_guard = instance1.backend();
         if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
@@ -1276,22 +1276,22 @@ mod tests {
         // Load the same backend multiple times and verify consistency
         for i in 0..3 {
             let backend = InMemory::load_from_file(&path)?;
-            let instance = Instance::open(Box::new(backend))?;
+            let instance = Instance::open(Box::new(backend)).await?;
 
             // Device ID should be the same every time
-            let device_id = instance.device_id_string()?;
+            let device_id = instance.device_id_string().await?;
             assert_eq!(
                 device_id, device_id1,
                 "Device ID should be consistent on reload {i}"
             );
 
             // User list should be the same
-            let users = instance.list_users()?;
+            let users = instance.list_users().await?;
             assert_eq!(users.len(), 1);
             assert_eq!(users[0], "frank");
 
             // Should be able to login
-            let user = instance.login_user("frank", None)?;
+            let user = instance.login_user("frank", None).await?;
             assert_eq!(user.username(), "frank");
 
             drop(user);
@@ -1306,17 +1306,17 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_load_new_vs_existing() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
         // Test the difference between loading new and existing backends
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_new_vs_existing.json");
 
         // Create first instance (new backend)
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1))?;
-        let device_id1 = instance1.device_id_string()?;
-        instance1.create_user("grace", None)?;
+        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let device_id1 = instance1.device_id_string().await?;
+        instance1.create_user("grace", None).await?;
 
         let backend_guard = instance1.backend();
         if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
@@ -1326,28 +1326,28 @@ mod tests {
 
         // Load existing backend
         let backend2 = InMemory::load_from_file(&path)?;
-        let instance2 = Instance::open(Box::new(backend2))?;
-        let device_id2 = instance2.device_id_string()?;
+        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let device_id2 = instance2.device_id_string().await?;
 
         // Device ID should match (existing backend)
         assert_eq!(device_id1, device_id2);
 
         // User should exist (existing backend)
-        let users = instance2.list_users()?;
+        let users = instance2.list_users().await?;
         assert_eq!(users.len(), 1);
         assert_eq!(users[0], "grace");
         drop(instance2);
 
         // Create completely new instance (different backend)
         let backend3 = InMemory::new();
-        let instance3 = Instance::open(Box::new(backend3))?;
-        let device_id3 = instance3.device_id_string()?;
+        let instance3 = Instance::open(Box::new(backend3)).await?;
+        let device_id3 = instance3.device_id_string().await?;
 
         // Device ID should be different (new backend)
         assert_ne!(device_id1, device_id3);
 
         // No users should exist (new backend)
-        let users = instance3.list_users()?;
+        let users = instance3.list_users().await?;
         assert_eq!(users.len(), 0);
 
         // Clean up
@@ -1358,16 +1358,16 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
         // Test that Instance::create() fails on already-initialized backend
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_create_strict.json");
 
         // Create first instance
         let backend1 = InMemory::new();
-        let instance1 = Instance::create(Box::new(backend1))?;
-        instance1.create_user("alice", None)?;
+        let instance1 = Instance::create(Box::new(backend1)).await?;
+        instance1.create_user("alice", None).await?;
 
         // Save backend
         let backend_guard = instance1.backend();
@@ -1378,7 +1378,7 @@ mod tests {
 
         // Try to create() on the existing backend - should fail
         let backend2 = InMemory::load_from_file(&path)?;
-        let result = Instance::create(Box::new(backend2));
+        let result = Instance::create(Box::new(backend2)).await;
         assert!(result.is_err(), "create() should fail on existing backend");
 
         // Verify error type
@@ -1395,8 +1395,8 @@ mod tests {
 
         // Verify open() still works
         let backend3 = InMemory::load_from_file(&path)?;
-        let instance3 = Instance::open(Box::new(backend3))?;
-        let users = instance3.list_users()?;
+        let instance3 = Instance::open(Box::new(backend3)).await?;
+        let users = instance3.list_users().await?;
         assert_eq!(users.len(), 1);
         assert_eq!(users[0], "alice");
 
@@ -1408,18 +1408,18 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
+    #[tokio::test]
+    async fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
         // Test that Instance::create() succeeds on fresh backend
         let backend = InMemory::new();
-        let instance = Instance::create(Box::new(backend))?;
+        let instance = Instance::create(Box::new(backend)).await?;
 
         // Verify instance is properly initialized
-        assert!(instance.device_id().is_ok());
+        assert!(instance.device_id().await.is_ok());
 
         // Verify we can create users
-        instance.create_user("bob", None)?;
-        let user = instance.login_user("bob", None)?;
+        instance.create_user("bob", None).await?;
+        let user = instance.login_user("bob", None).await?;
         assert_eq!(user.username(), "bob");
 
         Ok(())

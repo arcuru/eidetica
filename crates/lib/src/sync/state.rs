@@ -500,17 +500,17 @@ mod tests {
             .id()
             .clone();
         cursor.update_sync(entry_id, 3);
-        state_manager.update_sync_cursor(&cursor).unwrap();
+        state_manager.update_sync_cursor(&cursor).await.unwrap();
 
         // Test metadata management
         let mut metadata = state_manager.get_sync_metadata(peer_pubkey).await.unwrap();
         metadata.record_successful_sync(3, 512, 50.0);
-        state_manager.update_sync_metadata(&metadata).unwrap();
+        state_manager.update_sync_metadata(&metadata).await.unwrap();
 
         // Test history
         let mut history_entry = SyncHistoryEntry::new(peer_pubkey.to_string(), tree_id.clone());
         history_entry.complete_success(3, 512);
-        state_manager.add_sync_history(&history_entry).unwrap();
+        state_manager.add_sync_history(&history_entry).await.unwrap();
 
         // Commit the changes and test
         op.commit().await.unwrap();

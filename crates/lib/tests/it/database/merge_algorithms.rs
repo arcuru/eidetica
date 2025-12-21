@@ -8,35 +8,35 @@ use eidetica::{crdt::doc::Value, store::DocStore};
 use super::helpers::*;
 use crate::helpers::*;
 
-#[test]
-fn test_simple_linear_chain() {
+#[tokio::test]
+async fn test_simple_linear_chain() {
     // Test basic parent-aware merging: A -> B -> C
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create entry A with initial data
-    let op_a = tree.new_transaction().unwrap();
-    let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
-    subtree_a.set("counter", "1").unwrap();
-    subtree_a.set("name", "alice").unwrap();
-    op_a.commit().unwrap();
+    let op_a = tree.new_transaction().await.unwrap();
+    let subtree_a = op_a.get_store::<DocStore>("data").await.unwrap();
+    subtree_a.set("counter", "1").await.unwrap();
+    subtree_a.set("name", "alice").await.unwrap();
+    op_a.commit().await.unwrap();
 
     // Create entry B as child of A
-    let op_b = tree.new_transaction().unwrap();
-    let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
-    subtree_b.set("counter", "2").unwrap(); // Update counter
-    subtree_b.set("age", "25").unwrap(); // Add new field
-    op_b.commit().unwrap();
+    let op_b = tree.new_transaction().await.unwrap();
+    let subtree_b = op_b.get_store::<DocStore>("data").await.unwrap();
+    subtree_b.set("counter", "2").await.unwrap(); // Update counter
+    subtree_b.set("age", "25").await.unwrap(); // Add new field
+    op_b.commit().await.unwrap();
 
     // Create entry C as child of B
-    let op_c = tree.new_transaction().unwrap();
-    let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
-    subtree_c.set("counter", "3").unwrap(); // Update counter again
-    subtree_c.set("city", "nyc").unwrap(); // Add another field
-    op_c.commit().unwrap();
+    let op_c = tree.new_transaction().await.unwrap();
+    let subtree_c = op_c.get_store::<DocStore>("data").await.unwrap();
+    subtree_c.set("counter", "3").await.unwrap(); // Update counter again
+    subtree_c.set("city", "nyc").await.unwrap(); // Add another field
+    op_c.commit().await.unwrap();
 
     // Check the final accumulated state
-    let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let final_state = viewer.get_all().unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
 
     // Final state should have all fields from the chain:
     // - counter: "3" (latest value from C)
@@ -65,38 +65,38 @@ fn test_simple_linear_chain() {
     }
 }
 
-#[test]
-fn test_caching_consistency() {
+#[tokio::test]
+async fn test_caching_consistency() {
     // Test that caching provides consistent results
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create a simple chain to have some data to cache
-    let op_a = tree.new_transaction().unwrap();
-    let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
-    subtree_a.set("value", "1").unwrap();
-    op_a.commit().unwrap();
+    let op_a = tree.new_transaction().await.unwrap();
+    let subtree_a = op_a.get_store::<DocStore>("data").await.unwrap();
+    subtree_a.set("value", "1").await.unwrap();
+    op_a.commit().await.unwrap();
 
-    let op_b = tree.new_transaction().unwrap();
-    let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
-    subtree_b.set("value", "2").unwrap();
-    op_b.commit().unwrap();
+    let op_b = tree.new_transaction().await.unwrap();
+    let subtree_b = op_b.get_store::<DocStore>("data").await.unwrap();
+    subtree_b.set("value", "2").await.unwrap();
+    op_b.commit().await.unwrap();
 
-    let op_c = tree.new_transaction().unwrap();
-    let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
-    subtree_c.set("value", "3").unwrap();
-    op_c.commit().unwrap();
+    let op_c = tree.new_transaction().await.unwrap();
+    let subtree_c = op_c.get_store::<DocStore>("data").await.unwrap();
+    subtree_c.set("value", "3").await.unwrap();
+    op_c.commit().await.unwrap();
 
     // First read - should compute and cache states
-    let viewer1 = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let state1 = viewer1.get_all().unwrap();
+    let viewer1 = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let state1 = viewer1.get_all().await.unwrap();
 
     // Second read - should use cached states
-    let viewer2 = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let state2 = viewer2.get_all().unwrap();
+    let viewer2 = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let state2 = viewer2.get_all().await.unwrap();
 
     // Third read - should also use cached states
-    let viewer3 = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let state3 = viewer3.get_all().unwrap();
+    let viewer3 = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let state3 = viewer3.get_all().await.unwrap();
 
     // All results should be identical
     assert_eq!(state1, state2);
@@ -109,28 +109,28 @@ fn test_caching_consistency() {
     }
 }
 
-#[test]
-fn test_parent_merge_semantics() {
+#[tokio::test]
+async fn test_parent_merge_semantics() {
     // Test that parent states are properly merged
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create base entry with shared data
-    let op_base = tree.new_transaction().unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").unwrap();
-    subtree_base.set("base_field", "base_value").unwrap();
-    subtree_base.set("shared_field", "original").unwrap();
-    op_base.commit().unwrap();
+    let op_base = tree.new_transaction().await.unwrap();
+    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    subtree_base.set("base_field", "base_value").await.unwrap();
+    subtree_base.set("shared_field", "original").await.unwrap();
+    op_base.commit().await.unwrap();
 
     // Create child entry that updates shared field and adds new field
-    let op_child = tree.new_transaction().unwrap();
-    let subtree_child = op_child.get_store::<DocStore>("data").unwrap();
-    subtree_child.set("shared_field", "updated").unwrap();
-    subtree_child.set("child_field", "child_value").unwrap();
-    op_child.commit().unwrap();
+    let op_child = tree.new_transaction().await.unwrap();
+    let subtree_child = op_child.get_store::<DocStore>("data").await.unwrap();
+    subtree_child.set("shared_field", "updated").await.unwrap();
+    subtree_child.set("child_field", "child_value").await.unwrap();
+    op_child.commit().await.unwrap();
 
     // Check the merged state
-    let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let final_state = viewer.get_all().unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
 
     // Should have both base and child data, with child overriding shared field
     match final_state.get("base_field").unwrap() {
@@ -149,27 +149,28 @@ fn test_parent_merge_semantics() {
     }
 }
 
-#[test]
-fn test_deep_chain_performance() {
+#[tokio::test]
+async fn test_deep_chain_performance() {
     // Test that deep chains don't cause stack overflow and use caching effectively
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create a moderately deep chain (not too deep to avoid long test times)
     const CHAIN_LENGTH: u32 = 50;
 
     for i in 1..=CHAIN_LENGTH {
-        let op = tree.new_transaction().unwrap();
-        let subtree = op.get_store::<DocStore>("data").unwrap();
-        subtree.set("step", i.to_string()).unwrap();
+        let op = tree.new_transaction().await.unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("step", i.to_string()).await.unwrap();
         subtree
             .set(format!("step_{i}"), format!("value_{i}"))
+            .await
             .unwrap();
-        op.commit().unwrap();
+        op.commit().await.unwrap();
     }
 
     // Read the final state - this should not stack overflow
-    let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let final_state = viewer.get_all().unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
 
     // Check that we have the final step
     match final_state.get("step").unwrap() {
@@ -188,29 +189,29 @@ fn test_deep_chain_performance() {
     }
 }
 
-#[test]
-fn test_multiple_reads_consistency() {
+#[tokio::test]
+async fn test_multiple_reads_consistency() {
     // Test that multiple reads of the same data are consistent (deterministic)
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create some test data
-    let op1 = tree.new_transaction().unwrap();
-    let subtree1 = op1.get_store::<DocStore>("data").unwrap();
-    subtree1.set("key1", "value1").unwrap();
-    subtree1.set("key2", "value2").unwrap();
-    op1.commit().unwrap();
+    let op1 = tree.new_transaction().await.unwrap();
+    let subtree1 = op1.get_store::<DocStore>("data").await.unwrap();
+    subtree1.set("key1", "value1").await.unwrap();
+    subtree1.set("key2", "value2").await.unwrap();
+    op1.commit().await.unwrap();
 
-    let op2 = tree.new_transaction().unwrap();
-    let subtree2 = op2.get_store::<DocStore>("data").unwrap();
-    subtree2.set("key1", "updated1").unwrap();
-    subtree2.set("key3", "value3").unwrap();
-    op2.commit().unwrap();
+    let op2 = tree.new_transaction().await.unwrap();
+    let subtree2 = op2.get_store::<DocStore>("data").await.unwrap();
+    subtree2.set("key1", "updated1").await.unwrap();
+    subtree2.set("key3", "value3").await.unwrap();
+    op2.commit().await.unwrap();
 
     // Read the data multiple times
     let mut results = Vec::new();
     for _ in 0..5 {
-        let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-        let state = viewer.get_all().unwrap();
+        let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+        let state = viewer.get_all().await.unwrap();
         results.push(state);
     }
 
@@ -237,8 +238,8 @@ fn test_multiple_reads_consistency() {
     }
 }
 
-#[test]
-fn test_incorrect_parent_merging_would_fail() {
+#[tokio::test]
+async fn test_incorrect_parent_merging_would_fail() {
     // This test demonstrates a critical issue that would occur with the incorrect approach
     // of merging parent states directly. It tests a scenario where a complex branching
     // pattern requires proper LCA-based computation to get the correct result.
@@ -247,49 +248,50 @@ fn test_incorrect_parent_merging_would_fail() {
     // the incorrect approach would compute parent states with inconsistent orderings
     // and potentially lose or incorrectly merge data.
 
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Create a sequence of operations that build up a complex state
     // Step 1: Initial state with multiple fields
-    let op1 = tree.new_transaction().unwrap();
-    let subtree1 = op1.get_store::<DocStore>("data").unwrap();
-    subtree1.set("count", "1").unwrap();
-    subtree1.set("name", "initial").unwrap();
-    subtree1.set("status", "active").unwrap();
-    op1.commit().unwrap();
+    let op1 = tree.new_transaction().await.unwrap();
+    let subtree1 = op1.get_store::<DocStore>("data").await.unwrap();
+    subtree1.set("count", "1").await.unwrap();
+    subtree1.set("name", "initial").await.unwrap();
+    subtree1.set("status", "active").await.unwrap();
+    op1.commit().await.unwrap();
 
     // Step 2: Update some fields, add new ones
-    let op2 = tree.new_transaction().unwrap();
-    let subtree2 = op2.get_store::<DocStore>("data").unwrap();
-    subtree2.set("count", "2").unwrap(); // Update existing
-    subtree2.set("category", "type_a").unwrap(); // Add new
-    op2.commit().unwrap();
+    let op2 = tree.new_transaction().await.unwrap();
+    let subtree2 = op2.get_store::<DocStore>("data").await.unwrap();
+    subtree2.set("count", "2").await.unwrap(); // Update existing
+    subtree2.set("category", "type_a").await.unwrap(); // Add new
+    op2.commit().await.unwrap();
 
     // Step 3: More updates with overlapping and new fields
-    let op3 = tree.new_transaction().unwrap();
-    let subtree3 = op3.get_store::<DocStore>("data").unwrap();
-    subtree3.set("count", "3").unwrap(); // Update again
-    subtree3.set("name", "updated").unwrap(); // Update existing
-    subtree3.set("priority", "high").unwrap(); // Add new
-    op3.commit().unwrap();
+    let op3 = tree.new_transaction().await.unwrap();
+    let subtree3 = op3.get_store::<DocStore>("data").await.unwrap();
+    subtree3.set("count", "3").await.unwrap(); // Update again
+    subtree3.set("name", "updated").await.unwrap(); // Update existing
+    subtree3.set("priority", "high").await.unwrap(); // Add new
+    op3.commit().await.unwrap();
 
     // Step 4: Final operation with more field changes
-    let op4 = tree.new_transaction().unwrap();
-    let subtree4 = op4.get_store::<DocStore>("data").unwrap();
-    subtree4.set("count", "4").unwrap(); // Final count update
-    subtree4.set("status", "completed").unwrap(); // Update status
-    subtree4.set("result", "success").unwrap(); // Add final field
-    op4.commit().unwrap();
+    let op4 = tree.new_transaction().await.unwrap();
+    let subtree4 = op4.get_store::<DocStore>("data").await.unwrap();
+    subtree4.set("count", "4").await.unwrap(); // Final count update
+    subtree4.set("status", "completed").await.unwrap(); // Update status
+    subtree4.set("result", "success").await.unwrap(); // Add final field
+    op4.commit().await.unwrap();
 
     // Clear cache to force computation
     tree.backend()
         .expect("Failed to get backend")
         .clear_crdt_cache()
+        .await
         .unwrap();
 
     // Read the final state - this exercises the complex merge algorithm
-    let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let final_state = viewer.get_all().unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
 
     println!("Final state after complex operations: {final_state:#?}");
 
@@ -357,8 +359,8 @@ fn test_incorrect_parent_merging_would_fail() {
 
     // Verify deterministic behavior by reading multiple times
     for i in 0..5 {
-        let viewer_check = tree.get_store_viewer::<DocStore>("data").unwrap();
-        let state_check = viewer_check.get_all().unwrap();
+        let viewer_check = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+        let state_check = viewer_check.get_all().await.unwrap();
         assert_eq!(
             final_state, state_check,
             "State should be deterministic on read {i}"
@@ -369,8 +371,8 @@ fn test_incorrect_parent_merging_would_fail() {
     println!("  This test would likely FAIL with incorrect parent-state merging approach");
 }
 
-#[test]
-fn test_true_diamond_pattern() {
+#[tokio::test]
+async fn test_true_diamond_pattern() {
     // This test creates a TRUE diamond pattern that would definitely fail with incorrect
     // parent-state merging. We use the new Tree interface to manually control which tips
     // each operation starts from.
@@ -382,18 +384,18 @@ fn test_true_diamond_pattern() {
     //     \ /
     //      D (merge operation sees both B and C as tips)
 
-    let (_instance, tree) = setup_tree();
+    let (_instance, tree) = setup_tree().await;
 
     // Step 1: Create entry A (common ancestor)
-    let op_a = tree.new_transaction().unwrap();
-    let subtree_a = op_a.get_store::<DocStore>("data").unwrap();
-    subtree_a.set("base", "A").unwrap();
-    subtree_a.set("shared", "original").unwrap();
-    subtree_a.set("count", "1").unwrap();
-    let entry_a_id = op_a.commit().unwrap();
+    let op_a = tree.new_transaction().await.unwrap();
+    let subtree_a = op_a.get_store::<DocStore>("data").await.unwrap();
+    subtree_a.set("base", "A").await.unwrap();
+    subtree_a.set("shared", "original").await.unwrap();
+    subtree_a.set("count", "1").await.unwrap();
+    let entry_a_id = op_a.commit().await.unwrap();
 
     // Verify A is now the only tip
-    let tips_after_a = tree.get_tips().unwrap();
+    let tips_after_a = tree.get_tips().await.unwrap();
     assert_eq!(tips_after_a.len(), 1, "Should have exactly 1 tip after A");
     assert_eq!(tips_after_a[0], entry_a_id, "A should be the only tip");
 
@@ -403,27 +405,29 @@ fn test_true_diamond_pattern() {
     // Create operation B - starts from A
     let op_b = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
+        .await
         .unwrap();
-    let subtree_b = op_b.get_store::<DocStore>("data").unwrap();
-    subtree_b.set("shared", "from_B").unwrap(); // Override shared field
-    subtree_b.set("b_specific", "B_data").unwrap(); // Add B-specific data
-    subtree_b.set("count", "2").unwrap(); // Update count
+    let subtree_b = op_b.get_store::<DocStore>("data").await.unwrap();
+    subtree_b.set("shared", "from_B").await.unwrap(); // Override shared field
+    subtree_b.set("b_specific", "B_data").await.unwrap(); // Add B-specific data
+    subtree_b.set("count", "2").await.unwrap(); // Update count
 
     // Create operation C - also starts from A (same parent!)
     let op_c = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
+        .await
         .unwrap();
-    let subtree_c = op_c.get_store::<DocStore>("data").unwrap();
-    subtree_c.set("shared", "from_C").unwrap(); // Override shared field differently
-    subtree_c.set("c_specific", "C_data").unwrap(); // Add C-specific data  
-    subtree_c.set("count", "3").unwrap(); // Update count differently
+    let subtree_c = op_c.get_store::<DocStore>("data").await.unwrap();
+    subtree_c.set("shared", "from_C").await.unwrap(); // Override shared field differently
+    subtree_c.set("c_specific", "C_data").await.unwrap(); // Add C-specific data
+    subtree_c.set("count", "3").await.unwrap(); // Update count differently
 
     // Commit both operations - this creates the diamond fork
-    let entry_b_id = op_b.commit().unwrap();
-    let entry_c_id = op_c.commit().unwrap();
+    let entry_b_id = op_b.commit().await.unwrap();
+    let entry_c_id = op_c.commit().await.unwrap();
 
     // Verify we now have a true diamond: both B and C should be tips with A as parent
-    let tips_after_fork = tree.get_tips().unwrap();
+    let tips_after_fork = tree.get_tips().await.unwrap();
     assert_eq!(
         tips_after_fork.len(),
         2,
@@ -441,8 +445,8 @@ fn test_true_diamond_pattern() {
     // Verify parent relationships - both B and C should have A as their only parent
     {
         let backend = tree.backend().expect("Failed to get backend");
-        let entry_b = backend.get(&entry_b_id).unwrap();
-        let entry_c = backend.get(&entry_c_id).unwrap();
+        let entry_b = backend.get(&entry_b_id).await.unwrap();
+        let entry_c = backend.get(&entry_c_id).await.unwrap();
 
         assert_eq!(
             entry_b.parents().unwrap(),
@@ -460,19 +464,20 @@ fn test_true_diamond_pattern() {
     tree.backend()
         .expect("Failed to get backend")
         .clear_crdt_cache()
+        .await
         .unwrap();
 
     // Step 3: Create merge operation D that automatically gets both B and C as parents
-    let op_d = tree.new_transaction().unwrap(); // Uses current tips [B, C]
-    let subtree_d = op_d.get_store::<DocStore>("data").unwrap();
-    subtree_d.set("merge_marker", "D_created").unwrap();
-    subtree_d.set("final_data", "merged").unwrap();
-    let entry_d_id = op_d.commit().unwrap();
+    let op_d = tree.new_transaction().await.unwrap(); // Uses current tips [B, C]
+    let subtree_d = op_d.get_store::<DocStore>("data").await.unwrap();
+    subtree_d.set("merge_marker", "D_created").await.unwrap();
+    subtree_d.set("final_data", "merged").await.unwrap();
+    let entry_d_id = op_d.commit().await.unwrap();
 
     // Verify D has both B and C as parents (the diamond merge)
     {
         let backend = tree.backend().expect("Failed to get backend");
-        let entry_d = backend.get(&entry_d_id).unwrap();
+        let entry_d = backend.get(&entry_d_id).await.unwrap();
         let parents = entry_d.parents().unwrap();
 
         assert_eq!(parents.len(), 2, "D should have exactly 2 parents");
@@ -481,8 +486,8 @@ fn test_true_diamond_pattern() {
     }
 
     // Step 4: Read the final state - this exercises the LCA algorithm on a true diamond!
-    let viewer = tree.get_store_viewer::<DocStore>("data").unwrap();
-    let final_state = viewer.get_all().unwrap();
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
 
     println!("True diamond pattern final state: {final_state:#?}");
 
@@ -564,8 +569,8 @@ fn test_true_diamond_pattern() {
 
     // Verify deterministic behavior - the exact same read should always give same result
     for i in 0..3 {
-        let viewer_check = tree.get_store_viewer::<DocStore>("data").unwrap();
-        let state_check = viewer_check.get_all().unwrap();
+        let viewer_check = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+        let state_check = viewer_check.get_all().await.unwrap();
         assert_eq!(
             final_state, state_check,
             "Diamond merge should be deterministic on read {i}"
@@ -579,13 +584,13 @@ fn test_true_diamond_pattern() {
 }
 
 /// Test helper functions for complex merge scenarios
-#[test]
-fn test_merge_algorithm_helpers() {
-    let (_instance, tree) = setup_tree();
+#[tokio::test]
+async fn test_merge_algorithm_helpers() {
+    let (_instance, tree) = setup_tree().await;
 
     // Test diamond pattern creation helper
     let base_data = &[("foundation", "solid"), ("version", "1.0")];
-    let (base_id, branch_b_id, branch_c_id, merge_id) = create_diamond_pattern(&tree, base_data);
+    let (base_id, branch_b_id, branch_c_id, merge_id) = create_diamond_pattern(&tree, base_data).await;
 
     // Verify diamond structure
     assert_entry_parents(&tree, &branch_b_id, std::slice::from_ref(&base_id));
@@ -604,14 +609,16 @@ fn test_merge_algorithm_helpers() {
             ("merge", "D"),
             ("final", "merged"),
         ],
-    );
+    ).await;
 
     // Verify that conflicting field "branch" has one of the expected values
     let viewer = tree
         .get_store_viewer::<DocStore>("data")
+        .await
         .expect("Failed to get viewer");
     let branch_value = viewer
         .get_string("branch")
+        .await
         .expect("Should have branch value");
     assert!(
         branch_value == "B" || branch_value == "C",
@@ -619,22 +626,22 @@ fn test_merge_algorithm_helpers() {
     );
 
     // Test deterministic reads
-    assert_deterministic_reads(&tree, "data", 5);
+    assert_deterministic_reads(&tree, "data", 5).await;
 
     // Test caching consistency
-    assert_caching_consistency(&tree, "data");
+    assert_caching_consistency(&tree, "data").await;
 }
 
 /// Test performance with deep chains
-#[test]
-fn test_merge_performance_with_deep_chains() {
-    let (_instance, tree) = setup_tree();
+#[tokio::test]
+async fn test_merge_performance_with_deep_chains() {
+    let (_instance, tree) = setup_tree().await;
 
     // Create deep chain and verify performance
-    assert_deep_operations_performance(&tree, 100);
+    assert_deep_operations_performance(&tree, 100).await;
 
     // Test linear chain creation helper
-    let chain_ids = create_linear_chain(&tree, "performance", 20);
+    let chain_ids = create_linear_chain(&tree, "performance", 20).await;
     assert_eq!(chain_ids.len(), 20);
 
     // Verify chain structure - each entry should have previous as parent (except first)
@@ -645,8 +652,9 @@ fn test_merge_performance_with_deep_chains() {
     // Verify final state has all accumulated data
     let viewer = tree
         .get_store_viewer::<DocStore>("performance")
+        .await
         .expect("Failed to get viewer");
-    let final_state = viewer.get_all().expect("Failed to get final state");
+    let final_state = viewer.get_all().await.expect("Failed to get final state");
 
     // Should have final step value
     assert_eq!(

@@ -16,7 +16,7 @@ use super::helpers::setup;
 /// Test that multiple HTTP transports can be enabled (though unusual, validates the mechanism)
 #[tokio::test]
 async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
-    let (_instance, sync) = setup();
+    let (_instance, sync) = setup().await;
 
     // Enable first HTTP transport
     sync.enable_http_transport().await?;
@@ -46,7 +46,7 @@ async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
 /// Test that transport routing works correctly
 #[tokio::test]
 async fn test_transport_routing_by_address_type() -> Result<()> {
-    let (_instance, sync) = setup();
+    let (_instance, sync) = setup().await;
 
     // Enable HTTP transport
     sync.enable_http_transport().await?;
@@ -71,7 +71,7 @@ async fn test_transport_routing_by_address_type() -> Result<()> {
 /// Test server start/stop with multiple transports
 #[tokio::test]
 async fn test_server_lifecycle_with_multiple_transports() -> Result<()> {
-    let (_instance, sync) = setup();
+    let (_instance, sync) = setup().await;
 
     // Enable two transports
     sync.enable_http_transport().await?;
@@ -114,7 +114,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Server with a sync-enabled database (wildcard permissions for testing)
     let (server_instance, _server_database, server_sync, tree_id) =
-        super::helpers::setup_global_wildcard_server();
+        super::helpers::setup_global_wildcard_server().await;
 
     // Enable both HTTP and Iroh transports on server
     server_sync.enable_http_transport().await?;
@@ -153,17 +153,17 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("Server Iroh address: {iroh_addr}");
     println!("Server tree_id: {tree_id}");
 
-    let server_pubkey = server_sync.get_device_public_key()?;
+    let server_pubkey = server_sync.get_device_public_key().await?;
 
     // === LEG 1: HTTP client bootstraps and adds data via HTTP ===
     println!("\n--- LEG 1: HTTP client syncs data TO server via HTTP ---");
 
-    let (http_client_instance, http_client_sync) = setup();
+    let (http_client_instance, http_client_sync) = setup().await;
     http_client_sync.enable_http_transport().await?;
 
     // Register server as peer
-    http_client_sync.register_peer(&server_pubkey, Some("server"))?;
-    http_client_sync.add_peer_address(&server_pubkey, Address::http(&http_addr))?;
+    http_client_sync.register_peer(&server_pubkey, Some("server")).await?;
+    http_client_sync.add_peer_address(&server_pubkey, Address::http(&http_addr)).await?;
 
     // HTTP client bootstraps the database from server
     println!("HTTP client bootstrapping database from server...");
@@ -174,7 +174,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Verify HTTP client has the tree
     assert!(
-        http_client_instance.backend().get(&tree_id).is_ok(),
+        http_client_instance.backend().get(&tree_id).await.is_ok(),
         "HTTP client should have the tree after bootstrap"
     );
     println!("✅ HTTP client bootstrapped database from server");
@@ -187,17 +187,17 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         &tree_id,
         http_client_instance
             .backend()
-            .get_private_key("_device_key")?
+            .get_private_key("_device_key").await?
             .expect("Should have device key"),
         "*".to_string(), // Use wildcard permission
     )?;
 
     let entry_id = {
-        let tx = http_client_db.new_transaction()?;
-        let store = tx.get_store::<DocStore>("multi_transport_data")?;
-        store.set("test_key", "http_to_iroh_test_value")?;
-        store.set("source", "http_client")?;
-        tx.commit()?
+        let tx = http_client_db.new_transaction().await?;
+        let store = tx.get_store::<DocStore>("multi_transport_data").await?;
+        store.set("test_key", "http_to_iroh_test_value").await?;
+        store.set("source", "http_client").await?;
+        tx.commit().await?
     };
     println!("✅ HTTP client created entry: {entry_id}");
 
@@ -213,7 +213,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Verify server received the entry
     assert!(
-        server_instance.backend().get(&entry_id).is_ok(),
+        server_instance.backend().get(&entry_id).await.is_ok(),
         "Server should have received the entry via HTTP"
     );
     println!("✅ Server received entry via HTTP");
@@ -221,7 +221,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     // === LEG 2: Iroh client retrieves data via Iroh ===
     println!("\n--- LEG 2: Iroh client syncs data FROM server via Iroh ---");
 
-    let (iroh_client_instance, iroh_client_sync) = setup();
+    let (iroh_client_instance, iroh_client_sync) = setup().await;
     let iroh_client_transport = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
         .build()?;
@@ -230,12 +230,12 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .await?;
 
     // Register server as peer with Iroh address
-    iroh_client_sync.register_peer(&server_pubkey, Some("server"))?;
-    iroh_client_sync.add_peer_address(&server_pubkey, Address::iroh(&iroh_addr))?;
+    iroh_client_sync.register_peer(&server_pubkey, Some("server")).await?;
+    iroh_client_sync.add_peer_address(&server_pubkey, Address::iroh(&iroh_addr)).await?;
 
     // Verify entry is NOT on Iroh client yet
     assert!(
-        iroh_client_instance.backend().get(&entry_id).is_err(),
+        iroh_client_instance.backend().get(&entry_id).await.is_err(),
         "Entry should NOT be on Iroh client yet"
     );
 
@@ -252,7 +252,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     // Verify Iroh client received the entry
     let synced_entry = iroh_client_instance
         .backend()
-        .get(&entry_id)
+        .get(&entry_id).await
         .expect("Iroh client should have received the entry via Iroh transport");
 
     println!(

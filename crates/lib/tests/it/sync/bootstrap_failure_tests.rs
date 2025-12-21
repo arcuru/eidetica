@@ -23,14 +23,16 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
     // Setup server with restricted auth policy - only specific admin keys allowed
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     // Add server admin key
     server_instance
         .add_private_key("server_admin")
+        .await
         .expect("Failed to add server admin key");
 
     // Create database with only server_admin having access
@@ -39,6 +41,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
+        .await
         .expect("Failed to get server admin public key");
 
     // Set strict auth policy - only server_admin has permission to manage auth
@@ -59,6 +62,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     // Create the database
     let server_database = server_instance
         .new_database(settings, "server_admin")
+        .await
         .expect("Failed to create restricted database");
 
     let restricted_tree_id = server_database.root_id().clone();
@@ -71,17 +75,20 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     };
 
     // Setup client with its own key
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("unauthorized_client")
+        .await
         .expect("Failed to add client key");
 
     let client_pubkey = client_instance
         .get_formatted_public_key("unauthorized_client")
+        .await
         .expect("Failed to get client public key");
 
     println!("👤 Client attempting bootstrap with unauthorized key: {client_pubkey}");
@@ -119,15 +126,15 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     // EXPECTED SECURE BEHAVIOR: Client should not receive the database
     assert!(
-        client_instance.load_database(&restricted_tree_id).is_err(),
+        client_instance.load_database(&restricted_tree_id).await.is_err(),
         "Client should be DENIED access to restricted database - test fails because security is not implemented"
     );
 
     // EXPECTED SECURE BEHAVIOR: Server database auth config should NOT be modified
     let server_auth_settings = server_database
-        .get_settings()
+        .get_settings().await
         .expect("Failed to get server database settings")
-        .get_all()
+        .get_all().await
         .expect("Failed to get all settings");
 
     // Check that auth section was NOT modified to include unauthorized key
@@ -167,13 +174,15 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     );
 
     // Setup server with a database that has NO authentication configuration
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_key")
+        .await
         .expect("Failed to add server key");
 
     // Create database with NO auth configuration
@@ -183,6 +192,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     let server_database = server_instance
         .new_database(settings, "server_key")
+        .await
         .expect("Failed to create unprotected database");
 
     let unprotected_tree_id = server_database.root_id().clone();
@@ -195,17 +205,20 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     };
 
     // Setup client
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("client_key")
+        .await
         .expect("Failed to add client key");
 
     let _client_pubkey = client_instance
         .get_formatted_public_key("client_key")
+        .await
         .expect("Failed to get client public key");
 
     let bootstrap_result = {
@@ -240,15 +253,15 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     // EXPECTED SECURE BEHAVIOR: Client should not receive database without proper authorization
     assert!(
-        client_instance.load_database(&unprotected_tree_id).is_err(),
+        client_instance.load_database(&unprotected_tree_id).await.is_err(),
         "Client should not receive database without proper authorization framework - test fails because security is not implemented"
     );
 
     // EXPECTED SECURE BEHAVIOR: Server database should NOT have auth config modified without authorization
     let server_auth_settings = server_database
-        .get_settings()
+        .get_settings().await
         .expect("Failed to get server database settings")
-        .get_all()
+        .get_all().await
         .expect("Failed to get all settings");
 
     // Check that NO auth section was created by unauthorized bootstrap
@@ -285,13 +298,15 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
     // Setup server
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_key")
+        .await
         .expect("Failed to add server key");
 
     // Create database
@@ -300,6 +315,7 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     let server_database = server_instance
         .new_database(settings, "server_key")
+        .await
         .expect("Failed to create database");
 
     let tree_id = server_database.root_id().clone();
@@ -311,9 +327,10 @@ async fn test_bootstrap_invalid_public_key_format() {
     };
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     // Note: We can't directly test malformed keys in the current API since
@@ -321,6 +338,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     // key format validation during the bootstrap process itself.
     client_instance
         .add_private_key("client_with_spaces_and_symbols!@#")
+        .await
         .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
@@ -365,25 +383,30 @@ async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
     // Setup server with auth configuration including a revoked key
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_admin")
+        .await
         .expect("Failed to add server admin key");
 
     server_instance
         .add_private_key("revoked_client")
+        .await
         .expect("Failed to add revoked client key");
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
+        .await
         .expect("Failed to get server admin public key");
 
     let revoked_client_pubkey = server_instance
         .get_formatted_public_key("revoked_client")
+        .await
         .expect("Failed to get revoked client public key");
 
     // Create database with auth configuration including the revoked key
@@ -417,6 +440,7 @@ async fn test_bootstrap_with_revoked_key() {
 
     let server_database = server_instance
         .new_database(settings, "server_admin")
+        .await
         .expect("Failed to create database");
 
     let tree_id = server_database.root_id().clone();
@@ -428,15 +452,17 @@ async fn test_bootstrap_with_revoked_key() {
     };
 
     // Setup different client instance (to simulate external client using revoked key)
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     // Note: In a real scenario, the client would have the private key corresponding
     // to the revoked public key. For testing, we create a key with the same name.
     client_instance
         .add_private_key("attempting_revoked_access")
+        .await
         .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
@@ -485,17 +511,20 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
     // Setup server with policy allowing only Read permissions for new clients
-    let server_instance = test_instance();
+    let server_instance = test_instance().await;
     server_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on server");
 
     server_instance
         .add_private_key("server_admin")
+        .await
         .expect("Failed to add server admin key");
 
     let server_admin_pubkey = server_instance
         .get_formatted_public_key("server_admin")
+        .await
         .expect("Failed to get server admin public key");
 
     // Create database with restrictive auth policy
@@ -519,6 +548,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     let server_database = server_instance
         .new_database(settings, "server_admin")
+        .await
         .expect("Failed to create database");
 
     let tree_id = server_database.root_id().clone();
@@ -530,13 +560,15 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     };
 
     // Setup client requesting Admin permissions (should be excessive)
-    let client_instance = test_instance();
+    let client_instance = test_instance().await;
     client_instance
         .enable_sync()
+        .await
         .expect("Failed to initialize sync on client");
 
     client_instance
         .add_private_key("greedy_client")
+        .await
         .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
@@ -567,9 +599,9 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     // EXPECTED SECURE BEHAVIOR: No permissions should be granted for failed bootstrap
     let server_auth_settings = server_database
-        .get_settings()
+        .get_settings().await
         .expect("Failed to get server database settings")
-        .get_all()
+        .get_all().await
         .expect("Failed to get all settings");
 
     if let Some(auth_node) = server_auth_settings.get("auth")

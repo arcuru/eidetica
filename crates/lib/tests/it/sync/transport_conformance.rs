@@ -14,13 +14,13 @@ use crate::helpers::test_instance;
 /// Set up two Instance instances with private keys
 async fn setup_databases() -> Result<(Instance, Instance)> {
     let db1 = {
-        let db = test_instance();
-        db.add_private_key("device_key")?;
+        let db = test_instance().await;
+        db.add_private_key("device_key").await?;
         db
     };
     let db2 = {
-        let db = test_instance();
-        db.add_private_key("device_key")?;
+        let db = test_instance().await;
+        db.add_private_key("device_key").await?;
         db
     };
     Ok((db1, db2))
@@ -58,15 +58,19 @@ where
     let address2 = factory.create_address(&addr2);
 
     // Connect peers
-    let peer1_pubkey = sync1.get_device_public_key()?;
-    let peer2_pubkey = sync2.get_device_public_key()?;
+    let peer1_pubkey = sync1.get_device_public_key().await?;
+    let peer2_pubkey = sync2.get_device_public_key().await?;
 
     // Register peers with each other
-    sync1.register_peer(&peer2_pubkey, Some("test_peer_2"))?;
-    sync1.add_peer_address(&peer2_pubkey, address2)?;
+    sync1
+        .register_peer(&peer2_pubkey, Some("test_peer_2"))
+        .await?;
+    sync1.add_peer_address(&peer2_pubkey, address2).await?;
 
-    sync2.register_peer(&peer1_pubkey, Some("test_peer_1"))?;
-    sync2.add_peer_address(&peer1_pubkey, address1)?;
+    sync2
+        .register_peer(&peer1_pubkey, Some("test_peer_1"))
+        .await?;
+    sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
     Ok((
         sync1,
@@ -77,7 +81,7 @@ where
 }
 
 /// Set up trees with bidirectional sync hooks
-fn setup_sync_hooks(
+async fn setup_sync_hooks(
     db1: &Instance,
     db2: &Instance,
     sync1: &eidetica::sync::Sync,
@@ -85,21 +89,35 @@ fn setup_sync_hooks(
     peer1_pubkey: &str,
     peer2_pubkey: &str,
 ) -> Result<(eidetica::Database, eidetica::Database)> {
-    let tree1 = db1.new_database_default("device_key")?;
-    let tree2 = db2.new_database_default("device_key")?;
+    let tree1 = db1.new_database_default("device_key").await?;
+    let tree2 = db2.new_database_default("device_key").await?;
 
     // Set up sync callbacks using WriteCallback directly
     // Clone sync instances and peer pubkeys for use in callbacks
     let sync1_clone = sync1.clone();
     let peer2_pubkey_owned = peer2_pubkey.to_string();
     tree1.on_local_write(move |entry, db, _instance| {
-        sync1_clone.queue_entry_for_sync(&peer2_pubkey_owned, &entry.id(), db.root_id())
+        let sync = sync1_clone.clone();
+        let peer = peer2_pubkey_owned.clone();
+        let entry_id = entry.id();
+        let tree_id = db.root_id().clone();
+        async move {
+            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
+            Ok(())
+        }
     })?;
 
     let sync2_clone = sync2.clone();
     let peer1_pubkey_owned = peer1_pubkey.to_string();
     tree2.on_local_write(move |entry, db, _instance| {
-        sync2_clone.queue_entry_for_sync(&peer1_pubkey_owned, &entry.id(), db.root_id())
+        let sync = sync2_clone.clone();
+        let peer = peer1_pubkey_owned.clone();
+        let entry_id = entry.id();
+        let tree_id = db.root_id().clone();
+        async move {
+            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
+            Ok(())
+        }
     })?;
 
     Ok((tree1, tree2))
@@ -124,20 +142,20 @@ where
     let (sync1, sync2, peer1_pubkey, peer2_pubkey) =
         setup_sync_with_peers(&factory, &db1, &db2).await?;
     let (tree1, _tree2) =
-        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey)?;
+        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey).await?;
 
     // Create entries in DB1 - these should automatically sync via hooks
-    let op1 = tree1.new_transaction()?;
-    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
-    docstore1.set("name", "Alice")?;
-    docstore1.set("age", "30")?;
-    let entry_id1 = op1.commit()?;
+    let op1 = tree1.new_transaction().await?;
+    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data").await?;
+    docstore1.set("name", "Alice").await?;
+    docstore1.set("age", "30").await?;
+    let entry_id1 = op1.commit().await?;
 
-    let op2 = tree1.new_transaction()?;
-    let docstore1_2 = op2.get_store::<eidetica::store::DocStore>("data")?;
-    docstore1_2.set("name", "Bob")?;
-    docstore1_2.set("age", "25")?;
-    let entry_id2 = op2.commit()?;
+    let op2 = tree1.new_transaction().await?;
+    let docstore1_2 = op2.get_store::<eidetica::store::DocStore>("data").await?;
+    docstore1_2.set("name", "Bob").await?;
+    docstore1_2.set("age", "25").await?;
+    let entry_id2 = op2.commit().await?;
 
     println!("Created entries in DB1 (with sync hooks): {entry_id1} and {entry_id2}");
 
@@ -145,8 +163,8 @@ where
     sleep(factory.sync_wait_time()).await;
 
     // Verify entries were synced to DB2 backend
-    let entry1_in_db2 = db2.backend().get(&entry_id1);
-    let entry2_in_db2 = db2.backend().get(&entry_id2);
+    let entry1_in_db2 = db2.backend().get(&entry_id1).await;
+    let entry2_in_db2 = db2.backend().get(&entry_id2).await;
 
     println!("Checking for entries in DB2 backend...");
     println!("Entry 1 in DB2: {:?}", entry1_in_db2.is_ok());
@@ -199,29 +217,29 @@ where
     let (sync1, sync2, peer1_pubkey, peer2_pubkey) =
         setup_sync_with_peers(&factory, &db1, &db2).await?;
     let (tree1, tree2) =
-        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey)?;
+        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey).await?;
 
     // Create entry in DB1
-    let op1 = tree1.new_transaction()?;
-    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data")?;
-    docstore1.set("origin", "db1")?;
-    let entry_from_db1 = op1.commit()?;
+    let op1 = tree1.new_transaction().await?;
+    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data").await?;
+    docstore1.set("origin", "db1").await?;
+    let entry_from_db1 = op1.commit().await?;
 
     // Create entry in DB2
-    let op2 = tree2.new_transaction()?;
-    let docstore2 = op2.get_store::<eidetica::store::DocStore>("data")?;
-    docstore2.set("origin", "db2")?;
-    let entry_from_db2 = op2.commit()?;
+    let op2 = tree2.new_transaction().await?;
+    let docstore2 = op2.get_store::<eidetica::store::DocStore>("data").await?;
+    docstore2.set("origin", "db2").await?;
+    let entry_from_db2 = op2.commit().await?;
 
     // Wait for bidirectional sync
     sleep(factory.sync_wait_time()).await;
 
     // Verify DB1 has entry from DB2
-    let db2_entry_in_db1 = db1.backend().get(&entry_from_db2);
+    let db2_entry_in_db1 = db1.backend().get(&entry_from_db2).await;
     println!("DB2 entry in DB1: {:?}", db2_entry_in_db1.is_ok());
 
     // Verify DB2 has entry from DB1
-    let db1_entry_in_db2 = db2.backend().get(&entry_from_db1);
+    let db1_entry_in_db2 = db2.backend().get(&entry_from_db1).await;
     println!("DB1 entry in DB2: {:?}", db1_entry_in_db2.is_ok());
 
     // At least one direction should have synced

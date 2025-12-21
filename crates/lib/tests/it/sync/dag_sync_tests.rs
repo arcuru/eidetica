@@ -77,8 +77,8 @@ fn create_dag_structure(tree_id: &str) -> Vec<Entry> {
 
 #[tokio::test]
 async fn test_dag_sync_linear_chain() {
-    let (base_db1, _sync1) = helpers::setup();
-    let (base_db2, _sync2) = helpers::setup();
+    let (base_db1, _sync1) = helpers::setup().await;
+    let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a linear chain of entries in backend1
     let tree_id = "test_tree";
@@ -86,11 +86,11 @@ async fn test_dag_sync_linear_chain() {
 
     // Store entire chain in backend1
     for entry in &chain {
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Backend2 only has the root entry
-    base_db2.backend().put_verified(chain[0].clone()).unwrap();
+    base_db2.backend().put_verified(chain[0].clone()).await.unwrap();
 
     // Test DAG traversal to find missing entries
     // Simulate sync by checking what backend2 would need
@@ -105,7 +105,7 @@ async fn test_dag_sync_linear_chain() {
     // Find what backend2 is missing (should be entries 1-4)
     let mut missing_count = 0;
     for (_i, entry) in chain.iter().enumerate().skip(1) {
-        if backend2.get(&entry.id()).is_err() {
+        if backend2.get(&entry.id()).await.is_err() {
             missing_count += 1;
         }
     }
@@ -126,8 +126,8 @@ async fn test_dag_sync_linear_chain() {
 
 #[tokio::test]
 async fn test_dag_sync_branching_structure() {
-    let (base_db1, _sync1) = helpers::setup();
-    let (base_db2, _sync2) = helpers::setup();
+    let (base_db1, _sync1) = helpers::setup().await;
+    let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a DAG structure
     let tree_id = "test_tree";
@@ -135,23 +135,25 @@ async fn test_dag_sync_branching_structure() {
 
     // Store all entries in backend1
     for entry in &dag_entries {
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Backend2 only has the root
     base_db2
         .backend()
         .put_verified(dag_entries[0].clone())
+        .await
         .unwrap();
 
     let backend2 = base_db2.backend();
 
     // Check that backend2 is missing the branch and merge entries
-    let missing: Vec<_> = dag_entries
-        .iter()
-        .skip(1) // Skip root
-        .filter(|entry| backend2.get(&entry.id()).is_err())
-        .collect();
+    let mut missing = Vec::new();
+    for entry in dag_entries.iter().skip(1) {
+        if backend2.get(&entry.id()).await.is_err() {
+            missing.push(entry);
+        }
+    }
 
     assert_eq!(
         missing.len(),
@@ -182,8 +184,8 @@ async fn test_dag_sync_branching_structure() {
 
 #[tokio::test]
 async fn test_dag_sync_partial_overlap() {
-    let (base_db1, _sync1) = helpers::setup();
-    let (base_db2, _sync2) = helpers::setup();
+    let (base_db1, _sync1) = helpers::setup().await;
+    let (base_db2, _sync2) = helpers::setup().await;
 
     // Create linear chain
     let tree_id = "test_tree";
@@ -191,22 +193,23 @@ async fn test_dag_sync_partial_overlap() {
 
     // Backend1 has all entries
     for entry in &chain {
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Backend2 has first 3 entries
     for entry in &chain[0..3] {
-        base_db2.backend().put_verified(entry.clone()).unwrap();
+        base_db2.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     let backend2 = base_db2.backend();
 
     // Check missing entries (should be last 3)
-    let missing_count = chain
-        .iter()
-        .skip(3)
-        .filter(|entry| backend2.get(&entry.id()).is_err())
-        .count();
+    let mut missing_count = 0;
+    for entry in chain.iter().skip(3) {
+        if backend2.get(&entry.id()).await.is_err() {
+            missing_count += 1;
+        }
+    }
 
     assert_eq!(
         missing_count, 3,
@@ -216,7 +219,7 @@ async fn test_dag_sync_partial_overlap() {
 
 #[tokio::test]
 async fn test_dag_sync_entry_ordering() {
-    let (base_db, _sync) = helpers::setup();
+    let (base_db, _sync) = helpers::setup().await;
 
     // Create entries that must be ordered by height
     let tree_id = "test_tree";
@@ -224,15 +227,15 @@ async fn test_dag_sync_entry_ordering() {
 
     // Store entries in random order
     let backend = base_db.backend();
-    backend.put_verified(chain[2].clone()).unwrap(); // Child first
-    backend.put_verified(chain[0].clone()).unwrap(); // Root
-    backend.put_verified(chain[3].clone()).unwrap(); // Grandchild
-    backend.put_verified(chain[1].clone()).unwrap(); // Parent
+    backend.put_verified(chain[2].clone()).await.unwrap(); // Child first
+    backend.put_verified(chain[0].clone()).await.unwrap(); // Root
+    backend.put_verified(chain[3].clone()).await.unwrap(); // Grandchild
+    backend.put_verified(chain[1].clone()).await.unwrap(); // Parent
 
     // Retrieve and verify parent-child relationships
     for i in 1..chain.len() {
-        let parent = backend.get(&chain[i - 1].id()).unwrap();
-        let child = backend.get(&chain[i].id()).unwrap();
+        let parent = backend.get(&chain[i - 1].id()).await.unwrap();
+        let child = backend.get(&chain[i].id()).await.unwrap();
 
         // Verify child has parent as one of its parents
         assert!(
@@ -246,7 +249,7 @@ async fn test_dag_sync_entry_ordering() {
 
 #[tokio::test]
 async fn test_dag_sync_empty_sets() {
-    let (base_db, _sync) = helpers::setup();
+    let (base_db, _sync) = helpers::setup().await;
 
     // Test edge cases with empty tip sets
     let _tree_id = "test_tree";
@@ -254,7 +257,7 @@ async fn test_dag_sync_empty_sets() {
         .build()
         .expect("Root entry should build successfully");
 
-    base_db.backend().put_verified(entry.clone()).unwrap();
+    base_db.backend().put_verified(entry.clone()).await.unwrap();
 
     // Empty tips should result in empty operations
     let empty_tips: Vec<ID> = vec![];
@@ -269,8 +272,8 @@ async fn test_dag_sync_empty_sets() {
 
 #[tokio::test]
 async fn test_sync_flow_integration() {
-    let (base_db1, _sync1) = helpers::setup();
-    let (base_db2, _sync2) = helpers::setup();
+    let (base_db1, _sync1) = helpers::setup().await;
+    let (base_db2, _sync2) = helpers::setup().await;
 
     // Create a complex DAG structure in database 1
     let tree_id = "sync_test_tree";
@@ -278,7 +281,7 @@ async fn test_sync_flow_integration() {
 
     // Store all entries in backend1
     for entry in &dag_entries {
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Simulate what would happen during sync:
@@ -293,7 +296,7 @@ async fn test_sync_flow_integration() {
     // 2. Identify missing entries (backend2 is missing everything)
     let mut missing_entries = Vec::new();
     for entry in &dag_entries {
-        if base_db2.backend().get(&entry.id()).is_err() {
+        if base_db2.backend().get(&entry.id()).await.is_err() {
             missing_entries.push(entry.clone());
         }
     }
@@ -307,13 +310,13 @@ async fn test_sync_flow_integration() {
     // 3. Store entries in dependency order (root first, then children)
     // For this test, we'll store them in the order they were created
     for entry in missing_entries {
-        base_db2.backend().put_verified(entry).unwrap();
+        base_db2.backend().put_verified(entry).await.unwrap();
     }
 
     // Verify all entries are now present in both backends
     for entry in &dag_entries {
-        let entry1 = base_db1.backend().get(&entry.id()).unwrap();
-        let entry2 = base_db2.backend().get(&entry.id()).unwrap();
+        let entry1 = base_db1.backend().get(&entry.id()).await.unwrap();
+        let entry2 = base_db2.backend().get(&entry.id()).await.unwrap();
         assert_eq!(entry1.id(), entry2.id(), "Entry IDs should match");
         assert_eq!(
             entry1.parents().unwrap(),
@@ -325,8 +328,8 @@ async fn test_sync_flow_integration() {
 
 #[tokio::test]
 async fn test_bidirectional_sync_flow() {
-    let (base_db1, _sync1) = helpers::setup();
-    let (base_db2, _sync2) = helpers::setup();
+    let (base_db1, _sync1) = helpers::setup().await;
+    let (base_db2, _sync2) = helpers::setup().await;
 
     let tree_id = "bidirectional_tree";
     let _tree_id_val: ID = tree_id.into();
@@ -349,12 +352,12 @@ async fn test_bidirectional_sync_flow() {
 
     // Store chain1 in backend1
     for entry in &chain1 {
-        base_db1.backend().put_verified(entry.clone()).unwrap();
+        base_db1.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Store chain2 in backend2 (sharing the root)
     for entry in &chain2 {
-        base_db2.backend().put_verified(entry.clone()).unwrap();
+        base_db2.backend().put_verified(entry.clone()).await.unwrap();
     }
 
     // Simulate bidirectional sync
@@ -363,39 +366,39 @@ async fn test_bidirectional_sync_flow() {
     let mut missing_in_2 = Vec::new();
     for entry in &chain1[1..] {
         // Skip root which backend2 already has
-        if base_db2.backend().get(&entry.id()).is_err() {
+        if base_db2.backend().get(&entry.id()).await.is_err() {
             missing_in_2.push(entry.clone());
         }
     }
 
     // Store missing entries in backend2
     for entry in missing_in_2 {
-        base_db2.backend().put_verified(entry).unwrap();
+        base_db2.backend().put_verified(entry).await.unwrap();
     }
 
     // Backend2 -> Backend1 sync
     let mut missing_in_1 = Vec::new();
     for entry in &chain2[1..] {
         // Skip root which backend1 already has
-        if base_db1.backend().get(&entry.id()).is_err() {
+        if base_db1.backend().get(&entry.id()).await.is_err() {
             missing_in_1.push(entry.clone());
         }
     }
 
     // Store missing entries in backend1
     for entry in missing_in_1 {
-        base_db1.backend().put_verified(entry).unwrap();
+        base_db1.backend().put_verified(entry).await.unwrap();
     }
 
     // Verify both databases have all entries
     for entry in chain1.iter().chain(chain2.iter()) {
         assert!(
-            base_db1.backend().get(&entry.id()).is_ok(),
+            base_db1.backend().get(&entry.id()).await.is_ok(),
             "Backend1 should have entry {}",
             entry.id()
         );
         assert!(
-            base_db2.backend().get(&entry.id()).is_ok(),
+            base_db2.backend().get(&entry.id()).await.is_ok(),
             "Backend2 should have entry {}",
             entry.id()
         );
@@ -405,8 +408,8 @@ async fn test_bidirectional_sync_flow() {
 #[tokio::test]
 async fn test_real_sync_transport_setup() {
     // Create two separate database instances using the helper
-    let (_base_db1, sync1) = helpers::setup();
-    let (_base_db2, sync2) = helpers::setup();
+    let (_base_db1, sync1) = helpers::setup().await;
+    let (_base_db2, sync2) = helpers::setup().await;
 
     // Enable HTTP transport for both
     sync1.enable_http_transport().await.unwrap();
@@ -420,22 +423,23 @@ async fn test_real_sync_transport_setup() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Get sync device public keys for peer registration
-    let sync1_pubkey = sync1.get_device_public_key().unwrap();
-    let sync2_pubkey = sync2.get_device_public_key().unwrap();
+    let sync1_pubkey = sync1.get_device_public_key().await.unwrap();
+    let sync2_pubkey = sync2.get_device_public_key().await.unwrap();
 
     // Create server address using the helper method
     let server_address = Address::http(server_addr);
 
     // Register peers with each other
-    sync1.register_peer(&sync2_pubkey, Some("peer2")).unwrap();
+    sync1.register_peer(&sync2_pubkey, Some("peer2")).await.unwrap();
     sync1
         .add_peer_address(&sync2_pubkey, server_address.clone())
+        .await
         .unwrap();
 
-    sync2.register_peer(&sync1_pubkey, Some("peer1")).unwrap();
+    sync2.register_peer(&sync1_pubkey, Some("peer1")).await.unwrap();
 
     // Verify peer registration worked
-    let peer_info = sync1.get_peer_info(&sync2_pubkey).unwrap().unwrap();
+    let peer_info = sync1.get_peer_info(&sync2_pubkey).await.unwrap().unwrap();
     assert_eq!(peer_info.display_name, Some("peer2".to_string()));
     assert!(peer_info.has_transport("http"));
 
@@ -465,7 +469,7 @@ async fn test_real_sync_transport_setup() {
     // entries should actually be stored in database 2's backend
     for entry_id in &entry_ids {
         assert!(
-            _base_db2.backend().get(entry_id).is_ok(),
+            _base_db2.backend().get(entry_id).await.is_ok(),
             "Entry {entry_id} should exist in database 2 after sync"
         );
     }
@@ -486,11 +490,11 @@ async fn test_sync_protocol_implementation() {
 
     // Setup server with public sync-enabled database
     let (base_db1, _user1, _key_id1, tree1, tree_root_id, sync1) =
-        helpers::setup_public_sync_enabled_server("server_user", "server_key", "test_tree");
+        helpers::setup_public_sync_enabled_server("server_user", "server_key", "test_tree").await;
 
     // Setup client
     let (base_db2, _user2, _key_id2, sync2) =
-        helpers::setup_sync_enabled_client("client_user", "client_key");
+        helpers::setup_sync_enabled_client("client_user", "client_key").await;
 
     // Enable HTTP transport for both
     sync1.enable_http_transport().await.unwrap();
@@ -503,26 +507,26 @@ async fn test_sync_protocol_implementation() {
 
     // Add test data to tree1
     let test_entry_id = {
-        let op = tree1.new_transaction().unwrap();
-        let doc_store = op.get_store::<DocStore>("data").unwrap();
-        doc_store.set("test_key", "test_value").unwrap();
-        doc_store.set("protocol", "implemented").unwrap();
-        op.commit().unwrap()
+        let op = tree1.new_transaction().await.unwrap();
+        let doc_store = op.get_store::<DocStore>("data").await.unwrap();
+        doc_store.set("test_key", "test_value").await.unwrap();
+        doc_store.set("protocol", "implemented").await.unwrap();
+        op.commit().await.unwrap()
     };
 
     // Verify data exists in db1 but not in db2 yet
     assert!(
-        base_db1.backend().get(&test_entry_id).is_ok(),
+        base_db1.backend().get(&test_entry_id).await.is_ok(),
         "Entry should exist in db1"
     );
     assert!(
-        base_db2.backend().get(&test_entry_id).is_err(),
+        base_db2.backend().get(&test_entry_id).await.is_err(),
         "Entry should not exist in db2 yet"
     );
 
     // Also verify the tree root doesn't exist in db2 yet
     assert!(
-        base_db2.backend().get(&tree_root_id).is_err(),
+        base_db2.backend().get(&tree_root_id).await.is_err(),
         "Tree root should not exist in db2 yet"
     );
 
@@ -547,23 +551,23 @@ async fn test_sync_protocol_implementation() {
     println!("🧪 DEBUG: Checking what entries exist:");
     println!(
         "  - db1 has tree root: {}",
-        base_db1.backend().get(&tree_root_id).is_ok()
+        base_db1.backend().get(&tree_root_id).await.is_ok()
     );
     println!(
         "  - db1 has test entry: {}",
-        base_db1.backend().get(&test_entry_id).is_ok()
+        base_db1.backend().get(&test_entry_id).await.is_ok()
     );
     println!(
         "  - db2 has tree root: {}",
-        base_db2.backend().get(&tree_root_id).is_ok()
+        base_db2.backend().get(&tree_root_id).await.is_ok()
     );
     println!(
         "  - db2 has test entry: {}",
-        base_db2.backend().get(&test_entry_id).is_ok()
+        base_db2.backend().get(&test_entry_id).await.is_ok()
     );
 
     // Verify the data was actually synced to db2
-    let synced_entry = base_db2.backend().get(&test_entry_id);
+    let synced_entry = base_db2.backend().get(&test_entry_id).await;
     assert!(
         synced_entry.is_ok(),
         "Entry should now exist in db2 after sync"
@@ -571,20 +575,20 @@ async fn test_sync_protocol_implementation() {
 
     // Now add MORE data to tree1 and sync again to truly test the sync protocol
     let second_entry_id = {
-        let op = tree1.new_transaction().unwrap();
-        let doc_store = op.get_store::<DocStore>("data").unwrap();
-        doc_store.set("second_key", "second_value").unwrap();
-        doc_store.set("sync_test", "actually_working").unwrap();
-        op.commit().unwrap()
+        let op = tree1.new_transaction().await.unwrap();
+        let doc_store = op.get_store::<DocStore>("data").await.unwrap();
+        doc_store.set("second_key", "second_value").await.unwrap();
+        doc_store.set("sync_test", "actually_working").await.unwrap();
+        op.commit().await.unwrap()
     };
 
     // Verify second entry exists in db1 but not in db2
     assert!(
-        base_db1.backend().get(&second_entry_id).is_ok(),
+        base_db1.backend().get(&second_entry_id).await.is_ok(),
         "Second entry should exist in db1"
     );
     assert!(
-        base_db2.backend().get(&second_entry_id).is_err(),
+        base_db2.backend().get(&second_entry_id).await.is_err(),
         "Second entry should not exist in db2 before second sync"
     );
 
@@ -603,23 +607,23 @@ async fn test_sync_protocol_implementation() {
 
     // Verify the second entry was synced
     assert!(
-        base_db2.backend().get(&second_entry_id).is_ok(),
+        base_db2.backend().get(&second_entry_id).await.is_ok(),
         "Second entry should now exist in db2 after second sync"
     );
 
     // Reload the tree to get the latest state
-    let tree2 = base_db2.load_database(&tree_root_id).unwrap();
+    let tree2 = base_db2.load_database(&tree_root_id).await.unwrap();
 
     // Verify ALL synced data is correct
     {
-        let doc_store = tree2.get_store_viewer::<DocStore>("data").unwrap();
+        let doc_store = tree2.get_store_viewer::<DocStore>("data").await.unwrap();
         // First entry data
-        assert_eq!(doc_store.get_string("test_key").unwrap(), "test_value");
-        assert_eq!(doc_store.get_string("protocol").unwrap(), "implemented");
+        assert_eq!(doc_store.get_string("test_key").await.unwrap(), "test_value");
+        assert_eq!(doc_store.get_string("protocol").await.unwrap(), "implemented");
         // Second entry data
-        assert_eq!(doc_store.get_string("second_key").unwrap(), "second_value");
+        assert_eq!(doc_store.get_string("second_key").await.unwrap(), "second_value");
         assert_eq!(
-            doc_store.get_string("sync_test").unwrap(),
+            doc_store.get_string("sync_test").await.unwrap(),
             "actually_working"
         );
     }
@@ -641,8 +645,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db1, sync1) = helpers::setup();
-    let (base_db2, sync2) = helpers::setup();
+    let (_base_db1, sync1) = helpers::setup().await;
+    let (base_db2, sync2) = helpers::setup().await;
 
     // Enable Iroh transport for both with relays disabled for local testing
     let transport1 = IrohTransport::builder()
@@ -671,8 +675,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Get device public keys for peer registration
-    let sync1_pubkey = sync1.get_device_public_key().unwrap();
-    let sync2_pubkey = sync2.get_device_public_key().unwrap();
+    let sync1_pubkey = sync1.get_device_public_key().await.unwrap();
+    let sync2_pubkey = sync2.get_device_public_key().await.unwrap();
 
     // Get server addresses (now containing full NodeAddr info with direct addresses)
     // This uses the same pattern as HTTP transport but returns serialized NodeAddr info
@@ -689,20 +693,24 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     // Register peers with each other
     sync1
         .register_peer(&sync2_pubkey, Some("iroh_peer2"))
+        .await
         .unwrap();
     sync1
         .add_peer_address(&sync2_pubkey, server_address2.clone())
+        .await
         .unwrap();
 
     sync2
         .register_peer(&sync1_pubkey, Some("iroh_peer1"))
+        .await
         .unwrap();
     sync2
         .add_peer_address(&sync1_pubkey, server_address1.clone())
+        .await
         .unwrap();
 
     // Verify peer registration worked
-    let peer_info = sync1.get_peer_info(&sync2_pubkey).unwrap().unwrap();
+    let peer_info = sync1.get_peer_info(&sync2_pubkey).await.unwrap().unwrap();
     assert_eq!(peer_info.display_name, Some("iroh_peer2".to_string()));
     assert!(peer_info.has_transport("iroh"));
 
@@ -742,7 +750,7 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     // Verify entries were actually stored in database 2
     for entry_id in &entry_ids {
         assert!(
-            base_db2.backend().get(entry_id).is_ok(),
+            base_db2.backend().get(entry_id).await.is_ok(),
             "Entry {entry_id} should exist in database 2 after Iroh sync"
         );
     }
@@ -765,7 +773,7 @@ async fn test_iroh_transport_production_defaults() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db, sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup().await;
 
     // Test 1: Default constructor uses production relays
     sync.enable_iroh_transport().await.unwrap();
@@ -777,7 +785,7 @@ async fn test_iroh_transport_production_defaults() {
     sync.stop_server().await.unwrap();
 
     // Test 2: Builder with explicit Default mode
-    let (_base_db2, sync2) = helpers::setup();
+    let (_base_db2, sync2) = helpers::setup().await;
     let transport = IrohTransport::builder()
         .relay_mode(RelayMode::Default)
         .build()
@@ -800,7 +808,7 @@ async fn test_iroh_transport_staging_mode() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
-    let (_base_db, sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup().await;
 
     let transport = IrohTransport::builder()
         .relay_mode(RelayMode::Staging)
@@ -825,7 +833,7 @@ async fn test_iroh_transport_custom_relay_config() {
     use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::{RelayMap, RelayMode, RelayNode, RelayUrl};
 
-    let (_base_db, sync) = helpers::setup();
+    let (_base_db, sync) = helpers::setup().await;
 
     // Create a custom relay map pointing to a local relay server
     // (In real usage, you'd run: iroh-relay --dev)
