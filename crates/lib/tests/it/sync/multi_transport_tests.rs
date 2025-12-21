@@ -19,17 +19,17 @@ async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
     let (_instance, sync) = setup();
 
     // Enable first HTTP transport
-    sync.enable_http_transport()?;
+    sync.enable_http_transport().await?;
 
     // Enable second HTTP transport - should still succeed (adds to existing)
     let http2 = HttpTransport::new()?;
-    sync.add_transport_async(Box::new(http2)).await?;
+    sync.add_transport(Box::new(http2)).await?;
 
     // Start server on all transports
-    sync.start_server_async("127.0.0.1:0").await?;
+    sync.start_server("127.0.0.1:0").await?;
 
     // Get all server addresses - should have entries
-    let addresses = sync.get_all_server_addresses_async().await?;
+    let addresses = sync.get_all_server_addresses().await?;
     assert!(
         !addresses.is_empty(),
         "Should have at least one server address"
@@ -38,7 +38,7 @@ async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
     // Each HTTP transport will bind to its own port
     // (In practice you'd use different transport types like HTTP + Iroh)
 
-    sync.stop_server_async().await?;
+    sync.stop_server().await?;
 
     Ok(())
 }
@@ -49,21 +49,21 @@ async fn test_transport_routing_by_address_type() -> Result<()> {
     let (_instance, sync) = setup();
 
     // Enable HTTP transport
-    sync.enable_http_transport()?;
+    sync.enable_http_transport().await?;
 
     // Start server
-    sync.start_server_async("127.0.0.1:0").await?;
+    sync.start_server("127.0.0.1:0").await?;
 
     // Get the server address
-    let addr = sync.get_server_address_async().await?;
+    let addr = sync.get_server_address().await?;
     assert!(!addr.is_empty(), "Should have a server address");
 
     // Get all addresses
-    let all_addresses = sync.get_all_server_addresses_async().await?;
+    let all_addresses = sync.get_all_server_addresses().await?;
     assert_eq!(all_addresses.len(), 1, "Should have exactly one transport");
     assert_eq!(all_addresses[0].0, "http", "Should be HTTP transport type");
 
-    sync.stop_server_async().await?;
+    sync.stop_server().await?;
 
     Ok(())
 }
@@ -74,22 +74,22 @@ async fn test_server_lifecycle_with_multiple_transports() -> Result<()> {
     let (_instance, sync) = setup();
 
     // Enable two transports
-    sync.enable_http_transport()?;
+    sync.enable_http_transport().await?;
     let http2 = HttpTransport::new()?;
-    sync.add_transport_async(Box::new(http2)).await?;
+    sync.add_transport(Box::new(http2)).await?;
 
     // Start servers on all transports
-    sync.start_server_async("127.0.0.1:0").await?;
+    sync.start_server("127.0.0.1:0").await?;
 
     // Verify servers are running
-    let addresses = sync.get_all_server_addresses_async().await?;
+    let addresses = sync.get_all_server_addresses().await?;
     assert!(!addresses.is_empty(), "Should have running servers");
 
     // Stop all servers
-    sync.stop_server_async().await?;
+    sync.stop_server().await?;
 
     // Verify no more addresses available
-    let result = sync.get_server_address_async().await;
+    let result = sync.get_server_address().await;
     assert!(
         result.is_err(),
         "Should have no server addresses after stop"
@@ -117,22 +117,20 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         super::helpers::setup_global_wildcard_server();
 
     // Enable both HTTP and Iroh transports on server
-    server_sync.enable_http_transport()?;
+    server_sync.enable_http_transport().await?;
     let server_iroh = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
         .build()?;
-    server_sync
-        .add_transport_async(Box::new(server_iroh))
-        .await?;
+    server_sync.add_transport(Box::new(server_iroh)).await?;
 
     // Start server
-    server_sync.start_server_async("127.0.0.1:0").await?;
+    server_sync.start_server("127.0.0.1:0").await?;
 
     // Allow endpoints to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Get server addresses for both transports
-    let server_addresses = server_sync.get_all_server_addresses_async().await?;
+    let server_addresses = server_sync.get_all_server_addresses().await?;
     assert_eq!(
         server_addresses.len(),
         2,
@@ -161,7 +159,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("\n--- LEG 1: HTTP client syncs data TO server via HTTP ---");
 
     let (http_client_instance, http_client_sync) = setup();
-    http_client_sync.enable_http_transport()?;
+    http_client_sync.enable_http_transport().await?;
 
     // Register server as peer
     http_client_sync.register_peer(&server_pubkey, Some("server"))?;
@@ -227,7 +225,9 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     let iroh_client_transport = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
         .build()?;
-    iroh_client_sync.enable_iroh_transport_with_config(iroh_client_transport)?;
+    iroh_client_sync
+        .enable_iroh_transport_with_config(iroh_client_transport)
+        .await?;
 
     // Register server as peer with Iroh address
     iroh_client_sync.register_peer(&server_pubkey, Some("server"))?;
@@ -273,7 +273,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("✅ Data integrity verified!");
 
     // Cleanup
-    server_sync.stop_server_async().await?;
+    server_sync.stop_server().await?;
 
     println!("\n✅ Multi-transport HTTP→Server→Iroh test passed!");
     Ok(())

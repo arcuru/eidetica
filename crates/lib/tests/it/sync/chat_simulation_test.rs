@@ -133,13 +133,14 @@ async fn test_chat_app_authenticated_bootstrap() {
     let server_addr = {
         server_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
         server_sync
-            .start_server_async("127.0.0.1:0")
+            .start_server("127.0.0.1:0")
             .await
             .expect("Failed to start server");
         let addr = server_sync
-            .get_server_address_async()
+            .get_server_address()
             .await
             .expect("Failed to get server address");
         println!("🌐 Server listening at: {addr}");
@@ -173,6 +174,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         println!("\n🔄 Client attempting authenticated bootstrap...");
@@ -501,7 +503,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     {
         let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
-            .stop_server_async()
+            .stop_server()
             .await
             .expect("Failed to stop server");
     }
@@ -577,13 +579,14 @@ async fn test_global_key_bootstrap() {
     let server_addr = {
         server_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
         server_sync
-            .start_server_async("127.0.0.1:0")
+            .start_server("127.0.0.1:0")
             .await
             .expect("Failed to start server");
         server_sync
-            .get_server_address_async()
+            .get_server_address()
             .await
             .expect("Failed to get server address")
     };
@@ -604,6 +607,7 @@ async fn test_global_key_bootstrap() {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         println!("🔄 Client syncing with global permission...");
@@ -659,7 +663,7 @@ async fn test_global_key_bootstrap() {
     {
         let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
-            .stop_server_async()
+            .stop_server()
             .await
             .expect("Failed to stop server");
     }
@@ -738,13 +742,14 @@ async fn test_multiple_databases_sync() {
     let server_addr = {
         server_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
         server_sync
-            .start_server_async("127.0.0.1:0")
+            .start_server("127.0.0.1:0")
             .await
             .expect("Failed to start server");
         server_sync
-            .get_server_address_async()
+            .get_server_address()
             .await
             .expect("Failed to get server address")
     };
@@ -764,6 +769,7 @@ async fn test_multiple_databases_sync() {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         for (i, room_id) in room_ids.iter().enumerate() {
@@ -804,7 +810,7 @@ async fn test_multiple_databases_sync() {
     {
         let server_sync = server_instance.sync().expect("Server should have sync");
         server_sync
-            .stop_server_async()
+            .stop_server()
             .await
             .expect("Failed to stop server");
     }

@@ -409,12 +409,12 @@ async fn test_real_sync_transport_setup() {
     let (_base_db2, sync2) = helpers::setup();
 
     // Enable HTTP transport for both
-    sync1.enable_http_transport().unwrap();
-    sync2.enable_http_transport().unwrap();
+    sync1.enable_http_transport().await.unwrap();
+    sync2.enable_http_transport().await.unwrap();
 
     // Start server on sync2
-    sync2.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = sync2.get_server_address_async().await.unwrap();
+    sync2.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = sync2.get_server_address().await.unwrap();
 
     // Give the server a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -452,7 +452,7 @@ async fn test_real_sync_transport_setup() {
 
     // Test sending entries using the transport layer
     // This tests the implemented SendEntries functionality with actual storage
-    let result = sync1.send_entries_async(&entries, &server_address).await;
+    let result = sync1.send_entries(&entries, &server_address).await;
     assert!(
         result.is_ok(),
         "Should be able to send entries via HTTP transport"
@@ -476,7 +476,7 @@ async fn test_real_sync_transport_setup() {
     );
 
     // Clean up
-    sync2.stop_server_async().await.unwrap();
+    sync2.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -493,12 +493,12 @@ async fn test_sync_protocol_implementation() {
         helpers::setup_sync_enabled_client("client_user", "client_key");
 
     // Enable HTTP transport for both
-    sync1.enable_http_transport().unwrap();
-    sync2.enable_http_transport().unwrap();
+    sync1.enable_http_transport().await.unwrap();
+    sync2.enable_http_transport().await.unwrap();
 
     // Start server on sync1 (which has the data)
-    sync1.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = sync1.get_server_address_async().await.unwrap();
+    sync1.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = sync1.get_server_address().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Add test data to tree1
@@ -630,7 +630,7 @@ async fn test_sync_protocol_implementation() {
     println!("✅ Successfully synced multiple entries across two sync operations!");
 
     // Clean up
-    sync1.stop_server_async().await.unwrap();
+    sync1.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -654,12 +654,18 @@ async fn test_iroh_sync_end_to_end_no_relays() {
         .build()
         .unwrap();
 
-    sync1.enable_iroh_transport_with_config(transport1).unwrap();
-    sync2.enable_iroh_transport_with_config(transport2).unwrap();
+    sync1
+        .enable_iroh_transport_with_config(transport1)
+        .await
+        .unwrap();
+    sync2
+        .enable_iroh_transport_with_config(transport2)
+        .await
+        .unwrap();
 
     // Start servers (Iroh ignores the bind address and uses its own addressing)
-    sync2.start_server_async("ignored").await.unwrap();
-    sync1.start_server_async("ignored").await.unwrap();
+    sync2.start_server("ignored").await.unwrap();
+    sync1.start_server("ignored").await.unwrap();
 
     // Give endpoints time to initialize and discover direct addresses
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -670,8 +676,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
 
     // Get server addresses (now containing full NodeAddr info with direct addresses)
     // This uses the same pattern as HTTP transport but returns serialized NodeAddr info
-    let server_addr1 = sync1.get_server_address_async().await.unwrap();
-    let server_addr2 = sync2.get_server_address_async().await.unwrap();
+    let server_addr1 = sync1.get_server_address().await.unwrap();
+    let server_addr2 = sync2.get_server_address().await.unwrap();
 
     println!("Node 1 address info: {server_addr1}");
     println!("Node 2 address info: {server_addr2}");
@@ -716,7 +722,7 @@ async fn test_iroh_sync_end_to_end_no_relays() {
         "Attempting to send {} entries via Iroh transport...",
         entries.len()
     );
-    let result = sync1.send_entries_async(&entries, &server_address2).await;
+    let result = sync1.send_entries(&entries, &server_address2).await;
 
     if let Err(ref e) = result {
         println!("Send error: {e:?}");
@@ -747,8 +753,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     );
 
     // Clean up
-    sync1.stop_server_async().await.unwrap();
-    sync2.stop_server_async().await.unwrap();
+    sync1.stop_server().await.unwrap();
+    sync2.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -762,13 +768,13 @@ async fn test_iroh_transport_production_defaults() {
     let (_base_db, sync) = helpers::setup();
 
     // Test 1: Default constructor uses production relays
-    sync.enable_iroh_transport().unwrap();
-    sync.start_server_async("ignored").await.unwrap();
+    sync.enable_iroh_transport().await.unwrap();
+    sync.start_server("ignored").await.unwrap();
 
     // Just verify it starts without error - we can't test actual relay connectivity
     // without internet access in CI, but this ensures the configuration is valid
-    assert!(sync.get_server_address_async().await.is_ok());
-    sync.stop_server_async().await.unwrap();
+    assert!(sync.get_server_address().await.is_ok());
+    sync.stop_server().await.unwrap();
 
     // Test 2: Builder with explicit Default mode
     let (_base_db2, sync2) = helpers::setup();
@@ -777,10 +783,13 @@ async fn test_iroh_transport_production_defaults() {
         .build()
         .unwrap();
 
-    sync2.enable_iroh_transport_with_config(transport).unwrap();
-    sync2.start_server_async("ignored").await.unwrap();
-    assert!(sync2.get_server_address_async().await.is_ok());
-    sync2.stop_server_async().await.unwrap();
+    sync2
+        .enable_iroh_transport_with_config(transport)
+        .await
+        .unwrap();
+    sync2.start_server("ignored").await.unwrap();
+    assert!(sync2.get_server_address().await.is_ok());
+    sync2.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -798,12 +807,14 @@ async fn test_iroh_transport_staging_mode() {
         .build()
         .unwrap();
 
-    sync.enable_iroh_transport_with_config(transport).unwrap();
-    sync.start_server_async("ignored").await.unwrap();
+    sync.enable_iroh_transport_with_config(transport)
+        .await
+        .unwrap();
+    sync.start_server("ignored").await.unwrap();
 
     // Just verify it starts without error
-    assert!(sync.get_server_address_async().await.is_ok());
-    sync.stop_server_async().await.unwrap();
+    assert!(sync.get_server_address().await.is_ok());
+    sync.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -830,16 +841,18 @@ async fn test_iroh_transport_custom_relay_config() {
         .build()
         .unwrap();
 
-    sync.enable_iroh_transport_with_config(transport).unwrap();
+    sync.enable_iroh_transport_with_config(transport)
+        .await
+        .unwrap();
 
     // Note: This will fail to actually start because no relay is running
     // but it demonstrates the configuration pattern
-    let result = sync.start_server_async("ignored").await;
+    let result = sync.start_server("ignored").await;
 
     // We expect this to fail since no local relay is running
     // In a real integration test, you'd run iroh-relay --dev first
     if result.is_ok() {
-        sync.stop_server_async().await.unwrap();
+        sync.stop_server().await.unwrap();
     }
 
     println!("Custom relay configuration test completed (expected to fail without running relay)");

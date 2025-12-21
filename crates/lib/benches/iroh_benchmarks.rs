@@ -52,14 +52,14 @@ async fn setup_iroh_sync_pair() -> (
     sync2.enable_iroh_transport_with_config(transport2).unwrap();
 
     // Start servers
-    sync1.start_server_async("ignored").await.unwrap();
-    sync2.start_server_async("ignored").await.unwrap();
+    sync1.start_server("ignored").await.unwrap();
+    sync2.start_server("ignored").await.unwrap();
 
     // Allow time for initialization
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Setup peer relationship
-    let addr2 = sync2.get_server_address_async().await.unwrap();
+    let addr2 = sync2.get_server_address().await.unwrap();
     let pubkey2 = sync2.get_device_public_key().unwrap();
 
     sync1.register_peer(&pubkey2, Some("bench_peer")).unwrap();
@@ -109,7 +109,7 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
                             // Measure ONLY the sync time, not setup/teardown
                             let start = std::time::Instant::now();
                             let result = sync1
-                                .send_entries_async(black_box(&entries), black_box(&addr2))
+                                .send_entries(black_box(&entries), black_box(&addr2))
                                 .await;
                             let duration = start.elapsed();
 
@@ -130,8 +130,8 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
 
     // Cleanup after all benchmarking is done
     rt.block_on(async {
-        sync1.stop_server_async().await.unwrap();
-        sync2.stop_server_async().await.unwrap();
+        sync1.stop_server().await.unwrap();
+        sync2.stop_server().await.unwrap();
     });
 }
 
@@ -153,8 +153,8 @@ fn bench_iroh_connection_setup(c: &mut Criterion) {
                     total_duration += duration;
 
                     // Cleanup
-                    sync1.stop_server_async().await.unwrap();
-                    sync2.stop_server_async().await.unwrap();
+                    sync1.stop_server().await.unwrap();
+                    sync2.stop_server().await.unwrap();
                 }
 
                 total_duration

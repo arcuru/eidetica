@@ -9,13 +9,13 @@ async fn test_sync_with_http_transport() {
     let (_base_db, sync) = setup();
 
     // Enable HTTP transport
-    sync.enable_http_transport().unwrap();
+    sync.enable_http_transport().await.unwrap();
 
     // Start server on port 0 (OS assigns available port)
-    sync.start_server_async("127.0.0.1:0").await.unwrap();
+    sync.start_server("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address
-    let server_addr = sync.get_server_address_async().await.unwrap();
+    let server_addr = sync.get_server_address().await.unwrap();
     let http_address = Address::http(&server_addr);
 
     // Test the new protocol by sending entries
@@ -24,12 +24,10 @@ async fn test_sync_with_http_transport() {
         .build()
         .expect("Entry should build successfully");
 
-    sync.send_entries_async(vec![entry], &http_address)
-        .await
-        .unwrap();
+    sync.send_entries(vec![entry], &http_address).await.unwrap();
 
     // Stop server
-    sync.stop_server_async().await.unwrap();
+    sync.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -41,14 +39,14 @@ async fn test_multiple_sync_instances_communication() {
     let (_base_db2, sync_client) = setup();
 
     // Enable HTTP transport on both
-    sync_server.enable_http_transport().unwrap();
-    sync_client.enable_http_transport().unwrap();
+    sync_server.enable_http_transport().await.unwrap();
+    sync_client.enable_http_transport().await.unwrap();
 
     // Start server on first instance (port 0 for auto-assignment)
-    sync_server.start_server_async("127.0.0.1:0").await.unwrap();
+    sync_server.start_server("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address from the server instance
-    let server_addr = sync_server.get_server_address_async().await.unwrap();
+    let server_addr = sync_server.get_server_address().await.unwrap();
 
     // Test communication by sending entries from client to server
     let entry = Entry::root_builder()
@@ -58,12 +56,12 @@ async fn test_multiple_sync_instances_communication() {
 
     let http_address = Address::http(&server_addr);
     sync_client
-        .send_entries_async(vec![entry], &http_address)
+        .send_entries(vec![entry], &http_address)
         .await
         .unwrap();
 
     // Clean up
-    sync_server.stop_server_async().await.unwrap();
+    sync_server.stop_server().await.unwrap();
 }
 
 #[tokio::test]
@@ -75,14 +73,14 @@ async fn test_send_entries_http() {
     let (_base_db2, sync_client) = setup();
 
     // Enable HTTP transport on both
-    sync_server.enable_http_transport().unwrap();
-    sync_client.enable_http_transport().unwrap();
+    sync_server.enable_http_transport().await.unwrap();
+    sync_client.enable_http_transport().await.unwrap();
 
     // Start server on first instance (port 0 for auto-assignment)
-    sync_server.start_server_async("127.0.0.1:0").await.unwrap();
+    sync_server.start_server("127.0.0.1:0").await.unwrap();
 
     // Get the actual bound address from the server instance
-    let server_addr = sync_server.get_server_address_async().await.unwrap();
+    let server_addr = sync_server.get_server_address().await.unwrap();
 
     // Create some test entries
     let entry1 = Entry::root_builder()
@@ -98,16 +96,16 @@ async fn test_send_entries_http() {
     // Send entries from client to server
     let http_address = Address::http(&server_addr);
     sync_client
-        .send_entries_async(entries, &http_address)
+        .send_entries(entries, &http_address)
         .await
         .unwrap();
 
     // Clean up
-    sync_server.stop_server_async().await.unwrap();
+    sync_server.stop_server().await.unwrap();
 }
 
-#[test]
-fn test_sync_without_transport_enabled() {
+#[tokio::test]
+async fn test_sync_without_transport_enabled() {
     use eidetica::Entry;
 
     let (_base_db, sync) = setup();
@@ -116,7 +114,9 @@ fn test_sync_without_transport_enabled() {
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
-    let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:8084"));
+    let result = sync
+        .send_entries(vec![entry], &Address::http("127.0.0.1:8084"))
+        .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
@@ -127,12 +127,12 @@ fn test_sync_without_transport_enabled() {
     }
 }
 
-#[test]
-fn test_sync_server_without_transport_enabled() {
+#[tokio::test]
+async fn test_sync_server_without_transport_enabled() {
     let (_base_db, sync) = setup();
 
     // Attempting to start server without enabling transport should fail
-    let result = sync.start_server("127.0.0.1:8085");
+    let result = sync.start_server("127.0.0.1:8085").await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
@@ -143,17 +143,19 @@ fn test_sync_server_without_transport_enabled() {
     }
 }
 
-#[test]
-fn test_sync_connect_to_invalid_address() {
+#[tokio::test]
+async fn test_sync_connect_to_invalid_address() {
     use eidetica::Entry;
 
     let (_base_db, sync) = setup();
-    sync.enable_http_transport().unwrap();
+    sync.enable_http_transport().await.unwrap();
 
     // Try to send entries to a non-existent server
     let entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
-    let result = sync.send_entries(vec![entry], &Address::http("127.0.0.1:19998"));
+    let result = sync
+        .send_entries(vec![entry], &Address::http("127.0.0.1:19998"))
+        .await;
     assert!(result.is_err());
 }

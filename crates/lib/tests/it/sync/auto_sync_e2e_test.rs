@@ -29,12 +29,12 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     let sync2 = instance2.sync().expect("Sync2 should exist");
 
     // Set up HTTP transport
-    sync1.enable_http_transport()?;
-    sync2.enable_http_transport()?;
+    sync1.enable_http_transport().await?;
+    sync2.enable_http_transport().await?;
 
     // Start server on sync2
-    sync2.start_server_async("127.0.0.1:0").await?;
-    let server_addr = sync2.get_server_address_async().await?;
+    sync2.start_server("127.0.0.1:0").await?;
+    let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
     // Get peer public keys
@@ -140,15 +140,15 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let sync2 = instance2.sync().unwrap();
 
     // Set up HTTP transport
-    sync1.enable_http_transport()?;
-    sync2.enable_http_transport()?;
+    sync1.enable_http_transport().await?;
+    sync2.enable_http_transport().await?;
 
     // Start servers on both instances
-    sync1.start_server_async("127.0.0.1:0").await?;
-    sync2.start_server_async("127.0.0.1:0").await?;
+    sync1.start_server("127.0.0.1:0").await?;
+    sync2.start_server("127.0.0.1:0").await?;
 
-    let server1_addr = sync1.get_server_address_async().await?;
-    let server2_addr = sync2.get_server_address_async().await?;
+    let server1_addr = sync1.get_server_address().await?;
+    let server2_addr = sync2.get_server_address().await?;
 
     sleep(Duration::from_millis(100)).await;
 
@@ -304,11 +304,11 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     let sync2 = instance2.sync().unwrap();
 
     // Set up HTTP transport
-    sync1.enable_http_transport()?;
-    sync2.enable_http_transport()?;
+    sync1.enable_http_transport().await?;
+    sync2.enable_http_transport().await?;
 
-    sync2.start_server_async("127.0.0.1:0").await?;
-    let server_addr = sync2.get_server_address_async().await?;
+    sync2.start_server("127.0.0.1:0").await?;
+    let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
     let peer1_pubkey = sync1.get_device_public_key()?;
@@ -365,11 +365,11 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let sync2 = instance2.sync().unwrap();
 
     // Set up HTTP transport
-    sync1.enable_http_transport()?;
-    sync2.enable_http_transport()?;
+    sync1.enable_http_transport().await?;
+    sync2.enable_http_transport().await?;
 
-    sync2.start_server_async("127.0.0.1:0").await?;
-    let server_addr = sync2.get_server_address_async().await?;
+    sync2.start_server("127.0.0.1:0").await?;
+    let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
     let peer1_pubkey = sync1.get_device_public_key()?;

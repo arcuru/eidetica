@@ -58,13 +58,13 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    server_sync.enable_http_transport().await.unwrap();
+    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client that will attempt to bootstrap
     let (client_instance, client_sync) = helpers::setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Attempt to sync - should be rejected as "Tree not found"
     let result = client_sync
@@ -90,7 +90,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
     );
 
     // Clean up
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test that incremental sync requests are rejected for databases without sync enabled.
@@ -159,13 +159,13 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    server_sync.enable_http_transport().await.unwrap();
+    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and perform initial bootstrap (should succeed)
     let (client_instance, client_sync) = helpers::setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&tree_id))
@@ -246,7 +246,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     }
 
     // Clean up
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test that sync works normally when enabled (positive test case).
@@ -323,13 +323,13 @@ async fn test_sync_succeeds_when_enabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    server_sync.enable_http_transport().await.unwrap();
+    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and sync
     let (client_instance, client_sync) = helpers::setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&tree_id))
@@ -348,5 +348,5 @@ async fn test_sync_succeeds_when_enabled() {
     );
 
     // Clean up
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }

@@ -125,15 +125,15 @@ impl App {
             match self.transport.as_str() {
                 "http" => {
                     // Enable HTTP transport with simple client-server communication
-                    sync.enable_http_transport()?;
+                    sync.enable_http_transport().await?;
                     // Start server on localhost with random available port (0 = OS assigns port)
-                    sync.start_server_async("127.0.0.1:0").await?;
+                    sync.start_server("127.0.0.1:0").await?;
                 }
                 "iroh" => {
                     // Enable Iroh transport for P2P communication with NAT traversal
-                    sync.enable_iroh_transport()?;
+                    sync.enable_iroh_transport().await?;
                     // Start server (address parameter is ignored for Iroh)
-                    sync.start_server_async("iroh").await?;
+                    sync.start_server("iroh").await?;
                 }
                 _ => {
                     return Err(eidetica::Error::Sync(eidetica::sync::SyncError::Network(
@@ -143,7 +143,7 @@ impl App {
             }
 
             // Get the server address
-            if let Ok(addr) = sync.get_server_address_async().await {
+            if let Ok(addr) = sync.get_server_address().await {
                 self.server_running = true;
                 self.server_address = Some(addr);
             }
@@ -202,12 +202,12 @@ impl App {
             match self.transport.as_str() {
                 "http" => {
                     debug!(" Enabling HTTP transport...");
-                    sync.enable_http_transport()?;
+                    sync.enable_http_transport().await?;
                     info!(" HTTP transport enabled");
                 }
                 "iroh" => {
                     debug!(" Enabling Iroh transport...");
-                    sync.enable_iroh_transport()?;
+                    sync.enable_iroh_transport().await?;
                     info!(" Iroh transport enabled");
                 }
                 _ => {

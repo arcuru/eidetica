@@ -96,7 +96,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let client_sync = client_instance.sync().unwrap();
 
     // Enable HTTP transport on client
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Get client's device public key
     let client_pubkey = client_sync.get_device_public_key().unwrap();

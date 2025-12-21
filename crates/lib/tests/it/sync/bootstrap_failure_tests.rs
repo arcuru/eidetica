@@ -91,6 +91,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         // Attempt bootstrap with key approval request - should be REJECTED by default
@@ -150,7 +151,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     // Cleanup
     let server_sync = server_instance.sync().expect("Server should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap behavior when the database has no authentication configuration
@@ -211,6 +212,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
@@ -271,7 +273,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     // Cleanup
     let server_sync = server_instance.sync().expect("Server should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap behavior with malformed public key data.
@@ -324,6 +326,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
+        .await
         .expect("Failed to enable HTTP transport");
 
     // Attempt bootstrap - current implementation may accept any key name
@@ -350,7 +353,7 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     // Cleanup
     let server_sync = server_instance.sync().expect("Server should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap behavior with revoked key status.
@@ -439,6 +442,7 @@ async fn test_bootstrap_with_revoked_key() {
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
+        .await
         .expect("Failed to enable HTTP transport");
 
     // Attempt bootstrap with a different key (since we can't use the actual revoked key easily)
@@ -469,7 +473,7 @@ async fn test_bootstrap_with_revoked_key() {
 
     // Cleanup
     let server_sync = server_instance.sync().expect("Server should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap behavior when requesting permissions that exceed granted levels.
@@ -538,6 +542,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
         .enable_http_transport()
+        .await
         .expect("Failed to enable HTTP transport");
 
     // Attempt bootstrap requesting Admin permissions (excessive for a new client)
@@ -582,5 +587,5 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     // Cleanup
     let server_sync = server_instance.sync().expect("Server should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }

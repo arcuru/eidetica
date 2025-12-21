@@ -56,7 +56,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             // Bootstrap from server
             {
                 let client_sync = client_instance.sync().unwrap();
-                client_sync.enable_http_transport().unwrap();
+                client_sync.enable_http_transport().await.unwrap();
                 client_sync
                     .sync_with_peer(&addr, Some(&tree_id))
                     .await
@@ -84,7 +84,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 
     // Cleanup
     let server_sync = server_instance.sync().unwrap();
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 
     info!("Test finished: test_multiple_clients_bootstrap_same_database");
     Ok(())
@@ -165,7 +165,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
     // Cleanup
     let server_sync = server_instance.sync().unwrap();
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 
     info!("Test finished: test_concurrent_key_approval_requests");
     Ok(())

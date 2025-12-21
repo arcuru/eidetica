@@ -116,11 +116,12 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     let device1_server_addr = {
         let sync = device1_instance.sync().expect("Device1 should have sync");
         sync.enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
-        sync.start_server_async("127.0.0.1:0")
+        sync.start_server("127.0.0.1:0")
             .await
             .expect("Failed to start server");
-        sync.get_server_address_async()
+        sync.get_server_address()
             .await
             .expect("Failed to get server address")
     };
@@ -144,6 +145,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         let device2_sync = device2_instance.sync().expect("Device2 should have sync");
         device2_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         device2_sync
@@ -363,7 +365,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Cleanup
     let server_sync = device1_instance.sync().expect("Device1 should have sync");
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 
     println!("🧹 Test completed successfully");
 

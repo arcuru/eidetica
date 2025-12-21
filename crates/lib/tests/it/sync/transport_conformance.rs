@@ -36,19 +36,19 @@ where
     F: TransportFactory,
 {
     // Create sync instances with transports
-    let sync1 = factory.create_sync(db1.clone())?;
-    let sync2 = factory.create_sync(db2.clone())?;
+    let sync1 = factory.create_sync(db1.clone()).await?;
+    let sync2 = factory.create_sync(db2.clone()).await?;
 
     // Start servers on any available port
-    sync1.start_server_async("127.0.0.1:0").await?;
-    sync2.start_server_async("127.0.0.1:0").await?;
+    sync1.start_server("127.0.0.1:0").await?;
+    sync2.start_server("127.0.0.1:0").await?;
 
     // Give servers time to initialize
     sleep(Duration::from_millis(200)).await;
 
     // Get server addresses
-    let addr1: String = sync1.get_server_address_async().await?;
-    let addr2: String = sync2.get_server_address_async().await?;
+    let addr1: String = sync1.get_server_address().await?;
+    let addr2: String = sync2.get_server_address().await?;
 
     println!("Server 1 address: {addr1}");
     println!("Server 2 address: {addr2}");
@@ -107,8 +107,8 @@ fn setup_sync_hooks(
 
 /// Clean up sync instances
 async fn cleanup_sync(sync1: eidetica::sync::Sync, sync2: eidetica::sync::Sync) -> Result<()> {
-    sync1.stop_server_async().await?;
-    sync2.stop_server_async().await?;
+    sync1.stop_server().await?;
+    sync2.stop_server().await?;
     Ok(())
 }
 

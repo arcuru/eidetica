@@ -45,7 +45,7 @@ async fn test_bootstrap_with_provided_key() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Verify client doesn't have the database initially
     assert!(
@@ -88,7 +88,7 @@ async fn test_bootstrap_with_provided_key() {
     println!("✅ TEST: Bootstrap with provided key completed successfully");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap with provided key and verify the key is NOT stored in backend
@@ -110,7 +110,7 @@ async fn test_bootstrap_key_not_stored_in_backend() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Verify the key is NOT in the backend before sync
     assert!(
@@ -159,7 +159,7 @@ async fn test_bootstrap_key_not_stored_in_backend() {
     println!("✅ TEST: Verified key not stored in backend");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap with invalid signing key should fail gracefully
@@ -181,7 +181,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Try to sync with a non-existent tree (should fail)
     let fake_tree_id = eidetica::entry::ID::from("nonexistent_tree_id");
@@ -204,7 +204,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
     println!("✅ TEST: Bootstrap with invalid tree correctly failed");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test multiple clients bootstrapping with different user-managed keys
@@ -227,15 +227,14 @@ async fn test_multiple_clients_with_different_keys() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup three clients with different user-managed keys
-    let clients: Vec<_> = (0..3)
-        .map(|i| {
-            let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-            let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
-            let (instance, sync) = setup();
-            sync.enable_http_transport().unwrap();
-            (instance, sync, key_id, i)
-        })
-        .collect();
+    let mut clients = Vec::new();
+    for i in 0..3 {
+        let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+        let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
+        let (instance, sync) = setup();
+        sync.enable_http_transport().await.unwrap();
+        clients.push((instance, sync, key_id, i));
+    }
 
     // Each client bootstraps with their own key
     for (instance, sync, key_id, i) in clients {
@@ -283,7 +282,7 @@ async fn test_multiple_clients_with_different_keys() {
     println!("✅ TEST: All clients bootstrapped successfully with different keys");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap with provided key and different permission levels
@@ -314,7 +313,7 @@ async fn test_bootstrap_with_different_permissions() {
         let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
 
         let (_instance, sync) = setup();
-        sync.enable_http_transport().unwrap();
+        sync.enable_http_transport().await.unwrap();
 
         // Bootstrap with this permission level
         sync.sync_with_peer_for_bootstrap_with_key(
@@ -344,7 +343,7 @@ async fn test_bootstrap_with_different_permissions() {
     println!("✅ TEST: All permission levels worked correctly");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test that bootstrap with provided key works identically to backend-stored key
@@ -368,7 +367,7 @@ async fn test_with_key_equivalent_to_backend_key() {
 
     // Client 1: Use sync_with_peer_for_bootstrap (backend key)
     let (client1_instance, client1_sync) = setup_bootstrap_client("client1_key");
-    client1_sync.enable_http_transport().unwrap();
+    client1_sync.enable_http_transport().await.unwrap();
 
     client1_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client1_key", Permission::Write(5))
@@ -382,7 +381,7 @@ async fn test_with_key_equivalent_to_backend_key() {
     let client2_key_id = eidetica::auth::crypto::format_public_key(&client2_verifying_key);
 
     let (_client2_instance, client2_sync) = setup();
-    client2_sync.enable_http_transport().unwrap();
+    client2_sync.enable_http_transport().await.unwrap();
 
     client2_sync
         .sync_with_peer_for_bootstrap_with_key(
@@ -431,7 +430,7 @@ async fn test_with_key_equivalent_to_backend_key() {
     println!("✅ TEST: Both methods produce equivalent results");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap with invalid keys should fail with proper validation errors
@@ -449,7 +448,7 @@ async fn test_bootstrap_with_invalid_keys() {
     let server_addr = start_sync_server(&server_sync).await;
 
     let (_instance, sync) = setup();
-    sync.enable_http_transport().unwrap();
+    sync.enable_http_transport().await.unwrap();
 
     // Generate a valid public key for comparison
     let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -538,7 +537,7 @@ async fn test_bootstrap_with_invalid_keys() {
     println!("✅ TEST: All invalid key validations passed");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test full end-to-end bootstrap with actual Database instances and authentication
@@ -572,7 +571,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Verify client doesn't have the database initially
     assert!(
@@ -656,7 +655,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     println!("✅ TEST: Full end-to-end bootstrap with authentication completed successfully");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test incremental sync after bootstrap with provided key
@@ -679,7 +678,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Bootstrap with provided public key
     client_sync
@@ -732,5 +731,5 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     println!("✅ TEST: Incremental sync after bootstrap with key works correctly");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }

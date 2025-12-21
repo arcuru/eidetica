@@ -25,7 +25,7 @@ async fn test_client_polling_for_pending_status() {
     let (_client_instance, client_sync) = setup_simple_client();
 
     // Client attempts bootstrap (should be pending due to manual approval)
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;
@@ -49,7 +49,7 @@ async fn test_client_polling_for_pending_status() {
     info!("✅ Client correctly received pending status and request stored on server");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test client retry behavior after receiving pending status
@@ -67,7 +67,7 @@ async fn test_client_retry_after_pending() {
     let (client_instance, client_sync) = setup_simple_client();
 
     // First attempt - should be pending
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;
@@ -110,7 +110,7 @@ async fn test_client_retry_after_pending() {
     info!("✅ Client successfully retried and bootstrapped after approval");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test handling of duplicate bootstrap requests from the same client
@@ -128,7 +128,7 @@ async fn test_duplicate_bootstrap_requests() {
     let (_client_instance, client_sync) = setup_simple_client();
 
     // First bootstrap attempt
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let first_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;
@@ -162,7 +162,7 @@ async fn test_duplicate_bootstrap_requests() {
     info!("✅ Duplicate request handling behavior documented");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test client behavior after request rejection
@@ -180,7 +180,7 @@ async fn test_client_behavior_after_rejection() {
     let (client_instance, client_sync) = setup_simple_client();
 
     // Bootstrap attempt - should be pending
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;
@@ -214,7 +214,7 @@ async fn test_client_behavior_after_rejection() {
     info!("✅ Client correctly denied access after request rejection");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test client with different permission levels
@@ -239,7 +239,7 @@ async fn test_client_different_permission_requests() {
         let client_key = format!("client_key_{i}");
         let (_client_instance, client_sync) = setup_bootstrap_client(&client_key);
 
-        client_sync.enable_http_transport().unwrap();
+        client_sync.enable_http_transport().await.unwrap();
 
         let bootstrap_result = client_sync
             .sync_with_peer_for_bootstrap(&server_addr, &tree_id, &client_key, permission.clone())
@@ -267,7 +267,7 @@ async fn test_client_different_permission_requests() {
     }
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test client connection errors and recovery
@@ -277,7 +277,7 @@ async fn test_client_connection_error_handling() {
 
     // Setup client
     let (_client_instance, client_sync) = setup_simple_client();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Try to connect to non-existent server
     let fake_tree_id = eidetica::entry::ID::from("fake_tree_id");

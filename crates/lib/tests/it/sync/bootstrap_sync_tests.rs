@@ -50,7 +50,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     );
 
     // Use the new simplified sync API to bootstrap from server
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     println!("🧪 TEST: Attempting bootstrap sync from server...");
     client_sync
@@ -98,7 +98,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     println!("✅ TEST: Bootstrap sync completed successfully");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test incremental sync after bootstrap (both peers now have the database)
@@ -122,7 +122,7 @@ async fn test_incremental_sync_after_bootstrap() {
         setup_sync_enabled_client("client_user", "client_key");
 
     // Bootstrap client
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     client_sync
         .sync_with_peer(&server_addr, Some(&test_tree_id))
         .await
@@ -172,7 +172,7 @@ async fn test_incremental_sync_after_bootstrap() {
     println!("✅ TEST: Incremental sync completed successfully");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test error handling when trying to bootstrap a non-existent tree
@@ -182,12 +182,12 @@ async fn test_bootstrap_nonexistent_tree() {
     let (_client_instance, client_sync) = setup();
 
     // Start server (with no databases)
-    server_sync.enable_http_transport().unwrap();
-    server_sync.start_server_async("127.0.0.1:0").await.unwrap();
-    let server_addr = server_sync.get_server_address_async().await.unwrap();
+    server_sync.enable_http_transport().await.unwrap();
+    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Try to bootstrap a tree that doesn't exist
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let fake_tree_id = eidetica::entry::ID::from("fake_tree_id_that_doesnt_exist");
 
     let result = client_sync
@@ -203,7 +203,7 @@ async fn test_bootstrap_nonexistent_tree() {
     );
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test the discover_peer_trees API (placeholder test since it's not fully implemented)
@@ -216,7 +216,7 @@ async fn test_discover_peer_trees_placeholder() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Try to discover trees (currently returns empty list)
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
     let trees = client_sync.discover_peer_trees(&server_addr).await.unwrap();
 
     // Currently returns empty, but should not error
@@ -228,7 +228,7 @@ async fn test_discover_peer_trees_placeholder() {
     println!("✅ TEST: Tree discovery placeholder works (returns empty list)");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap behavior with malformed request data
@@ -250,7 +250,7 @@ async fn test_bootstrap_malformed_request_data() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Test 1: Invalid tree ID format
     let malformed_tree_id = eidetica::entry::ID::from("invalid_tree_format");
@@ -283,7 +283,7 @@ async fn test_bootstrap_malformed_request_data() {
     println!("✅ Bootstrap correctly rejected empty key name");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }
 
 /// Test bootstrap with conflicting tree IDs
@@ -305,7 +305,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Try to bootstrap with a different tree ID than what exists
     let different_tree_id = eidetica::entry::ID::from("different_tree_that_doesnt_exist");
@@ -332,5 +332,5 @@ async fn test_bootstrap_conflicting_tree_ids() {
     println!("✅ Bootstrap correctly rejected request for non-existent tree");
 
     // Cleanup
-    server_sync.stop_server_async().await.unwrap();
+    server_sync.stop_server().await.unwrap();
 }

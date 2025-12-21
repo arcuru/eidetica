@@ -460,13 +460,14 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         let alice_sync = alice_instance.sync().expect("Alice should have sync");
         alice_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
         alice_sync
-            .start_server_async("127.0.0.1:0")
+            .start_server("127.0.0.1:0")
             .await
             .expect("Failed to start Alice's server");
         let addr = alice_sync
-            .get_server_address_async()
+            .get_server_address()
             .await
             .expect("Failed to get server address");
         println!("🌐 Alice's server listening at: {addr}");
@@ -497,6 +498,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
             .enable_http_transport()
+            .await
             .expect("Failed to enable HTTP transport");
 
         // Bootstrap sync - this will get the database from Alice
@@ -611,7 +613,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     {
         let alice_sync = alice_instance.sync().expect("Alice should have sync");
         alice_sync
-            .stop_server_async()
+            .stop_server()
             .await
             .expect("Failed to stop Alice's server");
     }

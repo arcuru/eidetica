@@ -29,19 +29,25 @@ async fn test_iroh_e2e_basic_local() {
         .build()
         .unwrap();
 
-    sync1.enable_iroh_transport_with_config(transport1).unwrap();
-    sync2.enable_iroh_transport_with_config(transport2).unwrap();
+    sync1
+        .enable_iroh_transport_with_config(transport1)
+        .await
+        .unwrap();
+    sync2
+        .enable_iroh_transport_with_config(transport2)
+        .await
+        .unwrap();
 
     // Start servers
-    sync1.start_server_async("ignored").await.unwrap();
-    sync2.start_server_async("ignored").await.unwrap();
+    sync1.start_server("ignored").await.unwrap();
+    sync2.start_server("ignored").await.unwrap();
 
     // Allow endpoints to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Setup peer relationship
-    let _addr1 = sync1.get_server_address_async().await.unwrap();
-    let addr2 = sync2.get_server_address_async().await.unwrap();
+    let _addr1 = sync1.get_server_address().await.unwrap();
+    let addr2 = sync2.get_server_address().await.unwrap();
     let _pubkey1 = sync1.get_device_public_key().unwrap();
     let pubkey2 = sync2.get_device_public_key().unwrap();
 
@@ -65,9 +71,7 @@ async fn test_iroh_e2e_basic_local() {
     }
 
     // Perform sync
-    let result = sync1
-        .send_entries_async(&entries, &Address::iroh(&addr2))
-        .await;
+    let result = sync1.send_entries(&entries, &Address::iroh(&addr2)).await;
 
     assert!(result.is_ok(), "Sync failed: {:?}", result.err());
 
@@ -77,8 +81,8 @@ async fn test_iroh_e2e_basic_local() {
     );
 
     // Cleanup
-    sync1.stop_server_async().await.unwrap();
-    sync2.stop_server_async().await.unwrap();
+    sync1.stop_server().await.unwrap();
+    sync2.stop_server().await.unwrap();
 }
 
 /// Test Iroh transport resilience and reconnection
@@ -104,17 +108,23 @@ async fn test_iroh_e2e_resilience() {
         .build()
         .unwrap();
 
-    sync1.enable_iroh_transport_with_config(transport1).unwrap();
-    sync2.enable_iroh_transport_with_config(transport2).unwrap();
+    sync1
+        .enable_iroh_transport_with_config(transport1)
+        .await
+        .unwrap();
+    sync2
+        .enable_iroh_transport_with_config(transport2)
+        .await
+        .unwrap();
 
     // Start both nodes
-    sync1.start_server_async("ignored").await.unwrap();
-    sync2.start_server_async("ignored").await.unwrap();
+    sync1.start_server("ignored").await.unwrap();
+    sync2.start_server("ignored").await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let _addr1 = sync1.get_server_address_async().await.unwrap();
-    let addr2 = sync2.get_server_address_async().await.unwrap();
+    let _addr1 = sync1.get_server_address().await.unwrap();
+    let addr2 = sync2.get_server_address().await.unwrap();
     let _pubkey1 = sync1.get_device_public_key().unwrap();
     let pubkey2 = sync2.get_device_public_key().unwrap();
 
@@ -133,12 +143,12 @@ async fn test_iroh_e2e_resilience() {
 
     // First sync should succeed
     let result = sync1
-        .send_entries_async(&vec![entry1], &Address::iroh(&addr2))
+        .send_entries(&vec![entry1], &Address::iroh(&addr2))
         .await;
     assert!(result.is_ok());
 
     // Stop node 2
-    sync2.stop_server_async().await.unwrap();
+    sync2.stop_server().await.unwrap();
 
     // Create another entry while node 2 is down
     let entry2 = Entry::root_builder()
@@ -152,7 +162,7 @@ async fn test_iroh_e2e_resilience() {
     println!("⏳ Testing sync failure when peer is offline (this will timeout)...");
     let failed_sync_start = std::time::Instant::now();
     let result = sync1
-        .send_entries_async(&vec![entry2.clone()], &Address::iroh(&addr2))
+        .send_entries(&vec![entry2.clone()], &Address::iroh(&addr2))
         .await;
     let failed_sync_duration = failed_sync_start.elapsed();
     println!("⌛ Sync failure detected after {failed_sync_duration:?} (expected timeout)");
@@ -166,14 +176,15 @@ async fn test_iroh_e2e_resilience() {
         .unwrap();
     sync2
         .enable_iroh_transport_with_config(transport2_new)
+        .await
         .unwrap();
-    sync2.start_server_async("ignored").await.unwrap();
+    sync2.start_server("ignored").await.unwrap();
 
     // Reduced wait time - just enough for endpoint to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Get new address (will have changed)
-    let addr2_new = sync2.get_server_address_async().await.unwrap();
+    let addr2_new = sync2.get_server_address().await.unwrap();
 
     // Update peer address
     sync1
@@ -182,7 +193,7 @@ async fn test_iroh_e2e_resilience() {
 
     // Retry sync - should succeed now
     let result = sync1
-        .send_entries_async(&vec![entry2], &Address::iroh(&addr2_new))
+        .send_entries(&vec![entry2], &Address::iroh(&addr2_new))
         .await;
     assert!(
         result.is_ok(),
@@ -192,8 +203,8 @@ async fn test_iroh_e2e_resilience() {
     println!("✅ Iroh transport successfully handled disconnection and reconnection!");
 
     // Cleanup
-    sync1.stop_server_async().await.unwrap();
-    sync2.stop_server_async().await.unwrap();
+    sync1.stop_server().await.unwrap();
+    sync2.stop_server().await.unwrap();
 }
 
 /// Test end-to-end Iroh sync with actual relay servers (requires internet)
@@ -227,13 +238,13 @@ async fn test_iroh_e2e_with_relays() {
 
     // Enable Iroh transport with production relays (default)
     println!("🔧 Enabling Iroh transport with production relay servers...");
-    sync1.enable_iroh_transport().unwrap();
-    sync2.enable_iroh_transport().unwrap();
+    sync1.enable_iroh_transport().await.unwrap();
+    sync2.enable_iroh_transport().await.unwrap();
 
     // Start both servers - this will attempt to connect to relay servers
     println!("🚀 Starting Iroh endpoints (connecting to live relay servers)...");
-    let start_result1 = sync1.start_server_async("ignored").await;
-    let start_result2 = sync2.start_server_async("ignored").await;
+    let start_result1 = sync1.start_server("ignored").await;
+    let start_result2 = sync2.start_server("ignored").await;
 
     if start_result1.is_err() || start_result2.is_err() {
         eprintln!("❌ FAILED: Unable to start Iroh endpoints");
@@ -249,8 +260,8 @@ async fn test_iroh_e2e_with_relays() {
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
     // Get server addresses (should include relay connectivity info)
-    let addr1_result = sync1.get_server_address_async().await;
-    let addr2_result = sync2.get_server_address_async().await;
+    let addr1_result = sync1.get_server_address().await;
+    let addr2_result = sync2.get_server_address().await;
 
     if addr1_result.is_err() || addr2_result.is_err() {
         eprintln!("❌ FAILED: Unable to get server addresses from relay-connected endpoints");
@@ -298,9 +309,7 @@ async fn test_iroh_e2e_with_relays() {
     println!("   This may take longer than local tests due to relay coordination");
 
     let sync_start = std::time::Instant::now();
-    let result = sync1
-        .send_entries_async(&entries, &Address::iroh(&addr2))
-        .await;
+    let result = sync1.send_entries(&entries, &Address::iroh(&addr2)).await;
     let sync_duration = sync_start.elapsed();
 
     match result {
@@ -356,8 +365,8 @@ async fn test_iroh_e2e_with_relays() {
 
     // Cleanup
     println!("🧹 Cleaning up relay connections...");
-    sync1.stop_server_async().await.unwrap();
-    sync2.stop_server_async().await.unwrap();
+    sync1.stop_server().await.unwrap();
+    sync2.stop_server().await.unwrap();
 
     println!("🎯 Live relay test completed successfully!");
 }

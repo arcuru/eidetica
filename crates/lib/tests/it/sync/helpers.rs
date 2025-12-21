@@ -5,6 +5,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use eidetica::{
     Instance, Result,
     instance::LegacyInstanceOps,
@@ -127,9 +128,10 @@ pub fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
 ///     test_sync_with_any_transport(HttpTransportFactory).await.unwrap();
 /// }
 /// ```
+#[async_trait]
 pub trait TransportFactory: Send + std::marker::Sync {
     /// Create a sync instance with this transport enabled
-    fn create_sync(&self, instance: Instance) -> Result<Sync>;
+    async fn create_sync(&self, instance: Instance) -> Result<Sync>;
 
     /// Get the expected address format for this transport
     fn create_address(&self, server_addr: &str) -> Address;
@@ -150,10 +152,11 @@ pub trait TransportFactory: Send + std::marker::Sync {
 /// Factory for HTTP transport instances
 pub struct HttpTransportFactory;
 
+#[async_trait]
 impl TransportFactory for HttpTransportFactory {
-    fn create_sync(&self, instance: Instance) -> Result<Sync> {
+    async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance)?;
-        sync.enable_http_transport()?;
+        sync.enable_http_transport().await?;
         Ok(sync)
     }
 
@@ -169,13 +172,14 @@ impl TransportFactory for HttpTransportFactory {
 /// Factory for Iroh transport instances (relay disabled for fast local testing)
 pub struct IrohTransportFactory;
 
+#[async_trait]
 impl TransportFactory for IrohTransportFactory {
-    fn create_sync(&self, instance: Instance) -> Result<Sync> {
+    async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance)?;
         let transport = IrohTransport::builder()
             .relay_mode(RelayMode::Disabled)
             .build()?;
-        sync.add_transport(Box::new(transport))?;
+        sync.add_transport(Box::new(transport)).await?;
         Ok(sync)
     }
 
@@ -361,11 +365,12 @@ pub fn setup_auto_approval_server() -> (
 /// Start a sync server with common settings
 pub async fn start_sync_server(sync: &Sync) -> String {
     sync.enable_http_transport()
+        .await
         .expect("Failed to enable HTTP transport");
-    sync.start_server_async("127.0.0.1:0")
+    sync.start_server("127.0.0.1:0")
         .await
         .expect("Failed to start server");
-    sync.get_server_address_async()
+    sync.get_server_address()
         .await
         .expect("Failed to get server address")
 }
@@ -597,7 +602,7 @@ pub async fn request_and_map_database_access(
 ) -> Result<()> {
     {
         let client_sync = instance.sync().expect("Sync not initialized");
-        client_sync.enable_http_transport()?;
+        client_sync.enable_http_transport().await?;
 
         user.request_database_access(&client_sync, server_addr, tree_id, key_id, permission)
             .await?;

@@ -98,7 +98,7 @@ async fn test_bootstrap_pending_error_propagation() {
     client_instance.add_private_key("client_key").unwrap();
 
     let client_sync = client_instance.sync().unwrap();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Attempt to sync - should return BootstrapPending error
     let result = client_sync
@@ -192,7 +192,7 @@ async fn test_iroh_transport_concurrent_access() {
     // Enable Iroh transport
     {
         let sync_guard = sync.lock().await;
-        sync_guard.enable_iroh_transport().unwrap();
+        sync_guard.enable_iroh_transport().await.unwrap();
         println!("✅ Iroh transport enabled");
     }
 
@@ -208,7 +208,7 @@ async fn test_iroh_transport_concurrent_access() {
             let sync_guard = sync_clone.lock().await;
 
             // Try to get server address (this triggers endpoint initialization)
-            let result = sync_guard.get_server_address_async().await;
+            let result = sync_guard.get_server_address().await;
 
             // We don't care if this succeeds or fails, just that it doesn't panic
             // or cause race conditions during concurrent initialization
@@ -262,7 +262,7 @@ async fn test_http_address_with_http_transport() {
     let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
 
     // Enable HTTP transport on client
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     // Use an HTTP address format
     let http_addr = "127.0.0.1:9999"; // Non-existent server, but that's okay for this test
@@ -304,7 +304,7 @@ async fn test_iroh_address_detection() {
     let client_sync = eidetica::sync::Sync::new(instance.clone()).unwrap();
 
     // Enable Iroh transport on client
-    client_sync.enable_iroh_transport().unwrap();
+    client_sync.enable_iroh_transport().await.unwrap();
 
     // Use an Iroh JSON address format
     let iroh_addr = r#"{"node_id":"test_node_id_123"}"#;
@@ -412,7 +412,7 @@ async fn test_unauthenticated_sync_should_fail() {
     // CLIENT ATTEMPTS UNAUTHENTICATED SYNC
     // This is the vulnerability: sync_with_peer() sends no auth credentials
     let client_sync = client_instance.sync().unwrap();
-    client_sync.enable_http_transport().unwrap();
+    client_sync.enable_http_transport().await.unwrap();
 
     println!("🔓 Attempting unauthenticated sync (NO credentials provided)...");
     let result = client_sync

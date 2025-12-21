@@ -204,14 +204,14 @@ pub struct SyncStatus {
 ///
 /// ```rust,ignore
 /// // Enable both HTTP and Iroh transports
-/// sync.enable_http_transport()?;
-/// sync.enable_iroh_transport()?;
+/// sync.enable_http_transport().await?;
+/// sync.enable_iroh_transport().await?;
 ///
 /// // Start servers on all transports
-/// sync.start_server_async("127.0.0.1:0").await?;
+/// sync.start_server("127.0.0.1:0").await?;
 ///
 /// // Get all server addresses
-/// let addresses = sync.get_all_server_addresses_async().await?;
+/// let addresses = sync.get_all_server_addresses().await?;
 /// ```
 #[derive(Debug)]
 pub struct Sync {
@@ -1069,7 +1069,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    pub async fn start_server_async(&self, addr: &str) -> Result<()> {
+    pub async fn start_server(&self, addr: &str) -> Result<()> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx
@@ -1093,7 +1093,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
-    pub async fn stop_server_async(&self) -> Result<()> {
+    pub async fn stop_server(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx
@@ -1113,9 +1113,9 @@ impl Sync {
     /// Enable HTTP transport for network communication.
     ///
     /// Can be called multiple times to add HTTP transport alongside other transports.
-    pub fn enable_http_transport(&self) -> Result<()> {
+    pub async fn enable_http_transport(&self) -> Result<()> {
         let transport = HttpTransport::new()?;
-        self.add_transport(Box::new(transport))
+        self.add_transport(Box::new(transport)).await
     }
 
     /// Enable Iroh transport for peer-to-peer network communication.
@@ -1127,7 +1127,7 @@ impl Sync {
     /// ensuring the node maintains a stable identity (and thus address) across restarts.
     /// On first call, a new secret key is generated and saved. On subsequent calls,
     /// the existing key is loaded from storage.
-    pub fn enable_iroh_transport(&self) -> Result<()> {
+    pub async fn enable_iroh_transport(&self) -> Result<()> {
         // Load existing config or create default
         let mut config: IrohTransportConfig =
             self.load_transport_config(IrohTransport::TRANSPORT_TYPE)?;
@@ -1149,7 +1149,7 @@ impl Sync {
             .relay_mode(config.relay_mode.into())
             .build()?;
 
-        self.add_transport(Box::new(transport))
+        self.add_transport(Box::new(transport)).await
     }
 
     /// Enable Iroh transport with custom configuration.
@@ -1157,8 +1157,8 @@ impl Sync {
     /// This allows specifying custom relay modes, discovery options, etc.
     /// Use IrohTransport::builder() to create a configured transport.
     /// Can be called alongside other transports for multi-transport support.
-    pub fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
-        self.add_transport(Box::new(transport))
+    pub async fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
+        self.add_transport(Box::new(transport)).await
     }
 
     /// Add a transport to the sync system.
@@ -1166,33 +1166,7 @@ impl Sync {
     /// Multiple transports can be added. The first transport starts the background
     /// sync engine, subsequent transports are added to the existing engine.
     /// This is useful for testing and advanced configuration scenarios.
-    pub fn add_transport(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
-        if self.background_tx.get().is_some() {
-            // Background sync already running, add transport via command
-            self.add_transport_to_running(transport)
-        } else {
-            // First transport, start background sync
-            self.start_background_sync(transport)
-        }
-    }
-
-    /// Add a transport to the already-running background sync engine.
-    fn add_transport_to_running(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
-        // Try to use existing async context, or create runtime if needed
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.add_transport_async(transport))
-        } else {
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-            runtime.block_on(self.add_transport_async(transport))
-        }
-    }
-
-    /// Add a transport to the running background sync (async version).
-    ///
-    /// Use this method when calling from an async context. The sync version
-    /// `add_transport` may panic if called from within an async runtime.
-    pub async fn add_transport_async(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
+    pub async fn add_transport(&self, transport: Box<dyn SyncTransport>) -> Result<()> {
         if self.background_tx.get().is_none() {
             // First transport - start background sync
             return self.start_background_sync(transport);
@@ -1223,20 +1197,7 @@ impl Sync {
         let instance = self.instance()?;
 
         // Create the background sync and get command sender
-        let background_tx = if tokio::runtime::Handle::try_current().is_ok() {
-            BackgroundSync::start(transport, instance, sync_tree_id)
-        } else {
-            // If not in async context, create a runtime to spawn the background task
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-
-            let _guard = rt.enter();
-            let tx = BackgroundSync::start(transport, instance, sync_tree_id);
-
-            // Keep the runtime alive by detaching it
-            std::mem::forget(rt);
-            tx
-        };
+        let background_tx = BackgroundSync::start(transport, instance, sync_tree_id);
 
         // Initialize the command channel (can only be done once)
         self.background_tx
@@ -1251,12 +1212,12 @@ impl Sync {
     /// Get a server address if any transport is running a server.
     ///
     /// For backward compatibility, returns the first available server address.
-    /// Use `get_server_address_for_transport_async` for specific transports.
+    /// Use `get_server_address_for_transport` for specific transports.
     ///
     /// # Returns
     /// The address of the first running server, or an error if no server is running.
-    pub async fn get_server_address_async(&self) -> Result<String> {
-        let addresses = self.get_all_server_addresses_async().await?;
+    pub async fn get_server_address(&self) -> Result<String> {
+        let addresses = self.get_all_server_addresses().await?;
         addresses
             .into_iter()
             .next()
@@ -1271,10 +1232,7 @@ impl Sync {
     ///
     /// # Returns
     /// The address the server is bound to for that transport.
-    pub async fn get_server_address_for_transport_async(
-        &self,
-        transport_type: &str,
-    ) -> Result<String> {
+    pub async fn get_server_address_for_transport(&self, transport_type: &str) -> Result<String> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx
@@ -1295,7 +1253,7 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of (transport_type, address) pairs for all running servers.
-    pub async fn get_all_server_addresses_async(&self) -> Result<Vec<(String, String)>> {
+    pub async fn get_all_server_addresses(&self) -> Result<Vec<(String, String)>> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx
@@ -1307,57 +1265,6 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-    }
-
-    /// Get the server address (sync version).
-    ///
-    /// Note: This method may not work correctly when called from within an async context.
-    /// Use get_server_address_async() instead when possible.
-    pub fn get_server_address(&self) -> Result<String> {
-        // Try to use existing async context, or create runtime if needed
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.get_server_address_async())
-        } else {
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-
-            runtime.block_on(self.get_server_address_async())
-        }
-    }
-
-    /// Start a sync server on the specified address.
-    ///
-    /// # Arguments
-    /// * `addr` - The address to bind the server to (e.g., "127.0.0.1:8080")
-    ///
-    /// # Returns
-    /// A Result indicating success or failure of server startup.
-    pub fn start_server(&self, addr: impl AsRef<str>) -> Result<()> {
-        // Try to use existing async context, or create runtime if needed
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.start_server_async(addr.as_ref()))
-        } else {
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-
-            runtime.block_on(self.start_server_async(addr.as_ref()))
-        }
-    }
-
-    /// Stop the running sync server.
-    ///
-    /// # Returns
-    /// A Result indicating success or failure of server shutdown.
-    pub fn stop_server(&self) -> Result<()> {
-        // Try to use existing async context, or create runtime if needed
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.stop_server_async())
-        } else {
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-
-            runtime.block_on(self.stop_server_async())
-        }
     }
 
     // === Core Sync Methods ===
@@ -1619,14 +1526,14 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating whether the entries were successfully acknowledged.
-    pub async fn send_entries_async(
+    pub async fn send_entries(
         &self,
         entries: impl AsRef<[Entry]>,
         address: &Address,
     ) -> Result<()> {
         let entries_vec = entries.as_ref().to_vec();
         let request = SyncRequest::SendEntries(entries_vec);
-        let response = self.send_request_async(&request, address).await?;
+        let response = self.send_request(&request, address).await?;
 
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
@@ -1640,27 +1547,6 @@ impl Sync {
                 actual: format!("{response:?}"),
             }
             .into()),
-        }
-    }
-
-    /// Send a batch of entries to a sync peer.
-    ///
-    /// # Arguments
-    /// * `entries` - The entries to send
-    /// * `address` - The address of the peer to send to
-    ///
-    /// # Returns
-    /// A Result indicating whether the entries were successfully acknowledged.
-    pub fn send_entries(&self, entries: impl AsRef<[Entry]>, address: &Address) -> Result<()> {
-        // Try to use existing async context, or create runtime if needed
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.send_entries_async(entries, address))
-        } else {
-            let entries_ref = entries.as_ref();
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| SyncError::RuntimeCreation(e.to_string()))?;
-
-            runtime.block_on(self.send_entries_async(entries_ref, address))
         }
     }
 
@@ -1867,11 +1753,7 @@ impl Sync {
     ///
     /// # Returns
     /// The sync response from the peer.
-    async fn send_request_async(
-        &self,
-        request: &SyncRequest,
-        address: &Address,
-    ) -> Result<SyncResponse> {
+    async fn send_request(&self, request: &SyncRequest, address: &Address) -> Result<SyncResponse> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx

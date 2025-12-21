@@ -119,12 +119,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
 
     // Enable Iroh transport for P2P communication with NAT traversal
-    sync.enable_iroh_transport()?;
+    sync.enable_iroh_transport().await?;
     tracing::info!("Iroh transport enabled for sync");
 
     // Start Iroh server for incoming sync requests
-    sync.start_server_async("iroh").await?;
-    let iroh_address = sync.get_server_address_async().await?;
+    sync.start_server("iroh").await?;
+    let iroh_address = sync.get_server_address().await?;
     tracing::info!("Iroh server started: {}", iroh_address);
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
