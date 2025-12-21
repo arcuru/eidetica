@@ -52,20 +52,19 @@ enum Commands {
     },
     /// Show user information
     ShowUser,
-    /// Set user preference
+    /// Set a user preference
     SetPref {
-        /// Preference key
+        /// The preference key
         #[arg(required = true)]
         key: String,
-        /// Preference value
+        /// The preference value
         #[arg(required = true)]
         value: String,
     },
-    /// Show user preferences
+    /// Show all user preferences
     ShowPrefs,
 }
 
-///  A very basic todo list item
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub title: String,
@@ -90,37 +89,40 @@ impl Todo {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load or create the instance
-    let instance = load_or_create_instance(&cli.database_path)?;
+    let instance = load_or_create_instance(&cli.database_path).await?;
 
     // Get or create passwordless user
-    let mut user = get_or_create_user(&instance)?;
+    let mut user = get_or_create_user(&instance).await?;
 
     // Load or create the todo database
-    let todo_database = load_or_create_todo_database(&mut user)?;
+    let todo_database = load_or_create_todo_database(&mut user).await?;
 
     // Handle the command with proper error context
     let result = match &cli.command {
         Commands::Add { title } => {
-            add_todo(&todo_database, title.clone()).map(|_| println!("✓ Task added: {title}"))
+            add_todo(&todo_database, title.clone()).await.map(|_| println!("✓ Task added: {title}"))
         }
         Commands::Complete { id } => {
-            complete_todo(&todo_database, id).map(|_| println!("✓ Task completed: {id}"))
+            complete_todo(&todo_database, id).await.map(|_| println!("✓ Task completed: {id}"))
         }
-        Commands::List => list_todos(&todo_database),
+        Commands::List => list_todos(&todo_database).await,
         Commands::SetUser { name, email, bio } => {
             set_user_info(&todo_database, name.as_ref(), email.as_ref(), bio.as_ref())
+                .await
                 .map(|_| println!("✓ User information updated"))
         }
-        Commands::ShowUser => show_user_info(&todo_database),
+        Commands::ShowUser => show_user_info(&todo_database).await,
         Commands::SetPref { key, value } => {
             set_user_preference(&todo_database, key.clone(), value.clone())
+                .await
                 .map(|_| println!("✓ User preference set"))
         }
-        Commands::ShowPrefs => show_user_preferences(&todo_database),
+        Commands::ShowPrefs => show_user_preferences(&todo_database).await,
     };
 
     // Handle command errors with specific error messages
@@ -143,13 +145,13 @@ fn main() -> Result<()> {
     save_instance(&instance, &cli.database_path)
 }
 
-fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
+async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
     let instance = if path.exists() {
         let backend = InMemory::load_from_file(path)?;
-        Instance::open(Box::new(backend))?
+        Instance::open(Box::new(backend)).await?
     } else {
         let backend = InMemory::new();
-        Instance::open(Box::new(backend))?
+        Instance::open(Box::new(backend)).await?
     };
 
     println!("✓ Instance initialized");
@@ -157,12 +159,12 @@ fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
     Ok(instance)
 }
 
-fn get_or_create_user(instance: &Instance) -> Result<User> {
+async fn get_or_create_user(instance: &Instance) -> Result<User> {
     // Use a fixed username for the single user in this app
     let username = "todo-user";
 
     // Try to login first
-    match instance.login_user(username, None) {
+    match instance.login_user(username, None).await {
         Ok(user) => {
             println!("✓ Logged in as passwordless user: {username}");
             Ok(user)
@@ -170,8 +172,8 @@ fn get_or_create_user(instance: &Instance) -> Result<User> {
         Err(e) if e.is_not_found() => {
             // User doesn't exist, create it
             println!("Creating new passwordless user: {username}");
-            instance.create_user(username, None)?;
-            let user = instance.login_user(username, None)?;
+            instance.create_user(username, None).await?;
+            let user = instance.login_user(username, None).await?;
             println!("✓ Created and logged in as passwordless user: {username}");
             Ok(user)
         }
@@ -196,11 +198,11 @@ fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
+async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
     let database_name = "todo";
 
     // Try to find the database by name
-    let database = match user.find_database(database_name) {
+    let database = match user.find_database(database_name).await {
         Ok(mut databases) => {
             // If multiple databases with the same name exist, pop will return one arbitrarily.
             // We might want more robust handling later (e.g., error or config option).
@@ -216,7 +218,7 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
             let default_key = user.get_default_key()?;
 
             // User API automatically configures the database with user's keys
-            user.create_database(settings, &default_key)?
+            user.create_database(settings, &default_key).await?
         }
         Err(e) => {
             // Propagate other errors
@@ -227,37 +229,37 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
     Ok(database)
 }
 
-fn add_todo(database: &Database, title: String) -> Result<()> {
+async fn add_todo(database: &Database, title: String) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
 
     // Create a new todo
     let todo = Todo::new(title);
 
     // Insert the todo into the Table
     // The Table will generate a unique ID for it
-    let todo_id = todos_store.insert(todo)?;
+    let todo_id = todos_store.insert(todo).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     println!("Added todo with ID: {todo_id}");
 
     Ok(())
 }
 
-fn complete_todo(database: &Database, id: &str) -> Result<()> {
+async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
 
     // Get the todo from the Table
-    let mut todo = match todos_store.get(id) {
+    let mut todo = match todos_store.get(id).await {
         Ok(todo) => todo,
         Err(e) if e.is_not_found() => {
             // Provide a user-friendly error message for not found
@@ -277,23 +279,23 @@ fn complete_todo(database: &Database, id: &str) -> Result<()> {
     todo.complete();
 
     // Update the todo in the Table
-    todos_store.set(id, todo)?;
+    todos_store.set(id, todo).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     Ok(())
 }
 
-fn list_todos(database: &Database) -> Result<()> {
+async fn list_todos(database: &Database) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
 
     // Search for all todos (predicate always returns true)
-    let todos_with_ids = todos_store.search(|_| true)?;
+    let todos_with_ids = todos_store.search(|_| true).await?;
 
     // Print the todos
     if todos_with_ids.is_empty() {
@@ -313,17 +315,17 @@ fn list_todos(database: &Database) -> Result<()> {
     Ok(())
 }
 
-fn set_user_info(
+async fn set_user_info(
     database: &Database,
     name: Option<&String>,
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info")?;
+    let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -341,20 +343,20 @@ fn set_user_info(
         }
 
         Ok(())
-    })?;
+    }).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     Ok(())
 }
 
-fn show_user_info(database: &Database) -> Result<()> {
+async fn show_user_info(database: &Database) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info")?;
+    let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
     // Read user information from the Y-CRDT document
     user_info_store.with_doc(|doc| {
@@ -379,17 +381,17 @@ fn show_user_info(database: &Database) -> Result<()> {
         }
 
         Ok(())
-    })?;
+    }).await?;
 
     Ok(())
 }
 
-fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
+async fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'user_prefs' YDoc store
-    let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;
+    let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
 
     // Update user preference using the Y-CRDT document
     user_prefs_store.with_doc_mut(|doc| {
@@ -397,20 +399,20 @@ fn set_user_preference(database: &Database, key: String, value: String) -> Resul
         let mut txn = doc.transact_mut();
         prefs_map.insert(&mut txn, key, value);
         Ok(())
-    })?;
+    }).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     Ok(())
 }
 
-fn show_user_preferences(database: &Database) -> Result<()> {
+async fn show_user_preferences(database: &Database) -> Result<()> {
     // Start an atomic transaction (for read-only)
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'user_prefs' YDoc store
-    let user_prefs_store = op.get_store::<YDoc>("user_prefs")?;
+    let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
 
     // Read user preferences from the Y-CRDT document
     user_prefs_store.with_doc(|doc| {
@@ -426,7 +428,7 @@ fn show_user_preferences(database: &Database) -> Result<()> {
         }
 
         Ok(())
-    })?;
+    }).await?;
 
     Ok(())
 }

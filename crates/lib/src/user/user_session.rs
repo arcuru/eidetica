@@ -189,7 +189,7 @@ impl User {
     /// settings.set("name", "My Database");
     /// let database = user.new_database(settings, key_id)?;
     /// ```
-    pub fn create_database(
+    pub async fn create_database(
         &mut self,
         settings: crate::crdt::Doc,
         key_id: &str,
@@ -207,15 +207,17 @@ impl User {
             .clone();
 
         // Create the database with the provided key directly
-        let database = Database::create(settings, &self.instance, signing_key, key_id.to_string())?;
+        let database =
+            Database::create(settings, &self.instance, signing_key, key_id.to_string()).await?;
 
         // Store the mapping in UserKey and track the database
-        let tx = self.user_database.new_transaction()?;
-        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+        let tx = self.user_database.new_transaction().await?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
-            .search(|uk| uk.key_id == key_id)?
+            .search(|uk| uk.key_id == key_id)
+            .await?
             .into_iter()
             .next()
             .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
@@ -228,18 +230,18 @@ impl User {
             .insert(database.root_id().clone(), key_id.to_string());
 
         // Update the key in user database using the UUID primary key
-        keys_table.set(&uuid_primary_key, metadata.clone())?;
+        keys_table.set(&uuid_primary_key, metadata.clone()).await?;
 
         // Also track the database in the databases table
-        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
         let tracked = TrackedDatabase {
             database_id: database.root_id().clone(),
             key_id: key_id.to_string(),
             sync_settings: SyncSettings::default(),
         };
-        databases_table.set(database.root_id(), tracked)?;
+        databases_table.set(database.root_id(), tracked).await?;
 
-        tx.commit()?;
+        tx.commit().await?;
 
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
@@ -268,9 +270,9 @@ impl User {
     /// - Returns an error if no key is found for the database
     /// - Returns an error if no SigKey mapping exists
     /// - Returns an error if the key is not in the UserKeyManager
-    pub fn open_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
+    pub async fn open_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
         // Validate the root exists
-        self.instance.backend().get(root_id)?;
+        self.instance.backend().get(root_id).await?;
 
         // Find an appropriate key for this database
         let key_id =
@@ -307,18 +309,17 @@ impl User {
     ///
     /// # Returns
     /// Vector of matching databases from the user's tracked list
-    pub fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
+    pub async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
         let name = name.as_ref();
-        let tracked = self.databases()?;
+        let tracked = self.databases().await?;
         let mut matching = Vec::new();
 
         for tracked_db in tracked {
-            if let Ok(database) = self.instance.load_database(&tracked_db.database_id)
-                && let Ok(db_name) = database.get_name()
-                && db_name == name
-            {
-                matching.push(database);
-            }
+            if let Ok(database) = self.instance.load_database(&tracked_db.database_id).await
+                && let Ok(db_name) = database.get_name().await
+                    && db_name == name {
+                        matching.push(database);
+                    }
         }
 
         if matching.is_empty() {
@@ -405,15 +406,15 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the user database
-    pub fn map_key(
+    pub async fn map_key(
         &mut self,
         key_id: &str,
         database_id: &crate::entry::ID,
         sigkey: &str,
     ) -> Result<()> {
-        let tx = self.user_database.new_transaction()?;
-        self.map_key_in_txn(&tx, key_id, database_id, sigkey)?;
-        tx.commit()?;
+        let tx = self.user_database.new_transaction().await?;
+        self.map_key_in_txn(&tx, key_id, database_id, sigkey).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -421,7 +422,7 @@ impl User {
     ///
     /// This is used internally by methods that manage their own transactions.
     /// For external use, call `map_key()` instead.
-    fn map_key_in_txn(
+    async fn map_key_in_txn(
         &mut self,
         tx: &crate::Transaction,
         key_id: &str,
@@ -431,11 +432,12 @@ impl User {
         use crate::store::Table;
         use crate::user::types::UserKey;
 
-        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
-            .search(|uk| uk.key_id == key_id)?
+            .search(|uk| uk.key_id == key_id)
+            .await?
             .into_iter()
             .next()
             .ok_or_else(|| super::errors::UserError::KeyNotFound {
@@ -448,7 +450,7 @@ impl User {
             .insert(database_id.clone(), sigkey.to_string());
 
         // Update the key in user database using the UUID primary key
-        keys_table.set(&uuid_primary_key, metadata.clone())?;
+        keys_table.set(&uuid_primary_key, metadata.clone()).await?;
 
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
@@ -460,7 +462,7 @@ impl User {
     ///
     /// This validates that a key exists and has access to a database, discovers the appropriate
     /// SigKey, and creates the mapping. Used by track_database (which has upsert behavior).
-    fn validate_and_map_key_in_txn(
+    async fn validate_and_map_key_in_txn(
         &mut self,
         tx: &crate::Transaction,
         database_id: &crate::entry::ID,
@@ -479,7 +481,8 @@ impl User {
         let public_key = auth::format_public_key(&verifying_key);
 
         // Discover available SigKeys for this public key
-        let available_sigkeys = Database::find_sigkeys(&self.instance, database_id, &public_key)?;
+        let available_sigkeys =
+            Database::find_sigkeys(&self.instance, database_id, &public_key).await?;
 
         if available_sigkeys.is_empty() {
             return Err(UserError::NoSigKeyFound {
@@ -504,7 +507,7 @@ impl User {
         };
 
         // Create the key mapping within the provided transaction
-        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str)?;
+        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str).await?;
 
         Ok(())
     }
@@ -522,7 +525,7 @@ impl User {
     ///
     /// # Returns
     /// The key ID (public key string)
-    pub fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
+    pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
         use crate::auth::crypto::{format_public_key, generate_keypair};
         use crate::store::Table;
         use crate::user::crypto::current_timestamp;
@@ -566,10 +569,10 @@ impl User {
         };
 
         // Store in user database
-        let tx = self.user_database.new_transaction()?;
-        let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
-        keys_table.insert(user_key.clone())?;
-        tx.commit()?;
+        let tx = self.user_database.new_transaction().await?;
+        let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+        keys_table.insert(user_key.clone()).await?;
+        tx.commit().await?;
 
         // Add to in-memory key manager
         self.key_manager.add_key(user_key)?;
@@ -653,11 +656,11 @@ impl User {
     ///
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for pending requests
-    pub fn pending_bootstrap_requests(
+    pub async fn pending_bootstrap_requests(
         &self,
         sync: &crate::sync::Sync,
     ) -> Result<Vec<(String, crate::sync::BootstrapRequest)>> {
-        sync.pending_bootstrap_requests()
+        sync.pending_bootstrap_requests().await
     }
 
     /// Approve a bootstrap request and add the requesting key to the target database.
@@ -677,7 +680,7 @@ impl User {
     /// - Returns an error if the approving key doesn't have Admin permission on the target database
     /// - Returns an error if the request doesn't exist or isn't pending
     /// - Returns an error if the key addition to the database fails
-    pub fn approve_bootstrap_request(
+    pub async fn approve_bootstrap_request(
         &self,
         sync: &crate::sync::Sync,
         request_id: &str,
@@ -693,7 +696,8 @@ impl User {
 
         // Delegate to Sync layer with the user-provided key
         // The Sync layer will validate permissions when committing the transaction
-        sync.approve_bootstrap_request_with_key(request_id, signing_key, approving_key_id)?;
+        sync.approve_bootstrap_request_with_key(request_id, signing_key, approving_key_id)
+            .await?;
 
         Ok(())
     }
@@ -716,7 +720,7 @@ impl User {
     /// - Returns an error if the user doesn't own the specified rejecting key
     /// - Returns an error if the request doesn't exist or isn't pending
     /// - Returns an error if the rejecting key lacks Admin permission on the target database
-    pub fn reject_bootstrap_request(
+    pub async fn reject_bootstrap_request(
         &self,
         sync: &crate::sync::Sync,
         request_id: &str,
@@ -732,7 +736,8 @@ impl User {
 
         // Delegate to Sync layer with the user-provided key
         // The Sync layer will validate Admin permission on the target database
-        sync.reject_bootstrap_request_with_key(request_id, signing_key, rejecting_key_id)?;
+        sync.reject_bootstrap_request_with_key(request_id, signing_key, rejecting_key_id)
+            .await?;
 
         Ok(())
     }
@@ -834,14 +839,14 @@ impl User {
     /// # Errors
     /// - Returns `NoSigKeyFound` if no SigKey can be found for the specified key
     /// - Returns `KeyNotFound` if the specified key_id doesn't exist
-    pub fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()> {
+    pub async fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()> {
         // Single transaction for all operations
-        let tx = self.user_database.new_transaction()?;
-        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
+        let tx = self.user_database.new_transaction().await?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
         // Use database ID as the key - check if it already exists (O(1))
         let db_id_key = tracked.database_id.to_string();
-        let existing = databases_table.get(&db_id_key).ok();
+        let existing = databases_table.get(&db_id_key).await.ok();
 
         // Determine if we need to validate and setup key mapping
         let needs_key_validation = match &existing {
@@ -851,21 +856,23 @@ impl User {
 
         // Validate key and set up mapping if needed
         if needs_key_validation {
-            self.validate_and_map_key_in_txn(&tx, &tracked.database_id, &tracked.key_id)?;
+            self.validate_and_map_key_in_txn(&tx, &tracked.database_id, &tracked.key_id)
+                .await?;
         }
 
         // Store using database ID as explicit key (not using insert's auto-generated UUID)
-        databases_table.set(&db_id_key, tracked)?;
+        databases_table.set(&db_id_key, tracked).await?;
 
         // Single commit for all changes
-        tx.commit()?;
+        tx.commit().await?;
 
         // Update sync system to immediately recompute combined settings
         // This ensures automatic sync works right away, without waiting for background worker
         if let Some(sync) = self.instance.sync() {
             // Auto-sync user tracking if not already synced
             // This is idempotent - safe to call multiple times
-            sync.sync_user(&self.user_uuid, self.user_database.root_id())?;
+            sync.sync_user(&self.user_uuid, self.user_database.root_id())
+                .await?;
         }
 
         Ok(())
@@ -877,13 +884,14 @@ impl User {
     ///
     /// # Returns
     /// Vector of TrackedDatabase entries
-    pub fn databases(&self) -> Result<Vec<TrackedDatabase>> {
+    pub async fn databases(&self) -> Result<Vec<TrackedDatabase>> {
         let databases_table = self
             .user_database
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")?;
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+            .await?;
 
         // Get all entries from the table (returns Vec<(key, value)>)
-        let all_entries = databases_table.search(|_| true)?;
+        let all_entries = databases_table.search(|_| true).await?;
 
         // Extract just the values
         let tracked: Vec<TrackedDatabase> = all_entries.into_iter().map(|(_key, db)| db).collect();
@@ -901,14 +909,15 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list
-    pub fn database(&self, database_id: &crate::entry::ID) -> Result<TrackedDatabase> {
+    pub async fn database(&self, database_id: &crate::entry::ID) -> Result<TrackedDatabase> {
         let databases_table = self
             .user_database()
-            .get_store_viewer::<Table<TrackedDatabase>>("databases")?;
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+            .await?;
 
         // Direct O(1) lookup using database ID as key
         let db_id_key = database_id.to_string();
-        databases_table.get(&db_id_key).map_err(|_| {
+        databases_table.get(&db_id_key).await.map_err(|_| {
             UserError::DatabaseNotTracked {
                 database_id: database_id.to_string(),
             }
@@ -926,15 +935,15 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list
-    pub fn untrack_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
-        let tx = self.user_database.new_transaction()?;
-        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases")?;
+    pub async fn untrack_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
+        let tx = self.user_database.new_transaction().await?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
         // Direct O(1) delete using database ID as key
         let db_id_key = database_id.to_string();
 
         // Verify it exists before deleting
-        if databases_table.get(&db_id_key).is_err() {
+        if databases_table.get(&db_id_key).await.is_err() {
             return Err(UserError::DatabaseNotTracked {
                 database_id: database_id.to_string(),
             }
@@ -942,8 +951,8 @@ impl User {
         }
 
         // Delete using database ID as key
-        databases_table.delete(&db_id_key)?;
-        tx.commit()?;
+        databases_table.delete(&db_id_key).await?;
+        tx.commit().await?;
 
         Ok(())
     }

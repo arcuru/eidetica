@@ -27,11 +27,10 @@ fn render_chat(f: &mut ratatui::Frame, app: &App) {
         .constraints(constraints)
         .split(f.area());
 
-    // Room address bar (for sharing)
+    // Room address bar (for sharing) - use cached name
     let room_name = app
-        .current_room
-        .as_ref()
-        .and_then(|r| r.get_name().ok())
+        .current_room_name
+        .clone()
         .unwrap_or_else(|| "Unknown Room".to_string());
 
     let address_text = if let Some(addr) = &app.current_room_address {

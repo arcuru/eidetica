@@ -10,6 +10,7 @@
 
 use std::any::Any;
 
+use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 
 use crate::{
@@ -72,6 +73,7 @@ pub enum VerificationStatus {
 /// the entry has been authenticated by the higher-level authentication system.
 /// The backend itself does not perform verification - it only stores the status
 /// set by the calling code (typically Database/Transaction implementations).
+#[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
@@ -81,7 +83,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing the `Entry` if found, or an `Error::NotFound` otherwise.
     /// Returns an owned copy to support concurrent access with internal synchronization.
-    fn get(&self, id: &ID) -> Result<Entry>;
+    async fn get(&self, id: &ID) -> Result<Entry>;
 
     /// Gets the verification status of an entry.
     ///
@@ -90,7 +92,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing the `VerificationStatus` if the entry exists, or an `Error::NotFound` otherwise.
-    fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus>;
+    async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus>;
 
     /// Stores an entry in the database with the specified verification status.
     ///
@@ -104,7 +106,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
+    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
 
     /// Stores an entry with verified status (convenience method for local entries).
     ///
@@ -116,8 +118,8 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put_verified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Verified, entry)
+    async fn put_verified(&self, entry: Entry) -> Result<()> {
+        self.put(VerificationStatus::Verified, entry).await
     }
 
     /// Stores an entry with failed verification status (convenience method for sync scenarios).
@@ -131,8 +133,8 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn put_unverified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Failed, entry)
+    async fn put_unverified(&self, entry: Entry) -> Result<()> {
+        self.put(VerificationStatus::Failed, entry).await
     }
 
     /// Updates the verification status of an existing entry.
@@ -146,7 +148,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or `Error::NotFound` if the entry doesn't exist.
-    fn update_verification_status(
+    async fn update_verification_status(
         &self,
         id: &ID,
         verification_status: VerificationStatus,
@@ -162,7 +164,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs with the specified status.
-    fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>>;
+    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>>;
 
     /// Retrieves the IDs of the tip entries for a given tree.
     ///
@@ -175,7 +177,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of tip entry IDs or an error.
-    fn get_tips(&self, tree: &ID) -> Result<Vec<ID>>;
+    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>>;
 
     /// Retrieves the IDs of the tip entries for a specific store within a given tree.
     ///
@@ -190,7 +192,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of tip entry IDs for the store or an error.
-    fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>>;
+    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>>;
 
     /// Gets the store tips that exist up to a specific set of main tree entries.
     ///
@@ -204,7 +206,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of store tip entry IDs up to the main entries.
-    fn get_store_tips_up_to_entries(
+    async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         store: &str,
@@ -221,7 +223,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of top-level root entry IDs or an error.
-    fn all_roots(&self) -> Result<Vec<ID>>;
+    async fn all_roots(&self) -> Result<Vec<ID>>;
 
     /// Finds the Lowest Common Ancestor (LCA) of the given entry IDs within a store.
     ///
@@ -236,7 +238,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing the LCA entry ID, or an error if no common ancestor exists
-    fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
+    async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
 
     /// Collects all entries from the tree root down to the target entry within a store.
     ///
@@ -251,7 +253,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs from root to target, sorted by height
-    fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>>;
+    async fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>>;
 
     /// Returns a reference to the backend instance as a dynamic `Any` type.
     ///
@@ -274,7 +276,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the tree,
     /// sorted topologically, or an error.
-    fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>>;
+    async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>>;
 
     /// Retrieves all entries belonging to a specific store within a tree, sorted topologically.
     ///
@@ -291,7 +293,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the store,
     /// sorted topologically according to their position within the store, or an error.
-    fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>>;
+    async fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>>;
 
     /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
     ///
@@ -309,7 +311,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Errors
     /// - `EntryNotFound` if any tip doesn't exist locally
     /// - `EntryNotInTree` if any tip belongs to a different tree
-    fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
+    async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
 
     /// Retrieves all entries belonging to a specific store within a tree up to the given tips, sorted topologically.
     ///
@@ -324,7 +326,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a vector of `Entry` objects in the store up to the given tips,
     /// sorted topologically, or an error.
-    fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
+    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
 
     // === Private Key Storage Methods ===
     //
@@ -347,7 +349,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Security Note
     /// This is a basic implementation suitable for development and testing.
     /// Production systems should consider encryption at rest and hardware security modules.
-    fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()>;
+    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()>;
 
     /// Retrieve a private key from the backend's local key storage.
     ///
@@ -356,13 +358,13 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
-    fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>>;
+    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>>;
 
     /// List all private key identifiers stored in the backend.
     ///
     /// # Returns
     /// A `Result` containing a vector of key identifiers, or an error.
-    fn list_private_keys(&self) -> Result<Vec<String>>;
+    async fn list_private_keys(&self) -> Result<Vec<String>>;
 
     /// Remove a private key from the backend's local key storage.
     ///
@@ -371,7 +373,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    fn remove_private_key(&self, key_name: &str) -> Result<()>;
+    async fn remove_private_key(&self, key_name: &str) -> Result<()>;
 
     // === CRDT State Cache Methods ===
     //
@@ -387,7 +389,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing an `Option<String>`. Returns `None` if not cached.
-    fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>>;
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>>;
 
     /// Cache CRDT state for a store at a specific entry.
     ///
@@ -398,7 +400,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()>;
+    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()>;
 
     /// Clear all cached CRDT states.
     ///
@@ -407,7 +409,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` indicating success or an error during the clear operation.
-    fn clear_crdt_cache(&self) -> Result<()>;
+    async fn clear_crdt_cache(&self) -> Result<()>;
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///
@@ -423,7 +425,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a `Vec<ID>` of parent entry IDs sorted by (height, ID).
     /// Returns empty vec if the entry has no parents in the store.
-    fn get_sorted_store_parents(&self, tree_id: &ID, entry_id: &ID, store: &str)
+    async fn get_sorted_store_parents(&self, tree_id: &ID, entry_id: &ID, store: &str)
     -> Result<Vec<ID>>;
 
     /// Gets all entries between one entry and multiple target entries (exclusive of start, inclusive of targets).
@@ -440,7 +442,7 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result<Vec<ID>>` containing all entry IDs between from and any of the targets, deduplicated and sorted by height then ID
-    fn get_path_from_to(
+    async fn get_path_from_to(
         &self,
         tree_id: &ID,
         store: &str,

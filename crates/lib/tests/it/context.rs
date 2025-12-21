@@ -34,8 +34,8 @@ impl TestContext {
     }
 
     /// Add a database (creates a test user internally).
-    pub fn with_database(self) -> Self {
-        let (instance, mut user) = test_instance_with_user("test_user");
+    pub async fn with_database(self) -> Self {
+        let (instance, mut user) = test_instance_with_user("test_user").await;
         let default_key = user.get_default_key().expect("Failed to get default key");
 
         let mut settings = eidetica::crdt::Doc::new();
@@ -43,6 +43,7 @@ impl TestContext {
 
         let database = user
             .create_database(settings, &default_key)
+            .await
             .expect("Failed to create database");
 
         Self {

@@ -11,7 +11,7 @@ use crate::{
         types::{AuthKey, ResolvedAuth, SigKey},
     },
     crdt::{Doc, doc},
-    store::{DocStore, Store},
+    store::DocStore,
 };
 
 /// A settings-specific Store that wraps DocStore and provides specialized methods
@@ -39,7 +39,13 @@ impl SettingsStore {
     /// # Returns
     /// A Result containing the SettingsStore or an error if creation fails
     pub(crate) fn new(transaction: &Transaction) -> Result<Self> {
-        let inner = <DocStore as Store>::new(transaction, "_settings")?;
+        // Note: We create DocStore directly here instead of using Store::new()
+        // because SettingsStore is a wrapper that doesn't implement the Store trait itself.
+        // This avoids the async requirement for this simple internal construction.
+        let inner = DocStore {
+            name: "_settings".to_string(),
+            atomic_op: transaction.clone(),
+        };
         Ok(Self { inner })
     }
 
@@ -47,8 +53,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// The database name as a string, or an error if not found or invalid
-    pub fn get_name(&self) -> Result<String> {
-        self.inner.get_string("name")
+    pub async fn get_name(&self) -> Result<String> {
+        self.inner.get_string("name").await
     }
 
     /// Set the database name in settings
@@ -58,8 +64,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub fn set_name(&self, name: &str) -> Result<()> {
-        self.inner.set_result("name", name)
+    pub async fn set_name(&self, name: &str) -> Result<()> {
+        self.inner.set_result("name", name).await
     }
 
     /// Get a value from settings by key
@@ -69,8 +75,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// The value associated with the key, or an error if not found
-    pub fn get(&self, key: impl AsRef<str>) -> Result<doc::Value> {
-        self.inner.get(key)
+    pub async fn get(&self, key: impl AsRef<str>) -> Result<doc::Value> {
+        self.inner.get(key).await
     }
 
     /// Get a string value from settings by key
@@ -80,8 +86,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// The string value associated with the key, or an error if not found or wrong type
-    pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
-        self.inner.get_string(key)
+    pub async fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
+        self.inner.get_string(key).await
     }
 
     /// Get all settings as a Doc
@@ -90,8 +96,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// A Doc containing all current settings
-    pub fn get_all(&self) -> Result<Doc> {
-        self.inner.get_all()
+    pub async fn get_all(&self) -> Result<Doc> {
+        self.inner.get_all().await
     }
 
     /// Get the current authentication settings as an AuthSettings instance
@@ -101,9 +107,9 @@ impl SettingsStore {
     ///
     /// # Returns
     /// An AuthSettings instance representing the current auth configuration
-    pub fn get_auth_settings(&self) -> Result<AuthSettings> {
+    pub async fn get_auth_settings(&self) -> Result<AuthSettings> {
         // Try to get the existing auth document
-        match self.inner.get("auth") {
+        match self.inner.get("auth").await {
             Ok(auth_value) => {
                 // Convert the Value to a Doc and create AuthSettings from it
                 match auth_value {
@@ -131,19 +137,20 @@ impl SettingsStore {
     ///
     /// # Returns
     /// Result indicating success or failure of the update operation
-    pub fn update_auth_settings<F>(&self, f: F) -> Result<()>
+    pub async fn update_auth_settings<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut AuthSettings) -> Result<()>,
     {
         // Get current auth settings
-        let mut auth_settings = self.get_auth_settings()?;
+        let mut auth_settings = self.get_auth_settings().await?;
 
         // Apply the update function
         f(&mut auth_settings)?;
 
         // Save the updated auth settings back to the store
         self.inner
-            .set_node("auth", auth_settings.as_doc().clone())?;
+            .set_node("auth", auth_settings.as_doc().clone())
+            .await?;
 
         Ok(())
     }
@@ -161,7 +168,7 @@ impl SettingsStore {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()> {
+    pub async fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()> {
         self.update_auth_settings(|auth| {
             // Check if key already exists
             match auth.get_key(key_name) {
@@ -190,6 +197,7 @@ impl SettingsStore {
                 }
             }
         })
+        .await
     }
 
     /// Get an authentication key from the settings
@@ -199,8 +207,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// AuthKey if found, or error if not present or operation fails
-    pub fn get_auth_key(&self, key_name: &str) -> Result<AuthKey> {
-        let auth_settings = self.get_auth_settings()?;
+    pub async fn get_auth_key(&self, key_name: &str) -> Result<AuthKey> {
+        let auth_settings = self.get_auth_settings().await?;
         auth_settings.get_key(key_name)
     }
 
@@ -211,8 +219,9 @@ impl SettingsStore {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub fn revoke_auth_key(&self, key_name: &str) -> Result<()> {
+    pub async fn revoke_auth_key(&self, key_name: &str) -> Result<()> {
         self.update_auth_settings(|auth| auth.revoke_key(key_name))
+            .await
     }
 
     /// Get the auth document for validation purposes
@@ -223,8 +232,8 @@ impl SettingsStore {
     ///
     /// # Returns
     /// A Doc containing the auth configuration
-    pub fn get_auth_doc_for_validation(&self) -> Result<Doc> {
-        let auth_settings = self.get_auth_settings()?;
+    pub async fn get_auth_doc_for_validation(&self) -> Result<Doc> {
+        let auth_settings = self.get_auth_settings().await?;
         Ok(auth_settings.as_doc().clone())
     }
 
@@ -238,13 +247,13 @@ impl SettingsStore {
     ///
     /// # Returns
     /// ResolvedAuth information if validation succeeds
-    pub fn validate_entry_auth(
+    pub async fn validate_entry_auth(
         &self,
         sig_key: &SigKey,
         instance: Option<&Instance>,
     ) -> Result<ResolvedAuth> {
-        let auth_settings = self.get_auth_settings()?;
-        auth_settings.validate_entry_auth(sig_key, instance)
+        let auth_settings = self.get_auth_settings().await?;
+        auth_settings.validate_entry_auth(sig_key, instance).await
     }
 
     /// Get access to the underlying DocStore for advanced operations

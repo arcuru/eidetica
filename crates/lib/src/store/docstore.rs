@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use async_trait::async_trait;
 use crate::{
     Result, Store, Transaction,
     crdt::{
@@ -24,8 +25,8 @@ use crate::{
 ///   [`get_or_insert_path`](Self::get_or_insert_path),
 ///   [`modify_or_insert_path`](Self::modify_or_insert_path)
 pub struct DocStore {
-    name: String,
-    atomic_op: Transaction,
+    pub(crate) name: String,
+    pub(crate) atomic_op: Transaction,
 }
 
 impl Registered for DocStore {
@@ -34,10 +35,11 @@ impl Registered for DocStore {
     }
 }
 
+#[async_trait(?Send)]
 impl Store for DocStore {
-    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
+    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.into(),
+            name: subtree_name,
             atomic_op: op.clone(),
         })
     }
@@ -64,7 +66,7 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result` containing the MapValue if found, or `Error::NotFound`.
-    pub fn get(&self, key: impl AsRef<str>) -> Result<Value> {
+    pub async fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
@@ -87,7 +89,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
 
         // Return the value from the full state
         match data.get(key) {
@@ -110,8 +112,8 @@ impl DocStore {
     ///
     /// # Returns
     /// An `Option` containing the cloned Value if found, or `None`.
-    pub fn get_option(&self, key: impl AsRef<str>) -> Option<Value> {
-        self.get(key).ok()
+    pub async fn get_option(&self, key: impl AsRef<str>) -> Option<Value> {
+        self.get(key).await.ok()
     }
 
     /// Gets a value associated with a key from the Store (Result-based API for backward compatibility).
@@ -126,7 +128,7 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result` containing the MapValue if found, or `Error::NotFound`.
-    pub fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
+    pub async fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the atomic op itself
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
@@ -139,7 +141,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
 
         // Get the value
         match data.get(key) {
@@ -162,9 +164,9 @@ impl DocStore {
     /// # Returns
     /// A `Result` containing the string value if found, or an error if the key is not found
     /// or if the value is not a string.
-    pub fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
+    pub async fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
         let key_ref = key.as_ref();
-        match self.get_result(key_ref)? {
+        match self.get_result(key_ref).await? {
             Value::Text(value) => Ok(value),
             Value::Doc(_) => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
@@ -204,7 +206,7 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+    pub async fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
         let key = key.into();
         let value = value.into();
 
@@ -219,7 +221,7 @@ impl DocStore {
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+        self.atomic_op.update_subtree(&self.name, &serialized).await
     }
 
     /// Sets a key-value pair (HashMap-like API).
@@ -233,7 +235,7 @@ impl DocStore {
     ///
     /// # Returns
     /// An `Option<Value>` containing the previous value, or `None` if no previous value.
-    pub fn insert(&self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
+    pub async fn insert(&self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
         let key = key.into();
         let value = value.into();
 
@@ -257,6 +259,7 @@ impl DocStore {
             serde_json::to_string(&data).expect("Failed to serialize data during insert operation");
         self.atomic_op
             .update_subtree(&self.name, &serialized)
+            .await
             .expect("Failed to update subtree during insert operation");
 
         previous
@@ -274,7 +277,7 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub fn set_result(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+    pub async fn set_result(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
         let key = key.into();
         let value = value.into();
 
@@ -289,12 +292,12 @@ impl DocStore {
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+        self.atomic_op.update_subtree(&self.name, &serialized).await
     }
 
     /// Convenience method to set a string value.
-    pub fn set_string(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
-        self.set(key, Value::Text(value.into()))
+    pub async fn set_string(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
+        self.set(key, Value::Text(value.into())).await
     }
 
     /// Stages the setting of a nested value within the associated `Transaction`.
@@ -308,8 +311,8 @@ impl DocStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     /// Convenience method to get a List value.
-    pub fn get_list(&self, key: impl AsRef<str>) -> Result<List> {
-        match self.get(key)? {
+    pub async fn get_list(&self, key: impl AsRef<str>) -> Result<List> {
+        match self.get(key).await? {
             Value::List(list) => Ok(list),
             _ => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
@@ -321,8 +324,8 @@ impl DocStore {
     }
 
     /// Convenience method to get a nested Doc value.
-    pub fn get_node(&self, key: impl AsRef<str>) -> Result<Doc> {
-        match self.get(key)? {
+    pub async fn get_node(&self, key: impl AsRef<str>) -> Result<Doc> {
+        match self.get(key).await? {
             Value::Doc(node) => Ok(node),
             _ => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
@@ -334,23 +337,23 @@ impl DocStore {
     }
 
     /// Convenience method to set a list value.
-    pub fn set_list(&self, key: impl Into<String>, list: impl Into<List>) -> Result<()> {
-        self.set(key, Value::List(list.into()))
+    pub async fn set_list(&self, key: impl Into<String>, list: impl Into<List>) -> Result<()> {
+        self.set(key, Value::List(list.into())).await
     }
 
     /// Convenience method to set a nested Doc value.
-    pub fn set_node(&self, key: impl Into<String>, node: impl Into<Doc>) -> Result<()> {
-        self.set(key, Value::Doc(node.into()))
+    pub async fn set_node(&self, key: impl Into<String>, node: impl Into<Doc>) -> Result<()> {
+        self.set(key, Value::Doc(node.into())).await
     }
 
     /// Legacy method for backward compatibility - now just an alias to set
-    pub fn set_value(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        self.set(key, value)
+    pub async fn set_value(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        self.set(key, value).await
     }
 
     /// Legacy method for backward compatibility - now just an alias to get
-    pub fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
-        self.get(key)
+    pub async fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
+        self.get(key).await
     }
 
     /// Enhanced access methods with type inference
@@ -389,7 +392,7 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result<Value>` containing the value if found, or an error if not found.
-    pub fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
+    pub async fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
         // First check if there's any local staged data
         let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
 
@@ -401,7 +404,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
 
         // Get the path from the full state
         match data.get(&path) {
@@ -418,16 +421,16 @@ impl DocStore {
     ///
     /// # Returns
     /// An `Option<Value>` containing the value if found, or `None` if not found.
-    pub fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
-        self.get_path(path).ok()
+    pub async fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
+        self.get_path(path).await.ok()
     }
 
     /// Gets a value by path using dot notation (Result-based API for backward compatibility).
     ///
     /// # Returns
     /// A `Result<Value>` containing the value if found, or an error if not found.
-    pub fn get_path_result(&self, path: impl AsRef<Path>) -> Result<Value> {
-        self.get_path(path)
+    pub async fn get_path_result(&self, path: impl AsRef<Path>) -> Result<Value> {
+        self.get_path(path).await
     }
 }
 
@@ -464,11 +467,11 @@ impl DocStore {
     /// assert_eq!(age, 30);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn get_as<T>(&self, key: impl AsRef<str>) -> Result<T>
+    pub async fn get_as<T>(&self, key: impl AsRef<str>) -> Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
     {
-        let value = self.get(key)?;
+        let value = self.get(key).await?;
         T::try_from(&value).map_err(Into::into)
     }
 
@@ -504,11 +507,11 @@ impl DocStore {
     /// - The path doesn't exist (`SubtreeError::KeyNotFound`)
     /// - The value cannot be converted to type T (`CRDTError::TypeMismatch`)
     /// - The DocStore operation fails
-    pub fn get_path_as<T>(&self, path: impl AsRef<Path>) -> Result<T>
+    pub async fn get_path_as<T>(&self, path: impl AsRef<Path>) -> Result<T>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
     {
-        let value = self.get_path(path)?;
+        let value = self.get_path(path).await?;
         T::try_from(&value).map_err(Into::into)
     }
 
@@ -542,18 +545,18 @@ impl DocStore {
     /// assert_eq!(count2, 5);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn get_or_insert<T>(&self, key: impl AsRef<str>, default: T) -> Result<T>
+    pub async fn get_or_insert<T>(&self, key: impl AsRef<str>, default: T) -> Result<T>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
     {
         let key_str = key.as_ref();
 
         // Try to get existing value first
-        match self.get_as::<T>(key_str) {
+        match self.get_as::<T>(key_str).await {
             Ok(existing) => Ok(existing),
             Err(_) => {
                 // Key doesn't exist or wrong type - set default and return it
-                self.set_result(key_str, default.clone())?;
+                self.set_result(key_str, default.clone()).await?;
                 Ok(default)
             }
         }
@@ -603,7 +606,7 @@ impl DocStore {
     /// assert_eq!(store.get_as::<String>("text")?, "hello world");
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify<T, F>(&self, key: impl AsRef<str>, f: F) -> Result<()>
+    pub async fn modify<T, F>(&self, key: impl AsRef<str>, f: F) -> Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
@@ -611,13 +614,13 @@ impl DocStore {
         let key = key.as_ref();
 
         // Try to get and convert the current value
-        let mut value = self.get_as::<T>(key)?;
+        let mut value = self.get_as::<T>(key).await?;
 
         // Apply the modification
         f(&mut value);
 
         // Stage the modified value back
-        self.set(key, value)?;
+        self.set(key, value).await?;
         Ok(())
     }
 
@@ -648,7 +651,7 @@ impl DocStore {
     /// assert_eq!(store.get_as::<i64>("counter")?, 10);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_or_insert<T, F>(&self, key: impl AsRef<str>, default: T, f: F) -> Result<()>
+    pub async fn modify_or_insert<T, F>(&self, key: impl AsRef<str>, default: T, f: F) -> Result<()>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
         F: FnOnce(&mut T),
@@ -656,13 +659,13 @@ impl DocStore {
         let key = key.as_ref();
 
         // Get existing value or insert default
-        let mut value = self.get_or_insert(key, default)?;
+        let mut value = self.get_or_insert(key, default).await?;
 
         // Apply the modification
         f(&mut value);
 
         // Stage the modified value back
-        self.set(key, value)?;
+        self.set(key, value).await?;
 
         Ok(())
     }
@@ -693,28 +696,28 @@ impl DocStore {
     /// assert_eq!(count2, 42);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn get_or_insert_path<T>(&self, path: impl AsRef<Path>, default: T) -> Result<T>
+    pub async fn get_or_insert_path<T>(&self, path: impl AsRef<Path>, default: T) -> Result<T>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
     {
         // Try to get existing value first
-        match self.get_path_as(path.as_ref()) {
+        match self.get_path_as(path.as_ref()).await {
             Ok(existing) => Ok(existing),
             Err(_) => {
                 // Path doesn't exist or wrong type - set default and return it
-                self.set_path(path, default.clone())?;
+                self.set_path(path, default.clone()).await?;
                 Ok(default)
             }
         }
     }
 
     /// Get or insert a value at a path with string paths for runtime normalization
-    pub fn get_or_insert_path_str<T>(&self, path: &str, default: T) -> Result<T>
+    pub async fn get_or_insert_path_str<T>(&self, path: &str, default: T) -> Result<T>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
-        self.get_or_insert_path(&pathbuf, default)
+        self.get_or_insert_path(&pathbuf, default).await
     }
 
     /// Modify a value at a path or insert a default if it doesn't exist.
@@ -745,7 +748,7 @@ impl DocStore {
     /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score"))?, 20);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_or_insert_path<T, F>(
+    pub async fn modify_or_insert_path<T, F>(
         &self,
         path: impl AsRef<Path>,
         default: T,
@@ -756,25 +759,25 @@ impl DocStore {
         F: FnOnce(&mut T),
     {
         // Get existing value or insert default
-        let mut value = self.get_or_insert_path(path.as_ref(), default)?;
+        let mut value = self.get_or_insert_path(path.as_ref(), default).await?;
 
         // Apply the modification
         f(&mut value);
 
         // Stage the modified value back
-        self.set_path(path, value)?;
+        self.set_path(path, value).await?;
 
         Ok(())
     }
 
     /// Modify a value or insert a default with string paths for runtime normalization
-    pub fn modify_or_insert_path_str<T, F>(&self, path: &str, default: T, f: F) -> Result<()>
+    pub async fn modify_or_insert_path_str<T, F>(&self, path: &str, default: T, f: F) -> Result<()>
     where
         T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
-        self.modify_or_insert_path(&pathbuf, default, f)
+        self.modify_or_insert_path(&pathbuf, default, f).await
     }
 
     /// Sets a value at the given path, creating intermediate nodes as needed
@@ -846,7 +849,7 @@ impl DocStore {
     /// - The path is empty
     /// - A non-final segment contains a non-node value that cannot be navigated through
     /// - The DocStore operation fails
-    pub fn set_path(&self, path: impl AsRef<Path>, value: impl Into<Value>) -> Result<()> {
+    pub async fn set_path(&self, path: impl AsRef<Path>, value: impl Into<Value>) -> Result<()> {
         let value = value.into();
 
         // Get current data from the atomic op, or create new if not existing
@@ -860,13 +863,13 @@ impl DocStore {
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+        self.atomic_op.update_subtree(&self.name, &serialized).await
     }
 
     /// Sets a value at the given path with string paths for runtime normalization
-    pub fn set_path_str(&self, path: &str, value: impl Into<Value>) -> Result<()> {
+    pub async fn set_path_str(&self, path: &str, value: impl Into<Value>) -> Result<()> {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
-        self.set_path(&pathbuf, value)
+        self.set_path(&pathbuf, value).await
     }
 
     /// Modifies a value at a path in-place using a closure
@@ -901,30 +904,30 @@ impl DocStore {
     /// assert_eq!(store.get_path_as::<i64>(path!("user.score"))?, 150);
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn modify_path<T, F>(&self, path: impl AsRef<Path>, f: F) -> Result<()>
+    pub async fn modify_path<T, F>(&self, path: impl AsRef<Path>, f: F) -> Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
         // Try to get and convert the current value
-        let mut value = self.get_path_as(path.as_ref())?;
+        let mut value = self.get_path_as(path.as_ref()).await?;
 
         // Apply the modification
         f(&mut value);
 
         // Stage the modified value back
-        self.set_path(path, value)?;
+        self.set_path(path, value).await?;
         Ok(())
     }
 
     /// Modify a value at a path with string paths for runtime normalization
-    pub fn modify_path_str<T, F>(&self, path: &str, f: F) -> Result<()>
+    pub async fn modify_path_str<T, F>(&self, path: &str, f: F) -> Result<()>
     where
         T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
-        self.modify_path(&pathbuf, f)
+        self.modify_path(&pathbuf, f).await
     }
 
     /// Stages the deletion of a key within the associated `Transaction`.
@@ -967,11 +970,11 @@ impl DocStore {
     /// - `Ok(true)` if the key existed and was deleted
     /// - `Ok(false)` if the key did not exist (no-op)
     /// - `Err` on serialization or staging errors
-    pub fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
+    pub async fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
         let key_str = key.as_ref();
 
         // Check if key exists in full merged state
-        let full_state = self.get_all()?;
+        let full_state = self.get_all().await?;
         if full_state.get(key_str).is_none() {
             return Ok(false); // Key doesn't exist, no-op
         }
@@ -987,7 +990,9 @@ impl DocStore {
 
         // Serialize and update the atomic op
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)?;
+        self.atomic_op
+            .update_subtree(&self.name, &serialized)
+            .await?;
         Ok(true)
     }
 
@@ -1037,12 +1042,12 @@ impl DocStore {
     ///
     /// # Returns
     /// A `Result` containing the merged `Doc` data structure with nested maps for path-based data.
-    pub fn get_all(&self) -> Result<Doc> {
+    pub async fn get_all(&self) -> Result<Doc> {
         // First get the local data directly from the atomic op
         let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name).await?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {
@@ -1079,7 +1084,7 @@ impl DocStore {
     /// assert!(!store.contains_key("name")); // Key deleted (tombstone)
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn contains_key(&self, key: impl AsRef<str>) -> bool {
+    pub async fn contains_key(&self, key: impl AsRef<str>) -> bool {
         let key = key.as_ref();
 
         // Check local staged data first
@@ -1090,7 +1095,7 @@ impl DocStore {
         }
 
         // Check backend data
-        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
+        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name).await {
             backend_data.contains_key(key)
         } else {
             false
@@ -1130,7 +1135,7 @@ impl DocStore {
     /// assert!(!store.contains_path(path!("user.profile.age"))); // Path doesn't exist
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn contains_path(&self, path: impl AsRef<Path>) -> bool {
+    pub async fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first
         if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
             && local_data.get(&path).is_some()
@@ -1139,7 +1144,7 @@ impl DocStore {
         }
 
         // Check backend data
-        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name) {
+        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name).await {
             backend_data.get(&path).is_some()
         } else {
             false
@@ -1147,9 +1152,9 @@ impl DocStore {
     }
 
     /// Returns true if the DocStore contains the given path with string paths for runtime normalization
-    pub fn contains_path_str(&self, path: &str) -> bool {
+    pub async fn contains_path_str(&self, path: &str) -> bool {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
-        self.contains_path(&pathbuf)
+        self.contains_path(&pathbuf).await
     }
 
     /// Gets a mutable editor for a value associated with the given key.
@@ -1192,7 +1197,7 @@ impl DocStore {
     ///   or if the final value or an intermediate value is a `Value::Deleted` (tombstone).
     /// * `Error::Io` with `ErrorKind::InvalidData` if a non-map value is
     ///   encountered during path traversal where a map was expected.
-    pub fn get_at_path<S, P>(&self, path: P) -> Result<Value>
+    pub async fn get_at_path<S, P>(&self, path: P) -> Result<Value>
     where
         S: AsRef<str>,
         P: AsRef<[S]>,
@@ -1200,10 +1205,10 @@ impl DocStore {
         let path_slice = path.as_ref();
         if path_slice.is_empty() {
             // Requesting the root of this Doc's named subtree
-            return Ok(Value::Doc(self.get_all()?));
+            return Ok(Value::Doc(self.get_all().await?));
         }
 
-        let mut current_value_view = Value::Doc(self.get_all()?);
+        let mut current_value_view = Value::Doc(self.get_all().await?);
 
         for key_segment_s in path_slice.iter() {
             match current_value_view {
@@ -1282,7 +1287,7 @@ impl DocStore {
     /// * `Error::InvalidOperation` if the `path` is empty and `value` is not a `Value::Doc`.
     /// * `Error::Serialize` if the updated subtree data cannot be serialized to JSON.
     /// * Potentially other errors from `Transaction::update_subtree`.
-    pub fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
+    pub async fn set_at_path<S, P>(&self, path: P, value: Value) -> Result<()>
     where
         S: Into<String> + Clone,
         P: AsRef<[S]>,
@@ -1293,7 +1298,10 @@ impl DocStore {
             // The value must be a node.
             if let Value::Doc(node) = value {
                 let serialized_data = serde_json::to_string(&node)?;
-                return self.atomic_op.update_subtree(&self.name, &serialized_data);
+                return self
+                    .atomic_op
+                    .update_subtree(&self.name, &serialized_data)
+                    .await;
             } else {
                 return Err(StoreError::TypeMismatch {
                     store: self.name.clone(),
@@ -1323,7 +1331,9 @@ impl DocStore {
         subtree_data.set(&path_str, value);
 
         let serialized_data = serde_json::to_string(&subtree_data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized_data)
+        self.atomic_op
+            .update_subtree(&self.name, &serialized_data)
+            .await
     }
 }
 
@@ -1358,8 +1368,8 @@ impl<'a> ValueEditor<'a> {
     /// final value is a tombstone (`Value::Deleted`).
     /// Returns `Error::Io` with `ErrorKind::InvalidData` if a non-map value is encountered
     /// during path traversal where a map was expected.
-    pub fn get(&self) -> Result<Value> {
-        self.kv_store.get_at_path(&self.keys)
+    pub async fn get(&self) -> Result<Value> {
+        self.kv_store.get_at_path(&self.keys).await
     }
 
     /// Sets a `Value` at the path specified by `self.keys` within the `DocStore`'s `Transaction`.
@@ -1372,24 +1382,24 @@ impl<'a> ValueEditor<'a> {
     /// be a `Value::Doc`.
     ///
     /// Returns `Error::InvalidOperation` if setting the root and `value` is not a node.
-    pub fn set(&self, value: Value) -> Result<()> {
-        self.kv_store.set_at_path(&self.keys, value)
+    pub async fn set(&self, value: Value) -> Result<()> {
+        self.kv_store.set_at_path(&self.keys, value).await
     }
 
     /// Returns a nested value by appending `key` to the current editor's path.
     ///
     /// This is a convenience method that uses `self.get()` to find the map at the current
     /// editor's path, and then retrieves `key` from that map.
-    pub fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
+    pub async fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         if self.keys.is_empty() {
             // If the base path is empty, trying to get a sub-key implies trying to get a top-level key.
-            return self.kv_store.get_at_path([key]);
+            return self.kv_store.get_at_path([key]).await;
         }
 
         let mut path_to_value = self.keys.clone();
         path_to_value.push(key.to_string());
-        self.kv_store.get_at_path(&path_to_value)
+        self.kv_store.get_at_path(&path_to_value).await
     }
 
     /// Constructs a new `ValueEditor` for a path one level deeper.
@@ -1404,8 +1414,8 @@ impl<'a> ValueEditor<'a> {
     /// Marks the value at the editor's current path as deleted.
     /// This is achieved by setting its value to `Value::Deleted`.
     /// The change is staged in the `Transaction` and needs to be committed.
-    pub fn delete_self(&self) -> Result<()> {
-        self.set(Value::Deleted)
+    pub async fn delete_self(&self) -> Result<()> {
+        self.set(Value::Deleted).await
     }
 
     /// Marks the value at the specified child `key` (relative to the editor's current path) as deleted.
@@ -1413,9 +1423,9 @@ impl<'a> ValueEditor<'a> {
     /// The change is staged in the `Transaction` and needs to be committed.
     ///
     /// If the editor points to the root (empty path), this will delete the top-level `key`.
-    pub fn delete_child(&self, key: impl Into<String>) -> Result<()> {
+    pub async fn delete_child(&self, key: impl Into<String>) -> Result<()> {
         let mut path_to_delete = self.keys.clone();
         path_to_delete.push(key.into());
-        self.kv_store.set_at_path(&path_to_delete, Value::Deleted)
+        self.kv_store.set_at_path(&path_to_delete, Value::Deleted).await
     }
 }

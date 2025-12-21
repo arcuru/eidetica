@@ -22,7 +22,7 @@ use crate::{Result, backend::errors::BackendError, entry::ID};
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs forming the path from root to target.
-pub(crate) fn build_path_from_root(
+pub(crate) async fn build_path_from_root(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -41,7 +41,7 @@ pub(crate) fn build_path_from_root(
         path.push(current.clone());
 
         // Get the entry
-        let entry = super::storage::get(backend, &current)?;
+        let entry = super::storage::get(backend, &current).await?;
 
         // Check if we've reached the tree root
         if current == *tree || entry.is_root() {
@@ -83,13 +83,13 @@ pub(crate) fn build_path_from_root(
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs from root to target.
-pub(crate) fn collect_root_to_target(
+pub(crate) async fn collect_root_to_target(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
     target_entry: &ID,
 ) -> Result<Vec<ID>> {
-    build_path_from_root(backend, tree, subtree, target_entry)
+    build_path_from_root(backend, tree, subtree, target_entry).await
 }
 
 /// Get all entry IDs on paths from a specific entry to multiple target entries
@@ -107,7 +107,7 @@ pub(crate) fn collect_root_to_target(
 /// # Returns
 /// A `Result` containing a vector of entry IDs on paths from `from_id` to any `to_ids`,
 /// sorted by height then ID for deterministic ordering.
-pub(crate) fn get_path_from_to(
+pub(crate) async fn get_path_from_to(
     backend: &InMemory,
     tree_id: &ID,
     subtree: &str,
@@ -148,7 +148,7 @@ pub(crate) fn get_path_from_to(
         processed.insert(current.clone());
 
         // Get parents in the subtree
-        let parents = get_sorted_store_parents(backend, tree_id, &current, subtree)?;
+        let parents = get_sorted_store_parents(backend, tree_id, &current, subtree).await?;
 
         // Add all parents to be processed
         for parent in parents {
@@ -163,7 +163,7 @@ pub(crate) fn get_path_from_to(
     result.dedup();
 
     if !result.is_empty() {
-        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree))?;
+        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree)).await?;
         result.sort_by(|a, b| {
             let a_height = *heights.get(a).unwrap_or(&0);
             let b_height = *heights.get(b).unwrap_or(&0);
@@ -187,13 +187,13 @@ pub(crate) fn get_path_from_to(
 ///
 /// # Returns
 /// A `Result` containing a vector of parent entry IDs, sorted by height then ID.
-pub(crate) fn get_sorted_store_parents(
+pub(crate) async fn get_sorted_store_parents(
     backend: &InMemory,
     tree_id: &ID,
     entry_id: &ID,
     subtree: &str,
 ) -> Result<Vec<ID>> {
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
     let entry = entries
         .get(entry_id)
         .ok_or_else(|| BackendError::EntryNotFound {
@@ -212,7 +212,7 @@ pub(crate) fn get_sorted_store_parents(
 
     // Sort parents by height (ascending), then by ID for determinism
     if !parents.is_empty() {
-        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree))?;
+        let heights = super::cache::calculate_heights(backend, tree_id, Some(subtree)).await?;
         parents.sort_by(|a, b| {
             let a_height = *heights.get(a).unwrap_or(&0);
             let b_height = *heights.get(b).unwrap_or(&0);
@@ -236,7 +236,7 @@ pub(crate) fn get_sorted_store_parents(
 ///
 /// # Returns
 /// A `Result` containing the ID of the lowest common ancestor, or an error if no LCA is found.
-pub(crate) fn find_lca(
+pub(crate) async fn find_lca(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -264,7 +264,7 @@ pub(crate) fn find_lca(
 
     // Verify that all entries exist and belong to the specified tree
     for entry_id in entry_ids {
-        match super::storage::get(backend, entry_id) {
+        match super::storage::get(backend, entry_id).await {
             Ok(entry) => {
                 // CRITICAL: Validate entry structure to fail fast on invalid data
                 //
@@ -369,7 +369,7 @@ pub(crate) fn find_lca(
                 }
 
                 // Add parents to queue
-                if let Ok(entry) = super::storage::get(backend, &current) {
+                if let Ok(entry) = super::storage::get(backend, &current).await {
                     // Get subtree parents for LCA calculations
                     match entry.subtree_parents(subtree) {
                         Ok(parents) => {
@@ -471,9 +471,9 @@ pub(crate) fn find_lca(
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the tree.
-pub(crate) fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
+pub(crate) async fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
     // Check if we have cached tree tips
-    let tips_cache = backend.tips.read().unwrap();
+    let tips_cache = backend.tips.read().await;
     if let Some(cache) = tips_cache.get(tree) {
         let cached_tips: Vec<ID> = cache.tree_tips.iter().cloned().collect();
         return Ok(cached_tips);
@@ -482,24 +482,27 @@ pub(crate) fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
 
     // Compute tips lazily
     let mut tips = Vec::new();
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
 
-    for (id, entry) in entries.iter() {
-        if entry.root() == tree && super::storage::is_tip(backend, tree, id) {
-            tips.push(id.clone());
-        } else if entry.is_root()
-            && entry.id() == *tree
-            && super::storage::is_tip(backend, tree, id)
-        {
-            // Handle the special case of the root entry
-            tips.push(id.clone());
-        }
-    }
+    // Collect entry info before async calls
+    let entry_info: Vec<_> = entries
+        .iter()
+        .filter(|(_, entry)| entry.root() == tree || (entry.is_root() && entry.id() == *tree))
+        .map(|(id, entry)| (id.clone(), entry.is_root(), entry.id()))
+        .collect();
     drop(entries);
+
+    for (id, is_root, entry_id) in entry_info {
+        let is_tip_result = super::storage::is_tip(backend, tree, &id).await;
+        if is_tip_result
+            && (!is_root || entry_id == *tree) {
+                tips.push(id);
+            }
+    }
 
     // Cache the result
     let tips_set: HashSet<ID> = tips.iter().cloned().collect();
-    let mut tips_cache = backend.tips.write().unwrap();
+    let mut tips_cache = backend.tips.write().await;
     let cache = tips_cache.entry(tree.clone()).or_default();
     cache.tree_tips = tips_set;
 
@@ -518,9 +521,9 @@ pub(crate) fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the subtree.
-pub(crate) fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+pub(crate) async fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
     // Check if we have cached subtree tips
-    let tips_cache = backend.tips.read().unwrap();
+    let tips_cache = backend.tips.read().await;
     if let Some(cache) = tips_cache.get(tree)
         && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
     {
@@ -529,12 +532,12 @@ pub(crate) fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Re
     drop(tips_cache);
 
     // Compute subtree tips lazily
-    let tree_tips = get_tips(backend, tree)?;
-    let subtree_tips = get_store_tips_up_to_entries(backend, tree, subtree, &tree_tips)?;
+    let tree_tips = get_tips(backend, tree).await?;
+    let subtree_tips = get_store_tips_up_to_entries(backend, tree, subtree, &tree_tips).await?;
 
     // Cache the result
     let tips_set: HashSet<ID> = subtree_tips.iter().cloned().collect();
-    let mut tips_cache = backend.tips.write().unwrap();
+    let mut tips_cache = backend.tips.write().await;
     let cache = tips_cache.entry(tree.clone()).or_default();
     cache.subtree_tips.insert(subtree.to_string(), tips_set);
 
@@ -554,7 +557,7 @@ pub(crate) fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Re
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are subtree tips within the scope.
-pub(crate) fn get_store_tips_up_to_entries(
+pub(crate) async fn get_store_tips_up_to_entries(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -566,17 +569,23 @@ pub(crate) fn get_store_tips_up_to_entries(
 
     // Special case: if main_entries represents current tree tips (i.e., we want all subtree tips),
     // use the original algorithm that checks all entries
-    let current_tree_tips = get_tips(backend, tree)?;
+    let current_tree_tips = get_tips(backend, tree).await?;
     if main_entries == current_tree_tips {
         // Use original algorithm for current tips case
         let mut tips = Vec::new();
-        let entries = backend.entries.read().unwrap();
-        for (id, entry) in entries.iter() {
-            if entry.in_tree(tree)
-                && entry.in_subtree(subtree)
-                && super::storage::is_subtree_tip(backend, tree, subtree, id)
-            {
-                tips.push(id.clone());
+        let entries = backend.entries.read().await;
+
+        // Collect entry info before async calls
+        let entry_info: Vec<_> = entries
+            .iter()
+            .filter(|(_, entry)| entry.in_tree(tree) && entry.in_subtree(subtree))
+            .map(|(id, _)| id.clone())
+            .collect();
+        drop(entries);
+
+        for id in entry_info {
+            if super::storage::is_subtree_tip(backend, tree, subtree, &id).await {
+                tips.push(id);
             }
         }
         return Ok(tips);
@@ -584,7 +593,7 @@ pub(crate) fn get_store_tips_up_to_entries(
 
     // For custom tips: Get all tree entries reachable from the main entries,
     // then filter to those that are in the specified subtree
-    let all_tree_entries = super::storage::get_tree_from_tips(backend, tree, main_entries)?;
+    let all_tree_entries = super::storage::get_tree_from_tips(backend, tree, main_entries).await?;
     let subtree_entries: Vec<_> = all_tree_entries
         .into_iter()
         .filter(|entry| entry.in_subtree(subtree))

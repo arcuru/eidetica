@@ -54,8 +54,8 @@ async fn main() -> Result<()> {
 
     // Initialize Eidetica with sync enabled
     let backend = InMemory::new();
-    let instance = Instance::create(Box::new(backend))?;
-    instance.enable_sync()?;
+    let instance = Instance::create(Box::new(backend)).await?;
+    instance.enable_sync().await?;
 
     // Get username from args, environment, or use default
     let username = args
@@ -64,10 +64,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "Anonymous".to_string());
 
     // Create a passwordless user (ignore error if user already exists)
-    let _ = instance.create_user(&username, None);
+    let _ = instance.create_user(&username, None).await;
 
     // Login the user to get a User session
-    let user = instance.login_user(&username, None)?;
+    let user = instance.login_user(&username, None).await?;
 
     // Validate and parse transport
     let transport = match args.transport.to_lowercase().as_str() {
@@ -166,7 +166,7 @@ async fn run_app<B: ratatui::backend::Backend>(
             if let Ok(Event::Key(key)) = event::read() {
                 handled_event = true;
                 if key.kind == KeyEventKind::Press {
-                    handle_key_event(app, key.code, key.modifiers);
+                    handle_key_event(app, key.code, key.modifiers).await;
                 }
             }
         }
@@ -176,7 +176,7 @@ async fn run_app<B: ratatui::backend::Backend>(
             tokio::select! {
                 _ = refresh_interval.tick() => {
                     // Periodically refresh messages from database
-                    if let Err(e) = app.refresh_messages() {
+                    if let Err(e) = app.refresh_messages().await {
                         eprintln!("Error refreshing messages: {e}");
                     }
                 }

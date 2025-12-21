@@ -35,7 +35,7 @@ use crate::{
 ///
 /// # Returns
 /// The _instance Database
-pub fn create_instance_database(
+pub async fn create_instance_database(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
@@ -60,7 +60,8 @@ pub fn create_instance_database(
         instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
-    )?;
+    )
+    .await?;
 
     Ok(database)
 }
@@ -77,7 +78,7 @@ pub fn create_instance_database(
 ///
 /// # Returns
 /// The created _users Database
-pub fn create_users_database(
+pub async fn create_users_database(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
@@ -103,7 +104,8 @@ pub fn create_users_database(
         instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
-    )?;
+    )
+    .await?;
 
     Ok(database)
 }
@@ -121,7 +123,7 @@ pub fn create_users_database(
 ///
 /// # Returns
 /// The created _databases Database
-pub fn create_databases_tracking(
+pub async fn create_databases_tracking(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
@@ -147,7 +149,8 @@ pub fn create_databases_tracking(
         instance,
         device_signing_key.clone(),
         "_device_key".to_string(),
-    )?;
+    )
+    .await?;
 
     Ok(database)
 }
@@ -168,7 +171,7 @@ pub fn create_databases_tracking(
 ///
 /// # Returns
 /// A tuple of (user_uuid, UserInfo) where user_uuid is the generated primary key
-pub fn create_user(
+pub async fn create_user(
     users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
@@ -183,8 +186,8 @@ pub fn create_user(
     // For now, duplicate detection happens at login time.
 
     // Check if username already exists
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users")?;
-    let existing = users_table.search(|u| u.username == username)?;
+    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+    let existing = users_table.search(|u| u.username == username).await?;
     if !existing.is_empty() {
         return Err(UserError::UsernameAlreadyExists {
             username: username.to_string(),
@@ -214,7 +217,8 @@ pub fn create_user(
     // Get device key for auth settings and database creation
     let device_private_key = instance
         .backend()
-        .get_private_key("_device_key")?
+        .get_private_key("_device_key")
+        .await?
         .ok_or_else(|| UserError::KeyNotFound {
             key_id: "_device_key".to_string(),
         })?;
@@ -242,7 +246,8 @@ pub fn create_user(
         instance,
         device_private_key,
         "_device_key".to_string(),
-    )?;
+    )
+    .await?;
     let user_database_id = user_database.root_id().clone();
 
     // 4. Store user's private key (encrypted or unencrypted based on password)
@@ -278,10 +283,10 @@ pub fn create_user(
         }
     };
 
-    let tx = user_database.new_transaction()?;
-    let keys_table = tx.get_store::<Table<UserKey>>("keys")?;
-    keys_table.insert(user_key)?;
-    tx.commit()?;
+    let tx = user_database.new_transaction().await?;
+    let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+    keys_table.insert(user_key).await?;
+    tx.commit().await?;
 
     // 5. Create UserInfo
     let user_info = UserInfo {
@@ -294,10 +299,10 @@ pub fn create_user(
     };
 
     // 6. Store UserInfo in _users database with auto-generated UUID
-    let tx = users_db.new_transaction()?;
-    let users_table = tx.get_store::<Table<UserInfo>>("users")?;
-    let user_uuid = users_table.insert(user_info.clone())?; // Generate UUID primary key
-    tx.commit()?;
+    let tx = users_db.new_transaction().await?;
+    let users_table = tx.get_store::<Table<UserInfo>>("users").await?;
+    let user_uuid = users_table.insert(user_info.clone()).await?; // Generate UUID primary key
+    tx.commit().await?;
 
     Ok((user_uuid, user_info))
 }
@@ -320,7 +325,7 @@ pub fn create_user(
 ///
 /// # Returns
 /// A User session object with keys loaded
-pub fn login_user(
+pub async fn login_user(
     users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
@@ -329,8 +334,8 @@ pub fn login_user(
     let username = username.as_ref();
 
     // 1. Search for user by username
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users")?;
-    let results = users_table.search(|u| u.username == username)?;
+    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+    let results = users_table.search(|u| u.username == username).await?;
 
     // Check for duplicate users (race condition detection)
     let (user_uuid, user_info) = match results.len() {
@@ -389,9 +394,10 @@ pub fn login_user(
     let temp_user_database = Database::open_readonly(user_info.user_database_id.clone(), instance)?;
 
     // 4. Load keys from user database
-    let keys_table = temp_user_database.get_store_viewer::<Table<UserKey>>("keys")?;
+    let keys_table = temp_user_database.get_store_viewer::<Table<UserKey>>("keys").await?;
     let keys: Vec<UserKey> = keys_table
-        .search(|_| true)? // Get all keys
+        .search(|_| true)
+        .await? // Get all keys
         .into_iter()
         .map(|(_, key)| key)
         .collect();
@@ -434,10 +440,10 @@ pub fn login_user(
 
     // 7. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
-    let tx = users_db.new_transaction()?;
-    let last_login_table = tx.get_store::<Table<i64>>("last_login")?;
-    last_login_table.set(&user_uuid, current_timestamp()?)?;
-    tx.commit()?;
+    let tx = users_db.new_transaction().await?;
+    let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
+    last_login_table.set(&user_uuid, current_timestamp()?).await?;
+    tx.commit().await?;
 
     // 8. Create User session
     Ok(User::new(
@@ -456,10 +462,11 @@ pub fn login_user(
 ///
 /// # Returns
 /// Vector of usernames
-pub fn list_users(users_db: &Database) -> Result<Vec<String>> {
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users")?;
+pub async fn list_users(users_db: &Database) -> Result<Vec<String>> {
+    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
     let users: Vec<UserInfo> = users_table
-        .search(|_| true)? // Get all users
+        .search(|_| true)
+        .await? // Get all users
         .into_iter()
         .map(|(_, user)| user)
         .collect();

@@ -107,8 +107,17 @@ impl Registry {
     ///
     /// # Returns
     /// A Result containing the Registry or an error if creation fails
-    pub(crate) fn new(transaction: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
-        let inner = transaction.get_store::<DocStore>(subtree_name)?;
+    pub(crate) async fn new(
+        transaction: &Transaction,
+        subtree_name: impl Into<String>,
+    ) -> Result<Self> {
+        let name = subtree_name.into();
+        // Initialize subtree parents before creating the store
+        // This mirrors what get_store() does but avoids the recursive
+        // get_store -> get_index -> Registry::new -> get_store cycle
+        transaction.init_subtree_parents(&name).await?;
+        // Create DocStore directly instead of going through get_store
+        let inner = DocStore::new(transaction, name).await?;
         Ok(Self { inner })
     }
 
@@ -119,9 +128,9 @@ impl Registry {
     ///
     /// # Returns
     /// The entry metadata if found, or an error if not registered
-    pub fn get_entry(&self, name: impl AsRef<str>) -> Result<RegistryEntry> {
+    pub async fn get_entry(&self, name: impl AsRef<str>) -> Result<RegistryEntry> {
         let name = name.as_ref();
-        let value = self.inner.get(name)?;
+        let value = self.inner.get(name).await?;
 
         // The value should be a Doc (nested map) with "type" and "config" keys
         let doc = value
@@ -159,8 +168,8 @@ impl Registry {
     ///
     /// # Returns
     /// true if the entry is registered, false otherwise
-    pub fn contains(&self, name: impl AsRef<str>) -> bool {
-        self.get_entry(name).is_ok()
+    pub async fn contains(&self, name: impl AsRef<str>) -> bool {
+        self.get_entry(name).await.is_ok()
     }
 
     /// Register or update an entry
@@ -172,7 +181,7 @@ impl Registry {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub fn set_entry(
+    pub async fn set_entry(
         &self,
         name: impl AsRef<str>,
         type_id: impl Into<String>,
@@ -188,7 +197,7 @@ impl Registry {
         metadata_doc.set("config", doc::Value::Text(config));
 
         // Set the metadata in the registry subtree
-        self.inner.set(name, doc::Value::Doc(metadata_doc))?;
+        self.inner.set(name, doc::Value::Doc(metadata_doc)).await?;
 
         Ok(())
     }
@@ -197,8 +206,12 @@ impl Registry {
     ///
     /// # Returns
     /// A vector of entry names that are registered
-    pub fn list(&self) -> Result<Vec<String>> {
-        let full_state: Doc = self.inner.transaction().get_full_state(self.inner.name())?;
+    pub async fn list(&self) -> Result<Vec<String>> {
+        let full_state: Doc = self
+            .inner
+            .transaction()
+            .get_full_state(self.inner.name())
+            .await?;
 
         // Get all top-level keys from the Doc and clone them to owned Strings
         let keys: Vec<String> = full_state.keys().cloned().collect();

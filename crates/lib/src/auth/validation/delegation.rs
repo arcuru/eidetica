@@ -31,7 +31,7 @@ impl DelegationResolver {
     ///
     /// This iteratively processes each step in the delegation path,
     /// applying permission clamping at each level.
-    pub fn resolve_delegation_path_with_depth(
+    pub async fn resolve_delegation_path_with_depth(
         &mut self,
         steps: &[DelegationStep],
         auth_settings: &AuthSettings,
@@ -94,7 +94,7 @@ impl DelegationResolver {
                     })?;
 
                 // Validate tips
-                let current_tips = current_backend.get_tips(&root_id).map_err(|e| {
+                let current_tips = current_backend.get_tips(&root_id).await.map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!(
                             "Failed to get current tips for delegated tree '{root_id}': {e}"
@@ -103,7 +103,7 @@ impl DelegationResolver {
                 })?;
 
                 let tips_valid =
-                    self.validate_tip_ancestry(tips, &current_tips, &current_backend)?;
+                    self.validate_tip_ancestry(tips, &current_tips, &current_backend).await?;
                 if !tips_valid {
                     return Err(AuthError::InvalidDelegationTips {
                         tree_id: root_id.to_string(),
@@ -113,12 +113,12 @@ impl DelegationResolver {
                 }
 
                 // Get delegated tree's auth settings
-                let delegated_settings = delegated_tree.get_settings().map_err(|e| {
+                let delegated_settings = delegated_tree.get_settings().await.map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!("Failed to get delegated tree settings: {e}"),
                     }
                 })?;
-                current_auth_settings = delegated_settings.get_auth_settings().map_err(|e| {
+                current_auth_settings = delegated_settings.get_auth_settings().await.map_err(|e| {
                     AuthError::InvalidAuthConfiguration {
                         reason: format!("Failed to get delegated tree auth settings: {e}"),
                     }
@@ -168,7 +168,7 @@ impl DelegationResolver {
     /// * `claimed_tips` - Tips claimed by the entry being validated
     /// * `current_tips` - Current tips from the backend
     /// * `backend` - Backend to use for DAG traversal
-    fn validate_tip_ancestry(
+    async fn validate_tip_ancestry(
         &self,
         claimed_tips: &[ID],
         current_tips: &[ID],
@@ -210,7 +210,7 @@ impl DelegationResolver {
                 // DAG traversal methods.
 
                 // Try to get the entry to verify it exists in the tree
-                if backend.get(claimed_tip).is_ok() {
+                if backend.get(claimed_tip).await.is_ok() {
                     is_valid = true;
                 }
             }

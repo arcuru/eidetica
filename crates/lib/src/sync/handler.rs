@@ -36,7 +36,7 @@ use crate::{
 /// Implementations of this trait can process sync requests and generate
 /// appropriate responses, with full access to the database backend for
 /// storing and retrieving entries.
-#[async_trait]
+#[async_trait(?Send)]
 pub trait SyncHandler: Send + std::marker::Sync {
     /// Handle a sync request and generate an appropriate response.
     ///
@@ -83,12 +83,13 @@ impl SyncHandlerImpl {
     ///
     /// # Returns
     /// A Database instance for the sync tree with device key authentication.
-    fn get_sync_tree(&self) -> Result<Database> {
+    async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance
             .backend()
-            .get_private_key(DEVICE_KEY_NAME)?
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
             .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
@@ -118,8 +119,8 @@ impl SyncHandlerImpl {
         requesting_key_name: &str,
         requested_permission: &crate::auth::Permission,
     ) -> crate::Result<String> {
-        let sync_tree = self.get_sync_tree()?;
-        let op = sync_tree.new_transaction()?;
+        let sync_tree = self.get_sync_tree().await?;
+        let op = sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&op);
 
         let request = BootstrapRequest {
@@ -137,14 +138,14 @@ impl SyncHandlerImpl {
             },
         };
 
-        let request_id = manager.store_request(request)?;
-        op.commit()?;
+        let request_id = manager.store_request(request).await?;
+        op.commit().await?;
 
         Ok(request_id)
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl SyncHandler for SyncHandlerImpl {
     async fn handle_request(
         &self,
@@ -174,7 +175,7 @@ impl SyncHandler for SyncHandlerImpl {
                 // Store entries in the backend as unverified (from sync)
                 let mut stored_count = 0usize;
                 for entry in entries {
-                    match instance.backend().put_unverified(entry.clone()) {
+                    match instance.backend().put_unverified(entry.clone()).await {
                         Ok(_) => {
                             stored_count += 1;
                             trace!(entry_id = %entry.id(), "Stored entry successfully");
@@ -221,9 +222,9 @@ impl SyncHandlerImpl {
         requesting_pubkey: &str,
     ) -> Result<Option<Permission>> {
         let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
-        let transaction = database.new_transaction()?;
+        let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
-        let auth_settings = settings_store.get_auth_settings()?;
+        let auth_settings = settings_store.get_auth_settings().await?;
 
         let results = auth_settings.find_all_sigkeys_for_pubkey(requesting_pubkey);
 
@@ -259,7 +260,8 @@ impl SyncHandlerImpl {
         let instance = self.instance()?;
         let signing_key = instance
             .backend()
-            .get_private_key(DEVICE_KEY_NAME)?
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
             .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
@@ -270,10 +272,10 @@ impl SyncHandlerImpl {
             signing_key,
             DEVICE_KEY_NAME.to_string(),
         )?;
-        let transaction = database.new_transaction()?;
+        let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
 
-        let auth_settings = settings_store.get_auth_settings()?;
+        let auth_settings = settings_store.get_auth_settings().await?;
 
         // Use the AuthSettings.can_access() method to check permissions
         if auth_settings.can_access(requesting_pubkey, requested_permission) {
@@ -305,10 +307,10 @@ impl SyncHandlerImpl {
     /// - `Err` if the check fails
     async fn check_if_database_has_auth(&self, tree_id: &ID) -> Result<bool> {
         let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
-        let transaction = database.new_transaction()?;
+        let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
 
-        let auth_settings = settings_store.get_auth_settings()?;
+        let auth_settings = settings_store.get_auth_settings().await?;
 
         // Check if auth settings is completely empty (no auth configured)
         if auth_settings.as_doc().is_empty() {
@@ -363,7 +365,7 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME) {
+        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME).await {
             Ok(Some(key)) => key,
             _ => return false, // Fail closed
         };
@@ -378,14 +380,14 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let transaction = match sync_database.new_transaction() {
+        let transaction = match sync_database.new_transaction().await {
             Ok(tx) => tx,
             Err(_) => return false, // Fail closed
         };
 
         // Use UserSyncManager to get combined settings
         let user_mgr = UserSyncManager::new(&transaction);
-        match user_mgr.get_combined_settings(tree_id) {
+        match user_mgr.get_combined_settings(tree_id).await {
             Ok(Some(settings)) => settings.sync_enabled,
             _ => false, // Fail closed: no settings or error
         }
@@ -404,19 +406,19 @@ impl SyncHandlerImpl {
     ///
     /// # Returns
     /// Result indicating success or failure of registration
-    fn register_incoming_peer(
+    async fn register_incoming_peer(
         &self,
         peer_pubkey: &str,
         display_name: Option<&str>,
         advertised_addresses: &[Address],
         remote_address: &Option<Address>,
     ) -> Result<()> {
-        let sync_tree = self.get_sync_tree()?;
-        let op = sync_tree.new_transaction()?;
+        let sync_tree = self.get_sync_tree().await?;
+        let op = sync_tree.new_transaction().await?;
         let peer_manager = PeerManager::new(&op);
 
         // Try to register the peer (ignore if already exists)
-        match peer_manager.register_peer(peer_pubkey, display_name) {
+        match peer_manager.register_peer(peer_pubkey, display_name).await {
             Ok(()) => {
                 info!(peer_pubkey = %peer_pubkey, "Registered new incoming peer");
             }
@@ -428,19 +430,18 @@ impl SyncHandlerImpl {
 
         // Add all advertised addresses
         for addr in advertised_addresses {
-            if let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()) {
+            if let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()).await {
                 warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add advertised address");
             }
         }
 
         // Add the remote address from transport if available
         if let Some(addr) = remote_address
-            && let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone())
-        {
-            warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
-        }
+            && let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()).await {
+                warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
+            }
 
-        op.commit()?;
+        op.commit().await?;
         Ok(())
     }
 
@@ -456,14 +457,14 @@ impl SyncHandlerImpl {
     ///
     /// # Returns
     /// Result indicating success or failure
-    fn track_tree_sync_relationship(&self, tree_id: &ID, peer_pubkey: &str) -> Result<()> {
-        let sync_tree = self.get_sync_tree()?;
-        let op = sync_tree.new_transaction()?;
+    async fn track_tree_sync_relationship(&self, tree_id: &ID, peer_pubkey: &str) -> Result<()> {
+        let sync_tree = self.get_sync_tree().await?;
+        let op = sync_tree.new_transaction().await?;
         let peer_manager = PeerManager::new(&op);
 
         // Add the tree sync relationship
-        peer_manager.add_tree_sync(peer_pubkey, tree_id)?;
-        op.commit()?;
+        peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
+        op.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
         Ok(())
@@ -505,7 +506,7 @@ impl SyncHandlerImpl {
                     return SyncResponse::Error(format!("Failed to get instance: {e}"));
                 }
             };
-            let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME) {
+            let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME).await {
                 Ok(Some(key)) => {
                     debug!(device_key_name = %DEVICE_KEY_NAME, "Retrieved device signing key");
                     key
@@ -535,7 +536,7 @@ impl SyncHandlerImpl {
             let available_trees = self.get_available_trees().await;
 
             // Register the peer and add their addresses to our peer list
-            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address) {
+            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
                 Ok(()) => {
                     debug!(peer_pubkey = %request.public_key, "Successfully registered incoming peer");
                 }
@@ -594,7 +595,7 @@ impl SyncHandlerImpl {
             // IMPORTANT: Only use context.peer_pubkey (device key from handshake)
             // Do NOT use request.requesting_key (that's an auth key for database access)
             if let Some(peer_pubkey) = &context.peer_pubkey {
-                if let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey) {
+                if let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey).await {
                     // Log the error but don't fail the sync - relationship tracking is best-effort
                     warn!(tree_id = %request.tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
                 }
@@ -689,7 +690,7 @@ impl SyncHandlerImpl {
             Ok(i) => i,
             Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
         };
-        let _root_entry = match instance.backend().get(tree_id) {
+        let _root_entry = match instance.backend().get(tree_id).await {
             Ok(entry) => entry,
             Err(e) if e.is_not_found() => {
                 warn!(tree_id = %tree_id, "Tree not found for bootstrap");
@@ -861,7 +862,7 @@ impl SyncHandlerImpl {
             Ok(i) => i,
             Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
         };
-        let root_entry = match instance.backend().get(tree_id) {
+        let root_entry = match instance.backend().get(tree_id).await {
             Ok(entry) => entry,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get root entry");
@@ -912,7 +913,7 @@ impl SyncHandlerImpl {
             Ok(i) => i,
             Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
         };
-        let our_tips = match instance.backend().get_tips(tree_id) {
+        let our_tips = match instance.backend().get_tips(tree_id).await {
             Ok(tips) => tips,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get our tips");
@@ -921,7 +922,7 @@ impl SyncHandlerImpl {
         };
 
         // Find entries peer is missing
-        let missing_entries = match self.find_missing_entries_for_peer(&our_tips, peer_tips) {
+        let missing_entries = match self.find_missing_entries_for_peer(&our_tips, peer_tips).await {
             Ok(entries) => entries,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to find missing entries");
@@ -954,12 +955,12 @@ impl SyncHandlerImpl {
                 return Vec::new();
             }
         };
-        match instance.backend().all_roots() {
+        match instance.backend().all_roots().await {
             Ok(roots) => {
                 let mut tree_infos = Vec::new();
                 for root_id in roots {
                     // Get basic tree info
-                    if let Ok(entry_count) = self.count_tree_entries(&root_id) {
+                    if let Ok(entry_count) = self.count_tree_entries(&root_id).await {
                         tree_infos.push(TreeInfo {
                             tree_id: root_id,
                             name: None, // Could extract from tree metadata in the future
@@ -988,7 +989,7 @@ impl SyncHandlerImpl {
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.instance()?.backend().get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id).await?;
         to_visit.extend(tips);
 
         // Traverse the DAG depth-first
@@ -998,7 +999,7 @@ impl SyncHandlerImpl {
             }
             visited.insert(entry_id.clone());
 
-            match self.instance()?.backend().get(&entry_id) {
+            match self.instance()?.backend().get(&entry_id).await {
                 Ok(entry) => {
                     // Add parents to visit list
                     if let Ok(parent_ids) = entry.parents() {
@@ -1033,7 +1034,7 @@ impl SyncHandlerImpl {
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.instance()?.backend().get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id).await?;
         to_visit.extend(tips);
 
         // Traverse the DAG depth-first, INCLUDING the root
@@ -1043,7 +1044,7 @@ impl SyncHandlerImpl {
             }
             visited.insert(entry_id.clone());
 
-            match self.instance()?.backend().get(&entry_id) {
+            match self.instance()?.backend().get(&entry_id).await {
                 Ok(entry) => {
                     // Add parents to visit list
                     if let Ok(parent_ids) = entry.parents() {
@@ -1074,7 +1075,7 @@ impl SyncHandlerImpl {
     }
 
     /// Find entries that peer is missing
-    fn find_missing_entries_for_peer(
+    async fn find_missing_entries_for_peer(
         &self,
         our_tips: &[crate::entry::ID],
         peer_tips: &[crate::entry::ID],
@@ -1095,17 +1096,17 @@ impl SyncHandlerImpl {
             self.instance()?.backend().as_backend_impl(),
             &missing_tip_ids,
             peer_tips,
-        )
+        ).await
     }
 
     /// Count entries in a tree
-    fn count_tree_entries(&self, tree_id: &crate::entry::ID) -> crate::Result<usize> {
+    async fn count_tree_entries(&self, tree_id: &crate::entry::ID) -> crate::Result<usize> {
         let mut count = 1; // Include root
         let mut visited = std::collections::HashSet::new();
         let mut to_visit = std::collections::VecDeque::new();
 
         // Get tips to start traversal
-        let tips = self.instance()?.backend().get_tips(tree_id)?;
+        let tips = self.instance()?.backend().get_tips(tree_id).await?;
         to_visit.extend(tips);
 
         // Count all entries
@@ -1116,7 +1117,7 @@ impl SyncHandlerImpl {
             visited.insert(entry_id.clone());
             count += 1;
 
-            if let Ok(entry) = self.instance()?.backend().get(&entry_id)
+            if let Ok(entry) = self.instance()?.backend().get(&entry_id).await
                 && let Ok(parent_ids) = entry.parents()
             {
                 for parent_id in parent_ids {

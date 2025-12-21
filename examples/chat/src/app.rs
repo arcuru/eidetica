@@ -12,6 +12,7 @@ pub struct App {
     // Current room state
     pub current_room: Option<Database>,
     pub current_room_address: Option<String>,
+    pub current_room_name: Option<String>,
 
     // Chat state
     pub input: String,
@@ -39,6 +40,7 @@ impl App {
             instance,
             current_room: None,
             current_room_address: None,
+            current_room_name: None,
             input: String::new(),
             messages: Vec::new(),
             scroll_state: ScrollbarState::default(),
@@ -61,15 +63,15 @@ impl App {
         let key_id = self.user.get_default_key()?;
 
         // User API automatically configures auth with the creating key as admin
-        let database = self.user.create_database(settings, &key_id)?;
+        let database = self.user.create_database(settings, &key_id).await?;
 
         // Add global "*" permission so anyone with the room ID can write
-        let tx = database.new_transaction()?;
+        let tx = database.new_transaction().await?;
         let settings_store = tx.get_settings()?;
         let global_key =
             eidetica::auth::AuthKey::active("*", eidetica::auth::Permission::Write(10))?;
-        settings_store.set_auth_key("*", global_key)?;
-        tx.commit()?;
+        settings_store.set_auth_key("*", global_key).await?;
+        tx.commit().await?;
 
         // Enable sync for this database with periodic sync every 2 seconds
         let database_id = database.root_id().clone();
@@ -83,7 +85,7 @@ impl App {
                     interval_seconds: Some(2), // Sync every 2 seconds
                     properties: std::collections::HashMap::new(),
                 },
-            })?;
+            }).await?;
 
         // Open the new room
         self.enter_room(database).await?;
@@ -113,9 +115,13 @@ impl App {
             room_id.clone()
         };
 
+        // Cache the room name for the UI (since get_name is async)
+        let room_name = database.get_name().await.ok();
+
         self.current_room = Some(database);
         self.current_room_address = Some(room_address);
-        self.load_messages()?;
+        self.current_room_name = room_name;
+        self.load_messages().await?;
 
         Ok(())
     }
@@ -167,14 +173,14 @@ impl App {
 
         // Check if room already exists locally
         let room_id_obj = eidetica::entry::ID::from(room_id);
-        if let Ok(_database) = self.user.open_database(&room_id_obj) {
+        if let Ok(_database) = self.user.open_database(&room_id_obj).await {
             debug!("Room already exists locally");
         } else {
             debug!("Room does not exist locally, will bootstrap from remote");
         }
 
         // Check if this is a bootstrap scenario (we don't have the room locally)
-        let is_bootstrap = match self.user.backend().get(&room_id_obj) {
+        let is_bootstrap = match self.user.backend().get(&room_id_obj).await {
             Ok(_) => false,                     // Room exists locally
             Err(e) if e.is_not_found() => true, // Room doesn't exist, need bootstrap
             Err(e) => return Err(e),            // Other error
@@ -189,46 +195,19 @@ impl App {
             }
         );
 
-        // Get our key ID for bootstrap
-        let key_id_for_debug = if is_bootstrap {
-            self.user.get_default_key().ok()
-        } else {
-            None
-        };
-
-        // Use simplified sync API
         let connection_success = if let Some(sync) = self.instance.sync() {
-            // Enable the same transport that the server is using
-            match self.transport.as_str() {
-                "http" => {
-                    debug!(" Enabling HTTP transport...");
-                    sync.enable_http_transport().await?;
-                    info!(" HTTP transport enabled");
-                }
-                "iroh" => {
-                    debug!(" Enabling Iroh transport...");
-                    sync.enable_iroh_transport().await?;
-                    info!(" Iroh transport enabled");
-                }
-                _ => {
-                    return Err(eidetica::Error::Sync(eidetica::sync::SyncError::Network(
-                        format!("Unknown transport: {}", self.transport),
-                    )));
-                }
-            }
-
+            let key_id = self.user.get_default_key()?;
             let sync_result = if is_bootstrap {
-                // Use authenticated bootstrap for new rooms with User API
-                debug!(" Starting authenticated bootstrap...");
-                if let Some(key_id) = &key_id_for_debug {
-                    debug!(" Requesting access for key: {}", key_id);
-                }
+                // Bootstrap sync - authenticate and sync a room we don't have locally
+                info!(
+                    " Starting authenticated bootstrap sync (we don't have this room yet)..."
+                );
 
-                // Use the User's request_database_access method
-                let key_id = self.user.get_default_key()?;
-                println!("DEBUG: Calling request_database_access for room {room_id}");
-                println!("DEBUG: Using key_id: {key_id}");
+                println!(
+                    "DEBUG: Starting bootstrap sync with server_addr={server_addr}, room_id={room_id}"
+                );
 
+                // For bootstrap sync, use the User API which handles key management internally
                 let result = self
                     .user
                     .request_database_access(
@@ -236,7 +215,7 @@ impl App {
                         server_addr,
                         &room_id_obj,
                         &key_id,
-                        eidetica::auth::Permission::Write(10),
+                        eidetica::auth::types::Permission::Write(5),
                     )
                     .await;
 
@@ -247,7 +226,7 @@ impl App {
                         println!("DEBUG: ✓ Bootstrap sync call returned Ok");
                         info!(" Bootstrap sync completed successfully");
                         // Check if the database root actually exists in backend
-                        match self.instance.backend().get(&room_id_obj) {
+                        match self.instance.backend().get(&room_id_obj).await {
                             Ok(entry) => {
                                 println!("DEBUG: ✓ Root entry FOUND in backend: {}", entry.id());
                                 info!(" ✓ Root entry confirmed in backend");
@@ -274,7 +253,7 @@ impl App {
                                     interval_seconds: Some(2), // Sync every 2 seconds
                                     properties: std::collections::HashMap::new(),
                                 },
-                            }) {
+                            }).await {
                             Ok(_) => {
                                 println!("DEBUG: ✓ Database registered with User");
                                 info!(" ✓ Database registered with User's key manager");
@@ -317,14 +296,14 @@ impl App {
             debug!(" Attempting to load synced room...");
             println!("DEBUG: Attempting to load database {room_id_obj}");
 
-            match self.user.open_database(&room_id_obj) {
+            match self.user.open_database(&room_id_obj).await {
                 Ok(database) => {
                     println!("DEBUG: ✓ Successfully loaded database!");
                     info!(" Successfully loaded synced room!");
 
                     self.current_room = Some(database);
                     self.current_room_address = Some(room_address.to_string());
-                    self.load_messages()?;
+                    self.load_messages().await?;
                     return Ok(());
                 }
                 Err(e) => {
@@ -338,12 +317,12 @@ impl App {
             let mut settings = Doc::new();
             settings.set("name", format!("Room {room_id} (Syncing...)"));
             let key_id = self.user.get_default_key()?;
-            let database = self.user.create_database(settings, &key_id)?;
+            let database = self.user.create_database(settings, &key_id).await?;
             info!(" Created placeholder room");
 
             self.current_room = Some(database);
             self.current_room_address = Some(room_address.to_string());
-            self.load_messages()?;
+            self.load_messages().await?;
         }
 
         Ok(())
@@ -354,12 +333,12 @@ impl App {
         self.connect_to_room_debug(room_address).await
     }
 
-    pub fn load_messages(&mut self) -> Result<()> {
+    pub async fn load_messages(&mut self) -> Result<()> {
         if let Some(database) = &self.current_room {
-            let op = database.new_transaction()?;
-            let store = op.get_store::<Table<ChatMessage>>("messages")?;
+            let op = database.new_transaction().await?;
+            let store = op.get_store::<Table<ChatMessage>>("messages").await?;
 
-            let entries = store.search(|_| true)?;
+            let entries = store.search(|_| true).await?;
             let mut messages = Vec::new();
 
             for (_, msg) in entries {
@@ -376,7 +355,7 @@ impl App {
         Ok(())
     }
 
-    pub fn send_message(&mut self) -> Result<()> {
+    pub async fn send_message(&mut self) -> Result<()> {
         if self.input.trim().is_empty() || self.current_room.is_none() {
             return Ok(());
         }
@@ -385,10 +364,10 @@ impl App {
 
         if let Some(database) = &self.current_room {
             // Database from User API has auth configured automatically
-            let op = database.new_transaction()?;
-            let store = op.get_store::<Table<ChatMessage>>("messages")?;
-            store.insert(message.clone())?;
-            op.commit()?;
+            let op = database.new_transaction().await?;
+            let store = op.get_store::<Table<ChatMessage>>("messages").await?;
+            store.insert(message.clone()).await?;
+            op.commit().await?;
             // Note: commit() triggers sync callbacks which queue entries in background
 
             self.messages.push(message);
@@ -418,11 +397,11 @@ impl App {
         }
     }
 
-    pub fn refresh_messages(&mut self) -> Result<()> {
+    pub async fn refresh_messages(&mut self) -> Result<()> {
         // Reload messages from database (picks up any new synced messages)
         // The library handles all syncing automatically based on interval_seconds
         let current_count = self.messages.len();
-        self.load_messages()?;
+        self.load_messages().await?;
 
         // If we have new messages, update scroll to show them
         if self.messages.len() > current_count {

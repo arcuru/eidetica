@@ -173,7 +173,7 @@ impl AuthSettings {
     ///
     /// This is entry-time validation using current settings state only.
     /// No complex merge-time validation is performed.
-    pub fn validate_entry_auth(
+    pub async fn validate_entry_auth(
         &self,
         sig_key: &SigKey,
         instance: Option<&crate::Instance>,
@@ -198,7 +198,9 @@ impl AuthSettings {
 
                 // Use AuthValidator to resolve the delegation path
                 let mut validator = AuthValidator::new();
-                validator.resolve_sig_key(sig_key, self, Some(instance))
+                validator
+                    .resolve_sig_key(sig_key, self, Some(instance))
+                    .await
             }
         }
     }

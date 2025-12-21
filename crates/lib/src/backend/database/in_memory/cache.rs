@@ -12,6 +12,9 @@ use crate::{
     entry::{Entry, ID},
 };
 
+// Note: We can't use a simple `use std::sync::RwLock` import for the lock guards
+// since we're now using tokio::sync::RwLock which has a different API.
+
 /// Calculate the heights of all entries within a tree or subtree.
 ///
 /// This function computes the height (longest path from root) for each entry
@@ -24,7 +27,7 @@ use crate::{
 ///
 /// # Returns
 /// A `Result` containing a `HashMap` mapping entry IDs to their heights.
-pub(crate) fn calculate_heights(
+pub(crate) async fn calculate_heights(
     backend: &InMemory,
     tree: &ID,
     subtree: Option<&str>,
@@ -32,10 +35,10 @@ pub(crate) fn calculate_heights(
     match subtree {
         None => {
             // Database height calculation with caching
-            let heights_cache = backend.heights.read().unwrap();
+            let heights_cache = backend.heights.read().await;
             if let Some(tree_cache) = heights_cache.get(tree) {
                 // Try to serve from cache
-                let entries = backend.entries.read().unwrap();
+                let entries = backend.entries.read().await;
                 let mut tree_entries = Vec::new();
                 for (id, entry) in entries.iter() {
                     if entry.in_tree(tree) {
@@ -63,10 +66,10 @@ pub(crate) fn calculate_heights(
             drop(heights_cache);
 
             // Compute heights and cache them
-            let computed_heights = calculate_heights_original(backend, tree, None)?;
+            let computed_heights = calculate_heights_original(backend, tree, None).await?;
 
             // Update cache
-            let mut heights_cache = backend.heights.write().unwrap();
+            let mut heights_cache = backend.heights.write().await;
             let tree_cache = heights_cache.entry(tree.clone()).or_default();
 
             // Update tree heights for each entry
@@ -81,10 +84,10 @@ pub(crate) fn calculate_heights(
         }
         Some(subtree_name) => {
             // Subtree height calculation with caching
-            let heights_cache = backend.heights.read().unwrap();
+            let heights_cache = backend.heights.read().await;
             if let Some(tree_cache) = heights_cache.get(tree) {
                 // Try to serve from cache
-                let entries = backend.entries.read().unwrap();
+                let entries = backend.entries.read().await;
                 let mut subtree_entries = Vec::new();
                 for (id, entry) in entries.iter() {
                     if entry.in_tree(tree) && entry.in_subtree(subtree_name) {
@@ -117,10 +120,10 @@ pub(crate) fn calculate_heights(
             drop(heights_cache);
 
             // Compute heights and cache them
-            let computed_heights = calculate_heights_original(backend, tree, Some(subtree_name))?;
+            let computed_heights = calculate_heights_original(backend, tree, Some(subtree_name)).await?;
 
             // Update cache
-            let mut heights_cache = backend.heights.write().unwrap();
+            let mut heights_cache = backend.heights.write().await;
             let tree_cache = heights_cache.entry(tree.clone()).or_default();
 
             // Update subtree heights for each entry
@@ -139,7 +142,7 @@ pub(crate) fn calculate_heights(
 }
 
 /// Original height calculation implementation (fallback)
-fn calculate_heights_original(
+async fn calculate_heights_original(
     backend: &InMemory,
     tree: &ID,
     subtree: Option<&str>,
@@ -152,7 +155,7 @@ fn calculate_heights_original(
     let mut nodes_in_context: HashSet<ID> = HashSet::new();
 
     // 1. Build graph structure (children_map, in_degree) for the context
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
     for (id, entry) in entries.iter() {
         // Check if entry is in the context (tree or tree+subtree)
         let in_context = match subtree {
@@ -290,12 +293,12 @@ fn calculate_heights_original(
 ///
 /// # Returns
 /// A `Result` indicating success or an error if height calculation fails.
-pub(crate) fn sort_entries_by_height(
+pub(crate) async fn sort_entries_by_height(
     backend: &InMemory,
     tree: &ID,
     entries: &mut [Entry],
 ) -> Result<()> {
-    let heights = calculate_heights(backend, tree, None)?;
+    let heights = calculate_heights(backend, tree, None).await?;
 
     entries.sort_by(|a, b| {
         let a_height = *heights.get(&a.id()).unwrap_or(&0);
@@ -319,13 +322,13 @@ pub(crate) fn sort_entries_by_height(
 ///
 /// # Returns
 /// A `Result` indicating success or an error if height calculation fails.
-pub(crate) fn sort_entries_by_subtree_height(
+pub(crate) async fn sort_entries_by_subtree_height(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
     entries: &mut [Entry],
 ) -> Result<()> {
-    let heights = calculate_heights(backend, tree, Some(subtree))?;
+    let heights = calculate_heights(backend, tree, Some(subtree)).await?;
     entries.sort_by(|a, b| {
         let a_height = *heights.get(&a.id()).unwrap_or(&0);
         let b_height = *heights.get(&b.id()).unwrap_or(&0);
@@ -345,32 +348,32 @@ pub(crate) fn create_crdt_cache_key(entry_id: &ID, subtree: &str) -> String {
 }
 
 /// Get cached CRDT state for a subtree at a specific entry.
-pub(crate) fn get_cached_crdt_state(
+pub(crate) async fn get_cached_crdt_state(
     backend: &InMemory,
     entry_id: &ID,
     subtree: &str,
 ) -> Result<Option<String>> {
     let key = create_crdt_cache_key(entry_id, subtree);
-    let cache = backend.cache.read().unwrap();
+    let cache = backend.cache.read().await;
     Ok(cache.get(&key).cloned())
 }
 
 /// Cache CRDT state for a subtree at a specific entry.
-pub(crate) fn cache_crdt_state(
+pub(crate) async fn cache_crdt_state(
     backend: &InMemory,
     entry_id: &ID,
     subtree: &str,
     state: String,
 ) -> Result<()> {
     let key = create_crdt_cache_key(entry_id, subtree);
-    let mut cache = backend.cache.write().unwrap();
+    let mut cache = backend.cache.write().await;
     cache.insert(key, state);
     Ok(())
 }
 
 /// Clear all cached CRDT states.
-pub(crate) fn clear_crdt_cache(backend: &InMemory) -> Result<()> {
-    let mut cache = backend.cache.write().unwrap();
+pub(crate) async fn clear_crdt_cache(backend: &InMemory) -> Result<()> {
+    let mut cache = backend.cache.write().await;
     cache.clear();
     Ok(())
 }

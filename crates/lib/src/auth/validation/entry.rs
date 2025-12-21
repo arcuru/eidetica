@@ -40,7 +40,7 @@ impl AuthValidator {
     /// * `entry` - The entry to validate
     /// * `auth_settings` - Authentication settings for key lookup
     /// * `instance` - Instance for loading delegated trees (optional for direct keys)
-    pub fn validate_entry(
+    pub async fn validate_entry(
         &mut self,
         entry: &Entry,
         auth_settings: &AuthSettings,
@@ -68,12 +68,15 @@ impl AuthValidator {
 
         // For all other entries, proceed with normal authentication validation
         // Resolve the authentication information
-        let resolved_auth = self.resolver.resolve_sig_key_with_pubkey(
-            &entry.sig.key,
-            auth_settings,
-            instance,
-            entry.sig.pubkey.as_deref(),
-        )?;
+        let resolved_auth = self
+            .resolver
+            .resolve_sig_key_with_pubkey(
+                &entry.sig.key,
+                auth_settings,
+                instance,
+                entry.sig.pubkey.as_deref(),
+            )
+            .await?;
 
         // Check if the key is in an active state
         if resolved_auth.key_status != KeyStatus::Active {
@@ -90,7 +93,7 @@ impl AuthValidator {
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
-    pub fn resolve_sig_key(
+    pub async fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -99,6 +102,7 @@ impl AuthValidator {
         // Delegate to the resolver
         self.resolver
             .resolve_sig_key(sig_key, auth_settings, instance)
+            .await
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
@@ -108,7 +112,7 @@ impl AuthValidator {
     /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
-    pub fn resolve_sig_key_with_pubkey(
+    pub async fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -118,6 +122,7 @@ impl AuthValidator {
         // Delegate to the resolver
         self.resolver
             .resolve_sig_key_with_pubkey(sig_key, auth_settings, instance, pubkey_override)
+            .await
     }
 
     /// Check if a resolved authentication has sufficient permissions for an operation

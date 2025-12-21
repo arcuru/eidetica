@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -45,13 +46,14 @@ where
     }
 }
 
+#[async_trait(?Send)]
 impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
-    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
+    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.into(),
+            name: subtree_name,
             atomic_op: op.clone(),
             phantom: PhantomData,
         })
@@ -86,7 +88,7 @@ where
     /// Returns an error if:
     /// * The record doesn't exist (`Error::NotFound`)
     /// * There's a serialization/deserialization error
-    pub fn get(&self, key: impl AsRef<str>) -> Result<T> {
+    pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
 
         // Get local data from the atomic op if it exists
@@ -118,7 +120,7 @@ where
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name)?;
+        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
 
         // Get the value
         match data.get(key).and_then(|v| v.as_text()) {
@@ -152,7 +154,7 @@ where
     ///
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
-    pub fn insert(&self, row: T) -> Result<String> {
+    pub async fn insert(&self, row: T) -> Result<String> {
         // Generate a UUIDv4 for the primary key
         let primary_key = Uuid::new_v4().to_string();
 
@@ -179,7 +181,8 @@ where
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
         self.atomic_op
-            .update_subtree(&self.name, &serialized_data)?;
+            .update_subtree(&self.name, &serialized_data)
+            .await?;
 
         // Return the primary key
         Ok(primary_key)
@@ -199,7 +202,7 @@ where
     ///
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
-    pub fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
+    pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
         // Get current data from the atomic op, or create new if not existing
         let mut data = self
@@ -223,7 +226,9 @@ where
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.atomic_op.update_subtree(&self.name, &serialized_data)
+        self.atomic_op
+            .update_subtree(&self.name, &serialized_data)
+            .await
     }
 
     /// Deletes a row from the Table by its primary key.
@@ -240,11 +245,11 @@ where
     ///
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
-    pub fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
+    pub async fn delete(&self, key: impl AsRef<str>) -> Result<bool> {
         let key_str = key.as_ref();
 
         // Check if the record exists (checks both local and full state)
-        let exists = self.get(key_str).is_ok();
+        let exists = self.get(key_str).await.is_ok();
 
         // If the record doesn't exist, return false early
         if !exists {
@@ -267,7 +272,8 @@ where
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
         self.atomic_op
-            .update_subtree(&self.name, &serialized_data)?;
+            .update_subtree(&self.name, &serialized_data)
+            .await?;
 
         // Return true since we confirmed the record existed
         Ok(true)
@@ -283,7 +289,7 @@ where
     ///
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
-    pub fn search(&self, query: impl Fn(&T) -> bool) -> Result<Vec<(String, T)>> {
+    pub async fn search(&self, query: impl Fn(&T) -> bool) -> Result<Vec<(String, T)>> {
         // Get the full state combining local and backend data
         let mut result = Vec::new();
 
@@ -291,7 +297,7 @@ where
         let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name)?;
+        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name).await?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {

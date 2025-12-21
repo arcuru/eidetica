@@ -73,15 +73,16 @@ impl<'a> BootstrapRequestManager<'a> {
     ///
     /// # Returns
     /// The generated UUID for the request.
-    pub(super) fn store_request(&self, request: BootstrapRequest) -> Result<String> {
+    pub(super) async fn store_request(&self, request: BootstrapRequest) -> Result<String> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
 
         debug!(tree_id = %request.tree_id, "Storing bootstrap request");
 
         // Insert request and get generated UUID
-        let request_id = requests.insert(request.clone())?;
+        let request_id = requests.insert(request.clone()).await?;
 
         info!(request_id = %request_id, tree_id = %request.tree_id, "Successfully stored bootstrap request");
         Ok(request_id)
@@ -94,12 +95,12 @@ impl<'a> BootstrapRequestManager<'a> {
     ///
     /// # Returns
     /// The bootstrap request if found, None otherwise.
-    pub(super) fn get_request(&self, request_id: &str) -> Result<Option<BootstrapRequest>> {
+    pub(super) async fn get_request(&self, request_id: &str) -> Result<Option<BootstrapRequest>> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
 
-        match requests.get(request_id) {
+        match requests.get(request_id).await {
             Ok(request) => Ok(Some(request)),
             Err(Error::Store(crate::store::StoreError::KeyNotFound { .. })) => Ok(None),
             Err(e) => Err(e),
@@ -107,17 +108,17 @@ impl<'a> BootstrapRequestManager<'a> {
     }
 
     /// Internal method to filter bootstrap requests by status.
-    fn filter_requests(
+    async fn filter_requests(
         &self,
         status_filter: &RequestStatus,
     ) -> Result<Vec<(String, BootstrapRequest)>> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
 
         let results = requests.search(|request| {
             std::mem::discriminant(status_filter) == std::mem::discriminant(&request.status)
-        })?;
+        }).await?;
 
         Ok(results)
     }
@@ -126,30 +127,30 @@ impl<'a> BootstrapRequestManager<'a> {
     ///
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for pending requests.
-    pub(super) fn pending_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
-        self.filter_requests(&RequestStatus::Pending)
+    pub(super) async fn pending_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+        self.filter_requests(&RequestStatus::Pending).await
     }
 
     /// Get all approved bootstrap requests.
     ///
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for approved requests.
-    pub(super) fn approved_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+    pub(super) async fn approved_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
         self.filter_requests(&RequestStatus::Approved {
             approved_by: String::new(),
             approval_time: String::new(),
-        })
+        }).await
     }
 
     /// Get all rejected bootstrap requests.
     ///
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for rejected requests.
-    pub(super) fn rejected_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
+    pub(super) async fn rejected_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
         self.filter_requests(&RequestStatus::Rejected {
             rejected_by: String::new(),
             rejection_time: String::new(),
-        })
+        }).await
     }
 
     /// Update the status of a bootstrap request.
@@ -160,19 +161,19 @@ impl<'a> BootstrapRequestManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn update_status(&self, request_id: &str, new_status: RequestStatus) -> Result<()> {
+    pub(super) async fn update_status(&self, request_id: &str, new_status: RequestStatus) -> Result<()> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
 
         // Get the existing request
-        let mut request = requests.get(request_id)?;
+        let mut request = requests.get(request_id).await?;
 
         // Update the status
         request.status = new_status;
 
         // Store the updated request
-        requests.set(request_id, request)?;
+        requests.set(request_id, request).await?;
 
         debug!(request_id = %request_id, "Updated bootstrap request status");
         Ok(())

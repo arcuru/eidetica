@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use crate::{Result, Transaction};
 
 mod errors;
@@ -38,6 +39,7 @@ pub use ydoc::{YDoc, YrsBinary};
 /// 2. `Transaction::get_store`: For staging modifications within an atomic operation.
 ///
 /// Store types must also implement [`Registered`] to provide their type identifier.
+#[async_trait(?Send)]
 pub trait Store: Sized + Registered {
     /// Creates a new `Store` handle associated with a specific transaction.
     ///
@@ -49,7 +51,7 @@ pub trait Store: Sized + Registered {
     /// # Arguments
     /// * `op` - The `Transaction` this `Store` instance will read from and potentially write to.
     /// * `subtree_name` - The name identifying this specific data partition within the `Database`.
-    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self>;
+    async fn new(op: &Transaction, subtree_name: String) -> Result<Self>;
 
     /// Returns the name of this subtree.
     fn name(&self) -> &str;
@@ -98,10 +100,9 @@ pub trait Store: Sized + Registered {
     ///
     /// # Returns
     /// A `Result<Self>` containing the initialized Store.
-    fn init(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
-        let name = subtree_name.into();
-        let store = Self::new(op, name)?;
-        store.set_config(Self::default_config())?;
+    async fn init(op: &Transaction, subtree_name: String) -> Result<Self> {
+        let store = Self::new(op, subtree_name).await?;
+        store.set_config(Self::default_config()).await?;
         Ok(store)
     }
 
@@ -112,9 +113,9 @@ pub trait Store: Sized + Registered {
     ///
     /// # Errors
     /// Returns an error if the subtree is not registered in `_index`.
-    fn get_config(&self) -> Result<String> {
-        let index = self.transaction().get_index()?;
-        let info = index.get_entry(self.name())?;
+    async fn get_config(&self) -> Result<String> {
+        let index = self.transaction().get_index().await?;
+        let info = index.get_entry(self.name()).await?;
         Ok(info.config)
     }
 
@@ -129,9 +130,11 @@ pub trait Store: Sized + Registered {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or failure.
-    fn set_config(&self, config: impl Into<String>) -> Result<()> {
-        let index = self.transaction().get_index()?;
-        index.set_entry(self.name(), Self::type_id(), config.into())?;
+    async fn set_config(&self, config: impl Into<String>) -> Result<()> {
+        let index = self.transaction().get_index().await?;
+        index
+            .set_entry(self.name(), Self::type_id(), config.into())
+            .await?;
         Ok(())
     }
 }

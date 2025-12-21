@@ -9,8 +9,8 @@ use crate::{
 
 /// Retrieves an entry by ID from the internal `HashMap`.
 /// Used internally by traversal functions.
-pub(crate) fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
-    let entries = backend.entries.read().unwrap();
+pub(crate) async fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
+    let entries = backend.entries.read().await;
     entries
         .get(id)
         .cloned()
@@ -64,7 +64,7 @@ pub(crate) fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
 /// # Returns
 /// * `Ok(())` on successful storage
 /// * `Err` if validation fails or storage operations fail
-pub(crate) fn put(
+pub(crate) async fn put(
     backend: &InMemory,
     verification_status: VerificationStatus,
     entry: Entry,
@@ -97,19 +97,19 @@ pub(crate) fn put(
 
     // Store the entry
     {
-        let mut entries = backend.entries.write().unwrap();
+        let mut entries = backend.entries.write().await;
         entries.insert(entry_id.clone(), entry.clone());
     }
 
     // Store the verification status
     {
-        let mut verification_status_map = backend.verification_status.write().unwrap();
+        let mut verification_status_map = backend.verification_status.write().await;
         verification_status_map.insert(entry_id.clone(), verification_status);
     }
 
     // Smart cache update for heights
     {
-        let mut heights_cache = backend.heights.write().unwrap();
+        let mut heights_cache = backend.heights.write().await;
         if let Some(cache) = heights_cache.get_mut(&tree_id) {
             update_cached_heights(cache, &entry, &entry_id);
         }
@@ -119,67 +119,16 @@ pub(crate) fn put(
     // This ensures correctness when entries arrive in any order, which is common during
     // sync operations between peers.
 
-    // Helper function to update tips for a given tree ID
-    let update_tips_for_tree = |tips_cache: &mut std::collections::HashMap<
-        ID,
-        super::TreeTipsCache,
-    >,
-                                target_tree_id: &ID| {
-        let cache = tips_cache.entry(target_tree_id.clone()).or_default();
-
-        // IMPORTANT: Recalculate tips from scratch after adding any entry
-        //
-        // Why full recalculation is necessary:
-        // During sync operations, entries can arrive out of order. For example:
-        // 1. A child entry arrives first and is marked as a tip
-        // 2. Its parent arrives later
-        // 3. The parent should not be a tip (it has a child)
-        // 4. The child should remain a tip
-        //
-        // Incremental updates would miss removing the parent from tips in step 3.
-        // Full recalculation ensures correctness at the cost of performance.
-        //
-        // TODO: Optimize with proper DAG-aware incremental updates that handle
-        // out-of-order arrival by checking if new entries are parents of existing tips
-        cache.tree_tips.clear();
-
-        // Get all entries in this tree and recalculate which ones are actually tips
-        let entries = backend.entries.read().unwrap();
-        let tree_entries: Vec<&Entry> = entries
-            .values()
-            .filter(|e| e.root() == target_tree_id || (e.is_root() && e.id() == *target_tree_id))
-            .collect();
-
-        // An entry is a tip if no other entry in the same tree has it as a parent
-        for entry in &tree_entries {
-            let entry_id = entry.id();
-            let mut is_tip = true;
-
-            for other_entry in &tree_entries {
-                if let Ok(parents) = other_entry.parents()
-                    && parents.contains(&entry_id)
-                {
-                    is_tip = false;
-                    break;
-                }
-            }
-
-            if is_tip {
-                cache.tree_tips.insert(entry_id);
-            }
-        }
-        drop(entries);
-    };
     // Smart cache update for tips - ALWAYS update, creating cache if needed
     {
-        let mut tips_cache = backend.tips.write().unwrap();
+        let mut tips_cache = backend.tips.write().await;
 
         // Update tips for the entry's declared tree
-        update_tips_for_tree(&mut tips_cache, &tree_id);
+        update_tips_for_tree_async(backend, &mut tips_cache, &tree_id).await;
 
         // SPECIAL CASE: For root entries, also update tips for the tree named after the entry ID
         if let Some(ref additional_tree) = additional_tree_id {
-            update_tips_for_tree(&mut tips_cache, additional_tree);
+            update_tips_for_tree_async(backend, &mut tips_cache, additional_tree).await;
         }
 
         // Update subtree tips for each subtree (for the main tree only)
@@ -205,12 +154,63 @@ pub(crate) fn put(
     Ok(())
 }
 
+/// Helper function to update tips for a given tree ID (async version)
+async fn update_tips_for_tree_async(
+    backend: &InMemory,
+    tips_cache: &mut std::collections::HashMap<ID, super::TreeTipsCache>,
+    target_tree_id: &ID,
+) {
+    let cache = tips_cache.entry(target_tree_id.clone()).or_default();
+
+    // IMPORTANT: Recalculate tips from scratch after adding any entry
+    //
+    // Why full recalculation is necessary:
+    // During sync operations, entries can arrive out of order. For example:
+    // 1. A child entry arrives first and is marked as a tip
+    // 2. Its parent arrives later
+    // 3. The parent should not be a tip (it has a child)
+    // 4. The child should remain a tip
+    //
+    // Incremental updates would miss removing the parent from tips in step 3.
+    // Full recalculation ensures correctness at the cost of performance.
+    //
+    // TODO: Optimize with proper DAG-aware incremental updates that handle
+    // out-of-order arrival by checking if new entries are parents of existing tips
+    cache.tree_tips.clear();
+
+    // Get all entries in this tree and recalculate which ones are actually tips
+    let entries = backend.entries.read().await;
+    let tree_entries: Vec<&Entry> = entries
+        .values()
+        .filter(|e| e.root() == target_tree_id || (e.is_root() && e.id() == *target_tree_id))
+        .collect();
+
+    // An entry is a tip if no other entry in the same tree has it as a parent
+    for entry in &tree_entries {
+        let entry_id = entry.id();
+        let mut is_tip = true;
+
+        for other_entry in &tree_entries {
+            if let Ok(parents) = other_entry.parents()
+                && parents.contains(&entry_id)
+            {
+                is_tip = false;
+                break;
+            }
+        }
+
+        if is_tip {
+            cache.tree_tips.insert(entry_id);
+        }
+    }
+}
+
 /// Helper function to check if an entry is a tip within its tree.
 ///
 /// An entry is a tip if no other entry in the same tree lists it as a parent.
-pub(crate) fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool {
+pub(crate) async fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool {
     // Check if any other entry has this entry as its parent
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
     for other_entry in entries.values() {
         if other_entry.root() == tree
             && other_entry.parents().unwrap_or_default().contains(entry_id)
@@ -224,8 +224,8 @@ pub(crate) fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool {
 /// Helper function to check if an entry is a tip within a specific subtree.
 ///
 /// An entry is a subtree tip if no other entry in the same subtree lists it as a subtree parent.
-pub(crate) fn is_subtree_tip(backend: &InMemory, tree: &ID, subtree: &str, entry_id: &ID) -> bool {
-    let entries = backend.entries.read().unwrap();
+pub(crate) async fn is_subtree_tip(backend: &InMemory, tree: &ID, subtree: &str, entry_id: &ID) -> bool {
+    let entries = backend.entries.read().await;
     for other_entry in entries.values() {
         if other_entry.root() == tree
             && other_entry.subtrees().contains(&subtree.to_string())
@@ -286,8 +286,8 @@ fn update_cached_heights(cache: &mut TreeHeightsCache, entry: &Entry, entry_id: 
 }
 
 /// Retrieves all entries belonging to a specific tree, sorted topologically.
-pub(crate) fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
-    let entries = backend.entries.read().unwrap();
+pub(crate) async fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
+    let entries = backend.entries.read().await;
     let mut tree_entries: Vec<Entry> = entries
         .values()
         .filter(|entry| entry.in_tree(tree))
@@ -297,13 +297,13 @@ pub(crate) fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
     drop(entries); // Release the lock before calling sort_entries_by_height
 
     // Sort by height using the cache module function
-    super::cache::sort_entries_by_height(backend, tree, &mut tree_entries)?;
+    super::cache::sort_entries_by_height(backend, tree, &mut tree_entries).await?;
     Ok(tree_entries)
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree, sorted topologically.
-pub(crate) fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
-    let entries = backend.entries.read().unwrap();
+pub(crate) async fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
+    let entries = backend.entries.read().await;
     let mut subtree_entries: Vec<Entry> = entries
         .values()
         .filter(|entry| entry.in_tree(tree) && entry.in_subtree(subtree))
@@ -313,12 +313,12 @@ pub(crate) fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> Result<
     drop(entries); // Release the lock before calling sort_entries_by_subtree_height
 
     // Sort by subtree height using the cache module function
-    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries)?;
+    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries).await?;
     Ok(subtree_entries)
 }
 
 /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
-pub(crate) fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
+pub(crate) async fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
     if tips.is_empty() {
         return Ok(vec![]);
     }
@@ -329,7 +329,7 @@ pub(crate) fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> 
     let mut processed = std::collections::HashSet::new();
 
     // Initialize with tips
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
     for tip in tips {
         if let Some(entry) = entries.get(tip) {
             // Only include entries that are part of the specified tree
@@ -376,14 +376,14 @@ pub(crate) fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> 
 
     // Sort the result by height within the tree context
     if !result.is_empty() {
-        super::cache::sort_entries_by_height(backend, tree, &mut result)?;
+        super::cache::sort_entries_by_height(backend, tree, &mut result).await?;
     }
 
     Ok(result)
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips, sorted topologically.
-pub(crate) fn get_store_from_tips(
+pub(crate) async fn get_store_from_tips(
     backend: &InMemory,
     tree: &ID,
     subtree: &str,
@@ -399,7 +399,7 @@ pub(crate) fn get_store_from_tips(
     let mut processed = std::collections::HashSet::new();
 
     // Initialize with tips
-    let entries = backend.entries.read().unwrap();
+    let entries = backend.entries.read().await;
     for tip in tips {
         if let Some(entry) = entries.get(tip) {
             // Only include entries that are part of both the tree and the subtree
@@ -438,7 +438,7 @@ pub(crate) fn get_store_from_tips(
 
     // Sort the result by subtree height
     if !result.is_empty() {
-        super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut result)?;
+        super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut result).await?;
     }
 
     Ok(result)

@@ -1346,6 +1346,7 @@ dependencies = [
  "eidetica",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 

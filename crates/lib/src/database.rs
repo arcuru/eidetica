@@ -108,7 +108,7 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn create(
+    pub async fn create(
         initial_settings: Doc,
         instance: &crate::Instance,
         signing_key: SigningKey,
@@ -165,21 +165,23 @@ impl Database {
         };
 
         // Create the transaction - it will use the provided key automatically
-        let op = temp_database_for_bootstrap.new_transaction()?;
+        let op = temp_database_for_bootstrap.new_transaction().await?;
 
         // IMPORTANT: For the root entry, we need to set the database root to empty string
         // so that is_root() returns true and all_roots() can find it
         op.set_entry_root("")?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)?;
-        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)?; // Standard practice for root entry's _root
+        op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)
+            .await?;
+        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)
+            .await?; // Standard practice for root entry's _root
 
         // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
         op.set_metadata_entropy(rand::thread_rng().next_u64())?;
 
         // Commit the initial entry
-        let new_root_id = op.commit()?;
+        let new_root_id = op.commit().await?;
 
         // Now create the real database with the new_root_id and KeySource::Provided
         Ok(Self {
@@ -344,7 +346,7 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn find_sigkeys(
+    pub async fn find_sigkeys(
         instance: &Instance,
         root_id: &ID,
         pubkey: &str,
@@ -353,8 +355,8 @@ impl Database {
         let temp_db = Self::open_readonly(root_id.clone(), instance)?;
 
         // Load auth settings
-        let settings_store = temp_db.get_settings()?;
-        let auth_settings = settings_store.get_auth_settings()?;
+        let settings_store = temp_db.get_settings().await?;
+        let auth_settings = settings_store.get_auth_settings().await?;
 
         // Find all SigKeys for this pubkey (returns sorted by highest permission first)
         Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
@@ -404,9 +406,13 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn on_local_write<F>(&self, callback: F) -> Result<()>
+    pub fn on_local_write<F, Fut>(&self, callback: F) -> Result<()>
     where
-        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+            + Send
+            + std::marker::Sync
+            + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
         instance.register_write_callback(
@@ -450,9 +456,13 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn on_remote_write<F>(&self, callback: F) -> Result<()>
+    pub fn on_remote_write<F, Fut>(&self, callback: F) -> Result<()>
     where
-        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+            + Send
+            + std::marker::Sync
+            + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
         instance.register_write_callback(
@@ -483,9 +493,9 @@ impl Database {
     }
 
     /// Retrieve the root entry from the backend
-    pub fn get_root(&self) -> Result<Entry> {
+    pub async fn get_root(&self) -> Result<Entry> {
         let instance = self.instance()?;
-        instance.get(&self.root)
+        instance.get(&self.root).await
     }
 
     /// Get a read-only settings store for the database.
@@ -515,15 +525,15 @@ impl Database {
     /// txn.commit()?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn get_settings(&self) -> Result<SettingsStore> {
-        let txn = self.new_transaction()?;
+    pub async fn get_settings(&self) -> Result<SettingsStore> {
+        let txn = self.new_transaction().await?;
         txn.get_settings()
     }
 
     /// Get the name of the database from its settings store
-    pub fn get_name(&self) -> Result<String> {
-        let settings = self.get_settings()?;
-        settings.get_name()
+    pub async fn get_name(&self) -> Result<String> {
+        let settings = self.get_settings().await?;
+        settings.get_name().await
     }
 
     /// Create a new atomic transaction on this database
@@ -534,9 +544,9 @@ impl Database {
     ///
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
-    pub fn new_transaction(&self) -> Result<Transaction> {
-        let tips = self.get_tips()?;
-        self.new_transaction_with_tips(&tips)
+    pub async fn new_transaction(&self) -> Result<Transaction> {
+        let tips = self.get_tips().await?;
+        self.new_transaction_with_tips(&tips).await
     }
 
     /// Create a new atomic transaction on this database with specific parent tips
@@ -550,8 +560,8 @@ impl Database {
     ///
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
-    pub fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
-        let mut op = Transaction::new_with_tips(self, tips.as_ref())?;
+    pub async fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
+        let mut op = Transaction::new_with_tips(self, tips.as_ref()).await?;
 
         // Set provided signing key (all databases use KeySource::Provided now)
         if let Some(KeySource::Provided {
@@ -568,11 +578,11 @@ impl Database {
     /// Insert an entry into the database without modifying it.
     /// This is primarily for testing purposes or when you need full control over the entry.
     /// Note: This method assumes the entry is already properly signed and verified.
-    pub fn insert_raw(&self, entry: Entry) -> Result<ID> {
+    pub async fn insert_raw(&self, entry: Entry) -> Result<ID> {
         let instance = self.instance()?;
         let id = entry.id();
 
-        instance.put(crate::backend::VerificationStatus::Verified, entry)?;
+        instance.put(crate::backend::VerificationStatus::Verified, entry).await?;
 
         Ok(id)
     }
@@ -583,12 +593,12 @@ impl Database {
     /// The returned store should NOT be used to modify the database, as it intentionally does not
     /// expose the Transaction. Since the Transaction is never committed, it does not have any
     /// effect on the database.
-    pub fn get_store_viewer<T>(&self, name: impl Into<String>) -> Result<T>
+    pub async fn get_store_viewer<T>(&self, name: impl Into<String>) -> Result<T>
     where
         T: Store,
     {
-        let op = self.new_transaction()?;
-        T::new(&op, name)
+        let op = self.new_transaction().await?;
+        T::new(&op, name.into()).await
     }
 
     /// Get the current tips (leaf entries) of the main database branch.
@@ -597,20 +607,23 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
-    pub fn get_tips(&self) -> Result<Vec<ID>> {
+    pub async fn get_tips(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
-        instance.get_tips(&self.root)
+        instance.get_tips(&self.root).await
     }
 
     /// Get the full `Entry` objects for the current tips of the main database branch.
     ///
     /// # Returns
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
-    pub fn get_tip_entries(&self) -> Result<Vec<Entry>> {
+    pub async fn get_tip_entries(&self) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
-        let tips = instance.get_tips(&self.root)?;
-        let entries: Result<Vec<_>> = tips.iter().map(|id| instance.get(id)).collect();
-        entries
+        let tips = instance.get_tips(&self.root).await?;
+        let mut entries = Vec::new();
+        for id in &tips {
+            entries.push(instance.get(id).await?);
+        }
+        Ok(entries)
     }
 
     /// Get a single entry by ID from this database.
@@ -648,10 +661,10 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
+    pub async fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
         let instance = self.instance()?;
         let id = entry_id.into();
-        let entry = instance.get(&id)?;
+        let entry = instance.get(&id).await?;
 
         // Check if the entry belongs to this database
         if !entry.in_tree(&self.root) {
@@ -697,7 +710,7 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_entries<I, T>(&self, entry_ids: I) -> Result<Vec<Entry>>
+    pub async fn get_entries<I, T>(&self, entry_ids: I) -> Result<Vec<Entry>>
     where
         I: IntoIterator<Item = T>,
         T: Into<ID>,
@@ -708,7 +721,7 @@ impl Database {
         let mut entries = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let entry = instance.get(&id)?;
+            let entry = instance.get(&id).await?;
 
             // Check if the entry belongs to this database
             if !entry.in_tree(&self.root) {
@@ -749,8 +762,8 @@ impl Database {
     /// - The entry does not belong to this database
     /// - The entry's metadata cannot be parsed
     /// - The historical authentication settings cannot be retrieved
-    pub fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
-        let entry = self.get_entry(entry_id)?;
+    pub async fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
+        let entry = self.get_entry(entry_id).await?;
 
         // If the entry has no authentication, it's considered valid for backward compatibility
         if entry.sig.key == crate::auth::types::SigKey::default() {
@@ -758,12 +771,14 @@ impl Database {
         }
 
         // Get the authentication settings that were valid at the time this entry was created
-        let historical_settings = self.get_historical_settings_for_entry(&entry)?;
+        let historical_settings = self.get_historical_settings_for_entry(&entry).await?;
 
         // Use the authentication validator with historical settings
         let instance = self.instance()?;
         let mut validator = crate::auth::validation::AuthValidator::new();
-        validator.validate_entry(&entry, &historical_settings, Some(&instance))
+        validator
+            .validate_entry(&entry, &historical_settings, Some(&instance))
+            .await
     }
 
     /// Get the effective permission level for a given SigKey in this database.
@@ -806,17 +821,19 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn get_sigkey_permission(&self, sigkey: &str) -> Result<Permission> {
+    pub async fn get_sigkey_permission(&self, sigkey: &str) -> Result<Permission> {
         // Get database settings
-        let settings_store = self.get_settings()?;
+        let settings_store = self.get_settings().await?;
 
         // Get auth settings from the settings store
-        let auth_settings = settings_store.get_auth_settings()?;
+        let auth_settings = settings_store.get_auth_settings().await?;
 
         // Create SigKey and validate entry auth to get effective permission
         let instance = self.instance()?;
         let sig_key = crate::auth::types::SigKey::Direct(sigkey.to_string());
-        let resolved_auth = auth_settings.validate_entry_auth(&sig_key, Some(&instance))?;
+        let resolved_auth = auth_settings
+            .validate_entry_auth(&sig_key, Some(&instance))
+            .await?;
 
         Ok(resolved_auth.effective_permission)
     }
@@ -831,7 +848,7 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing the historical authentication settings
-    fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<AuthSettings> {
+    async fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<AuthSettings> {
         // TODO: Implement full historical settings reconstruction from entry metadata
         // For now, use current settings for simplicity and backward compatibility
         //
@@ -843,8 +860,8 @@ impl Database {
         // This ensures entries remain valid even if keys are later revoked,
         // but requires more complex CRDT state reconstruction logic.
 
-        let settings = self.get_settings()?;
-        settings.get_auth_settings()
+        let settings = self.get_settings().await?;
+        settings.get_auth_settings().await
     }
 
     // === DATABASE QUERIES ===
@@ -856,9 +873,9 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the database
-    pub fn get_all_entries(&self) -> Result<Vec<Entry>> {
+    pub async fn get_all_entries(&self) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
-        instance.backend().get_tree(&self.root)
+        instance.backend().get_tree(&self.root).await
     }
 }
 

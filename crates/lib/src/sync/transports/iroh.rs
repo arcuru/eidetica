@@ -504,16 +504,17 @@ impl IrohTransport {
             address: remote_node_id.to_string(),
         };
 
-        // Accept incoming streams
+        // Accept incoming streams and process sequentially
+        // Note: We process streams sequentially because SyncHandler::handle_request
+        // returns non-Send futures (internal types use Rc/RefCell).
         while let Ok((send_stream, recv_stream)) = conn.accept_bi().await {
-            let handler_clone = handler.clone();
-            let remote_addr_clone = remote_address.clone();
-            tokio::spawn(Self::handle_stream(
+            Self::handle_stream(
                 send_stream,
                 recv_stream,
-                handler_clone,
-                remote_addr_clone,
-            ));
+                handler.clone(),
+                remote_address.clone(),
+            )
+            .await;
         }
     }
 
@@ -555,7 +556,21 @@ impl IrohTransport {
         };
 
         // Handle the request using the SyncHandler
-        let response = handler.handle_request(&request, &context).await;
+        // Use spawn_blocking with a LocalSet to handle non-Send futures
+        // This is required because SyncHandler::handle_request returns non-Send futures
+        // (internal types use Rc/RefCell), but this function runs in a spawned task.
+        let response = tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create runtime");
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async {
+                handler.handle_request(&request, &context).await
+            })
+        })
+        .await
+        .expect("spawn_blocking task panicked");
 
         // Serialize and send response using JsonHandler
         match JsonHandler::serialize_response(&response) {

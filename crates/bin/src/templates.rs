@@ -435,16 +435,31 @@ pub struct DatabaseInfo {
 
 impl DatabaseInfo {
     /// Create DatabaseInfo from tracked database and database
-    pub fn from_tracked(tracked: &eidetica::user::TrackedDatabase, db: Option<&Database>) -> Self {
+    pub async fn from_tracked(
+        tracked: &eidetica::user::TrackedDatabase,
+        db: Option<&Database>,
+    ) -> Self {
+        let name = if let Some(d) = db {
+            d.get_name().await.ok()
+        } else {
+            None
+        }
+        .unwrap_or_else(|| "Unknown".to_string());
+
+        let entry_count = if let Some(d) = db {
+            d.get_all_entries()
+                .await
+                .ok()
+                .map(|entries| entries.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         Self {
             root_id: tracked.database_id.to_string(),
-            name: db
-                .and_then(|d| d.get_name().ok())
-                .unwrap_or_else(|| "Unknown".to_string()),
-            entry_count: db
-                .and_then(|d| d.get_all_entries().ok())
-                .map(|entries| entries.len())
-                .unwrap_or(0),
+            name,
+            entry_count,
             sync_enabled: tracked.sync_settings.sync_enabled,
             key_id: tracked.key_id.clone(),
         }

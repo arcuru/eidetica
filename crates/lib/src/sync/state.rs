@@ -233,15 +233,15 @@ impl<'a> SyncStateManager<'a> {
     }
 
     /// Get or create a sync cursor for a peer-tree relationship.
-    pub fn get_sync_cursor(
+    pub async fn get_sync_cursor(
         &self,
         peer_pubkey: impl AsRef<str>,
         tree_id: &ID,
     ) -> Result<SyncCursor> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
         let cursor_path = path!("cursors", peer_pubkey.as_ref(), tree_id.as_str());
 
-        match sync_state.get_path_as::<String>(&cursor_path) {
+        match sync_state.get_path_as::<String>(&cursor_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
                 crate::Error::Store(crate::store::StoreError::SerializationFailed {
                     store: "sync_state".to_string(),
@@ -259,20 +259,20 @@ impl<'a> SyncStateManager<'a> {
     }
 
     /// Update a sync cursor.
-    pub fn update_sync_cursor(&self, cursor: &SyncCursor) -> Result<()> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
+    pub async fn update_sync_cursor(&self, cursor: &SyncCursor) -> Result<()> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
         let cursor_path = path!("cursors", cursor.peer_pubkey, cursor.tree_id.as_str());
         let cursor_json = serde_json::to_string(cursor)?;
-        sync_state.set_path(&cursor_path, cursor_json)?;
+        sync_state.set_path(&cursor_path, cursor_json).await?;
         Ok(())
     }
 
     /// Get or create sync metadata for a peer.
-    pub fn get_sync_metadata(&self, peer_pubkey: impl AsRef<str>) -> Result<SyncMetadata> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
+    pub async fn get_sync_metadata(&self, peer_pubkey: impl AsRef<str>) -> Result<SyncMetadata> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
         let metadata_path = path!("metadata", peer_pubkey.as_ref());
 
-        match sync_state.get_path_as::<String>(&metadata_path) {
+        match sync_state.get_path_as::<String>(&metadata_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
                 crate::Error::Store(crate::store::StoreError::SerializationFailed {
                     store: "sync_state".to_string(),
@@ -287,20 +287,20 @@ impl<'a> SyncStateManager<'a> {
     }
 
     /// Update sync metadata for a peer.
-    pub fn update_sync_metadata(&self, metadata: &SyncMetadata) -> Result<()> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
+    pub async fn update_sync_metadata(&self, metadata: &SyncMetadata) -> Result<()> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
         let metadata_path = path!("metadata", metadata.peer_pubkey);
         let metadata_json = serde_json::to_string(metadata)?;
-        sync_state.set_path(&metadata_path, metadata_json)?;
+        sync_state.set_path(&metadata_path, metadata_json).await?;
         Ok(())
     }
 
     /// Add a sync history entry.
-    pub fn add_sync_history(&self, history_entry: &SyncHistoryEntry) -> Result<()> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
+    pub async fn add_sync_history(&self, history_entry: &SyncHistoryEntry) -> Result<()> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
         let history_path = path!("history", history_entry.sync_id);
         let history_json = serde_json::to_string(history_entry)?;
-        sync_state.set_path(&history_path, history_json)?;
+        sync_state.set_path(&history_path, history_json).await?;
         Ok(())
     }
 
@@ -310,13 +310,13 @@ impl<'a> SyncStateManager<'a> {
     /// This method navigates the nested map structure created by `DocStore::set_path()`.
     /// When using `set_path("history.sync_id", data)`, it creates a nested structure
     /// `{ "history": { "sync_id": data } }` rather than a flat key with dots.
-    pub fn get_sync_history(
+    pub async fn get_sync_history(
         &self,
         peer_pubkey: impl AsRef<str>,
         limit: Option<usize>,
     ) -> Result<Vec<SyncHistoryEntry>> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
-        let all_data = sync_state.get_all()?;
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
+        let all_data = sync_state.get_all().await?;
 
         let mut history_entries = Vec::new();
 
@@ -350,9 +350,9 @@ impl<'a> SyncStateManager<'a> {
     /// This method navigates the nested map structure created by `DocStore::set_path()`.
     /// The data is organized in nested maps like `{ "metadata": { "peer_key": data } }`
     /// and `{ "cursors": { "peer_key": { "tree_id": data } } }`.
-    pub fn get_peers_with_sync_state(&self) -> Result<Vec<String>> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
-        let all_data = sync_state.get_all()?;
+    pub async fn get_peers_with_sync_state(&self) -> Result<Vec<String>> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
+        let all_data = sync_state.get_all().await?;
 
         let mut peers = std::collections::HashSet::new();
 
@@ -379,9 +379,9 @@ impl<'a> SyncStateManager<'a> {
     /// This method navigates the nested map structure created by `DocStore::set_path()`.
     /// History entries are stored as `{ "history": { "sync_id": data } }` and the
     /// method properly navigates this structure to find and clean old entries.
-    pub fn cleanup_old_history(&self, max_age_days: u32) -> Result<usize> {
-        let sync_state = self.op.get_store::<DocStore>("sync_state")?;
-        let all_data = sync_state.get_all()?;
+    pub async fn cleanup_old_history(&self, max_age_days: u32) -> Result<usize> {
+        let sync_state = self.op.get_store::<DocStore>("sync_state").await?;
+        let all_data = sync_state.get_all().await?;
 
         let cutoff_time = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
         let cutoff_str = cutoff_time.to_rfc3339();
@@ -389,17 +389,23 @@ impl<'a> SyncStateManager<'a> {
         let mut cleaned_count = 0;
 
         // The history data is stored as nested structure under the "history" key
+        // Collect keys to delete first to avoid borrowing issues
+        let mut keys_to_delete = Vec::new();
         if let Some(Value::Doc(history_node)) = all_data.get("history") {
             for (sync_id, value) in history_node.iter() {
                 if let Value::Text(json_str) = value
                     && let Ok(history_entry) = serde_json::from_str::<SyncHistoryEntry>(json_str)
                     && history_entry.started_at < cutoff_str
                 {
-                    // Delete using the path format
-                    sync_state.delete(format!("history.{sync_id}"))?;
-                    cleaned_count += 1;
+                    keys_to_delete.push(sync_id.to_string());
                 }
             }
+        }
+
+        // Delete the collected keys
+        for sync_id in keys_to_delete {
+            sync_state.delete(format!("history.{sync_id}")).await?;
+            cleaned_count += 1;
         }
 
         Ok(cleaned_count)
@@ -463,19 +469,20 @@ mod tests {
     #[tokio::test]
     async fn test_sync_state_manager() {
         let backend = InMemory::new();
-        let db = Instance::open(Box::new(backend)).expect("Failed to create test instance");
-        db.enable_sync().unwrap();
+        let db = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        db.enable_sync().await.unwrap();
 
         // Create a user tree for testing tree ID
         let user_tree = db
             .new_database(crate::crdt::Doc::new(), DEVICE_KEY_NAME)
+            .await
             .unwrap();
         let tree_id = user_tree.root_id().clone();
 
         // Get the sync instance and its tree
         let sync = db.sync().unwrap();
         let sync_tree = &sync.sync_tree;
-        let op = sync_tree.new_transaction().unwrap();
+        let op = sync_tree.new_transaction().await.unwrap();
 
         let state_manager = SyncStateManager::new(&op);
         let peer_pubkey = "test_peer";
@@ -483,6 +490,7 @@ mod tests {
         // Test cursor management
         let mut cursor = state_manager
             .get_sync_cursor(peer_pubkey, &tree_id)
+            .await
             .unwrap();
         assert!(!cursor.has_sync_history());
 
@@ -495,7 +503,7 @@ mod tests {
         state_manager.update_sync_cursor(&cursor).unwrap();
 
         // Test metadata management
-        let mut metadata = state_manager.get_sync_metadata(peer_pubkey).unwrap();
+        let mut metadata = state_manager.get_sync_metadata(peer_pubkey).await.unwrap();
         metadata.record_successful_sync(3, 512, 50.0);
         state_manager.update_sync_metadata(&metadata).unwrap();
 
@@ -505,13 +513,14 @@ mod tests {
         state_manager.add_sync_history(&history_entry).unwrap();
 
         // Commit the changes and test
-        op.commit().unwrap();
+        op.commit().await.unwrap();
 
         // Create a new operation on the sync tree and test that the history is persisted
-        let op2 = sync_tree.new_transaction().unwrap();
+        let op2 = sync_tree.new_transaction().await.unwrap();
         let state_manager2 = SyncStateManager::new(&op2);
         let history = state_manager2
             .get_sync_history(peer_pubkey, Some(10))
+            .await
             .unwrap();
 
         // Verify that history is properly persisted and retrieved

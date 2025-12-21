@@ -3,9 +3,10 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use std::{collections::HashMap, fs, path::Path, sync::RwLock};
+use std::{collections::HashMap, fs, path::Path};
 
 use ed25519_dalek::SigningKey;
+use tokio::sync::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{InMemory, TreeHeightsCache, TreeTipsCache};
@@ -73,16 +74,17 @@ impl Serialize for InMemory {
     where
         S: Serializer,
     {
-        let entries = self.entries.read().unwrap().clone();
-        let verification_status = self.verification_status.read().unwrap().clone();
-        let private_keys = self.private_keys.read().unwrap();
+        // Use blocking_read since serde's Serialize is sync
+        let entries = self.entries.blocking_read().clone();
+        let verification_status = self.verification_status.blocking_read().clone();
+        let private_keys = self.private_keys.blocking_read();
         let private_keys_bytes = private_keys
             .iter()
             .map(|(k, v)| (k.clone(), v.to_bytes()))
             .collect();
-        let cache = self.cache.read().unwrap().clone();
-        let heights = self.heights.read().unwrap().clone();
-        let tips = self.tips.read().unwrap().clone();
+        let cache = self.cache.blocking_read().clone();
+        let heights = self.heights.blocking_read().clone();
+        let tips = self.tips.blocking_read().clone();
 
         let serializable = SerializableDatabase {
             version: PERSISTENCE_VERSION,

@@ -38,32 +38,37 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn track_user_preferences(
+    pub(super) async fn track_user_preferences(
         &self,
         user_uuid: impl AsRef<str>,
         preferences_db_id: &crate::entry::ID,
     ) -> Result<()> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE)?;
+        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
         // Check if the user is already registered
         if user_tracking
             .get_path(path!(user_uuid.as_ref(), "preferences_db_id"))
+            .await
             .is_ok()
         {
             return Ok(());
         }
 
         // Store the preferences database ID
-        user_tracking.set_path(
-            path!(user_uuid.as_ref(), "preferences_db_id"),
-            preferences_db_id.to_string(),
-        )?;
+        user_tracking
+            .set_path(
+                path!(user_uuid.as_ref(), "preferences_db_id"),
+                preferences_db_id.to_string(),
+            )
+            .await?;
 
         // Initialize with empty tips (will be populated on first update)
-        user_tracking.set_path(
-            path!(user_uuid.as_ref(), "preferences_tips"),
-            serde_json::to_string(&Vec::<String>::new()).unwrap(),
-        )?;
+        user_tracking
+            .set_path(
+                path!(user_uuid.as_ref(), "preferences_tips"),
+                serde_json::to_string(&Vec::<String>::new()).unwrap(),
+            )
+            .await?;
 
         debug!(user_uuid = %user_uuid.as_ref(), "Tracking user preferences for sync");
         Ok(())
@@ -79,20 +84,21 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A tuple of (preferences_db_id, preferences_tips) or None if user not tracked
-    pub(super) fn get_tracked_user_state(
+    pub(super) async fn get_tracked_user_state(
         &self,
         user_uuid: impl AsRef<str>,
     ) -> Result<Option<(crate::entry::ID, Vec<crate::entry::ID>)>> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE)?;
+        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
         // Check if user exists
-        if !user_tracking.contains_path_str(user_uuid.as_ref()) {
+        if !user_tracking.contains_path_str(user_uuid.as_ref()).await {
             return Ok(None);
         }
 
         // Get preferences DB ID
         let prefs_db_id_str = user_tracking
             .get_path_as::<String>(path!(user_uuid.as_ref(), "preferences_db_id"))
+            .await
             .map_err(|_| {
                 Error::Sync(SyncError::SerializationError(
                     "Missing preferences_db_id field".to_string(),
@@ -103,6 +109,7 @@ impl<'a> UserSyncManager<'a> {
         // Get preferences tips
         let tips_json = user_tracking
             .get_path_as::<String>(path!(user_uuid.as_ref(), "preferences_tips"))
+            .await
             .unwrap_or_else(|_| "[]".to_string());
         let tips_strings: Vec<String> = serde_json::from_str(&tips_json).unwrap_or_default();
         let tips: Vec<crate::entry::ID> = tips_strings
@@ -125,18 +132,20 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn update_tracked_tips(
+    pub(super) async fn update_tracked_tips(
         &self,
         user_uuid: impl AsRef<str>,
         new_tips: &[crate::entry::ID],
     ) -> Result<()> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE)?;
+        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
         // Convert tips to strings for JSON serialization
         let tips_strings: Vec<String> = new_tips.iter().map(|id| id.to_string()).collect();
         let tips_json = serde_json::to_string(&tips_strings).unwrap();
 
-        user_tracking.set_path(path!(user_uuid.as_ref(), "preferences_tips"), tips_json)?;
+        user_tracking
+            .set_path(path!(user_uuid.as_ref(), "preferences_tips"), tips_json)
+            .await?;
 
         debug!(user_uuid = %user_uuid.as_ref(), tip_count = new_tips.len(), "Updated user preferences tips");
         Ok(())
@@ -152,18 +161,18 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn link_user_to_database(
+    pub(super) async fn link_user_to_database(
         &self,
         database_id: &crate::entry::ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
         let db_id_str = database_id.to_string();
 
         // Get existing users list for this database
         let users_path = path!(&db_id_str, "users");
-        let mut users: Vec<serde_json::Value> = database_users
-            .get_path_as::<String>(&users_path)
+        let users_result = database_users.get_path_as::<String>(&users_path).await;
+        let mut users: Vec<serde_json::Value> = users_result
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_else(Vec::new);
@@ -184,7 +193,9 @@ impl<'a> UserSyncManager<'a> {
 
             // Store updated users list
             let users_json = serde_json::to_string(&users).unwrap();
-            database_users.set_path(&users_path, users_json)?;
+            database_users
+                .set_path(&users_path, users_json)
+                .await?;
 
             debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Linked user to database for sync tracking");
         }
@@ -200,17 +211,17 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn unlink_user_from_database(
+    pub(super) async fn unlink_user_from_database(
         &self,
         database_id: &crate::entry::ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
         let db_id_str = database_id.to_string();
 
         // Get existing users list
         let users_path = path!(&db_id_str, "users");
-        if let Ok(users_json) = database_users.get_path_as::<String>(&users_path)
+        if let Ok(users_json) = database_users.get_path_as::<String>(&users_path).await
             && let Ok(mut users) = serde_json::from_str::<Vec<serde_json::Value>>(&users_json)
         {
             let initial_len = users.len();
@@ -226,11 +237,13 @@ impl<'a> UserSyncManager<'a> {
             if users.len() != initial_len {
                 if users.is_empty() {
                     // Remove entire database record if no users left
-                    database_users.delete(&db_id_str)?;
+                    database_users.delete(&db_id_str).await?;
                 } else {
                     // Update users list
                     let updated_json = serde_json::to_string(&users).unwrap();
-                    database_users.set_path(&users_path, updated_json)?;
+                    database_users
+                        .set_path(&users_path, updated_json)
+                        .await?;
                 }
 
                 debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Unlinked user from database sync tracking");
@@ -250,13 +263,16 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A vector of user UUIDs
-    pub(super) fn get_linked_users(&self, database_id: &crate::entry::ID) -> Result<Vec<String>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
+    pub(super) async fn get_linked_users(
+        &self,
+        database_id: &crate::entry::ID,
+    ) -> Result<Vec<String>> {
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
         let db_id_str = database_id.to_string();
 
         let users_path = path!(&db_id_str, "users");
-        let users: Vec<serde_json::Value> = database_users
-            .get_path_as::<String>(&users_path)
+        let users_result = database_users.get_path_as::<String>(&users_path).await;
+        let users: Vec<serde_json::Value> = users_result
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_else(Vec::new);
@@ -278,17 +294,17 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A vector of database IDs
-    pub(super) fn get_linked_databases(
+    pub(super) async fn get_linked_databases(
         &self,
         user_uuid: impl AsRef<str>,
     ) -> Result<Vec<crate::entry::ID>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
-        let all_databases = database_users.get_all()?;
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let all_databases = database_users.get_all().await?;
         let mut result = Vec::new();
 
         for db_id_str in all_databases.keys() {
             let users_path = path!(db_id_str, "users");
-            if let Ok(users_json) = database_users.get_path_as::<String>(&users_path)
+            if let Ok(users_json) = database_users.get_path_as::<String>(&users_path).await
                 && let Ok(users) = serde_json::from_str::<Vec<serde_json::Value>>(&users_json)
             {
                 // Check if this user is in the list
@@ -320,18 +336,20 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) fn set_combined_settings(
+    pub(super) async fn set_combined_settings(
         &self,
         database_id: &crate::entry::ID,
         settings: &crate::user::types::SyncSettings,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
         let db_id_str = database_id.to_string();
 
         let settings_json = serde_json::to_string(settings)
             .map_err(|e| Error::Sync(SyncError::SerializationError(e.to_string())))?;
 
-        database_users.set_path(path!(&db_id_str, "combined_settings"), settings_json)?;
+        database_users
+            .set_path(path!(&db_id_str, "combined_settings"), settings_json)
+            .await?;
 
         debug!(database_id = %database_id, "Updated combined sync settings");
         Ok(())
@@ -347,15 +365,15 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// The combined sync settings, or None if not found
-    pub(super) fn get_combined_settings(
+    pub(super) async fn get_combined_settings(
         &self,
         database_id: &crate::entry::ID,
     ) -> Result<Option<crate::user::types::SyncSettings>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE)?;
+        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
         let db_id_str = database_id.to_string();
 
         let settings_path = path!(&db_id_str, "combined_settings");
-        match database_users.get_path_as::<String>(&settings_path) {
+        match database_users.get_path_as::<String>(&settings_path).await {
             Ok(settings_json) => {
                 let settings = serde_json::from_str(&settings_json).map_err(|e| {
                     Error::Sync(SyncError::SerializationError(format!(

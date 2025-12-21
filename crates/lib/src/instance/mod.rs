@@ -6,6 +6,8 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex, Weak},
 };
 
@@ -42,26 +44,28 @@ pub enum WriteSource {
     Remote,
 }
 
-/// Callback function trait for write operations.
+/// Type alias for async write callback return type.
+///
+/// We use a boxed future for callbacks. Note: The future is NOT `Send` because
+/// internal operations use `Rc`/`RefCell`. Callbacks must run on the current thread.
+pub type AsyncWriteCallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+/// Async callback function type for write operations.
 ///
 /// Receives the entry that was written, the database it was written to, and the instance.
+/// Returns a boxed future that resolves to a Result.
 /// Used for both local and remote write callbacks.
 ///
-/// This trait alias can be used both as a trait bound (e.g., `F: WriteCallback`) and as a
-/// trait object type for storage (e.g., `Arc<dyn WriteCallback>`).
-pub trait WriteCallback:
-    Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync
-{
-}
-
-// Blanket implementation: any type that satisfies the bounds automatically implements WriteCallback
-impl<T> WriteCallback for T where
-    T: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync
-{
-}
+/// Note: Callbacks are NOT `Send` because internal operations use non-thread-safe types.
+/// They must be executed on the current thread.
+pub type AsyncWriteCallback = Arc<
+    dyn for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> AsyncWriteCallbackFuture<'a>
+        + Send
+        + std::marker::Sync,
+>;
 
 /// Type alias for a collection of write callbacks
-type CallbackVec = Vec<Arc<dyn WriteCallback>>;
+type CallbackVec = Vec<AsyncWriteCallback>;
 
 /// Type alias for the per-database callback map key
 type CallbackKey = (WriteSource, ID);
@@ -192,22 +196,22 @@ impl Instance {
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
+    pub async fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
         use crate::constants::{DATABASES, USERS};
 
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Load device_key first
-        let _device_key = match backend.get_private_key(DEVICE_KEY_NAME)? {
+        let _device_key = match backend.get_private_key(DEVICE_KEY_NAME).await? {
             Some(key) => key,
             None => {
                 // New backend: initialize like create()
-                return Self::create_internal(backend);
+                return Self::create_internal(backend).await;
             }
         };
 
         // Existing backend: load system databases
-        let all_roots = backend.all_roots()?;
+        let all_roots = backend.all_roots().await?;
 
         // Find system databases by name
         let mut users_db_root = None;
@@ -236,7 +240,7 @@ impl Instance {
                 }),
             };
             let temp_db = Database::open_readonly(root_id.clone(), &temp_instance)?;
-            if let Ok(name) = temp_db.get_name() {
+            if let Ok(name) = temp_db.get_name().await {
                 match name.as_str() {
                     USERS => {
                         if users_db_root.is_some() {
@@ -328,20 +332,20 @@ impl Instance {
     /// let db = user.create_database(settings, &default_key)?;
     /// # Ok::<(), eidetica::Error>(())
     /// ```
-    pub fn create(backend: Box<dyn BackendImpl>) -> Result<Self> {
+    pub async fn create(backend: Box<dyn BackendImpl>) -> Result<Self> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Check if already initialized
-        if backend.get_private_key(DEVICE_KEY_NAME)?.is_some() {
+        if backend.get_private_key(DEVICE_KEY_NAME).await?.is_some() {
             return Err(InstanceError::InstanceAlreadyExists.into());
         }
 
         // Create new instance
-        Self::create_internal(backend)
+        Self::create_internal(backend).await
     }
 
     /// Internal implementation of new that works with Arc<dyn BackendImpl>
-    pub(crate) fn create_internal(backend: Arc<dyn BackendImpl>) -> Result<Self> {
+    pub(crate) async fn create_internal(backend: Arc<dyn BackendImpl>) -> Result<Self> {
         use crate::{
             auth::crypto::{format_public_key, generate_keypair},
             user::system_databases::{create_databases_tracking, create_users_database},
@@ -350,7 +354,7 @@ impl Instance {
         // 1. Generate and store instance device key (_device_key)
         let (device_key, device_pubkey) = generate_keypair();
         let device_pubkey_str = format_public_key(&device_pubkey);
-        backend.store_private_key(DEVICE_KEY_NAME, device_key.clone())?;
+        backend.store_private_key(DEVICE_KEY_NAME, device_key.clone()).await?;
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -372,9 +376,9 @@ impl Instance {
                 global_write_callbacks: Mutex::new(HashMap::new()),
             }),
         };
-        let users_db = create_users_database(&temp_instance, &device_key, &device_pubkey_str)?;
+        let users_db = create_users_database(&temp_instance, &device_key, &device_pubkey_str).await?;
         let databases_db =
-            create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str)?;
+            create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str).await?;
 
         // 3. Store root IDs and return instance
         let inner = Arc::new(InstanceInternal {
@@ -397,22 +401,22 @@ impl Instance {
     // === Backend pass-through methods (pub(crate) for internal use) ===
 
     /// Get an entry from the backend
-    pub(crate) fn get(&self, id: &crate::entry::ID) -> Result<crate::entry::Entry> {
-        self.inner.backend.get(id)
+    pub(crate) async fn get(&self, id: &crate::entry::ID) -> Result<crate::entry::Entry> {
+        self.inner.backend.get(id).await
     }
 
     /// Put an entry into the backend
-    pub(crate) fn put(
+    pub(crate) async fn put(
         &self,
         verification_status: crate::backend::VerificationStatus,
         entry: crate::entry::Entry,
     ) -> Result<()> {
-        self.inner.backend.put(verification_status, entry)
+        self.inner.backend.put(verification_status, entry).await
     }
 
     /// Get tips for a tree
-    pub(crate) fn get_tips(&self, tree: &crate::entry::ID) -> Result<Vec<crate::entry::ID>> {
-        self.inner.backend.get_tips(tree)
+    pub(crate) async fn get_tips(&self, tree: &crate::entry::ID) -> Result<Vec<crate::entry::ID>> {
+        self.inner.backend.get_tips(tree).await
     }
 
     // === System database accessors ===
@@ -420,11 +424,12 @@ impl Instance {
     /// Get the _users database
     ///
     /// This constructs a Database instance on-the-fly to avoid circular references.
-    pub(crate) fn users_db(&self) -> Result<Database> {
+    pub(crate) async fn users_db(&self) -> Result<Database> {
         let device_key = self
             .inner
             .backend
-            .get_private_key(DEVICE_KEY_NAME)?
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
             .ok_or(InstanceError::DeviceKeyNotFound)?;
 
         Database::open(
@@ -448,11 +453,11 @@ impl Instance {
     ///
     /// # Returns
     /// A Result containing the user's UUID (stable internal identifier)
-    pub fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
+    pub async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
         use crate::user::system_databases::create_user;
 
-        let users_db = self.users_db()?;
-        let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password)?;
+        let users_db = self.users_db().await?;
+        let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password).await?;
         Ok(user_uuid)
     }
 
@@ -467,22 +472,22 @@ impl Instance {
     ///
     /// # Returns
     /// A Result containing the User session
-    pub fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
+    pub async fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
         use crate::user::system_databases::login_user;
 
-        let users_db = self.users_db()?;
-        login_user(&users_db, self, user_id, password)
+        let users_db = self.users_db().await?;
+        login_user(&users_db, self, user_id, password).await
     }
 
     /// List all user IDs.
     ///
     /// # Returns
     /// A Result containing a vector of user IDs
-    pub fn list_users(&self) -> Result<Vec<String>> {
+    pub async fn list_users(&self) -> Result<Vec<String>> {
         use crate::user::system_databases::list_users;
 
-        let users_db = self.users_db()?;
-        list_users(&users_db)
+        let users_db = self.users_db().await?;
+        list_users(&users_db).await
     }
 
     // === User-Sync Integration ===
@@ -497,11 +502,12 @@ impl Instance {
     ///
     /// # Returns
     /// A `Result` containing the device's public key (device ID).
-    pub fn device_id(&self) -> Result<VerifyingKey> {
+    pub async fn device_id(&self) -> Result<VerifyingKey> {
         let device_key = self
             .inner
             .backend
-            .get_private_key(DEVICE_KEY_NAME)?
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
             .ok_or_else(|| crate::Error::from(InstanceError::DeviceKeyNotFound))?;
         Ok(device_key.verifying_key())
     }
@@ -513,8 +519,8 @@ impl Instance {
     ///
     /// # Returns
     /// A `Result` containing the formatted device ID string.
-    pub fn device_id_string(&self) -> Result<String> {
-        let device_key = self.device_id()?;
+    pub async fn device_id_string(&self) -> Result<String> {
+        let device_key = self.device_id().await?;
         Ok(format_public_key(&device_key))
     }
 
@@ -525,10 +531,10 @@ impl Instance {
     ///
     /// # Returns
     /// A `Result` containing the loaded `Database` or an error if the root ID is not found.
-    pub fn load_database(&self, root_id: &ID) -> Result<Database> {
+    pub async fn load_database(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
-        self.inner.backend.get(root_id)?;
+        self.inner.backend.get(root_id).await?;
 
         // Create a database object with the given root_id
         let database = Database::open_readonly(root_id.clone(), self)?;
@@ -543,8 +549,8 @@ impl Instance {
     /// For user-facing database discovery, use `User::find_database()` instead.
     // TODO: Will be used for Admin users
     #[allow(dead_code)]
-    pub(crate) fn all_databases(&self) -> Result<Vec<Database>> {
-        let root_ids = self.inner.backend.all_roots()?;
+    pub(crate) async fn all_databases(&self) -> Result<Vec<Database>> {
+        let root_ids = self.inner.backend.all_roots().await?;
         let mut databases = Vec::new();
 
         for root_id in root_ids {
@@ -566,14 +572,14 @@ impl Instance {
     /// Returns `InstanceError::DatabaseNotFound` if no databases with the specified name are found.
     // TODO: Will be used for Admin users
     #[allow(dead_code)]
-    pub(crate) fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
+    pub(crate) async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
-        let all_databases = self.all_databases()?;
+        let all_databases = self.all_databases().await?;
         let mut matching_databases = Vec::new();
 
         for database in all_databases {
             // Attempt to get the name from the database's settings
-            if let Ok(database_name) = database.get_name()
+            if let Ok(database_name) = database.get_name().await
                 && database_name == name
             {
                 matching_databases.push(database);
@@ -597,9 +603,9 @@ impl Instance {
     ///
     /// # Returns
     /// A `Result` containing a vector of key IDs or an error.
-    pub fn list_private_keys(&self) -> Result<Vec<String>> {
+    pub async fn list_private_keys(&self) -> Result<Vec<String>> {
         // List keys from backend storage
-        self.inner.backend.list_private_keys()
+        self.inner.backend.list_private_keys().await
     }
 
     // === Synchronization Management ===
@@ -615,22 +621,23 @@ impl Instance {
     /// # Errors
     /// Returns an error if the sync settings database cannot be created or if device key
     /// generation/storage fails.
-    pub fn enable_sync(&self) -> Result<()> {
+    pub async fn enable_sync(&self) -> Result<()> {
         // Check if there is an existing Sync database already configured
         if self.inner.sync.get().is_some() {
             return Ok(());
         }
-        let sync = Sync::new(self.clone())?;
+        let sync = Sync::new(self.clone()).await?;
         let sync_arc = Arc::new(sync);
 
         // Register global callback for automatic sync on local writes
         let sync_for_callback = Arc::clone(&sync_arc);
-        self.register_global_write_callback(
-            WriteSource::Local,
-            move |entry, database, instance| {
-                sync_for_callback.on_local_write(entry, database, instance)
-            },
-        )?;
+        self.register_global_write_callback(WriteSource::Local, move |entry, database, instance| {
+            let sync = Arc::clone(&sync_for_callback);
+            let entry = entry.clone();
+            let database = database.clone();
+            let instance = instance.clone();
+            async move { sync.on_local_write(&entry, &database, &instance).await }
+        })?;
 
         let _ = self.inner.sync.set(sync_arc);
         Ok(())
@@ -663,20 +670,26 @@ impl Instance {
     ///
     /// # Returns
     /// A Result indicating success or failure
-    pub(crate) fn register_write_callback<F>(
+    pub(crate) fn register_write_callback<F, Fut>(
         &self,
         source: WriteSource,
         tree_id: ID,
         callback: F,
     ) -> Result<()>
     where
-        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync + 'static,
+        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+            + Send
+            + std::marker::Sync
+            + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let mut callbacks = self.inner.write_callbacks.lock().unwrap();
-        callbacks
-            .entry((source, tree_id))
-            .or_default()
-            .push(Arc::new(callback));
+        callbacks.entry((source, tree_id)).or_default().push(Arc::new(
+            move |entry: &Entry, database: &Database, instance: &Instance| {
+                let fut = callback(entry, database, instance);
+                Box::pin(fut) as AsyncWriteCallbackFuture<'_>
+            },
+        ));
         Ok(())
     }
 
@@ -692,19 +705,22 @@ impl Instance {
     ///
     /// # Returns
     /// A Result indicating success or failure
-    pub(crate) fn register_global_write_callback<F>(
+    pub(crate) fn register_global_write_callback<F, Fut>(
         &self,
         source: WriteSource,
         callback: F,
     ) -> Result<()>
     where
-        F: Fn(&Entry, &Database, &Instance) -> Result<()> + Send + std::marker::Sync + 'static,
+        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut + Send + std::marker::Sync + 'static,
+        Fut: Future<Output = Result<()>> + 'static,
     {
         let mut callbacks = self.inner.global_write_callbacks.lock().unwrap();
-        callbacks
-            .entry(source)
-            .or_default()
-            .push(Arc::new(callback));
+        callbacks.entry(source).or_default().push(Arc::new(
+            move |entry: &Entry, database: &Database, instance: &Instance| {
+                let fut = callback(entry, database, instance);
+                Box::pin(fut) as AsyncWriteCallbackFuture<'_>
+            },
+        ));
         Ok(())
     }
 
@@ -724,7 +740,7 @@ impl Instance {
     ///
     /// # Returns
     /// A Result indicating success or failure
-    pub fn put_entry(
+    pub async fn put_entry(
         &self,
         tree_id: &ID,
         verification: crate::backend::VerificationStatus,
@@ -732,7 +748,7 @@ impl Instance {
         source: WriteSource,
     ) -> Result<()> {
         // 1. Persist to backend storage
-        self.backend().put(verification, entry.clone())?;
+        self.backend().put(verification, entry.clone()).await?;
 
         // 2. Look up and execute callbacks based on write source
         // Clone the callbacks to avoid holding the lock while executing callbacks.
@@ -762,7 +778,7 @@ impl Instance {
             // Execute per-database callbacks
             if let Some(callbacks) = per_db_callbacks {
                 for callback in callbacks {
-                    if let Err(e) = callback(&entry, &database, self) {
+                    if let Err(e) = callback(&entry, &database, self).await {
                         tracing::error!(
                             tree_id = %tree_id,
                             entry_id = %entry.id(),
@@ -777,7 +793,7 @@ impl Instance {
             // Execute global callbacks
             if let Some(callbacks) = global_callbacks {
                 for callback in callbacks {
-                    if let Err(e) = callback(&entry, &database, self) {
+                    if let Err(e) = callback(&entry, &database, self).await {
                         tracing::error!(
                             tree_id = %tree_id,
                             entry_id = %entry.id(),

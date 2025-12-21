@@ -34,55 +34,55 @@ impl Backend {
     }
 
     /// Get an entry from the backend
-    pub fn get(&self, id: &ID) -> Result<Entry> {
-        self.backend_impl.get(id)
+    pub async fn get(&self, id: &ID) -> Result<Entry> {
+        self.backend_impl.get(id).await
     }
 
     /// Get verification status of an entry
-    pub fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
-        self.backend_impl.get_verification_status(id)
+    pub async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
+        self.backend_impl.get_verification_status(id).await
     }
 
     /// Put an entry into the backend with verification status
-    pub fn put(&self, verification: VerificationStatus, entry: Entry) -> Result<()> {
-        self.backend_impl.put(verification, entry)
+    pub async fn put(&self, verification: VerificationStatus, entry: Entry) -> Result<()> {
+        self.backend_impl.put(verification, entry).await
     }
 
     /// Put a verified entry (convenience method)
-    pub fn put_verified(&self, entry: Entry) -> Result<()> {
-        self.backend_impl.put_verified(entry)
+    pub async fn put_verified(&self, entry: Entry) -> Result<()> {
+        self.backend_impl.put_verified(entry).await
     }
 
     /// Put an unverified entry (convenience method)
-    pub fn put_unverified(&self, entry: Entry) -> Result<()> {
-        self.backend_impl.put_unverified(entry)
+    pub async fn put_unverified(&self, entry: Entry) -> Result<()> {
+        self.backend_impl.put_unverified(entry).await
     }
 
     /// Update verification status of an entry
-    pub fn update_verification_status(&self, id: &ID, status: VerificationStatus) -> Result<()> {
-        self.backend_impl.update_verification_status(id, status)
+    pub async fn update_verification_status(&self, id: &ID, status: VerificationStatus) -> Result<()> {
+        self.backend_impl.update_verification_status(id, status).await
     }
 
     /// Get entries by verification status
-    pub fn get_entries_by_verification_status(
+    pub async fn get_entries_by_verification_status(
         &self,
         status: VerificationStatus,
     ) -> Result<Vec<ID>> {
-        self.backend_impl.get_entries_by_verification_status(status)
+        self.backend_impl.get_entries_by_verification_status(status).await
     }
 
     /// Get tips for a tree
-    pub fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        self.backend_impl.get_tips(tree)
+    pub async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
+        self.backend_impl.get_tips(tree).await
     }
 
     /// Get tips for a specific store within a tree
-    pub fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
-        self.backend_impl.get_store_tips(tree, store)
+    pub async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
+        self.backend_impl.get_store_tips(tree, store).await
     }
 
     /// Get store tips up to specific entries
-    pub fn get_store_tips_up_to_entries(
+    pub async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         store: &str,
@@ -90,81 +90,83 @@ impl Backend {
     ) -> Result<Vec<ID>> {
         self.backend_impl
             .get_store_tips_up_to_entries(tree, store, up_to)
+            .await
     }
 
     /// Get all root entries
-    pub fn all_roots(&self) -> Result<Vec<ID>> {
-        self.backend_impl.all_roots()
+    pub async fn all_roots(&self) -> Result<Vec<ID>> {
+        self.backend_impl.all_roots().await
     }
 
     /// Find lowest common ancestor
-    pub fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        self.backend_impl.find_lca(tree, store, entry_ids)
+    pub async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+        self.backend_impl.find_lca(tree, store, entry_ids).await
     }
 
     /// Collect root to target path
-    pub fn collect_root_to_target(&self, tree: &ID, store: &str, target: &ID) -> Result<Vec<ID>> {
+    pub async fn collect_root_to_target(&self, tree: &ID, store: &str, target: &ID) -> Result<Vec<ID>> {
         self.backend_impl
             .collect_root_to_target(tree, store, target)
+            .await
     }
 
     /// Get all entries in a tree
-    pub fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
-        self.backend_impl.get_tree(tree)
+    pub async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
+        self.backend_impl.get_tree(tree).await
     }
 
     /// Get all entries in a store
-    pub fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>> {
-        self.backend_impl.get_store(tree, store)
+    pub async fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>> {
+        self.backend_impl.get_store(tree, store).await
     }
 
     /// Get tree entries from tips
-    pub fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.backend_impl.get_tree_from_tips(tree, tips)
+    pub async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
+        self.backend_impl.get_tree_from_tips(tree, tips).await
     }
 
     /// Get store entries from tips
-    pub fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.backend_impl.get_store_from_tips(tree, store, tips)
+    pub async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+        self.backend_impl.get_store_from_tips(tree, store, tips).await
     }
 
     /// Store a private key
-    pub fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        self.backend_impl.store_private_key(key_name, private_key)
+    pub async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
+        self.backend_impl.store_private_key(key_name, private_key).await
     }
 
     /// Get a private key
-    pub fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        self.backend_impl.get_private_key(key_name)
+    pub async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
+        self.backend_impl.get_private_key(key_name).await
     }
 
     /// List all private keys
-    pub fn list_private_keys(&self) -> Result<Vec<String>> {
-        self.backend_impl.list_private_keys()
+    pub async fn list_private_keys(&self) -> Result<Vec<String>> {
+        self.backend_impl.list_private_keys().await
     }
 
     /// Remove a private key
-    pub fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        self.backend_impl.remove_private_key(key_name)
+    pub async fn remove_private_key(&self, key_name: &str) -> Result<()> {
+        self.backend_impl.remove_private_key(key_name).await
     }
 
     /// Get cached CRDT state
-    pub fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
-        self.backend_impl.get_cached_crdt_state(entry_id, store)
+    pub async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
+        self.backend_impl.get_cached_crdt_state(entry_id, store).await
     }
 
     /// Cache CRDT state
-    pub fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
-        self.backend_impl.cache_crdt_state(entry_id, store, state)
+    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
+        self.backend_impl.cache_crdt_state(entry_id, store, state).await
     }
 
     /// Clear CRDT cache
-    pub fn clear_crdt_cache(&self) -> Result<()> {
-        self.backend_impl.clear_crdt_cache()
+    pub async fn clear_crdt_cache(&self) -> Result<()> {
+        self.backend_impl.clear_crdt_cache().await
     }
 
     /// Get sorted store parents
-    pub fn get_sorted_store_parents(
+    pub async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
         entry_id: &ID,
@@ -172,10 +174,11 @@ impl Backend {
     ) -> Result<Vec<ID>> {
         self.backend_impl
             .get_sorted_store_parents(tree_id, entry_id, store)
+            .await
     }
 
     /// Get path from one entry to others
-    pub fn get_path_from_to(
+    pub async fn get_path_from_to(
         &self,
         tree_id: &ID,
         store: &str,
@@ -184,6 +187,7 @@ impl Backend {
     ) -> Result<Vec<ID>> {
         self.backend_impl
             .get_path_from_to(tree_id, store, from_id, to_ids)
+            .await
     }
 
     /// Get access to the underlying BackendImpl

@@ -13,11 +13,12 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     path::Path,
-    sync::RwLock,
 };
 
+use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::{
     Result,
@@ -81,8 +82,8 @@ impl InMemory {
     }
 
     /// Returns a vector containing the IDs of all entries currently stored in the database.
-    pub fn all_ids(&self) -> Vec<ID> {
-        let entries = self.entries.read().unwrap();
+    pub async fn all_ids(&self) -> Vec<ID> {
+        let entries = self.entries.read().await;
         entries.keys().cloned().collect()
     }
 
@@ -118,12 +119,12 @@ impl InMemory {
     ///
     /// # Returns
     /// A `Result` containing a `HashMap` mapping entry IDs to their heights.
-    pub fn calculate_heights(
+    pub async fn calculate_heights(
         &self,
         tree: &ID,
         subtree: Option<&str>,
     ) -> Result<std::collections::HashMap<ID, usize>> {
-        cache::calculate_heights(self, tree, subtree)
+        cache::calculate_heights(self, tree, subtree).await
     }
 
     /// Sort entries by their height within a tree (exposed for testing)
@@ -134,8 +135,8 @@ impl InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or an error if height calculation fails.
-    pub fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) -> Result<()> {
-        cache::sort_entries_by_height(self, tree, entries)
+    pub async fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) -> Result<()> {
+        cache::sort_entries_by_height(self, tree, entries).await
     }
 
     /// Sort entries by their height within a subtree (exposed for testing)
@@ -147,13 +148,13 @@ impl InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or an error if height calculation fails.
-    pub fn sort_entries_by_subtree_height(
+    pub async fn sort_entries_by_subtree_height(
         &self,
         tree: &ID,
         subtree: &str,
         entries: &mut [Entry],
     ) -> Result<()> {
-        cache::sort_entries_by_subtree_height(self, tree, subtree, entries)
+        cache::sort_entries_by_subtree_height(self, tree, subtree, entries).await
     }
 
     /// Check if an entry is a tip within its tree (exposed for benchmarks)
@@ -166,8 +167,8 @@ impl InMemory {
     ///
     /// # Returns
     /// `true` if the entry is a tip, `false` otherwise
-    pub fn is_tip(&self, tree: &ID, entry_id: &ID) -> bool {
-        storage::is_tip(self, tree, entry_id)
+    pub async fn is_tip(&self, tree: &ID, entry_id: &ID) -> bool {
+        storage::is_tip(self, tree, entry_id).await
     }
 }
 
@@ -177,6 +178,7 @@ impl Default for InMemory {
     }
 }
 
+#[async_trait]
 impl BackendImpl for InMemory {
     /// Retrieves an entry by its unique content-addressable ID.
     ///
@@ -186,8 +188,8 @@ impl BackendImpl for InMemory {
     /// # Returns
     /// A `Result` containing the `Entry` if found, or a `DatabaseError::EntryNotFound` otherwise.
     /// Returns an owned copy to support concurrent access with internal synchronization.
-    fn get(&self, id: &ID) -> Result<Entry> {
-        let entries = self.entries.read().unwrap();
+    async fn get(&self, id: &ID) -> Result<Entry> {
+        let entries = self.entries.read().await;
         entries
             .get(id)
             .cloned()
@@ -201,16 +203,16 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing the `VerificationStatus` if the entry exists, or a `DatabaseError::VerificationStatusNotFound` otherwise.
-    fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
-        let verification_status_map = self.verification_status.read().unwrap();
+    async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
+        let verification_status_map = self.verification_status.read().await;
         verification_status_map
             .get(id)
             .copied()
             .ok_or_else(|| BackendError::VerificationStatusNotFound { id: id.clone() }.into())
     }
 
-    fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
-        storage::put(self, verification_status, entry)
+    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
+        storage::put(self, verification_status, entry).await
     }
 
     /// Updates the verification status of an existing entry.
@@ -224,12 +226,12 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or `DatabaseError::EntryNotFound` if the entry doesn't exist.
-    fn update_verification_status(
+    async fn update_verification_status(
         &self,
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        let mut verification_status_map = self.verification_status.write().unwrap();
+        let mut verification_status_map = self.verification_status.write().await;
         if verification_status_map.contains_key(id) {
             verification_status_map.insert(id.clone(), verification_status);
             Ok(())
@@ -248,8 +250,8 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs with the specified status.
-    fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
-        let verification_status_map = self.verification_status.read().unwrap();
+    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
+        let verification_status_map = self.verification_status.read().await;
         let ids = verification_status_map
             .iter()
             .filter(|&(_, entry_status)| *entry_status == status)
@@ -258,21 +260,21 @@ impl BackendImpl for InMemory {
         Ok(ids)
     }
 
-    fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        traversal::get_tips(self, tree)
+    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
+        traversal::get_tips(self, tree).await
     }
 
-    fn get_store_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
-        traversal::get_store_tips(self, tree, subtree)
+    async fn get_store_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+        traversal::get_store_tips(self, tree, subtree).await
     }
 
-    fn get_store_tips_up_to_entries(
+    async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         subtree: &str,
         main_entries: &[ID],
     ) -> Result<Vec<ID>> {
-        traversal::get_store_tips_up_to_entries(self, tree, subtree, main_entries)
+        traversal::get_store_tips_up_to_entries(self, tree, subtree, main_entries).await
     }
 
     /// Retrieves the IDs of all top-level root entries stored in the database.
@@ -284,8 +286,8 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing a vector of top-level root entry IDs or an error.
-    fn all_roots(&self) -> Result<Vec<ID>> {
-        let entries = self.entries.read().unwrap();
+    async fn all_roots(&self) -> Result<Vec<ID>> {
+        let entries = self.entries.read().await;
         let roots: Vec<ID> = entries
             .values()
             .filter(|entry| entry.is_root())
@@ -294,37 +296,37 @@ impl BackendImpl for InMemory {
         Ok(roots)
     }
 
-    fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
-        traversal::find_lca(self, tree, subtree, entry_ids)
+    async fn find_lca(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
+        traversal::find_lca(self, tree, subtree, entry_ids).await
     }
 
-    fn collect_root_to_target(
+    async fn collect_root_to_target(
         &self,
         tree: &ID,
         subtree: &str,
         target_entry: &ID,
     ) -> Result<Vec<ID>> {
-        traversal::collect_root_to_target(self, tree, subtree, target_entry)
+        traversal::collect_root_to_target(self, tree, subtree, target_entry).await
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
-        storage::get_tree(self, tree)
+    async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
+        storage::get_tree(self, tree).await
     }
 
-    fn get_store(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
-        storage::get_store(self, tree, subtree)
+    async fn get_store(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
+        storage::get_store(self, tree, subtree).await
     }
 
-    fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        storage::get_tree_from_tips(self, tree, tips)
+    async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
+        storage::get_tree_from_tips(self, tree, tips).await
     }
 
-    fn get_store_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        storage::get_store_from_tips(self, tree, subtree, tips)
+    async fn get_store_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+        storage::get_store_from_tips(self, tree, subtree, tips).await
     }
 
     /// Store a private key in the database's local key storage.
@@ -342,8 +344,8 @@ impl BackendImpl for InMemory {
     /// # Security Note
     /// This is a basic implementation suitable for development and testing.
     /// Production systems should consider encryption at rest and hardware security modules.
-    fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        let mut private_keys = self.private_keys.write().unwrap();
+    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
+        let mut private_keys = self.private_keys.write().await;
         private_keys.insert(key_name.to_string(), private_key);
         Ok(())
     }
@@ -355,8 +357,8 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
-    fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        let private_keys = self.private_keys.read().unwrap();
+    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
+        let private_keys = self.private_keys.read().await;
         Ok(private_keys.get(key_name).cloned())
     }
 
@@ -364,8 +366,8 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing a vector of key identifiers, or an error.
-    fn list_private_keys(&self) -> Result<Vec<String>> {
-        let private_keys = self.private_keys.read().unwrap();
+    async fn list_private_keys(&self) -> Result<Vec<String>> {
+        let private_keys = self.private_keys.read().await;
         Ok(private_keys.keys().cloned().collect())
     }
 
@@ -376,40 +378,40 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        let mut private_keys = self.private_keys.write().unwrap();
+    async fn remove_private_key(&self, key_name: &str) -> Result<()> {
+        let mut private_keys = self.private_keys.write().await;
         private_keys.remove(key_name);
         Ok(())
     }
 
-    fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
-        cache::get_cached_crdt_state(self, entry_id, subtree)
+    async fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
+        cache::get_cached_crdt_state(self, entry_id, subtree).await
     }
 
-    fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
-        cache::cache_crdt_state(self, entry_id, subtree, state)
+    async fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
+        cache::cache_crdt_state(self, entry_id, subtree, state).await
     }
 
-    fn clear_crdt_cache(&self) -> Result<()> {
-        cache::clear_crdt_cache(self)
+    async fn clear_crdt_cache(&self) -> Result<()> {
+        cache::clear_crdt_cache(self).await
     }
 
-    fn get_sorted_store_parents(
+    async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
         entry_id: &ID,
         subtree: &str,
     ) -> Result<Vec<ID>> {
-        traversal::get_sorted_store_parents(self, tree_id, entry_id, subtree)
+        traversal::get_sorted_store_parents(self, tree_id, entry_id, subtree).await
     }
 
-    fn get_path_from_to(
+    async fn get_path_from_to(
         &self,
         tree_id: &ID,
         subtree: &str,
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        traversal::get_path_from_to(self, tree_id, subtree, from_id, to_ids)
+        traversal::get_path_from_to(self, tree_id, subtree, from_id, to_ids).await
     }
 }

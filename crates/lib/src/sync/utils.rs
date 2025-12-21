@@ -36,10 +36,10 @@ use crate::{
 ///
 /// let backend = InMemory::new();
 /// let missing_ids = vec![ID::from("tip1"), ID::from("tip2")];
-/// let missing = collect_missing_ancestors(&backend, &missing_ids)?;
+/// let missing = collect_missing_ancestors(&backend, &missing_ids).await?;
 /// // Returns IDs of entries that need to be fetched from peer
 /// ```
-pub fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) -> Result<Vec<ID>> {
+pub async fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) -> Result<Vec<ID>> {
     let mut missing = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -55,7 +55,7 @@ pub fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) ->
         }
         visited.insert(entry_id.clone());
 
-        match backend.get(&entry_id) {
+        match backend.get(&entry_id).await {
             Ok(entry) => {
                 // We have this entry, but we need to check its parents
                 if let Ok(parents) = entry.parents() {
@@ -111,10 +111,10 @@ pub fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) ->
 /// let backend = InMemory::new();
 /// let our_tips = vec![ID::from("tip1"), ID::from("tip2")];
 /// let their_tips = vec![ID::from("common_ancestor")];
-/// let to_send = collect_ancestors_to_send(&backend, &our_tips, &their_tips)?;
+/// let to_send = collect_ancestors_to_send(&backend, &our_tips, &their_tips).await?;
 /// // Returns entries that peer needs, excluding what they already have
 /// ```
-pub fn collect_ancestors_to_send(
+pub async fn collect_ancestors_to_send(
     backend: &dyn BackendImpl,
     entry_ids: &[ID],
     their_tips: &[ID],
@@ -135,7 +135,7 @@ pub fn collect_ancestors_to_send(
         }
         visited.insert(entry_id.clone());
 
-        match backend.get(&entry_id) {
+        match backend.get(&entry_id).await {
             Ok(entry) => {
                 entries_to_send.insert(entry_id.clone(), entry.clone());
 
@@ -176,25 +176,25 @@ mod tests {
         Arc::new(InMemory::new())
     }
 
-    #[test]
-    fn test_collect_missing_ancestors_empty() {
+    #[tokio::test]
+    async fn test_collect_missing_ancestors_empty() {
         let backend = create_test_backend();
-        let result = collect_missing_ancestors(backend.as_ref(), &[]).unwrap();
+        let result = collect_missing_ancestors(backend.as_ref(), &[]).await.unwrap();
         assert!(result.is_empty());
     }
 
-    #[test]
-    fn test_collect_missing_ancestors_not_found() {
+    #[tokio::test]
+    async fn test_collect_missing_ancestors_not_found() {
         let backend = create_test_backend();
         let missing_id = ID::from("missing123");
 
         let result =
-            collect_missing_ancestors(backend.as_ref(), std::slice::from_ref(&missing_id)).unwrap();
+            collect_missing_ancestors(backend.as_ref(), std::slice::from_ref(&missing_id)).await.unwrap();
         assert_eq!(result, vec![missing_id]);
     }
 
-    #[test]
-    fn test_collect_missing_ancestors_present() {
+    #[tokio::test]
+    async fn test_collect_missing_ancestors_present() {
         let backend = create_test_backend();
         let entry = Entry::root_builder()
             .build()
@@ -202,21 +202,21 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry).unwrap();
+        backend.put_verified(entry).await.unwrap();
 
-        let result = collect_missing_ancestors(backend.as_ref(), &[entry_id]).unwrap();
+        let result = collect_missing_ancestors(backend.as_ref(), &[entry_id]).await.unwrap();
         assert!(result.is_empty()); // Entry exists, so nothing missing
     }
 
-    #[test]
-    fn test_collect_ancestors_to_send_empty() {
+    #[tokio::test]
+    async fn test_collect_ancestors_to_send_empty() {
         let backend = create_test_backend();
-        let result = collect_ancestors_to_send(backend.as_ref(), &[], &[]).unwrap();
+        let result = collect_ancestors_to_send(backend.as_ref(), &[], &[]).await.unwrap();
         assert!(result.is_empty());
     }
 
-    #[test]
-    fn test_collect_ancestors_to_send_single_entry() {
+    #[tokio::test]
+    async fn test_collect_ancestors_to_send_single_entry() {
         let backend = create_test_backend();
         let entry = Entry::root_builder()
             .build()
@@ -224,15 +224,15 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry.clone()).unwrap();
+        backend.put_verified(entry.clone()).await.unwrap();
 
-        let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[]).unwrap();
+        let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[]).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id(), entry.id());
     }
 
-    #[test]
-    fn test_collect_ancestors_to_send_peer_already_has() {
+    #[tokio::test]
+    async fn test_collect_ancestors_to_send_peer_already_has() {
         let backend = create_test_backend();
         let entry = Entry::root_builder()
             .build()
@@ -240,7 +240,7 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry).unwrap();
+        backend.put_verified(entry).await.unwrap();
 
         // Peer already has this entry
         let result = collect_ancestors_to_send(
@@ -248,6 +248,7 @@ mod tests {
             std::slice::from_ref(&entry_id),
             std::slice::from_ref(&entry_id),
         )
+        .await
         .unwrap();
         assert!(result.is_empty());
     }

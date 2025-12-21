@@ -11,8 +11,7 @@
 //! ## Architecture
 //!
 //! The SQL backend uses sqlx with `AnyPool` for multi-database support.
-//! All async sqlx calls are wrapped with `block_on` to maintain sync APIs.
-//! TODO: Change backends to all be async
+//! All methods are async to match the async `BackendImpl` trait.
 //!
 //! ## Schema and Migrations
 //!
@@ -32,6 +31,7 @@ pub mod schema;
 use std::any::Any;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
 use sqlx::AnyPool;
 use sqlx::Executor;
@@ -114,36 +114,6 @@ impl SqlxBackend {
     /// Check if this backend is using PostgreSQL.
     pub fn is_postgres(&self) -> bool {
         self.kind == DbKind::Postgres
-    }
-
-    /// Run an async operation synchronously using the available runtime.
-    ///
-    /// Uses the owned runtime if available. If called from within another tokio
-    /// runtime (e.g., `#[tokio::test]`), spawns the work on a separate thread.
-    ///
-    /// TODO: added to simplify initial implementation, needs cleanup
-    fn block_on<F, T>(&self, future: F) -> T
-    where
-        F: std::future::Future<Output = T> + Send,
-        T: Send,
-    {
-        if let Some(ref rt) = self.runtime {
-            // Check if we're already in a tokio runtime (e.g., #[tokio::test])
-            if tokio::runtime::Handle::try_current().is_ok() {
-                // We're in another runtime - run our block_on on a scoped thread
-                // to avoid 'static lifetime requirements
-                std::thread::scope(|s| {
-                    s.spawn(|| rt.block_on(future))
-                        .join()
-                        .expect("block_on thread panicked")
-                })
-            } else {
-                // Not in another runtime, can use block_on directly
-                rt.block_on(future)
-            }
-        } else {
-            tokio::runtime::Handle::current().block_on(future)
-        }
     }
 }
 
@@ -471,143 +441,126 @@ impl SqlxBackend {
     }
 }
 
+#[async_trait]
 impl BackendImpl for SqlxBackend {
-    fn get(&self, id: &ID) -> Result<Entry> {
-        self.block_on(storage::get(self, id))
+    async fn get(&self, id: &ID) -> Result<Entry> {
+        storage::get(self, id).await
     }
 
-    fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
-        self.block_on(storage::get_verification_status(self, id))
+    async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
+        storage::get_verification_status(self, id).await
     }
 
-    fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
-        self.block_on(storage::put(self, verification_status, entry))
+    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
+        storage::put(self, verification_status, entry).await
     }
 
-    fn update_verification_status(
+    async fn update_verification_status(
         &self,
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        self.block_on(storage::update_verification_status(
-            self,
-            id,
-            verification_status,
-        ))
+        storage::update_verification_status(self, id, verification_status).await
     }
 
-    fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
-        self.block_on(storage::get_entries_by_verification_status(self, status))
+    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
+        storage::get_entries_by_verification_status(self, status).await
     }
 
-    fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        self.block_on(traversal::get_tips(self, tree))
+    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
+        traversal::get_tips(self, tree).await
     }
 
-    fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
-        self.block_on(traversal::get_store_tips(self, tree, store))
+    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
+        traversal::get_store_tips(self, tree, store).await
     }
 
-    fn get_store_tips_up_to_entries(
+    async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         store: &str,
         main_entries: &[ID],
     ) -> Result<Vec<ID>> {
-        self.block_on(traversal::get_store_tips_up_to_entries(
-            self,
-            tree,
-            store,
-            main_entries,
-        ))
+        traversal::get_store_tips_up_to_entries(self, tree, store, main_entries).await
     }
 
-    fn all_roots(&self) -> Result<Vec<ID>> {
-        self.block_on(storage::all_roots(self))
+    async fn all_roots(&self) -> Result<Vec<ID>> {
+        storage::all_roots(self).await
     }
 
-    fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        self.block_on(traversal::find_lca(self, tree, store, entry_ids))
+    async fn find_lca(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+        traversal::find_lca(self, tree, store, entry_ids).await
     }
 
-    fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>> {
-        self.block_on(traversal::collect_root_to_target(
-            self,
-            tree,
-            store,
-            target_entry,
-        ))
+    async fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>> {
+        traversal::collect_root_to_target(self, tree, store, target_entry).await
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
 
-    fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
-        self.block_on(storage::get_tree(self, tree))
+    async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
+        storage::get_tree(self, tree).await
     }
 
-    fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>> {
-        self.block_on(storage::get_store(self, tree, store))
+    async fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>> {
+        storage::get_store(self, tree, store).await
     }
 
-    fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.block_on(traversal::get_tree_from_tips(self, tree, tips))
+    async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
+        traversal::get_tree_from_tips(self, tree, tips).await
     }
 
-    fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.block_on(traversal::get_store_from_tips(self, tree, store, tips))
+    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+        traversal::get_store_from_tips(self, tree, store, tips).await
     }
 
-    fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        self.block_on(storage::store_private_key(self, key_name, private_key))
+    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
+        storage::store_private_key(self, key_name, private_key).await
     }
 
-    fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        self.block_on(storage::get_private_key(self, key_name))
+    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
+        storage::get_private_key(self, key_name).await
     }
 
-    fn list_private_keys(&self) -> Result<Vec<String>> {
-        self.block_on(storage::list_private_keys(self))
+    async fn list_private_keys(&self) -> Result<Vec<String>> {
+        storage::list_private_keys(self).await
     }
 
-    fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        self.block_on(storage::remove_private_key(self, key_name))
+    async fn remove_private_key(&self, key_name: &str) -> Result<()> {
+        storage::remove_private_key(self, key_name).await
     }
 
-    fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
-        self.block_on(storage::get_cached_crdt_state(self, entry_id, store))
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
+        storage::get_cached_crdt_state(self, entry_id, store).await
     }
 
-    fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
-        self.block_on(storage::cache_crdt_state(self, entry_id, store, state))
+    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
+        storage::cache_crdt_state(self, entry_id, store, state).await
     }
 
-    fn clear_crdt_cache(&self) -> Result<()> {
-        self.block_on(storage::clear_crdt_cache(self))
+    async fn clear_crdt_cache(&self) -> Result<()> {
+        storage::clear_crdt_cache(self).await
     }
 
-    fn get_sorted_store_parents(
+    async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,
         entry_id: &ID,
         store: &str,
     ) -> Result<Vec<ID>> {
-        self.block_on(traversal::get_sorted_store_parents(
-            self, tree_id, entry_id, store,
-        ))
+        traversal::get_sorted_store_parents(self, tree_id, entry_id, store).await
     }
 
-    fn get_path_from_to(
+    async fn get_path_from_to(
         &self,
         tree_id: &ID,
         store: &str,
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        self.block_on(traversal::get_path_from_to(
-            self, tree_id, store, from_id, to_ids,
-        ))
+        traversal::get_path_from_to(self, tree_id, store, from_id, to_ids).await
     }
 }
 

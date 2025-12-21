@@ -39,7 +39,7 @@ impl KeyResolver {
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
-    pub fn resolve_sig_key(
+    pub async fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -50,6 +50,7 @@ impl KeyResolver {
         // In a production system, caching would need to be more sophisticated with
         // invalidation strategies based on settings changes.
         self.resolve_sig_key_with_depth(sig_key, auth_settings, instance, 0)
+            .await
     }
 
     /// Resolve authentication identifier with pubkey override for global permissions
@@ -59,7 +60,7 @@ impl KeyResolver {
     /// * `auth_settings` - Authentication settings containing auth configuration
     /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
     /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
-    pub fn resolve_sig_key_with_pubkey(
+    pub async fn resolve_sig_key_with_pubkey(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -73,13 +74,14 @@ impl KeyResolver {
             0,
             pubkey_override,
         )
+        .await
     }
 
     /// Resolve authentication identifier with recursion depth tracking
     ///
     /// This internal method tracks delegation depth to prevent infinite loops
     /// and ensures that delegation chains don't exceed reasonable limits.
-    pub fn resolve_sig_key_with_depth(
+    pub async fn resolve_sig_key_with_depth(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -87,13 +89,14 @@ impl KeyResolver {
         depth: usize,
     ) -> Result<ResolvedAuth> {
         self.resolve_sig_key_with_depth_and_pubkey(sig_key, auth_settings, instance, depth, None)
+            .await
     }
 
     /// Resolve authentication identifier with recursion depth tracking and pubkey override
     ///
     /// This internal method tracks delegation depth to prevent infinite loops
     /// and ensures that delegation chains don't exceed reasonable limits.
-    pub fn resolve_sig_key_with_depth_and_pubkey(
+    pub async fn resolve_sig_key_with_depth_and_pubkey(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
@@ -118,12 +121,9 @@ impl KeyResolver {
                 let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
                 })?;
-                self.delegation_resolver.resolve_delegation_path_with_depth(
-                    steps,
-                    auth_settings,
-                    instance,
-                    depth,
-                )
+                self.delegation_resolver
+                    .resolve_delegation_path_with_depth(steps, auth_settings, instance, depth)
+                    .await
             }
         }
     }

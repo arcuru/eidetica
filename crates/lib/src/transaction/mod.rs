@@ -153,11 +153,11 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<Self>` containing the new transaction or an error if tips are empty or invalid.
-    pub(crate) fn new_with_tips(database: &Database, tips: &[ID]) -> Result<Self> {
+    pub(crate) async fn new_with_tips(database: &Database, tips: &[ID]) -> Result<Self> {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the database root exists in backend
-            let root_exists = database.backend()?.get(database.root_id()).is_ok();
+            let root_exists = database.backend()?.get(database.root_id()).await.is_ok();
 
             if root_exists {
                 return Err(TransactionError::EmptyTipsNotAllowed.into());
@@ -168,7 +168,7 @@ impl Transaction {
         // Validate that all tips belong to the same tree
         let backend = database.backend()?;
         for tip_id in tips {
-            let entry = backend.get(tip_id)?;
+            let entry = backend.get(tip_id).await?;
             if !entry.in_tree(database.root_id()) {
                 return Err(TransactionError::InvalidTip {
                     tip_id: tip_id.to_string(),
@@ -392,8 +392,8 @@ impl Transaction {
     /// Returns an error if:
     /// - Unable to create the Registry for the _index subtree
     /// - Operation has already been committed
-    pub fn get_index(&self) -> Result<Registry> {
-        Registry::new(self, INDEX)
+    pub async fn get_index(&self) -> Result<Registry> {
+        Registry::new(self, INDEX).await
     }
 
     /// Set the tree root field for the entry being built.
@@ -460,7 +460,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or an error.
-    pub(crate) fn update_subtree(
+    pub(crate) async fn update_subtree(
         &self,
         subtree: impl AsRef<str>,
         data: impl AsRef<str>,
@@ -478,7 +478,7 @@ impl Transaction {
         if !subtrees.contains(&subtree.to_string()) {
             // FIXME: we should get the subtree tips while still using the parent pointers
             let backend = self.db.backend()?;
-            let tips = backend.get_store_tips(self.db.root_id(), subtree)?;
+            let tips = backend.get_store_tips(self.db.root_id(), subtree).await?;
             builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
             builder.set_subtree_parents_mut(subtree, tips);
         } else {
@@ -506,14 +506,14 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the `Store` handle.
-    pub fn get_store<T>(&self, subtree_name: impl Into<String>) -> Result<T>
+    pub async fn get_store<T>(&self, subtree_name: impl Into<String>) -> Result<T>
     where
         T: Store,
     {
         let subtree_name = subtree_name.into();
 
         // Initialize subtree parents before checking _index
-        self.init_subtree_parents(&subtree_name)?;
+        self.init_subtree_parents(&subtree_name).await?;
 
         // Skip special system subtrees to avoid circular dependencies
         let is_system_subtree =
@@ -521,14 +521,14 @@ impl Transaction {
 
         if is_system_subtree {
             // System subtrees don't use _index registration
-            return T::new(self, subtree_name);
+            return T::new(self, subtree_name).await;
         }
 
         // Check _index to determine if this is a new or existing subtree
-        let index_store = self.get_index()?;
-        if index_store.contains(&subtree_name) {
+        let index_store = self.get_index().await?;
+        if index_store.contains(&subtree_name).await {
             // Type validation for existing subtree
-            let subtree_info = index_store.get_entry(&subtree_name)?;
+            let subtree_info = index_store.get_entry(&subtree_name).await?;
 
             if !T::supports_type_id(&subtree_info.type_id) {
                 return Err(StoreError::TypeMismatch {
@@ -540,40 +540,48 @@ impl Transaction {
             }
 
             // Type supported - create the Store
-            T::new(self, subtree_name)
+            T::new(self, subtree_name).await
         } else {
             // New subtree - init registers it in _index
-            T::init(self, subtree_name)
+            T::init(self, subtree_name).await
         }
     }
 
     /// Get the subtree tips reachable from the given main tree entries.
-    fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
+    async fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
         self.db.backend()?.get_store_tips_up_to_entries(
             self.db.root_id(),
             subtree_name,
             main_parents,
-        )
+        ).await
     }
 
     /// Initialize subtree parents if this is the first time accessing this subtree
     /// in this transaction.
-    fn init_subtree_parents(&self, subtree_name: &str) -> Result<()> {
+    pub(crate) async fn init_subtree_parents(&self, subtree_name: &str) -> Result<()> {
+        let main_parents = {
+            let builder_ref = self.entry_builder.borrow();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+            let subtrees = builder.subtrees();
+            if subtrees.contains(&subtree_name.to_string()) {
+                return Ok(()); // Already initialized
+            }
+            builder.parents().unwrap_or_default()
+        };
+
+        let tips = self.get_subtree_tips(subtree_name, &main_parents).await?;
+
         let mut builder_ref = self.entry_builder.borrow_mut();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-        let subtrees = builder.subtrees();
-
-        if !subtrees.contains(&subtree_name.to_string()) {
-            let main_parents = builder.parents().unwrap_or_default();
-            let tips = self.get_subtree_tips(subtree_name, &main_parents)?;
-
-            // Initialize the subtree with proper parent relationships
-            // set_subtree_parents_mut creates the subtree with data=None if it doesn't exist
-            builder.set_subtree_parents_mut(subtree_name, tips);
-        }
+        // Initialize the subtree with proper parent relationships
+        // set_subtree_parents_mut creates the subtree with data=None if it doesn't exist
+        builder.set_subtree_parents_mut(subtree_name, tips);
 
         Ok(())
     }
@@ -650,40 +658,59 @@ impl Transaction {
     /// # Returns
     /// A `Result<T>` containing the merged historical data of type `T`. Returns `Ok(T::default())`
     /// if the subtree has no history prior to this transaction.
-    pub(crate) fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
+    pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
         T: CRDT + Default,
     {
         let subtree_name = subtree_name.as_ref();
-        // Get the entry builder to get parent pointers
-        let mut builder_ref = self.entry_builder.borrow_mut();
-        let builder = builder_ref
-            .as_mut()
-            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-        // If we haven't cached the tips for this subtree yet, get them now
-        let subtrees = builder.subtrees();
-        if !subtrees.contains(&subtree_name.to_string()) {
-            // Check if this transaction was created with custom tips vs current tips
-            let main_parents = builder.parents().unwrap_or_default();
-            let current_database_tips = self.db.backend()?.get_tips(self.db.root_id())?;
+        // Check if we need to initialize subtree tips (get data from RefCell before await)
+        let (needs_init, main_parents) = {
+            let builder_ref = self.entry_builder.borrow();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+            let subtrees = builder.subtrees();
+            if subtrees.contains(&subtree_name.to_string()) {
+                (false, Vec::new())
+            } else {
+                (true, builder.parents().unwrap_or_default())
+            }
+        };
+
+        // Initialize subtree tips if needed (async operations)
+        if needs_init {
+            let current_database_tips = self.db.backend()?.get_tips(self.db.root_id()).await?;
 
             let tips = if main_parents == current_database_tips {
                 let backend = self.db.backend()?;
-                backend.get_store_tips(self.db.root_id(), subtree_name)?
+                backend.get_store_tips(self.db.root_id(), subtree_name).await?
             } else {
                 // This transaction uses custom tips - use special handler
                 self.db.backend()?.get_store_tips_up_to_entries(
                     self.db.root_id(),
                     subtree_name,
                     &main_parents,
-                )?
+                ).await?
             };
+
+            // Update RefCell after async operations
+            let mut builder_ref = self.entry_builder.borrow_mut();
+            let builder = builder_ref
+                .as_mut()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
             builder.set_subtree_parents_mut(subtree_name, tips);
         }
 
         // Get the parent pointers for this subtree
-        let parents = builder.subtree_parents(subtree_name).unwrap_or_default();
+        let parents = {
+            let builder_ref = self.entry_builder.borrow();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            builder.subtree_parents(subtree_name).unwrap_or_default()
+        };
 
         // If there are no parents, return a default
         if parents.is_empty() {
@@ -691,7 +718,7 @@ impl Transaction {
         }
 
         // Compute the CRDT state using LCA-based ROOT-to-target computation
-        self.compute_subtree_state_lca_based(subtree_name, &parents)
+        self.compute_subtree_state_lca_based(subtree_name, &parents).await
     }
 
     /// Computes the CRDT state for a subtree using correct recursive LCA-based algorithm.
@@ -710,7 +737,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the computed CRDT state
-    fn compute_subtree_state_lca_based<T>(
+    async fn compute_subtree_state_lca_based<T>(
         &self,
         subtree_name: impl AsRef<str>,
         entry_ids: &[ID],
@@ -727,17 +754,17 @@ impl Transaction {
 
         // If we have a single entry, compute its state recursively
         if entry_ids.len() == 1 {
-            return self.compute_single_entry_state_recursive(subtree_name, &entry_ids[0]);
+            return self.compute_single_entry_state_recursive(subtree_name, &entry_ids[0]).await;
         }
 
         // Multiple entries: find LCA and compute state from there
         let lca_id = self
             .db
             .backend()?
-            .find_lca(self.db.root_id(), subtree_name, entry_ids)?;
+            .find_lca(self.db.root_id(), subtree_name, entry_ids).await?;
 
         // Get the LCA state recursively
-        let mut result = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
+        let mut result = self.compute_single_entry_state_recursive(subtree_name, &lca_id).await?;
 
         // Get all entries from LCA to all tip entries (deduplicated and sorted)
         let path_entries = {
@@ -746,11 +773,11 @@ impl Transaction {
                 subtree_name,
                 &lca_id,
                 entry_ids,
-            )?
+            ).await?
         };
 
         // Merge all path entries in order
-        result = self.merge_path_entries(subtree_name, result, &path_entries)?;
+        result = self.merge_path_entries(subtree_name, result, &path_entries).await?;
 
         Ok(result)
     }
@@ -771,101 +798,96 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the computed CRDT state for the entry
-    fn compute_single_entry_state_recursive<T>(
-        &self,
-        subtree_name: &str,
-        entry_id: &ID,
-    ) -> Result<T>
+    fn compute_single_entry_state_recursive<'a, T>(
+        &'a self,
+        subtree_name: &'a str,
+        entry_id: &'a ID,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + 'a>>
     where
-        T: CRDT + Default,
+        T: CRDT + Default + 'a,
     {
-        // Step 1: Check if already cached
-        {
+        Box::pin(async move {
+            // Step 1: Check if already cached
             if let Some(cached_state) = self
                 .db
                 .backend()?
-                .get_cached_crdt_state(entry_id, subtree_name)?
+                .get_cached_crdt_state(entry_id, subtree_name)
+                .await?
             {
                 // Decrypt cached state if encryptor is registered
                 let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
                 let result: T = serde_json::from_str(&decrypted)?;
                 return Ok(result);
             }
-        }
 
-        // Get the parents of this entry in the subtree
-        let parents = {
-            self.db.backend()?.get_sorted_store_parents(
+            // Get the parents of this entry in the subtree
+            let parents = self.db.backend()?.get_sorted_store_parents(
                 self.db.root_id(),
                 entry_id,
                 subtree_name,
-            )?
-        };
+            ).await?;
 
-        // Step 2: Compute LCA state recursively
-        let (lca_state, lca_id_opt) = if parents.is_empty() {
-            // No parents - this is a root, start with default
-            (T::default(), None)
-        } else if parents.len() == 1 {
-            // Single parent - recursively get its state
-            (
-                self.compute_single_entry_state_recursive(subtree_name, &parents[0])?,
-                None,
-            )
-        } else {
-            // Multiple parents - find LCA and get its state
-            let lca_id = {
-                self.db
+            // Step 2: Compute LCA state recursively
+            let (lca_state, lca_id_opt) = if parents.is_empty() {
+                // No parents - this is a root, start with default
+                (T::default(), None)
+            } else if parents.len() == 1 {
+                // Single parent - recursively get its state
+                (
+                    self.compute_single_entry_state_recursive(subtree_name, &parents[0]).await?,
+                    None,
+                )
+            } else {
+                // Multiple parents - find LCA and get its state
+                let lca_id = self.db
                     .backend()?
-                    .find_lca(self.db.root_id(), subtree_name, &parents)?
+                    .find_lca(self.db.root_id(), subtree_name, &parents)
+                    .await?;
+                let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id).await?;
+                (lca_state, Some(lca_id))
             };
-            let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id)?;
-            (lca_state, Some(lca_id))
-        };
 
-        // Step 3: Merge entries from LCA to current entry
-        let mut result = lca_state;
+            // Step 3: Merge entries from LCA to current entry
+            let mut result = lca_state;
 
-        // If we have multiple parents, we need to merge paths from LCA to all parents
-        if let Some(lca_id) = lca_id_opt {
-            // Get all entries from LCA to all parents (deduplicated and sorted)
-            let path_entries = {
-                self.db.backend()?.get_path_from_to(
+            // If we have multiple parents, we need to merge paths from LCA to all parents
+            if let Some(lca_id) = lca_id_opt {
+                // Get all entries from LCA to all parents (deduplicated and sorted)
+                let path_entries = self.db.backend()?.get_path_from_to(
                     self.db.root_id(),
                     subtree_name,
                     &lca_id,
                     &parents,
-                )?
+                ).await?;
+
+                // Merge all path entries in order
+                result = self.merge_path_entries(subtree_name, result, &path_entries).await?;
+            }
+
+            // Finally, merge the current entry's local data
+            let local_data = {
+                let entry = self.db.backend()?.get(entry_id).await?;
+                if let Ok(data) = entry.data(subtree_name) {
+                    // Decrypt before deserializing
+                    let plaintext = self.decrypt_if_needed(subtree_name, data)?;
+                    serde_json::from_str::<T>(&plaintext)?
+                } else {
+                    T::default()
+                }
             };
 
-            // Merge all path entries in order
-            result = self.merge_path_entries(subtree_name, result, &path_entries)?;
-        }
+            result = result.merge(&local_data)?;
 
-        // Finally, merge the current entry's local data
-        let local_data = {
-            let entry = self.db.backend()?.get(entry_id)?;
-            if let Ok(data) = entry.data(subtree_name) {
-                // Decrypt before deserializing
-                let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_str::<T>(&plaintext)?
-            } else {
-                T::default()
-            }
-        };
-
-        result = result.merge(&local_data)?;
-
-        // Cache the result (encrypted if encryptor is registered)
-        {
+            // Cache the result (encrypted if encryptor is registered)
             let serialized_state = serde_json::to_string(&result)?;
             let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db
                 .backend()?
-                .cache_crdt_state(entry_id, subtree_name, to_cache)?;
-        }
+                .cache_crdt_state(entry_id, subtree_name, to_cache)
+                .await?;
 
-        Ok(result)
+            Ok(result)
+        })
     }
 
     /// Merges a sequence of entries into a CRDT state.
@@ -877,12 +899,12 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the merged CRDT state
-    fn merge_path_entries<T>(&self, subtree_name: &str, mut state: T, entry_ids: &[ID]) -> Result<T>
+    async fn merge_path_entries<T>(&self, subtree_name: &str, mut state: T, entry_ids: &[ID]) -> Result<T>
     where
         T: CRDT + Clone + Default + serde::de::DeserializeOwned,
     {
         for entry_id in entry_ids {
-            let entry = self.db.backend()?.get(entry_id)?;
+            let entry = self.db.backend()?.get(entry_id).await?;
 
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
@@ -918,7 +940,7 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<ID>` containing the ID of the committed entry.
-    pub fn commit(self) -> Result<ID> {
+    pub async fn commit(self) -> Result<ID> {
         // Check if this is a settings subtree update and get the effective settings before any borrowing
         let has_settings_update = {
             let builder_cell = self.entry_builder.borrow();
@@ -929,7 +951,7 @@ impl Transaction {
         };
 
         // Get settings using full CRDT state computation
-        let historical_settings = self.get_full_state::<Doc>(SETTINGS)?;
+        let historical_settings = self.get_full_state::<Doc>(SETTINGS).await?;
 
         // However, if this is a settings update and there's no historical auth but staged auth exists,
         // use the staged settings for validation (this handles initial database creation with auth)
@@ -973,28 +995,61 @@ impl Transaction {
 
         // Ensure _index constraint: subtrees referenced in _index must appear in Entry.
         // This adds subtrees with None data if they're referenced in _index but not yet in builder.
+        // First, get the data we need before any async operations
+        let (_index_data_opt, main_parents, missing_subtrees) = {
+            let builder_ref = self.entry_builder.borrow();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+
+            let index_data_opt = builder.data(INDEX).ok().map(String::from);
+            let main_parents = builder.parents().unwrap_or_default();
+            let existing_subtrees = builder.subtrees();
+
+            // Find missing subtrees
+            let missing = if let Some(ref index_data) = index_data_opt
+                && let Ok(index_doc) = serde_json::from_str::<Doc>(index_data)
+            {
+                index_doc.keys()
+                    .filter(|name| !existing_subtrees.contains(&name.to_string()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+            (index_data_opt, main_parents, missing)
+        };
+
+        // Get tips for missing subtrees (async)
+        let mut subtree_tips: Vec<(String, Vec<ID>)> = Vec::new();
+        for subtree_name in missing_subtrees {
+            let tips = self.get_subtree_tips(&subtree_name, &main_parents).await?;
+            subtree_tips.push((subtree_name, tips));
+        }
+
+        // Now update the builder with the tips
         {
             let mut builder_ref = self.entry_builder.borrow_mut();
             let builder = builder_ref
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-            // Check if _index was modified in this transaction
-            if let Ok(index_data) = builder.data(INDEX)
-                && let Ok(index_doc) = serde_json::from_str::<Doc>(index_data)
-            {
-                let main_parents = builder.parents().unwrap_or_default();
-                for subtree_name in index_doc.keys() {
-                    if !builder.subtrees().contains(&subtree_name.to_string()) {
-                        // Subtree referenced in _index but not in builder - add with None data
-                        let tips = self.get_subtree_tips(subtree_name, &main_parents)?;
-                        builder.set_subtree_parents_mut(subtree_name, tips);
-                    }
-                }
+            for (subtree_name, tips) in subtree_tips {
+                builder.set_subtree_parents_mut(&subtree_name, tips);
             }
 
             builder.remove_empty_subtrees_mut()?;
         }
+
+        // Add metadata with settings tips for all entries
+        // Get the backend to access settings tips (do async ops before RefCell borrow)
+        let db_tips = self.db.get_tips().await?;
+        let settings_tips = self.db.backend()?.get_store_tips_up_to_entries(
+            self.db.root_id(),
+            SETTINGS,
+            &db_tips,
+        ).await?;
 
         // Get the entry out of the RefCell, consuming self in the process
         let builder_cell = self.entry_builder.borrow_mut();
@@ -1004,14 +1059,6 @@ impl Transaction {
 
         // Clone the builder since we can't easily take ownership from RefCell<Option<>>
         let mut builder = builder_from_cell.clone();
-
-        // Add metadata with settings tips for all entries
-        // Get the backend to access settings tips
-        let settings_tips = self.db.backend()?.get_store_tips_up_to_entries(
-            self.db.root_id(),
-            SETTINGS,
-            &self.db.get_tips()?,
-        )?;
 
         // Parse existing metadata if present, or create new
         let mut metadata = builder
@@ -1138,11 +1185,10 @@ impl Transaction {
 
         let instance = self.db.instance()?;
 
-        let verification_status = match validator.validate_entry(
-            &entry,
-            &auth_settings_for_validation,
-            Some(&instance),
-        ) {
+        let verification_status = match validator
+            .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
+            .await
+        {
             Ok(true) => {
                 // Authentication validation succeeded - check permissions
                 // Check if we have auth configuration
@@ -1158,12 +1204,14 @@ impl Transaction {
                         Operation::WriteData // Default to write for other data modifications
                     };
 
-                    let resolved_auth = validator.resolve_sig_key_with_pubkey(
-                        &entry.sig.key,
-                        &auth_settings_for_validation,
-                        Some(&instance),
-                        entry.sig.pubkey.as_deref(),
-                    )?;
+                    let resolved_auth = validator
+                        .resolve_sig_key_with_pubkey(
+                            &entry.sig.key,
+                            &auth_settings_for_validation,
+                            Some(&instance),
+                            entry.sig.pubkey.as_deref(),
+                        )
+                        .await?;
 
                     let has_permission =
                         validator.check_permissions(&resolved_auth, &operation_type)?;
@@ -1219,7 +1267,7 @@ impl Transaction {
             verification_status,
             entry.clone(),
             crate::instance::WriteSource::Local,
-        )?;
+        ).await?;
 
         Ok(id)
     }

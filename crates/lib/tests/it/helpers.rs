@@ -5,6 +5,9 @@ use eidetica::{
     instance::LegacyInstanceOps, store::DocStore, user::User,
 };
 
+// Re-export tokio test macro for convenience
+pub use tokio;
+
 // Re-export TestContext for convenience
 pub use crate::context::TestContext;
 
@@ -74,26 +77,28 @@ pub fn test_backend() -> Box<dyn BackendImpl> {
 }
 
 /// Creates a basic Instance with no users or keys
-pub fn test_instance() -> Instance {
-    Instance::open(test_backend()).expect("Failed to create test instance")
+pub async fn test_instance() -> Instance {
+    Instance::open(test_backend()).await.expect("Failed to create test instance")
 }
 
 /// Creates an Instance wrapped in Arc (common for sync tests)
 #[allow(dead_code)]
-pub fn test_instance_arc() -> Arc<Instance> {
-    Arc::new(test_instance())
+pub async fn test_instance_arc() -> Arc<Instance> {
+    Arc::new(test_instance().await)
 }
 
 /// Creates an Instance with a passwordless user (most common test pattern)
 ///
 /// Returns (Instance, User) for immediate use with User API
-pub fn test_instance_with_user(username: &str) -> (Instance, User) {
-    let instance = test_instance();
+pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
+    let instance = test_instance().await;
     instance
         .create_user(username, None)
+        .await
         .expect("Failed to create user");
     let user = instance
         .login_user(username, None)
+        .await
         .expect("Failed to login user");
     (instance, user)
 }
@@ -102,10 +107,11 @@ pub fn test_instance_with_user(username: &str) -> (Instance, User) {
 ///
 /// **DEPRECATED**: This helper exists only for migrating old tests. New tests should
 /// use `test_instance_with_user()` and the User API for key management.
-pub fn test_instance_with_legacy_key(key_name: &str) -> Instance {
-    let instance = test_instance();
+pub async fn test_instance_with_legacy_key(key_name: &str) -> Instance {
+    let instance = test_instance().await;
     instance
         .add_private_key(key_name)
+        .await
         .expect("Failed to add legacy key");
     instance
 }
@@ -120,29 +126,29 @@ const DEFAULT_TEST_USER: &str = "test_user";
 /// Creates a basic authenticated database with User API and default key
 ///
 /// This replaces the old `setup_db()` pattern. Uses a default test user.
-pub fn setup_db() -> (Instance, User) {
-    test_instance_with_user(DEFAULT_TEST_USER)
+pub async fn setup_db() -> (Instance, User) {
+    test_instance_with_user(DEFAULT_TEST_USER).await
 }
 
 /// Creates an instance without any users (for tests that manage users manually)
-pub fn setup_empty_db() -> Instance {
-    test_instance()
+pub async fn setup_empty_db() -> Instance {
+    test_instance().await
 }
 
 /// Creates an authenticated database with a specific key name (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use `test_instance_with_user()` and User API.
 /// This helper maintains compatibility with tests not yet migrated to User API.
-pub fn setup_db_with_key(key_name: &str) -> Instance {
-    test_instance_with_legacy_key(key_name)
+pub async fn setup_db_with_key(key_name: &str) -> Instance {
+    test_instance_with_legacy_key(key_name).await
 }
 
 /// Creates a basic tree using User API with default key
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-pub fn setup_tree() -> (Instance, eidetica::Database) {
-    let (instance, mut user) = setup_db();
+pub async fn setup_tree() -> (Instance, eidetica::Database) {
+    let (instance, mut user) = setup_db().await;
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -150,6 +156,7 @@ pub fn setup_tree() -> (Instance, eidetica::Database) {
 
     let tree = user
         .create_database(settings, &default_key)
+        .await
         .expect("Failed to create tree for testing");
     (instance, tree)
 }
@@ -160,10 +167,11 @@ pub fn setup_tree() -> (Instance, eidetica::Database) {
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-pub fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
-    let db = setup_db_with_key(key_name);
+pub async fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
+    let db = setup_db_with_key(key_name).await;
     let tree = db
         .new_database_default(key_name)
+        .await
         .expect("Failed to create tree for testing");
     (db, tree)
 }
@@ -171,10 +179,11 @@ pub fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
 /// Creates a tree and database with a specific key (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use User API for key management.
-pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
-    let db = setup_db_with_key(key_name);
+pub async fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
+    let db = setup_db_with_key(key_name).await;
     let tree = db
         .new_database_default(key_name)
+        .await
         .expect("Failed to create tree for testing");
     (db, tree)
 }
@@ -183,8 +192,8 @@ pub fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Databa
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetica::Database) {
-    let (instance, mut user) = setup_db();
+pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetica::Database) {
+    let (instance, mut user) = setup_db().await;
     let default_key = user.get_default_key().expect("Failed to get default key");
 
     let mut db_settings = eidetica::crdt::Doc::new();
@@ -192,22 +201,25 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetic
 
     let tree = user
         .create_database(db_settings, &default_key)
+        .await
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
-    let op = tree.new_transaction().expect("Failed to create operation");
+    let op = tree.new_transaction().await.expect("Failed to create operation");
     {
         let settings_store = op
             .get_store::<DocStore>("_settings")
+            .await
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings {
             settings_store
                 .set(*key, *value)
+                .await
                 .expect("Failed to set setting");
         }
     }
-    op.commit().expect("Failed to commit settings");
+    op.commit().await.expect("Failed to commit settings");
 
     (instance, tree)
 }
@@ -217,9 +229,10 @@ pub fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetic
 // ==========================
 
 /// Helper for common assertions around DocStore value retrieval
-pub fn assert_dict_value(store: &DocStore, key: &str, expected: &str) {
+pub async fn assert_dict_value(store: &DocStore, key: &str, expected: &str) {
     match store
         .get(key)
+        .await
         .unwrap_or_else(|_| panic!("Failed to get key {key}"))
     {
         Value::Text(value) => assert_eq!(value, expected),

@@ -1,7 +1,7 @@
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-pub fn handle_key_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
+pub async fn handle_key_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
     match key {
         KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
             app.should_quit = true;
@@ -9,7 +9,7 @@ pub fn handle_key_event(app: &mut App, key: KeyCode, _modifiers: KeyModifiers) {
         KeyCode::Enter => {
             // Clear status message when sending a message
             app.clear_status_message();
-            if let Err(e) = app.send_message() {
+            if let Err(e) = app.send_message().await {
                 eprintln!("Error sending message: {e}");
             }
         }

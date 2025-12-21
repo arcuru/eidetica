@@ -18,17 +18,18 @@
 //! // OLD (deprecated):
 //! use eidetica::instance::LegacyInstanceOps;
 //! let instance = Instance::new(...);
-//! instance.add_private_key("my_key")?;
-//! let db = instance.new_database_default("my_key")?;
+//! instance.add_private_key("my_key").await?;
+//! let db = instance.new_database_default("my_key").await?;
 //!
 //! // NEW (recommended):
 //! let instance = Instance::new(...);
-//! instance.register_user("username", None)?;
-//! let user = instance.login_user("username", None)?;
+//! instance.register_user("username", None).await?;
+//! let user = instance.login_user("username", None).await?;
 //! let key = user.get_default_key()?;
-//! let db = user.create_database(settings, &key)?;
+//! let db = user.create_database(settings, &key).await?;
 //! ```
 
+use async_trait::async_trait;
 use ed25519_dalek::VerifyingKey;
 use rand::Rng;
 
@@ -47,6 +48,7 @@ use crate::{Database, Result, auth::crypto::format_public_key, crdt::Doc};
 /// ```rust,ignore
 /// use eidetica::instance::LegacyInstanceOps;
 /// ```
+#[async_trait(?Send)]
 pub trait LegacyInstanceOps {
     /// Create a new database in the instance (deprecated).
     ///
@@ -58,7 +60,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
-    fn new_database(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Database>;
+    async fn new_database(&self, settings: Doc, signing_key_name: &str) -> Result<Database>;
 
     /// Create a new database with default empty settings (deprecated).
     ///
@@ -69,7 +71,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
-    fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database>;
+    async fn new_database_default(&self, signing_key_name: &str) -> Result<Database>;
 
     /// Generate a new Ed25519 keypair (deprecated).
     ///
@@ -80,7 +82,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the key ID (public key string) or an error.
-    fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey>;
+    async fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey>;
 
     /// Import an existing Ed25519 keypair (deprecated).
     ///
@@ -92,7 +94,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the key ID or an error.
-    fn import_private_key(
+    async fn import_private_key(
         &self,
         key_id: &str,
         signing_key: ed25519_dalek::SigningKey,
@@ -107,7 +109,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the public key or an error.
-    fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey>;
+    async fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey>;
 
     /// Get the formatted public key string for a stored private key (deprecated).
     ///
@@ -118,21 +120,23 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the formatted public key string.
-    fn get_formatted_public_key(&self, key_name: impl AsRef<str>) -> Result<String>;
+    async fn get_formatted_public_key(&self, key_name: &str) -> Result<String>;
 }
 
+#[async_trait(?Send)]
 impl LegacyInstanceOps for Instance {
-    fn new_database(&self, settings: Doc, signing_key_name: impl AsRef<str>) -> Result<Database> {
+    async fn new_database(&self, settings: Doc, signing_key_name: &str) -> Result<Database> {
         use crate::auth::AuthError;
         let signing_key = match self
             .inner
             .backend
-            .get_private_key(signing_key_name.as_ref())?
+            .get_private_key(signing_key_name)
+            .await?
         {
             Some(key) => key,
             None => {
                 return Err(AuthError::KeyNotFound {
-                    key_name: signing_key_name.as_ref().to_string(),
+                    key_name: signing_key_name.to_string(),
                 }
                 .into());
             }
@@ -141,12 +145,13 @@ impl LegacyInstanceOps for Instance {
             settings,
             self,
             signing_key,
-            signing_key_name.as_ref().to_string(),
-        )?;
+            signing_key_name.to_string(),
+        )
+        .await?;
         Ok(database)
     }
 
-    fn new_database_default(&self, signing_key_name: impl AsRef<str>) -> Result<Database> {
+    async fn new_database_default(&self, signing_key_name: &str) -> Result<Database> {
         let mut settings = Doc::new();
 
         // Add a unique database identifier to ensure each database gets a unique root ID
@@ -162,10 +167,10 @@ impl LegacyInstanceOps for Instance {
         );
         settings.set("database_id", unique_id);
 
-        self.new_database(settings, signing_key_name)
+        self.new_database(settings, signing_key_name).await
     }
 
-    fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey> {
+    async fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey> {
         // Generate keypair using backend-stored keys (legacy path)
         use crate::auth::crypto::generate_keypair;
         let (signing_key, verifying_key) = generate_keypair();
@@ -173,36 +178,43 @@ impl LegacyInstanceOps for Instance {
         // Store in backend with display_name as the key name (legacy storage)
         self.inner
             .backend
-            .store_private_key(display_name, signing_key)?;
+            .store_private_key(display_name, signing_key)
+            .await?;
 
         Ok(verifying_key)
     }
 
-    fn import_private_key(
+    async fn import_private_key(
         &self,
         key_id: &str,
         signing_key: ed25519_dalek::SigningKey,
     ) -> Result<String> {
         // Import key into backend storage (legacy path)
-        self.inner.backend.store_private_key(key_id, signing_key)?;
+        self.inner
+            .backend
+            .store_private_key(key_id, signing_key)
+            .await?;
 
         Ok(key_id.to_string())
     }
 
-    fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey> {
+    async fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey> {
         use crate::instance::InstanceError;
         // Get signing key from backend storage (legacy path)
-        let signing_key = self.inner.backend.get_private_key(key_id)?.ok_or_else(|| {
-            InstanceError::SigningKeyNotFound {
+        let signing_key = self
+            .inner
+            .backend
+            .get_private_key(key_id)
+            .await?
+            .ok_or_else(|| InstanceError::SigningKeyNotFound {
                 key_name: key_id.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(signing_key.verifying_key())
     }
 
-    fn get_formatted_public_key(&self, key_name: impl AsRef<str>) -> Result<String> {
-        let public_key = self.get_public_key(key_name.as_ref())?;
+    async fn get_formatted_public_key(&self, key_name: &str) -> Result<String> {
+        let public_key = self.get_public_key(key_name).await?;
         Ok(format_public_key(&public_key))
     }
 }

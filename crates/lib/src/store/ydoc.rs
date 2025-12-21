@@ -22,6 +22,7 @@
 
 use std::cell::RefCell;
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use yrs::{Doc, ReadTxn, Transact, Update, updates::decoder::Decode};
@@ -208,10 +209,11 @@ impl Registered for YDoc {
     }
 }
 
+#[async_trait(?Send)]
 impl Store for YDoc {
-    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
+    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
-            name: subtree_name.into(),
+            name: subtree_name,
             atomic_op: op.clone(),
             cached_backend_data: RefCell::new(None),
         })
@@ -244,8 +246,8 @@ impl YDoc {
     ///
     /// ## Errors
     /// Returns an error if there are issues deserializing the Y-CRDT updates.
-    pub fn doc(&self) -> Result<Doc> {
-        let doc = self.get_initial_doc()?;
+    pub async fn doc(&self) -> Result<Doc> {
+        let doc = self.get_initial_doc().await?;
 
         // Apply local changes if they exist
         let local_data = self
@@ -296,11 +298,11 @@ impl YDoc {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_doc<F, R>(&self, f: F) -> Result<R>
+    pub async fn with_doc<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&Doc) -> Result<R>,
     {
-        let doc = self.doc()?;
+        let doc = self.doc().await?;
         f(&doc)
     }
 
@@ -336,13 +338,13 @@ impl YDoc {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_doc_mut<F, R>(&self, f: F) -> Result<R>
+    pub async fn with_doc_mut<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&Doc) -> Result<R>,
     {
-        let doc = self.doc()?;
+        let doc = self.doc().await?;
         let result = f(&doc)?;
-        self.save_doc(&doc)?;
+        self.save_doc(&doc).await?;
         Ok(result)
     }
 
@@ -365,8 +367,8 @@ impl YDoc {
     ///
     /// ## Errors
     /// Returns an error if the update data is malformed or cannot be applied.
-    pub fn apply_update(&self, update_data: &[u8]) -> Result<()> {
-        let doc = self.doc()?;
+    pub async fn apply_update(&self, update_data: &[u8]) -> Result<()> {
+        let doc = self.doc().await?;
         let update = Update::decode_v1(update_data).map_err(|e| {
             StoreError::from(YDocError::InvalidData {
                 reason: format!("Failed to decode Y-CRDT update: {e}"),
@@ -383,7 +385,7 @@ impl YDoc {
             })?;
         }
 
-        self.save_doc(&doc)
+        self.save_doc(&doc).await
     }
 
     /// Gets the current state of the document as a binary update.
@@ -404,8 +406,8 @@ impl YDoc {
     /// This method constructs the full document state, so it may be expensive for
     /// large documents. For incremental synchronization, consider using the
     /// differential updates automatically saved by `with_doc_mut()`.
-    pub fn get_update(&self) -> Result<Vec<u8>> {
-        let doc = self.doc()?;
+    pub async fn get_update(&self) -> Result<Vec<u8>> {
+        let doc = self.doc().await?;
         let txn = doc.transact();
         let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
         Ok(update)
@@ -431,13 +433,15 @@ impl YDoc {
     ///
     /// ## Returns
     /// A `Result<()>` indicating success or failure.
-    pub fn save_doc_full(&self, doc: &Doc) -> Result<()> {
+    pub async fn save_doc_full(&self, doc: &Doc) -> Result<()> {
         let txn = doc.transact();
         let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
 
         let yrs_binary = YrsBinary::new(update);
         let serialized = serde_json::to_string(&yrs_binary)?;
-        self.atomic_op.update_subtree(&self.name, &serialized)
+        self.atomic_op
+            .update_subtree(&self.name, &serialized)
+            .await
     }
 
     /// Saves the document state using efficient differential encoding.
@@ -467,11 +471,11 @@ impl YDoc {
     /// ## Performance
     /// This method is optimized for performance - the expensive backend state
     /// retrieval is cached, and only minimal diff calculation is performed.
-    pub fn save_doc(&self, doc: &Doc) -> Result<()> {
+    pub async fn save_doc(&self, doc: &Doc) -> Result<()> {
         let txn = doc.transact();
 
         // Get the backend state vector efficiently
-        let backend_state_vector = self.get_initial_state_vector()?;
+        let backend_state_vector = self.get_initial_state_vector().await?;
 
         // Encode only the changes since the backend state
         let diff_update = txn.encode_state_as_update_v1(&backend_state_vector);
@@ -480,7 +484,9 @@ impl YDoc {
         if !diff_update.is_empty() {
             let yrs_binary = YrsBinary::new(diff_update);
             let serialized = serde_json::to_string(&yrs_binary)?;
-            self.atomic_op.update_subtree(&self.name, &serialized)?;
+            self.atomic_op
+                .update_subtree(&self.name, &serialized)
+                .await?;
         }
 
         Ok(())
@@ -508,9 +514,9 @@ impl YDoc {
     ///
     /// ## Errors
     /// Returns an error if the cached backend data cannot be decoded or applied.
-    fn get_initial_state_vector(&self) -> Result<yrs::StateVector> {
+    async fn get_initial_state_vector(&self) -> Result<yrs::StateVector> {
         // Get the cached backend data
-        let backend_data = self.get_cached_backend_data()?;
+        let backend_data = self.get_cached_backend_data().await?;
 
         if backend_data.is_empty() {
             return Ok(yrs::StateVector::default());
@@ -552,9 +558,9 @@ impl YDoc {
     ///
     /// ## Errors
     /// Returns an error if the cached backend data cannot be decoded or applied.
-    fn get_initial_doc(&self) -> Result<Doc> {
+    async fn get_initial_doc(&self) -> Result<Doc> {
         // Get the cached backend data
-        let backend_data = self.get_cached_backend_data()?;
+        let backend_data = self.get_cached_backend_data().await?;
 
         // Create a new doc and apply backend data if it exists
         let doc = Doc::new();
@@ -603,14 +609,14 @@ impl YDoc {
     ///
     /// ## Errors
     /// Returns an error if the backend data cannot be retrieved or deserialized.
-    fn get_cached_backend_data(&self) -> Result<YrsBinary> {
+    async fn get_cached_backend_data(&self) -> Result<YrsBinary> {
         // Check if we already have the backend data cached
         if let Some(backend_data) = self.cached_backend_data.borrow().as_ref() {
             return Ok(backend_data.clone());
         }
 
         // Perform the expensive operation once
-        let backend_data = self.atomic_op.get_full_state::<YrsBinary>(&self.name)?;
+        let backend_data = self.atomic_op.get_full_state::<YrsBinary>(&self.name).await?;
 
         // Cache it for future use
         *self.cached_backend_data.borrow_mut() = Some(backend_data.clone());

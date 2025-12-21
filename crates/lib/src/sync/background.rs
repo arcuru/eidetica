@@ -197,16 +197,16 @@ impl BackgroundSync {
             command_rx: rx,
         };
 
-        // Try to spawn in current runtime, or create one if needed
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::spawn(background.run());
-        } else {
-            // Create a runtime and spawn the background task
-            std::thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(background.run());
-            });
-        }
+        // Spawn in a dedicated thread with a single-threaded runtime
+        // since Transaction is not Send (contains Rc<RefCell>)
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, background.run());
+        });
         tx
     }
 
@@ -218,12 +218,13 @@ impl BackgroundSync {
     }
 
     /// Get the sync tree for accessing peer data
-    fn get_sync_tree(&self) -> Result<Database> {
+    async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance
             .backend()
-            .get_private_key(DEVICE_KEY_NAME)?
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
             .ok_or_else(|| SyncError::DeviceKeyNotFound {
                 key_name: DEVICE_KEY_NAME.to_string(),
             })?;
@@ -238,13 +239,13 @@ impl BackgroundSync {
 
     /// Get the minimum sync interval from all tracked databases
     /// Returns None if no databases are tracked or no intervals are set
-    fn get_min_sync_interval(&self) -> Option<u64> {
-        let sync_tree = match self.get_sync_tree() {
+    async fn get_min_sync_interval(&self) -> Option<u64> {
+        let sync_tree = match self.get_sync_tree().await {
             Ok(tree) => tree,
             Err(_) => return None,
         };
 
-        let op = match sync_tree.new_transaction() {
+        let op = match sync_tree.new_transaction().await {
             Ok(op) => op,
             Err(_) => return None,
         };
@@ -254,12 +255,13 @@ impl BackgroundSync {
         // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
         let database_users = match op
             .get_store::<crate::store::DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
+            .await
         {
             Ok(store) => store,
             Err(_) => return None,
         };
 
-        let all_dbs = match database_users.get_all() {
+        let all_dbs = match database_users.get_all().await {
             Ok(doc) => doc,
             Err(_) => return None,
         };
@@ -268,7 +270,7 @@ impl BackgroundSync {
         let mut min_interval: Option<u64> = None;
         for db_id_str in all_dbs.keys() {
             if let Ok(db_id) = crate::entry::ID::parse(db_id_str)
-                && let Ok(Some(settings)) = user_mgr.get_combined_settings(&db_id)
+                && let Ok(Some(settings)) = user_mgr.get_combined_settings(&db_id).await
                 && let Some(interval) = settings.interval_seconds
             {
                 min_interval = Some(match min_interval {
@@ -287,7 +289,7 @@ impl BackgroundSync {
             info!("Starting background sync engine");
 
             // Get initial sync interval from settings (default to 300 seconds if none set)
-            let mut current_interval_secs = self.get_min_sync_interval().unwrap_or(300);
+            let mut current_interval_secs = self.get_min_sync_interval().await.unwrap_or(300);
             info!("Initial periodic sync interval: {} seconds", current_interval_secs);
 
             // Set up timers
@@ -330,7 +332,7 @@ impl BackgroundSync {
 
                     // Check if sync interval settings have changed
                     _ = settings_check.tick() => {
-                        if let Some(new_interval) = self.get_min_sync_interval()
+                        if let Some(new_interval) = self.get_min_sync_interval().await
                             && new_interval != current_interval_secs {
                                 info!("Sync interval changed from {} to {} seconds", current_interval_secs, new_interval);
                                 current_interval_secs = new_interval;
@@ -369,7 +371,7 @@ impl BackgroundSync {
             } => {
                 // Fetch entry and send immediately
                 let instance = self.instance()?;
-                match instance.backend().get(&entry_id) {
+                match instance.backend().get(&entry_id).await {
                     Ok(entry) => {
                         if let Err(e) = self.send_to_peer(&peer, vec![entry.clone()]).await {
                             self.add_to_retry_queue(peer, vec![entry], e);
@@ -468,10 +470,11 @@ impl BackgroundSync {
     async fn send_to_peer(&self, peer: &str, entries: Vec<Entry>) -> Result<()> {
         // Get peer address from sync tree (extract and drop operation before await)
         let address = {
-            let sync_tree = self.get_sync_tree()?;
-            let op = sync_tree.new_transaction()?;
+            let sync_tree = self.get_sync_tree().await?;
+            let op = sync_tree.new_transaction().await?;
             let peer_info = PeerManager::new(&op)
-                .get_peer_info(peer)?
+                .get_peer_info(peer)
+                .await?
                 .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
             peer_info
@@ -556,9 +559,9 @@ impl BackgroundSync {
         // Periodic sync triggered
 
         // Get all peers from sync tree
-        let peers = match self.get_sync_tree() {
-            Ok(sync_tree) => match sync_tree.new_transaction() {
-                Ok(op) => match PeerManager::new(&op).list_peers() {
+        let peers = match self.get_sync_tree().await {
+            Ok(sync_tree) => match sync_tree.new_transaction().await {
+                Ok(op) => match PeerManager::new(&op).list_peers().await {
                     Ok(peers) => {
                         // Extract peer list and drop the operation before awaiting
                         peers
@@ -597,12 +600,13 @@ impl BackgroundSync {
 
             // Get peer info and tree list from sync tree (extract and drop operation before await)
             let (address, sync_trees) = {
-                let sync_tree = self.get_sync_tree()?;
-                let op = sync_tree.new_transaction()?;
+                let sync_tree = self.get_sync_tree().await?;
+                let op = sync_tree.new_transaction().await?;
                 let peer_manager = PeerManager::new(&op);
 
                 let peer_info = peer_manager
-                    .get_peer_info(peer_pubkey)?
+                    .get_peer_info(peer_pubkey)
+                    .await?
                     .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
 
                 let address = peer_info
@@ -612,7 +616,7 @@ impl BackgroundSync {
                     .clone();
 
                 // Find all trees that sync with this peer from sync tree
-                let sync_trees = peer_manager.get_peer_trees(peer_pubkey)?;
+                let sync_trees = peer_manager.get_peer_trees(peer_pubkey).await?;
 
                 (address, sync_trees)
             }; // Operation is dropped here
@@ -682,10 +686,11 @@ impl BackgroundSync {
             let our_tips = instance
                 .backend()
                 .get_tips(tree_id)
+                .await
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME)? {
+            let our_device_pubkey = if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME).await? {
                 let verifying_key = signing_key.verifying_key();
                 Some(format_public_key(&verifying_key))
             } else {
@@ -761,7 +766,7 @@ impl BackgroundSync {
             if let Ok(parents) = entry.parents() {
                 for parent_id in &parents {
                     let instance = self.instance()?;
-                    if let Err(e) = instance.backend().get(parent_id) {
+                    if let Err(e) = instance.backend().get(parent_id).await {
                         if e.is_not_found() {
                             return Err(SyncError::InvalidEntry(format!(
                                 "Parent entry {} not found when storing entry {}",
@@ -787,6 +792,7 @@ impl BackgroundSync {
             instance
                 .backend()
                 .put_verified(entry)
+                .await
                 .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
         }
 
@@ -852,7 +858,7 @@ impl BackgroundSync {
         let device_id = "background_sync_device".to_string(); // TODO: Get actual device ID
         let instance = self.instance()?;
         let public_key =
-            if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME)? {
+            if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME).await? {
                 let verifying_key = signing_key.verifying_key();
                 format_public_key(&verifying_key)
             } else {
@@ -934,17 +940,20 @@ impl BackgroundSync {
                 );
 
                 // Add peer to sync tree
-                let sync_tree = self.get_sync_tree()?;
-                let op = sync_tree.new_transaction()?;
+                let sync_tree = self.get_sync_tree().await?;
+                let op = sync_tree.new_transaction().await?;
                 let peer_manager = PeerManager::new(&op);
 
                 // Try to register peer, but ignore if already exists
-                match peer_manager.register_peer(
-                    &handshake_resp.public_key,
-                    handshake_resp.display_name.as_deref(),
-                ) {
+                match peer_manager
+                    .register_peer(
+                        &handshake_resp.public_key,
+                        handshake_resp.display_name.as_deref(),
+                    )
+                    .await
+                {
                     Ok(_) => {
-                        op.commit()?;
+                        op.commit().await?;
                     }
                     Err(crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(
                         _,
@@ -983,6 +992,7 @@ impl BackgroundSync {
         instance
             .backend()
             .put_verified(response.root_entry)
+            .await
             .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
 
         // Store all other entries

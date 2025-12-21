@@ -26,6 +26,7 @@ use aes_gcm::{
     aead::{Aead, AeadCore, OsRng},
 };
 use argon2::{Argon2, Params, password_hash::SaltString};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -406,13 +407,12 @@ impl Registered for PasswordStore {
     }
 }
 
+#[async_trait(?Send)]
 impl Store for PasswordStore {
-    fn new(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
-        let subtree_name = subtree_name.into();
-
+    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
-        let index_store = op.get_index()?;
-        let info = index_store.get_entry(&subtree_name)?;
+        let index_store = op.get_index().await?;
+        let info = index_store.get_entry(&subtree_name).await?;
 
         // Type validation
         if !Self::supports_type_id(&info.type_id) {
@@ -473,15 +473,15 @@ impl Store for PasswordStore {
         }
     }
 
-    fn init(op: &Transaction, subtree_name: impl Into<String>) -> Result<Self> {
-        let name = subtree_name.into();
-
+    async fn init(op: &Transaction, subtree_name: String) -> Result<Self> {
         // Register in _index with empty config (marks as uninitialized)
-        let index_store = op.get_index()?;
-        index_store.set_entry(&name, Self::type_id(), Self::default_config())?;
+        let index_store = op.get_index().await?;
+        index_store
+            .set_entry(&subtree_name, Self::type_id(), Self::default_config())
+            .await?;
 
         Ok(Self {
-            name,
+            name: subtree_name,
             transaction: op.clone(),
             config: None,
             cached_password: None,
@@ -545,7 +545,7 @@ impl PasswordStore {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn initialize(
+    pub async fn initialize(
         &mut self,
         password: impl Into<String>,
         wrapped_type_id: impl Into<String>,
@@ -641,7 +641,7 @@ impl PasswordStore {
 
         // Update _index with the encryption config
         let config_json = serde_json::to_string(&config)?;
-        self.set_config(config_json)?;
+        self.set_config(config_json).await?;
 
         // Cache password and create encryptor
         let password_cache = Password {
@@ -887,7 +887,7 @@ impl PasswordStore {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn unwrap<T: Store>(&self) -> Result<T> {
+    pub async fn unwrap<T: Store>(&self) -> Result<T> {
         // Check if opened
         if !self.is_open() {
             return Err(StoreError::InvalidOperation {
@@ -917,6 +917,6 @@ impl PasswordStore {
         // The wrapped store is completely unaware of encryption
         // Note: We call T::new() directly, bypassing Transaction::get_store() type checking,
         // since we've already verified the wrapped type matches.
-        T::new(&self.transaction, self.name.clone())
+        T::new(&self.transaction, self.name.clone()).await
     }
 }
