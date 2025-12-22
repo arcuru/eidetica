@@ -77,21 +77,23 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 let backend = Box::new(InMemory::new());
-let instance = Instance::open(backend)?;
+let instance = Instance::open(backend).await?;
 
 // Create and login user - this will log at INFO level
-instance.create_user("alice", None)?;
-let mut user = instance.login_user("alice", None)?;
+instance.create_user("alice", None).await?;
+let mut user = instance.login_user("alice", None).await?;
 
 // Create a database - this will log at INFO level
 let mut settings = Doc::new();
 settings.set("name", "my_database");
 let default_key = user.get_default_key()?;
-let database = user.create_database(settings, &default_key)?;
+let database = user.create_database(settings, &default_key).await?;
 
 // Operations will emit logs at appropriate levels
 // Use RUST_LOG to control what you see

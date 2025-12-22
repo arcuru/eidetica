@@ -30,20 +30,22 @@ Here's a simple example:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
     // Create a new in-memory backend
     let backend = InMemory::new();
 
     // Create the Instance
-    let instance = Instance::open(Box::new(backend))?;
+    let instance = Instance::open(Box::new(backend)).await?;
 
     // Create a passwordless user (perfect for embedded/single-user apps)
-    instance.create_user("alice", None)?;
+    instance.create_user("alice", None).await?;
 
     // Login to get a User session
-    let mut user = instance.login_user("alice", None)?;
+    let mut user = instance.login_user("alice", None).await?;
 
     // Create a database in the user's context
     let mut settings = Doc::new();
@@ -51,7 +53,7 @@ Here's a simple example:
 
     // Get the default key (earliest created key)
     let default_key = user.get_default_key()?;
-    let _database = user.create_database(settings, &default_key)?;
+    let _database = user.create_database(settings, &default_key).await?;
 
     Ok(())
 }
@@ -63,19 +65,21 @@ The backend determines how your data is stored. The example above uses `InMemory
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 # use std::path::PathBuf;
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Create instance and user
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key)?;
+# let _database = user.create_database(settings, &default_key).await?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
@@ -84,7 +88,7 @@ The backend determines how your data is stored. The example above uses `InMemory
 // Save the backend to a file
 let backend_guard = instance.backend();
 if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-    in_memory.save_to_file(&path)?;
+    in_memory.save_to_file(&path).await?;
 }
 #
 # // Clean up the temporary file
@@ -99,19 +103,21 @@ You can load a previously saved backend:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 # use std::path::PathBuf;
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // First create and save a test backend
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key)?;
+# let _database = user.create_database(settings, &default_key).await?;
 #
 # // Use a temporary file path for testing
 # let temp_dir = std::env::temp_dir();
@@ -120,17 +126,17 @@ You can load a previously saved backend:
 # // Save the backend first
 # let backend_guard = instance.backend();
 # if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-#     in_memory.save_to_file(&path)?;
+#     in_memory.save_to_file(&path).await?;
 # }
 #
 // Load a previously saved backend
-let backend = InMemory::load_from_file(&path)?;
+let backend = InMemory::load_from_file(&path).await?;
 
 // Load instance (automatically detects existing system state)
-let instance = Instance::open(Box::new(backend))?;
+let instance = Instance::open(Box::new(backend)).await?;
 
 // Login to existing user
-let user = instance.login_user("alice", None)?;
+let user = instance.login_user("alice", None).await?;
 #
 # // Clean up the temporary file
 # if path.exists() {
@@ -185,6 +191,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
@@ -195,27 +202,28 @@ All operations in Eidetica happen within an atomic **Transaction**:
 #     age: u32,
 # }
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction
-let op = database.new_transaction()?;
+let op = database.new_transaction().await?;
 
 // Get or create a Table store
-let people = op.get_store::<Table<Person>>("people")?;
+let people = op.get_store::<Table<Person>>("people").await?;
 
 // Insert a person and get their ID
 let person = Person { name: "Alice".to_string(), age: 30 };
-let _id = people.insert(person)?;
+let _id = people.insert(person).await?;
 
 // Commit the changes (automatically signed with the user's key)
-op.commit()?;
+op.commit().await?;
 # Ok(())
 # }
 ```
@@ -224,6 +232,7 @@ op.commit()?;
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
@@ -234,31 +243,32 @@ op.commit()?;
 #     age: u32,
 # }
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Insert some test data
-# let op = database.new_transaction()?;
-# let people = op.get_store::<Table<Person>>("people")?;
-# let test_id = people.insert(Person { name: "Alice".to_string(), age: 30 })?;
-# op.commit()?;
+# let op = database.new_transaction().await?;
+# let people = op.get_store::<Table<Person>>("people").await?;
+# let test_id = people.insert(Person { name: "Alice".to_string(), age: 30 }).await?;
+# op.commit().await?;
 # let id = &test_id;
 #
-let op = database.new_transaction()?;
-let people = op.get_store::<Table<Person>>("people")?;
+let op = database.new_transaction().await?;
+let people = op.get_store::<Table<Person>>("people").await?;
 
 // Get a single person by ID
-if let Ok(person) = people.get(id) {
+if let Ok(person) = people.get(id).await {
     println!("Found: {} ({})", person.name, person.age);
 }
 
 // Search for all people (using a predicate that always returns true)
-let all_people = people.search(|_| true)?;
+let all_people = people.search(|_| true).await?;
 for (id, person) in all_people {
     println!("ID: {}, Name: {}, Age: {}", id, person.name, person.age);
 }
@@ -270,6 +280,7 @@ for (id, person) in all_people {
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
@@ -280,31 +291,32 @@ for (id, person) in all_people {
 #     age: u32,
 # }
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Insert some test data
-# let op_setup = database.new_transaction()?;
-# let people_setup = op_setup.get_store::<Table<Person>>("people")?;
-# let test_id = people_setup.insert(Person { name: "Alice".to_string(), age: 30 })?;
-# op_setup.commit()?;
+# let op_setup = database.new_transaction().await?;
+# let people_setup = op_setup.get_store::<Table<Person>>("people").await?;
+# let test_id = people_setup.insert(Person { name: "Alice".to_string(), age: 30 }).await?;
+# op_setup.commit().await?;
 # let id = &test_id;
 #
-let op = database.new_transaction()?;
-let people = op.get_store::<Table<Person>>("people")?;
+let op = database.new_transaction().await?;
+let people = op.get_store::<Table<Person>>("people").await?;
 
 // Get, modify, and update
-if let Ok(mut person) = people.get(id) {
+if let Ok(mut person) = people.get(id).await {
     person.age += 1;
-    people.set(id, person)?;
+    people.set(id, person).await?;
 }
 
-op.commit()?;
+op.commit().await?;
 # Ok(())
 # }
 ```
@@ -313,6 +325,7 @@ op.commit()?;
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
@@ -323,23 +336,24 @@ op.commit()?;
 #     age: u32,
 # }
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # let _id = "test_id";
 #
-let op = database.new_transaction()?;
-let people = op.get_store::<Table<Person>>("people")?;
+let op = database.new_transaction().await?;
+let people = op.get_store::<Table<Person>>("people").await?;
 
 // FIXME: Table doesn't currently support deletion
 // You can overwrite with a "deleted" marker or use other approaches
 
-op.commit()?;
+op.commit().await?;
 # Ok(())
 # }
 ```

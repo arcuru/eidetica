@@ -13,13 +13,13 @@ The `Instance` is your main entry point. It wraps a storage backend and manages 
 The Todo example implements `load_or_create_instance()` to handle loading existing backends or creating new ones:
 
 ```rust,ignore
-fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
+async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
     let instance = if path.exists() {
-        let backend = InMemory::load_from_file(path)?;
-        Instance::open(Box::new(backend))?
+        let backend = InMemory::load_from_file(path).await?;
+        Instance::open(Box::new(backend)).await?
     } else {
         let backend = InMemory::new();
-        Instance::open(Box::new(backend))?
+        Instance::open(Box::new(backend)).await?
     };
 
     println!("✓ Instance initialized");
@@ -35,11 +35,11 @@ This shows how the `InMemory` backend can persist to disk. Authentication is man
 Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity:
 
 ```rust,ignore
-fn get_or_create_user(instance: &Instance) -> Result<User> {
+async fn get_or_create_user(instance: &Instance) -> Result<User> {
     let username = "todo-user";
 
     // Try to login first
-    match instance.login_user(username, None) {
+    match instance.login_user(username, None).await {
         Ok(user) => {
             println!("✓ Logged in as passwordless user: {username}");
             Ok(user)
@@ -47,8 +47,8 @@ fn get_or_create_user(instance: &Instance) -> Result<User> {
         Err(e) if e.is_not_found() => {
             // User doesn't exist, create it
             println!("Creating new passwordless user: {username}");
-            instance.create_user(username, None)?;
-            let user = instance.login_user(username, None)?;
+            instance.create_user(username, None).await?;
+            let user = instance.login_user(username, None).await?;
             println!("✓ Created and logged in as passwordless user: {username}");
             Ok(user)
         }
@@ -64,11 +64,11 @@ A `Database` is a primary organizational unit within an `Instance`. Think of it 
 The Todo example uses a single Database named "todo", discovered through the User API:
 
 ```rust,ignore
-fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
+async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
     let database_name = "todo";
 
     // Try to find the database by name
-    let database = match user.find_database(database_name) {
+    let database = match user.find_database(database_name).await {
         Ok(mut databases) => {
             databases.pop().unwrap() // unwrap is safe because find_database errors if empty
         }
@@ -82,7 +82,7 @@ fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
             let default_key = user.get_default_key()?;
 
             // User API automatically configures the database with user's keys
-            user.create_database(settings, &default_key)?
+            user.create_database(settings, &default_key).await?
         }
         Err(e) => return Err(e),
     };
@@ -134,22 +134,22 @@ impl Todo {
 The `add_todo()` function shows how to insert data into a `Table` store:
 
 ```rust,ignore
-fn add_todo(database: &Database, title: String) -> Result<()> {
+async fn add_todo(database: &Database, title: String) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
 
     // Create a new todo
     let todo = Todo::new(title);
 
     // Insert the todo into the Table
     // The Table will generate a unique ID for it
-    let todo_id = todos_store.insert(todo)?;
+    let todo_id = todos_store.insert(todo).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     println!("Added todo with ID: {todo_id}");
 
@@ -162,24 +162,24 @@ fn add_todo(database: &Database, title: String) -> Result<()> {
 The `complete_todo()` function demonstrates reading and updating data:
 
 ```rust,ignore
-fn complete_todo(database: &Database, id: &str) -> Result<()> {
+async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos")?;
+    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
 
     // Get the todo from the Table
-    let mut todo = todos_store.get(id)?;
+    let mut todo = todos_store.get(id).await?;
 
     // Mark the todo as complete
     todo.complete();
 
     // Update the todo in the Table
-    todos_store.set(id, todo)?;
+    todos_store.set(id, todo).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
 
     Ok(())
 }
@@ -192,17 +192,17 @@ These examples show the typical pattern: start a transaction, get a store handle
 The example also uses `YDoc` stores for user information and preferences. Y-CRDTs are designed for collaborative editing:
 
 ```rust,ignore
-fn set_user_info(
+async fn set_user_info(
     database: &Database,
     name: Option<&String>,
     email: Option<&String>,
     bio: Option<&String>,
 ) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction()?;
+    let op = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info")?;
+    let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -220,10 +220,10 @@ fn set_user_info(
         }
 
         Ok(())
-    })?;
+    }).await?;
 
     // Commit the transaction
-    op.commit()?;
+    op.commit().await?;
     Ok(())
 }
 ```

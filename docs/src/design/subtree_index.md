@@ -148,30 +148,32 @@ Access via `Transaction::get_index()`.
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key)?;
+# let db = user.create_database(settings, &default_key).await?;
 #
 // First access to "config" subtree - will be auto-registered
-let txn = db.new_transaction()?;
-let config: DocStore = txn.get_store("config")?;
-config.set("theme", "dark")?;
-txn.commit()?;
+let txn = db.new_transaction().await?;
+let config: DocStore = txn.get_store("config").await?;
+config.set("theme", "dark").await?;
+txn.commit().await?;
 
 // After commit, "config" is registered in _index
-let txn = db.new_transaction()?;
-let index = txn.get_index()?;
-assert!(index.contains("config"));
+let txn = db.new_transaction().await?;
+let index = txn.get_index().await?;
+assert!(index.contains("config").await);
 
-let info = index.get_entry("config")?;
+let info = index.get_entry("config").await?;
 assert_eq!(info.type_id, "docstore:v0");
 assert_eq!(info.config, "{}");
 # Ok(())
@@ -184,34 +186,36 @@ assert_eq!(info.config, "{}");
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key)?;
+# let db = user.create_database(settings, &default_key).await?;
 #
 // Pre-register subtree with custom configuration
-let txn = db.new_transaction()?;
-let index = txn.get_index()?;
+let txn = db.new_transaction().await?;
+let index = txn.get_index().await?;
 
 index.set_entry(
     "documents",
     "ydoc:v0",
     r#"{"compression":"zstd","cache_size":1024}"#
-)?;
+).await?;
 
-txn.commit()?;
+txn.commit().await?;
 
 // Later access uses the registered configuration
-let txn = db.new_transaction()?;
-let index = txn.get_index()?;
-let info = index.get_entry("documents")?;
+let txn = db.new_transaction().await?;
+let index = txn.get_index().await?;
+let info = index.get_entry("documents").await?;
 assert_eq!(info.type_id, "ydoc:v0");
 assert!(info.config.contains("compression"));
 # Ok(())
@@ -224,32 +228,34 @@ assert!(info.config.contains("compression"));
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let db = user.create_database(settings, &default_key)?;
+# let db = user.create_database(settings, &default_key).await?;
 #
 // Create several subtrees with data
-let txn = db.new_transaction()?;
-let users: DocStore = txn.get_store("users")?;
-users.set("count", "0")?;
-let posts: DocStore = txn.get_store("posts")?;
-posts.set("count", "0")?;
-let comments: DocStore = txn.get_store("comments")?;
-comments.set("count", "0")?;
-txn.commit()?;
+let txn = db.new_transaction().await?;
+let users: DocStore = txn.get_store("users").await?;
+users.set("count", "0").await?;
+let posts: DocStore = txn.get_store("posts").await?;
+posts.set("count", "0").await?;
+let comments: DocStore = txn.get_store("comments").await?;
+comments.set("count", "0").await?;
+txn.commit().await?;
 
 // Query all registered subtrees
-let txn = db.new_transaction()?;
-let index = txn.get_index()?;
-let subtrees = index.list()?;
+let txn = db.new_transaction().await?;
+let index = txn.get_index().await?;
+let subtrees = index.list().await?;
 
 // All three subtrees should be registered
 assert!(subtrees.contains(&"users".to_string()));

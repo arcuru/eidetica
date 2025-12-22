@@ -6,26 +6,28 @@
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "secrets_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // Create and initialize an encrypted store
-let tx = database.new_transaction()?;
-let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-encrypted.initialize("my_password", DocStore::type_id(), "{}")?;
+let tx = database.new_transaction().await?;
+let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
+encrypted.initialize("my_password", DocStore::type_id(), "{}").await?;
 
 // Use the wrapped store normally
-let docstore = encrypted.unwrap::<DocStore>()?;
-docstore.set("api_key", "sk-secret-12345")?;
-tx.commit()?;
+let docstore = encrypted.unwrap::<DocStore>().await?;
+docstore.set("api_key", "sk-secret-12345").await?;
+tx.commit().await?;
 # Ok(())
 # }
 ```
@@ -34,33 +36,35 @@ tx.commit()?;
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "secrets_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # {
-#     let tx = database.new_transaction()?;
-#     let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-#     encrypted.initialize("my_password", DocStore::type_id(), "{}")?;
-#     let docstore = encrypted.unwrap::<DocStore>()?;
-#     docstore.set("secret", "value")?;
-#     tx.commit()?;
+#     let tx = database.new_transaction().await?;
+#     let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
+#     encrypted.initialize("my_password", DocStore::type_id(), "{}").await?;
+#     let docstore = encrypted.unwrap::<DocStore>().await?;
+#     docstore.set("secret", "value").await?;
+#     tx.commit().await?;
 # }
 // Use open() for existing stores instead of initialize()
-let tx = database.new_transaction()?;
-let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
+let tx = database.new_transaction().await?;
+let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
 encrypted.open("my_password")?;
 
-let docstore = encrypted.unwrap::<DocStore>()?;
-let _secret = docstore.get("secret")?;
-tx.commit()?;
+let docstore = encrypted.unwrap::<DocStore>().await?;
+let _secret = docstore.get("secret").await?;
+tx.commit().await?;
 # Ok(())
 # }
 ```
@@ -71,35 +75,37 @@ PasswordStore wraps any store type. Use `Registered::type_id()` to get the type 
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "creds_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #[derive(Serialize, Deserialize, Clone)]
 struct Credential {
     service: String,
     password: String,
 }
 
-let tx = database.new_transaction()?;
-let mut encrypted = tx.get_store::<PasswordStore>("credentials")?;
-encrypted.initialize("vault_password", Table::<Credential>::type_id(), "{}")?;
+let tx = database.new_transaction().await?;
+let mut encrypted = tx.get_store::<PasswordStore>("credentials").await?;
+encrypted.initialize("vault_password", Table::<Credential>::type_id(), "{}").await?;
 
-let table = encrypted.unwrap::<Table<Credential>>()?;
+let table = encrypted.unwrap::<Table<Credential>>().await?;
 table.insert(Credential {
     service: "github.com".to_string(),
     password: "secret_token".to_string(),
-})?;
-tx.commit()?;
+}).await?;
+tx.commit().await?;
 # Ok(())
 # }
 ```

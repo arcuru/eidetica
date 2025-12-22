@@ -43,6 +43,7 @@ Here's a quick example showing creating a user, database, and writing new data.
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{DocStore, Table}};
 # use serde::{Serialize, Deserialize};
@@ -52,40 +53,41 @@ Here's a quick example showing creating a user, database, and writing new data.
 #     name: String,
 # }
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 let backend = InMemory::new();
-let instance = Instance::open(Box::new(backend))?;
+let instance = Instance::open(Box::new(backend)).await?;
 
 // Create and login a passwordless user
-instance.create_user("alice", None)?;
-let mut user = instance.login_user("alice", None)?;
+instance.create_user("alice", None).await?;
+let mut user = instance.login_user("alice", None).await?;
 
 // Create a database
 let mut settings = Doc::new();
 settings.set("name", "my_database");
 let default_key = user.get_default_key()?;
-let database = user.create_database(settings, &default_key)?;
+let database = user.create_database(settings, &default_key).await?;
 
 // --- Writing Data ---
 // Start a Transaction
-let txn = database.new_transaction()?;
+let txn = database.new_transaction().await?;
 let inserted_id = { // Scope for store handles
     // Get Store handles
-    let config = txn.get_store::<DocStore>("config")?;
-    let items = txn.get_store::<Table<MyData>>("items")?;
+    let config = txn.get_store::<DocStore>("config").await?;
+    let items = txn.get_store::<Table<MyData>>("items").await?;
 
     // Use Store methods
-    config.set("version", "1.0")?;
-    items.insert(MyData { name: "example".to_string() })?
+    config.set("version", "1.0").await?;
+    items.insert(MyData { name: "example".to_string() }).await?
 }; // Handles drop, changes are staged in txn
 // Commit changes
-let new_entry_id = txn.commit()?;
+let new_entry_id = txn.commit().await?;
 println!("Committed changes, new entry ID: {}", new_entry_id);
 
 // --- Reading Data ---
 // Use Database::get_store_viewer for a read-only view
-let items_viewer = database.get_store_viewer::<Table<MyData>>("items")?;
-if let Ok(item) = items_viewer.get(&inserted_id) {
+let items_viewer = database.get_store_viewer::<Table<MyData>>("items").await?;
+if let Ok(item) = items_viewer.get(&inserted_id).await {
    println!("Read item: {:?}", item);
 }
 # Ok(())

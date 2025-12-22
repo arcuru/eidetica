@@ -8,16 +8,18 @@ Eidetica's sync system enables real-time data synchronization between distribute
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-let instance = Instance::open(backend)?;
-instance.enable_sync()?;
+let instance = Instance::open(backend).await?;
+instance.enable_sync().await?;
 
 // Create and login a user (generates authentication key automatically)
-instance.create_user("alice", None)?;
-let mut user = instance.login_user("alice", None)?;
+instance.create_user("alice", None).await?;
+let mut user = instance.login_user("alice", None).await?;
 # Ok(())
 # }
 ```
@@ -26,7 +28,7 @@ let mut user = instance.login_user("alice", None)?;
 
 ```rust,ignore
 let sync = instance.sync().unwrap();
-sync.enable_http_transport()?;
+sync.enable_http_transport().await?;
 
 // Start a server to accept connections
 sync.start_server_async("127.0.0.1:8080").await?;
@@ -50,7 +52,7 @@ Eidetica supports multiple transports simultaneously, allowing peers to be reach
 Simple REST-based sync. Good for development and fixed-IP deployments.
 
 ```rust,ignore
-sync.enable_http_transport()?;
+sync.enable_http_transport().await?;
 sync.start_server_async("127.0.0.1:8080").await?;
 ```
 
@@ -59,7 +61,7 @@ sync.start_server_async("127.0.0.1:8080").await?;
 QUIC-based with NAT traversal. Works through firewalls.
 
 ```rust,ignore
-sync.enable_iroh_transport()?;
+sync.enable_iroh_transport().await?;
 sync.start_server_async("ignored").await?;  // Iroh manages addressing
 let my_address = sync.get_server_address_async().await?;  // Share this with peers
 ```
@@ -72,8 +74,8 @@ Enable multiple transports for maximum connectivity:
 
 ```rust,ignore
 // Enable both HTTP (for local network) and Iroh (for P2P)
-sync.enable_http_transport()?;
-sync.enable_iroh_transport()?;
+sync.enable_http_transport().await?;
+sync.enable_iroh_transport().await?;
 
 // Start servers on all transports (HTTP uses address, Iroh ignores it)
 sync.start_server_async("127.0.0.1:0").await?;
@@ -93,17 +95,19 @@ For persistent sync relationships:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::sync::{SyncPeerInfo, Address};
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.enable_sync()?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.enable_sync().await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
-# let db = user.create_database(Doc::new(), &default_key)?;
+# let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
 # let sync = instance.sync().expect("Sync enabled");
 # let peer_pubkey = "ed25519:abc123".to_string();
@@ -117,7 +121,7 @@ let handle = sync.register_sync_peer(SyncPeerInfo {
     }],
     auth: None,
     display_name: Some("Peer Device".to_string()),
-})?;
+}).await?;
 # Ok(())
 # }
 ```
@@ -130,17 +134,19 @@ Configure per-database sync behavior:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 # use eidetica::user::types::{SyncSettings, TrackedDatabase};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.enable_sync()?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.enable_sync().await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let key = user.get_default_key()?;
-# let db = user.create_database(Doc::new(), &key)?;
+# let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();
 let tracked = TrackedDatabase {
     database_id: db_id,
@@ -154,7 +160,7 @@ let tracked = TrackedDatabase {
 };
 
 // Track this database with the User
-user.track_database(tracked)?;
+user.track_database(tracked).await?;
 # Ok(())
 # }
 ```

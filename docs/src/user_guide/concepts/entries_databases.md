@@ -36,34 +36,36 @@ You interact with Databases through Transactions:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::DocStore, Database};
 #
 # use eidetica::Result;
 #
-# fn example(database: Database) -> Result<()> {
+# async fn example(database: Database) -> Result<()> {
 #     // Create a new transaction
-#     let op = database.new_transaction()?;
+#     let op = database.new_transaction().await?;
 #
 #     // Access stores and perform actions
-#     let settings = op.get_store::<DocStore>("settings")?;
-#     settings.set("version", "1.2.0")?;
+#     let settings = op.get_store::<DocStore>("settings").await?;
+#     settings.set("version", "1.2.0").await?;
 #
 #     // Commit the changes, creating a new Entry
-#     let new_entry_id = op.commit()?;
+#     let new_entry_id = op.commit().await?;
 #
 #     Ok(())
 # }
 #
-# fn main() -> Result<()> {
+# #[tokio::main]
+# async fn main() -> Result<()> {
 #     let backend = InMemory::new();
-#     let instance = Instance::open(Box::new(backend))?;
-#     instance.create_user("alice", None)?;
-#     let mut user = instance.login_user("alice", None)?;
+#     let instance = Instance::open(Box::new(backend)).await?;
+#     instance.create_user("alice", None).await?;
+#     let mut user = instance.login_user("alice", None).await?;
 #     let mut settings = Doc::new();
 #     settings.set("name", "test");
 #     let default_key = user.get_default_key()?;
-#     let database = user.create_database(settings, &default_key)?;
-#     example(database)?;
+#     let database = user.create_database(settings, &default_key).await?;
+#     example(database).await?;
 #     Ok(())
 # }
 ```
@@ -81,33 +83,35 @@ Each Database maintains its settings as a key-value store in a special "settings
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore, Database};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");
 # settings_doc.set("version", "1.0.0");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings_doc, &default_key)?;
+# let database = user.create_database(settings_doc, &default_key).await?;
 // Access database settings through a transaction
-let transaction = database.new_transaction()?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Access common settings
-let name = settings_store.get_name()?;
+let name = settings_store.get_name().await?;
 println!("Database name: {}", name);
 
 // Access custom settings via the underlying DocStore
 let doc_store = settings_store.as_doc_store();
-if let Ok(version_value) = doc_store.get("version") {
+if let Ok(version_value) = doc_store.get("version").await {
     println!("Database version available");
 }
 
-transaction.commit()?;
+transaction.commit().await?;
 # Ok(())
 # }
 ```

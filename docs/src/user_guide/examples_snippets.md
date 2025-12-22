@@ -8,37 +8,39 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 # use std::path::PathBuf;
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Use a temporary file for testing
 # let temp_dir = std::env::temp_dir();
 # let db_path = temp_dir.join("eidetica_example_init.json");
 #
 # // First create and save a test database to demonstrate loading
 # let backend = InMemory::new();
-# let test_instance = Instance::open(Box::new(backend))?;
-# test_instance.create_user("alice", None)?;
-# let mut test_user = test_instance.login_user("alice", None)?;
+# let test_instance = Instance::open(Box::new(backend)).await?;
+# test_instance.create_user("alice", None).await?;
+# let mut test_user = test_instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "example_db");
 # let test_key = test_user.get_default_key()?;
-# let _database = test_user.create_database(settings, &test_key)?;
+# let _database = test_user.create_database(settings, &test_key).await?;
 # let database_guard = test_instance.backend();
 # if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
-#     in_memory.save_to_file(&db_path)?;
+#     in_memory.save_to_file(&db_path).await?;
 # }
 #
 // Option A: Create a new, empty in-memory database
 let database_new = InMemory::new();
-let _db_new = Instance::open(Box::new(database_new))?;
+let _db_new = Instance::open(Box::new(database_new)).await?;
 
 // Option B: Load from a previously saved file
 if db_path.exists() {
-    match InMemory::load_from_file(&db_path) {
+    match InMemory::load_from_file(&db_path).await {
         Ok(database_loaded) => {
-            let _db_loaded = Instance::open(Box::new(database_loaded))?;
+            let _db_loaded = Instance::open(Box::new(database_loaded)).await?;
             println!("Database loaded successfully.");
             // Use db_loaded
         }
@@ -64,15 +66,17 @@ if db_path.exists() {
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 let tree_name = "my_app_data";
 
-let database = match user.find_database(tree_name) {
+let database = match user.find_database(tree_name).await {
     Ok(mut databases) => {
         println!("Found existing database: {}", tree_name);
         databases.pop().unwrap() // Assume first one is correct
@@ -82,7 +86,7 @@ let database = match user.find_database(tree_name) {
         let mut doc = Doc::new();
         doc.set("name", tree_name);
         let default_key = user.get_default_key()?;
-        user.create_database(doc, &default_key)?
+        user.create_database(doc, &default_key).await?
     }
     Err(e) => return Err(e.into()), // Propagate other errors
 };
@@ -96,37 +100,39 @@ println!("Using Database with root ID: {}", database.root_id());
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction()?;
+let op = database.new_transaction().await?;
 
 {
     // Get the DocStore store handle (scoped)
-    let config_store = op.get_store::<DocStore>("configuration")?;
+    let config_store = op.get_store::<DocStore>("configuration").await?;
 
     // Set some values
-    config_store.set("api_key", "secret-key-123")?;
-    config_store.set("retry_count", "3")?;
+    config_store.set("api_key", "secret-key-123").await?;
+    config_store.set("retry_count", "3").await?;
 
     // Overwrite a value
-    config_store.set("api_key", "new-secret-456")?;
+    config_store.set("api_key", "new-secret-456").await?;
 
     // Remove a value
-    config_store.delete("old_setting")?; // Ok if it doesn't exist
+    config_store.delete("old_setting").await?; // Ok if it doesn't exist
 }
 
 // Commit the changes atomically
-let entry_id = op.commit()?;
+let entry_id = op.commit().await?;
 println!("DocStore changes committed in entry: {}", entry_id);
 # Ok(())
 # }
@@ -136,6 +142,7 @@ println!("DocStore changes committed in entry: {}", entry_id);
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
@@ -146,36 +153,37 @@ struct Task {
     completed: bool,
 }
 
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction()?;
+let op = database.new_transaction().await?;
 let inserted_id;
 
 {
     // Get the Table handle
-    let tasks_store = op.get_store::<Table<Task>>("tasks")?;
+    let tasks_store = op.get_store::<Table<Task>>("tasks").await?;
 
     // Insert a new task
     let task1 = Task { description: "Buy milk".to_string(), completed: false };
-    inserted_id = tasks_store.insert(task1)?;
+    inserted_id = tasks_store.insert(task1).await?;
     println!("Inserted task with ID: {}", inserted_id);
 
     // Insert another task
     let task2 = Task { description: "Write docs".to_string(), completed: false };
-    tasks_store.insert(task2)?;
+    tasks_store.insert(task2).await?;
 
     // Update the first task (requires getting it first if you only have the ID)
-    if let Ok(mut task_to_update) = tasks_store.get(&inserted_id) {
+    if let Ok(mut task_to_update) = tasks_store.get(&inserted_id).await {
         task_to_update.completed = true;
-        tasks_store.set(&inserted_id, task_to_update)?;
+        tasks_store.set(&inserted_id, task_to_update).await?;
         println!("Updated task {}", inserted_id);
     } else {
         eprintln!("Task {} not found for update?", inserted_id);
@@ -186,7 +194,7 @@ let inserted_id;
 }
 
 // Commit all inserts/updates/deletes
-let entry_id = op.commit()?;
+let entry_id = op.commit().await?;
 println!("Table changes committed in entry: {}", entry_id);
 # Ok(())
 # }
@@ -196,27 +204,29 @@ println!("Table changes committed in entry: {}", entry_id);
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Get a read-only viewer for the latest state
-let config_viewer = database.get_store_viewer::<DocStore>("configuration")?;
+let config_viewer = database.get_store_viewer::<DocStore>("configuration").await?;
 
-match config_viewer.get("api_key") {
+match config_viewer.get("api_key").await {
     Ok(api_key) => println!("Current API Key: {}", api_key),
     Err(e) if e.is_not_found() => println!("API Key not set."),
     Err(e) => return Err(e.into()),
 }
 
-match config_viewer.get("retry_count") {
+match config_viewer.get("retry_count").await {
     Ok(count_str) => {
         // Note: DocStore values can be various types
         if let Some(text) = count_str.as_text() {
@@ -235,6 +245,7 @@ match config_viewer.get("retry_count") {
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
@@ -245,24 +256,25 @@ match config_viewer.get("retry_count") {
 #     completed: bool,
 # }
 #
-# fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
-# let op = database.new_transaction()?;
-# let tasks_store = op.get_store::<Table<Task>>("tasks")?;
-# let id_to_find = tasks_store.insert(Task { description: "Test task".to_string(), completed: false })?;
-# op.commit()?;
+# let database = user.create_database(settings, &default_key).await?;
+# let op = database.new_transaction().await?;
+# let tasks_store = op.get_store::<Table<Task>>("tasks").await?;
+# let id_to_find = tasks_store.insert(Task { description: "Test task".to_string(), completed: false }).await?;
+# op.commit().await?;
 #
 // Get a read-only viewer
-let tasks_viewer = database.get_store_viewer::<Table<Task>>("tasks")?;
+let tasks_viewer = database.get_store_viewer::<Table<Task>>("tasks").await?;
 
 // Get a specific task by ID
-match tasks_viewer.get(&id_to_find) {
+match tasks_viewer.get(&id_to_find).await {
     Ok(task) => println!("Found task {}: {:?}", id_to_find, task),
     Err(e) if e.is_not_found() => println!("Task {} not found.", id_to_find),
     Err(e) => return Err(e.into()),
@@ -270,7 +282,7 @@ match tasks_viewer.get(&id_to_find) {
 
 // Search for all tasks
 println!("\nAll Tasks:");
-match tasks_viewer.search(|_| true) {
+match tasks_viewer.search(|_| true).await {
     Ok(tasks) => {
         for (id, task) in tasks {
             println!("  ID: {}, Task: {:?}", id, task);
@@ -286,58 +298,60 @@ match tasks_viewer.search(|_| true) {
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path, Database};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction()?;
+let op = database.new_transaction().await?;
 
 // Get the DocStore store handle
-let user_store = op.get_store::<DocStore>("users")?;
+let user_store = op.get_store::<DocStore>("users").await?;
 
 // Using path-based operations to create and modify nested structures
 // Set profile information using paths - creates nested structure automatically
-user_store.set_path(path!("user123.profile.name"), "Jane Doe")?;
-user_store.set_path(path!("user123.profile.email"), "jane@example.com")?;
+user_store.set_path(path!("user123.profile.name"), "Jane Doe").await?;
+user_store.set_path(path!("user123.profile.email"), "jane@example.com").await?;
 
 // Set preferences using paths
-user_store.set_path(path!("user123.preferences.theme"), "dark")?;
-user_store.set_path(path!("user123.preferences.notifications"), "enabled")?;
-user_store.set_path(path!("user123.preferences.language"), "en")?;
+user_store.set_path(path!("user123.preferences.theme"), "dark").await?;
+user_store.set_path(path!("user123.preferences.notifications"), "enabled").await?;
+user_store.set_path(path!("user123.preferences.language"), "en").await?;
 
 // Set additional nested configuration
-user_store.set_path(path!("config.database.host"), "localhost")?;
-user_store.set_path(path!("config.database.port"), "5432")?;
+user_store.set_path(path!("config.database.host"), "localhost").await?;
+user_store.set_path(path!("config.database.port"), "5432").await?;
 
 // Commit the changes
-let entry_id = op.commit()?;
+let entry_id = op.commit().await?;
 println!("Nested data changes committed in entry: {}", entry_id);
 
 // Read back the nested data using path operations
-let viewer_op = database.new_transaction()?;
-let viewer_store = viewer_op.get_store::<DocStore>("users")?;
+let viewer_op = database.new_transaction().await?;
+let viewer_store = viewer_op.get_store::<DocStore>("users").await?;
 
 // Get individual values using path operations
-let _name_value = viewer_store.get_path(path!("user123.profile.name"))?;
-let _email_value = viewer_store.get_path(path!("user123.profile.email"))?;
-let _theme_value = viewer_store.get_path(path!("user123.preferences.theme"))?;
-let _host_value = viewer_store.get_path(path!("config.database.host"))?;
+let _name_value = viewer_store.get_path(path!("user123.profile.name")).await?;
+let _email_value = viewer_store.get_path(path!("user123.profile.email")).await?;
+let _theme_value = viewer_store.get_path(path!("user123.preferences.theme")).await?;
+let _host_value = viewer_store.get_path(path!("config.database.host")).await?;
 
 // Get the entire user object to verify nested structure was created
-if let Ok(_user_data) = viewer_store.get("user123") {
+if let Ok(_user_data) = viewer_store.get("user123").await {
     println!("User profile and preferences created successfully");
 }
 
 // Get the entire config object to verify nested structure
-if let Ok(_config_data) = viewer_store.get("config") {
+if let Ok(_config_data) = viewer_store.get("config").await {
     println!("Configuration data created successfully");
 }
 
@@ -352,25 +366,27 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::YDoc, Database};
 # use eidetica::y_crdt::{Map as YMap, Transact};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_example");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction()?;
+let op = database.new_transaction().await?;
 
 // Get the YDoc store handle
-let user_info_store = op.get_store::<YDoc>("user_info")?;
+let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
 // Writing to Y-CRDT document
 user_info_store.with_doc_mut(|doc| {
@@ -382,15 +398,15 @@ user_info_store.with_doc_mut(|doc| {
     user_info_map.insert(&mut txn, "bio", "Software developer");
 
     Ok(())
-})?;
+}).await?;
 
 // Commit the transaction
-let entry_id = op.commit()?;
+let entry_id = op.commit().await?;
 println!("YDoc changes committed in entry: {}", entry_id);
 
 // Reading from Y-CRDT document
-let read_op = database.new_transaction()?;
-let reader_store = read_op.get_store::<YDoc>("user_info")?;
+let read_op = database.new_transaction().await?;
+let reader_store = read_op.get_store::<YDoc>("user_info").await?;
 
 reader_store.with_doc(|doc| {
     let user_info_map = doc.get_or_insert_map("user_info");
@@ -414,11 +430,11 @@ reader_store.with_doc(|doc| {
     }
 
     Ok(())
-})?;
+}).await?;
 
 // Working with nested Y-CRDT maps
-let prefs_op = database.new_transaction()?;
-let prefs_store = prefs_op.get_store::<YDoc>("user_prefs")?;
+let prefs_op = database.new_transaction().await?;
+let prefs_store = prefs_op.get_store::<YDoc>("user_prefs").await?;
 
 prefs_store.with_doc_mut(|doc| {
     let prefs_map = doc.get_or_insert_map("preferences");
@@ -429,13 +445,13 @@ prefs_store.with_doc_mut(|doc| {
     prefs_map.insert(&mut txn, "language", "en");
 
     Ok(())
-})?;
+}).await?;
 
-prefs_op.commit()?;
+prefs_op.commit().await?;
 
 // Reading preferences
-let prefs_read_op = database.new_transaction()?;
-let prefs_read_store = prefs_read_op.get_store::<YDoc>("user_prefs")?;
+let prefs_read_op = database.new_transaction().await?;
+let prefs_read_store = prefs_read_op.get_store::<YDoc>("user_prefs").await?;
 
 prefs_read_store.with_doc(|doc| {
     let prefs_map = doc.get_or_insert_map("preferences");
@@ -450,7 +466,7 @@ prefs_read_store.with_doc(|doc| {
     }
 
     Ok(())
-})?;
+}).await?;
 # Ok(())
 # }
 ```
@@ -473,19 +489,21 @@ prefs_read_store.with_doc(|doc| {
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
 # use std::path::PathBuf;
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Create a test database
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "save_example");
 # let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key)?;
+# let _database = user.create_database(settings, &default_key).await?;
 #
 # // Use a temporary file for testing
 # let temp_dir = std::env::temp_dir();
@@ -496,7 +514,7 @@ let database_guard = instance.backend();
 
 // Downcast to the concrete InMemory type
 if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemory>() {
-    match in_memory_database.save_to_file(&db_path) {
+    match in_memory_database.save_to_file(&db_path).await {
         Ok(_) => println!("Database saved successfully to {:?}", db_path),
         Err(e) => eprintln!("Error saving database: {}", e),
     }

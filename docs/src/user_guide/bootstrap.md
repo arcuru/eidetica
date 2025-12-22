@@ -52,7 +52,7 @@ auth_doc.set_json("*", serde_json::json!({
 }))?;
 
 settings.set("auth", auth_doc);
-let database = instance.new_database(settings, "admin_key")?;
+let database = instance.new_database(settings, "admin_key").await?;
 ```
 
 ### Permission Levels
@@ -227,7 +227,7 @@ match bootstrap_result {
             Ok(_) => {
                 println!("Access granted! Database synchronized.");
                 // Client can now load and use the database
-                let db = client_instance.load_database(&tree_id)?;
+                let db = client_instance.load_database(&tree_id).await?;
             },
             Err(_) => {
                 println!("Still pending or rejected. Check with admin.");

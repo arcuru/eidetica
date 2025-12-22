@@ -24,20 +24,22 @@ Using a `Transaction` follows a distinct lifecycle:
 
     ```rust
     # extern crate eidetica;
+    # extern crate tokio;
     # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
     #
-    # fn main() -> eidetica::Result<()> {
+    # #[tokio::main]
+    # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let instance = Instance::open(Box::new(backend))?;
-    # instance.create_user("alice", None)?;
-    # let mut user = instance.login_user("alice", None)?;
+    # let instance = Instance::open(Box::new(backend)).await?;
+    # instance.create_user("alice", None).await?;
+    # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
-    # let database = user.create_database(settings, &default_key)?;
+    # let database = user.create_database(settings, &default_key).await?;
     #
-    let _txn = database.new_transaction()?; // Automatically uses the database's default signing key
+    let _txn = database.new_transaction().await?; // Automatically uses the database's default signing key
     # Ok(())
     # }
     ```
@@ -46,6 +48,7 @@ Using a `Transaction` follows a distinct lifecycle:
 
     ```rust
     # extern crate eidetica;
+    # extern crate tokio;
     # extern crate serde;
     # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
     # use serde::{Serialize, Deserialize};
@@ -55,24 +58,25 @@ Using a `Transaction` follows a distinct lifecycle:
     #     name: String,
     # }
     #
-    # fn main() -> eidetica::Result<()> {
+    # #[tokio::main]
+    # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let instance = Instance::open(Box::new(backend))?;
-    # instance.create_user("alice", None)?;
-    # let mut user = instance.login_user("alice", None)?;
+    # let instance = Instance::open(Box::new(backend)).await?;
+    # instance.create_user("alice", None).await?;
+    # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
-    # let database = user.create_database(settings, &default_key)?;
-    let txn = database.new_transaction()?;
+    # let database = user.create_database(settings, &default_key).await?;
+    let txn = database.new_transaction().await?;
 
     // Get handles within a scope or manage their lifetime
-    let _users_store = txn.get_store::<Table<User>>("users")?;
-    let _config_store = txn.get_store::<DocStore>("config")?;
+    let _users_store = txn.get_store::<Table<User>>("users").await?;
+    let _config_store = txn.get_store::<DocStore>("config").await?;
     let _settings_store = txn.get_settings()?;  // For database settings
 
-    txn.commit()?;
+    txn.commit().await?;
     # Ok(())
     # }
     ```
@@ -81,6 +85,7 @@ Using a `Transaction` follows a distinct lifecycle:
 
     ```rust
     # extern crate eidetica;
+    # extern crate tokio;
     # extern crate serde;
     # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}};
     # use serde::{Serialize, Deserialize};
@@ -90,28 +95,29 @@ Using a `Transaction` follows a distinct lifecycle:
     #     name: String,
     # }
     #
-    # fn main() -> eidetica::Result<()> {
+    # #[tokio::main]
+    # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = InMemory::new();
-    # let instance = Instance::open(Box::new(backend))?;
-    # instance.create_user("alice", None)?;
-    # let mut user = instance.login_user("alice", None)?;
+    # let instance = Instance::open(Box::new(backend)).await?;
+    # instance.create_user("alice", None).await?;
+    # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
-    # let database = user.create_database(settings, &default_key)?;
-    # let txn = database.new_transaction()?;
-    # let users_store = txn.get_store::<Table<User>>("users")?;
-    # let config_store = txn.get_store::<DocStore>("config")?;
+    # let database = user.create_database(settings, &default_key).await?;
+    # let txn = database.new_transaction().await?;
+    # let users_store = txn.get_store::<Table<User>>("users").await?;
+    # let config_store = txn.get_store::<DocStore>("config").await?;
     # let settings_store = txn.get_settings()?;
     #
     // Insert a new user and get their ID
-    let user_id = users_store.insert(User { name: "Alice".to_string() })?;
-    let _current_user = users_store.get(&user_id)?;
-    config_store.set("last_updated", "2024-01-15T10:30:00Z")?;
-    settings_store.set_name("Updated Database Name")?;  // Manage database settings
+    let user_id = users_store.insert(User { name: "Alice".to_string() }).await?;
+    let _current_user = users_store.get(&user_id).await?;
+    config_store.set("last_updated", "2024-01-15T10:30:00Z").await?;
+    settings_store.set_name("Updated Database Name").await?;  // Manage database settings
     #
-    # txn.commit()?;
+    # txn.commit().await?;
     # Ok(())
     # }
     ```
@@ -122,22 +128,24 @@ Using a `Transaction` follows a distinct lifecycle:
 
     ```rust
     # extern crate eidetica;
+    # extern crate tokio;
     # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
     #
-    # fn main() -> eidetica::Result<()> {
+    # #[tokio::main]
+    # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = InMemory::new();
-    # let instance = Instance::open(Box::new(backend))?;
-    # instance.create_user("alice", None)?;
-    # let mut user = instance.login_user("alice", None)?;
+    # let instance = Instance::open(Box::new(backend)).await?;
+    # instance.create_user("alice", None).await?;
+    # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
-    # let database = user.create_database(settings, &default_key)?;
+    # let database = user.create_database(settings, &default_key).await?;
     #
     // Create transaction and commit
-    let txn = database.new_transaction()?;
-    let new_entry_id = txn.commit()?;
+    let txn = database.new_transaction().await?;
+    let new_entry_id = txn.commit().await?;
     println!("Changes committed. New state represented by Entry: {}", new_entry_id);
     # Ok(())
     # }
@@ -151,32 +159,34 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "settings_example");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Generate keypairs for old user and add it first so we can revoke it
 # let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
 # let old_user_public_key = format_public_key(&old_user_verifying_key);
 # let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(15))?;
-# let setup_txn = database.new_transaction()?;
+# let setup_txn = database.new_transaction().await?;
 # let setup_store = setup_txn.get_settings()?;
-# setup_store.set_auth_key("old_user", old_user_key)?;
-# setup_txn.commit()?;
-let transaction = database.new_transaction()?;
+# setup_store.set_auth_key("old_user", old_user_key).await?;
+# setup_txn.commit().await?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Update database name
-settings_store.set_name("Production Database")?;
+settings_store.set_name("Production Database").await?;
 
 // Generate keypairs for new users (hidden in production code)
 # let (_new_user_signing_key, new_user_verifying_key) = generate_keypair();
@@ -189,7 +199,7 @@ let new_user_key = AuthKey::active(
     &new_user_public_key,
     Permission::Write(10),
 )?;
-settings_store.set_auth_key("new_user", new_user_key)?;
+settings_store.set_auth_key("new_user", new_user_key).await?;
 
 // Complex auth operations atomically
 let alice_key = AuthKey::active(&alice_public_key, Permission::Write(5))?;
@@ -197,9 +207,9 @@ settings_store.update_auth_settings(|auth| {
     auth.overwrite_key("alice", alice_key)?;
     auth.revoke_key("old_user")?;
     Ok(())
-})?;
+}).await?;
 
-transaction.commit()?;
+transaction.commit().await?;
 # Ok(())
 # }
 ```
@@ -212,6 +222,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
@@ -221,24 +232,25 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 #     name: String,
 # }
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database with some data
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Insert test data
-# let txn = database.new_transaction()?;
-# let users_store = txn.get_store::<Table<User>>("users")?;
-# let user_id = users_store.insert(User { name: "Alice".to_string() })?;
-# txn.commit()?;
+# let txn = database.new_transaction().await?;
+# let users_store = txn.get_store::<Table<User>>("users").await?;
+# let user_id = users_store.insert(User { name: "Alice".to_string() }).await?;
+# txn.commit().await?;
 #
-let users_viewer = database.get_store_viewer::<Table<User>>("users")?;
-if let Ok(_user) = users_viewer.get(&user_id) {
+let users_viewer = database.get_store_viewer::<Table<User>>("users").await?;
+if let Ok(_user) = users_viewer.get(&user_id).await {
     // Read data based on the current tips of the 'users' store
 }
 # Ok(())

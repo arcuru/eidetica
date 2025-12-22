@@ -43,35 +43,37 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // Get a DocStore store
-let op = database.new_transaction()?;
-let store = op.get_store::<DocStore>("app_data")?;
+let op = database.new_transaction().await?;
+let store = op.get_store::<DocStore>("app_data").await?;
 
 // Set simple values
-store.set("version", "1.0.0")?;
-store.set("author", "Alice")?;
+store.set("version", "1.0.0").await?;
+store.set("author", "Alice").await?;
 
 // Path-based operations for nested structures
 // This creates nested maps: {"database": {"host": "localhost", "port": "5432"}}
-store.set_path(path!("database.host"), "localhost")?;
-store.set_path(path!("database.port"), "5432")?;
+store.set_path(path!("database.host"), "localhost").await?;
+store.set_path(path!("database.port"), "5432").await?;
 
 // Retrieve values
-let version = store.get("version")?; // Returns a Value
-let host = store.get_path(path!("database.host"))?; // Returns Value
+let version = store.get("version").await?; // Returns a Value
+let host = store.get_path(path!("database.host")).await?; // Returns Value
 
-op.commit()?;
+op.commit().await?;
 # Ok(())
 # }
 ```
@@ -82,21 +84,23 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
-# let op = database.new_transaction()?;
-# let store = op.get_store::<DocStore>("app_data")?;
+# let database = user.create_database(settings, &default_key).await?;
+# let op = database.new_transaction().await?;
+# let store = op.get_store::<DocStore>("app_data").await?;
 // This code:
-store.set_path(path!("user.profile.name"), "Bob")?;
+store.set_path(path!("user.profile.name"), "Bob").await?;
 
 // Creates this structure:
 // {
@@ -108,7 +112,7 @@ store.set_path(path!("user.profile.name"), "Bob")?;
 // }
 
 // NOT: { "user.profile.name": "Bob" } ❌
-# op.commit()?;
+# op.commit().await?;
 # Ok(())
 # }
 ```
@@ -127,19 +131,21 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // Define a struct for your data
 #[derive(Serialize, Deserialize, Clone)]
 struct User {
@@ -149,8 +155,8 @@ struct User {
 }
 
 // Get a Table store
-let op = database.new_transaction()?;
-let users = op.get_store::<Table<User>>("users")?;
+let op = database.new_transaction().await?;
+let users = op.get_store::<Table<User>>("users").await?;
 
 // Insert items (returns a generated UUID)
 let user = User {
@@ -158,31 +164,31 @@ let user = User {
     email: "alice@example.com".to_string(),
     active: true,
 };
-let id = users.insert(user)?;
+let id = users.insert(user).await?;
 
 // Get an item by ID
-if let Ok(user) = users.get(&id) {
+if let Ok(user) = users.get(&id).await {
     println!("Found user: {}", user.name);
 }
 
 // Update an item
-if let Ok(mut user) = users.get(&id) {
+if let Ok(mut user) = users.get(&id).await {
     user.active = false;
-    users.set(&id, user)?;
+    users.set(&id, user).await?;
 }
 
 // Delete an item
-let was_deleted = users.delete(&id)?;
+let was_deleted = users.delete(&id).await?;
 if was_deleted {
     println!("User deleted successfully");
 }
 
 // Search for items matching a condition
-let active_users = users.search(|user| user.active)?;
+let active_users = users.search(|user| user.active).await?;
 for (id, user) in active_users {
     println!("Active user: {} (ID: {})", user.name, id);
 }
-# op.commit()?;
+# op.commit().await?;
 # Ok(())
 # }
 ```
@@ -202,29 +208,31 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // Get a SettingsStore for the current transaction
-let transaction = database.new_transaction()?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Set database name
-settings_store.set_name("My Application Database")?;
+settings_store.set_name("My Application Database").await?;
 
 // Get database name
-let name = settings_store.get_name()?;
+let name = settings_store.get_name().await?;
 println!("Database name: {}", name);
 
-transaction.commit()?;
+transaction.commit().await?;
 # Ok(())
 # }
 ```
@@ -235,23 +243,25 @@ transaction.commit()?;
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "stores_auth_example");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Generate a keypair for the new user
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
 # let alice_public_key = format_public_key(&alice_verifying_key);
-let transaction = database.new_transaction()?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Add a new authentication key
@@ -259,16 +269,16 @@ let auth_key = AuthKey::active(
     &alice_public_key,
     Permission::Write(10),
 )?;
-settings_store.set_auth_key("alice", auth_key)?;
+settings_store.set_auth_key("alice", auth_key).await?;
 
 // Get an authentication key
-let key = settings_store.get_auth_key("alice")?;
+let key = settings_store.get_auth_key("alice").await?;
 println!("Alice's key: {}", key.pubkey());
 
 // Revoke a key
-settings_store.revoke_auth_key("alice")?;
+settings_store.revoke_auth_key("alice").await?;
 
-transaction.commit()?;
+transaction.commit().await?;
 # Ok(())
 # }
 ```
@@ -279,19 +289,21 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new()))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "complex_auth_example");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Generate keypairs for multiple users
 # let (_bob_signing_key, bob_verifying_key) = generate_keypair();
 # let bob_public_key = format_public_key(&bob_verifying_key);
@@ -303,11 +315,11 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 # let old_user_public_key = format_public_key(&old_user_verifying_key);
 # let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(30))?;
 # // Add old_user first so we can revoke it
-# let setup_txn = database.new_transaction()?;
+# let setup_txn = database.new_transaction().await?;
 # let setup_store = setup_txn.get_settings()?;
-# setup_store.set_auth_key("old_user", old_user_key)?;
-# setup_txn.commit()?;
-let transaction = database.new_transaction()?;
+# setup_store.set_auth_key("old_user", old_user_key).await?;
+# setup_txn.commit().await?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Perform multiple auth operations atomically
@@ -320,9 +332,9 @@ settings_store.update_auth_settings(|auth| {
     auth.revoke_key("old_user")?;
 
     Ok(())
-})?;
+}).await?;
 
-transaction.commit()?;
+transaction.commit().await?;
 # Ok(())
 # }
 ```
@@ -360,23 +372,25 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::YDoc};
 # use eidetica::y_crdt::{Map, Text, Transact};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend))?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_stores");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 #
 // Get a YDoc store
-let op = database.new_transaction()?;
-let doc_store = op.get_store::<YDoc>("document")?;
+let op = database.new_transaction().await?;
+let doc_store = op.get_store::<YDoc>("document").await?;
 
 // Work with Y-CRDT structures
 doc_store.with_doc_mut(|doc| {
@@ -393,9 +407,9 @@ doc_store.with_doc_mut(|doc| {
     metadata.insert(&mut txn, "author", "Alice");
 
     Ok(())
-})?;
+}).await?;
 
-op.commit()?;
+op.commit().await?;
 # Ok(())
 # }
 ```
@@ -439,22 +453,24 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 // First access to "app_config" - automatically registered in _index
-let txn = database.new_transaction()?;
-let config: DocStore = txn.get_store("app_config")?;
-config.set("version", "1.0.0")?;
-txn.commit()?;
+let txn = database.new_transaction().await?;
+let config: DocStore = txn.get_store("app_config").await?;
+config.set("version", "1.0.0").await?;
+txn.commit().await?;
 
 // The 'app_config' Store is now registered with type "docstore:v0"
 # Ok(())
@@ -471,40 +487,42 @@ Use `get_index()` to query information about registered subtrees:
 
 ```rust
 # extern crate eidetica;
+# extern crate tokio;
 # extern crate serde;
 # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{DocStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
-# fn main() -> eidetica::Result<()> {
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(InMemory::new());
-# let instance = Instance::open(backend)?;
-# instance.create_user("alice", None)?;
-# let mut user = instance.login_user("alice", None)?;
+# let instance = Instance::open(backend).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
-# let database = user.create_database(settings, &default_key)?;
+# let database = user.create_database(settings, &default_key).await?;
 # // Create some subtrees first
 # #[derive(Serialize, Deserialize, Clone)]
 # struct User { name: String }
-# let setup_txn = database.new_transaction()?;
-# let _config: DocStore = setup_txn.get_store("config")?;
-# let _users: Table<User> = setup_txn.get_store("users")?;
-# setup_txn.commit()?;
+# let setup_txn = database.new_transaction().await?;
+# let _config: DocStore = setup_txn.get_store("config").await?;
+# let _users: Table<User> = setup_txn.get_store("users").await?;
+# setup_txn.commit().await?;
 // Query the index to discover subtrees
-let txn = database.new_transaction()?;
-let index = txn.get_index()?;
+let txn = database.new_transaction().await?;
+let index = txn.get_index().await?;
 
 // List all registered subtrees
-let subtrees = index.list()?;
+let subtrees = index.list().await?;
 for name in subtrees {
     println!("Found subtree: {}", name);
 }
 
 // Check if a specific subtree exists
-if index.contains("config") {
+if index.contains("config").await {
     // Get metadata about the subtree
-    let info = index.get_entry("config")?;
+    let info = index.get_entry("config").await?;
     println!("Type: {}", info.type_id);  // e.g., "docstore:v0"
     println!("Config: {}", info.config);  // Store-specific configuration
 }

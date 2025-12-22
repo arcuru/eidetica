@@ -32,20 +32,20 @@ Example usage:
 // Create a new in-memory database
 use eidetica::backend::database::InMemory;
 let database = InMemory::new();
-let db = Instance::open(Box::new(database))?;
+let db = Instance::open(Box::new(database)).await?;
 
 // ... use the database ...
 
 // Save to a file (optional)
 let path = PathBuf::from("my_database.json");
-let database_guard = db.backend().lock().unwrap();
+let database_guard = db.backend().lock().await;
 if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
-    in_memory.save_to_file(&path)?;
+    in_memory.save_to_file(&path).await?;
 }
 
 // Load from a file
-let database = InMemory::load_from_file(&path)?;
-let db = Instance::open(Box::new(database))?;
+let database = InMemory::load_from_file(&path).await?;
+let db = Instance::open(Box::new(database)).await?;
 ```
 
 ### SQLite
