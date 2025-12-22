@@ -22,7 +22,7 @@ async fn test_backend_basic_operations() {
 
 #[tokio::test]
 async fn test_backend_error_handling() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Test retrieving a non-existent entry
     let non_existent_id: ID = "non_existent_id".into();
@@ -69,7 +69,7 @@ async fn test_backend_error_handling() {
 
 #[tokio::test]
 async fn test_all_roots() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Initially, there should be no roots
     assert!(backend.all_roots().await.unwrap().is_empty());

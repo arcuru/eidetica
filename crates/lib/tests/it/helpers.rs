@@ -40,11 +40,8 @@ pub use crate::context::TestContext;
 /// TEST_BACKEND=postgres TEST_POSTGRES_URL="host=localhost dbname=eidetica_test" \
 ///   cargo test --features postgres
 /// ```
-/// Creates a test backend based on TEST_BACKEND env var (async version).
-///
-/// This async version is preferred as it avoids runtime nesting issues
-/// with SQLite in-memory databases.
-pub async fn test_backend_async() -> Box<dyn BackendImpl> {
+/// Creates a test backend based on TEST_BACKEND env var
+pub async fn test_backend() -> Box<dyn BackendImpl> {
     match std::env::var("TEST_BACKEND").as_deref() {
         Ok("sqlite") => {
             #[cfg(feature = "sqlite")]
@@ -85,48 +82,9 @@ pub async fn test_backend_async() -> Box<dyn BackendImpl> {
     }
 }
 
-/// Sync version for backwards compatibility (uses internal runtime for SQL backends).
-///
-/// Prefer `test_backend_async()` for new tests, especially those using SQLite.
-pub fn test_backend() -> Box<dyn BackendImpl> {
-    match std::env::var("TEST_BACKEND").as_deref() {
-        Ok("sqlite") => {
-            #[cfg(feature = "sqlite")]
-            {
-                use eidetica::backend::database::sql::Sqlite;
-                Box::new(Sqlite::in_memory().expect("Failed to create SQLite backend"))
-            }
-            #[cfg(not(feature = "sqlite"))]
-            {
-                panic!("TEST_BACKEND=sqlite requires the 'sqlite' feature to be enabled")
-            }
-        }
-        Ok("postgres") => {
-            #[cfg(feature = "postgres")]
-            {
-                use eidetica::backend::database::Postgres;
-                let url = std::env::var("TEST_POSTGRES_URL")
-                    .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
-                // Use connect_isolated for test isolation - each test gets its own schema
-                // This always creates its own runtime internally, which works whether
-                // we're in a tokio context or not (the runtime is contained in the backend)
-                Box::new(Postgres::connect_isolated(&url).expect("Failed to connect to PostgreSQL"))
-            }
-            #[cfg(not(feature = "postgres"))]
-            {
-                panic!("TEST_BACKEND=postgres requires the 'postgres' feature to be enabled")
-            }
-        }
-        Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
-        Ok(other) => {
-            panic!("Unknown TEST_BACKEND value: {other}. Supported: inmemory, sqlite, postgres")
-        }
-    }
-}
-
 /// Creates a basic Instance with no users or keys
 pub async fn test_instance() -> Instance {
-    Instance::open(test_backend_async().await)
+    Instance::open(test_backend().await)
         .await
         .expect("Failed to create test instance")
 }

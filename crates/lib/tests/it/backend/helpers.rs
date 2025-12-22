@@ -9,7 +9,7 @@ pub use crate::helpers::test_backend;
 /// Create a test backend with a root entry already stored
 /// Returns (backend, root_id)
 pub async fn create_test_backend_with_root() -> (Box<dyn BackendImpl>, ID) {
-    let backend = test_backend();
+    let backend = test_backend().await;
     let root_id = create_and_store_root(&*backend).await;
     (backend, root_id)
 }

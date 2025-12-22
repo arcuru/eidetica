@@ -4,7 +4,7 @@ use super::helpers::test_backend;
 
 #[tokio::test]
 async fn test_backend_subtree_operations() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create a root entry with a subtree
     let root_entry = Entry::root_builder()
@@ -40,7 +40,7 @@ async fn test_backend_subtree_operations() {
 
 #[tokio::test]
 async fn test_backend_get_store_from_tips() {
-    let backend = test_backend();
+    let backend = test_backend().await;
     let subtree_name = "my_subtree";
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -184,7 +184,7 @@ async fn test_backend_get_store_from_tips() {
 
 #[tokio::test]
 async fn test_get_store_tips() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create a tree with subtrees
     let root = Entry::root_builder()

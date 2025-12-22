@@ -8,7 +8,7 @@ use super::helpers::test_backend;
 
 #[tokio::test]
 async fn test_verification_status_basic_operations() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create a test entry
     let entry = Entry::root_builder()
@@ -57,7 +57,7 @@ async fn test_verification_status_basic_operations() {
 
 #[tokio::test]
 async fn test_verification_status_default_behavior() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create a test entry
     let entry = Entry::root_builder()
@@ -89,7 +89,7 @@ async fn test_verification_status_default_behavior() {
 
 #[tokio::test]
 async fn test_verification_status_multiple_entries() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create multiple test entries
     let entry1 = Entry::root_builder()
@@ -139,7 +139,7 @@ async fn test_verification_status_multiple_entries() {
 
 #[tokio::test]
 async fn test_verification_status_not_found_errors() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     let nonexistent_id: ID = "nonexistent".into();
 
@@ -219,7 +219,7 @@ async fn test_verification_status_serialization() {
 
 #[tokio::test]
 async fn test_backend_verification_helpers() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Test the convenience methods
     let entry1 = Entry::root_builder()

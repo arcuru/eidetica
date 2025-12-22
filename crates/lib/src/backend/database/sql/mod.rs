@@ -29,7 +29,6 @@ mod traversal;
 pub mod schema;
 
 use std::any::Any;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -76,8 +75,6 @@ pub enum DbKind {
 /// SQL-based backend implementing `BackendImpl` using sqlx.
 ///
 /// This backend supports both SQLite and PostgreSQL through sqlx's `AnyPool`.
-/// All async operations are internally wrapped with `block_on` to provide
-/// synchronous APIs that match the `BackendImpl` trait.
 ///
 /// # Thread Safety
 ///
@@ -91,9 +88,6 @@ pub enum DbKind {
 pub struct SqlxBackend {
     pool: AnyPool,
     kind: DbKind,
-    /// Optional owned runtime for when created outside of an async context.
-    /// If None, uses `tokio::runtime::Handle::current()`.
-    runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
 impl SqlxBackend {
@@ -202,7 +196,6 @@ impl SqlxBackend {
         let backend = Self {
             pool,
             kind: DbKind::Sqlite,
-            runtime: None,
         };
 
         // Initialize schema
@@ -234,56 +227,6 @@ impl SqlxBackend {
         let unique_id = uuid::Uuid::new_v4();
         let url = format!("sqlite:file:mem_{unique_id}?mode=memory&cache=shared");
         Self::connect_sqlite(&url).await
-    }
-
-    /// Create an in-memory SQLite database (sync).
-    ///
-    /// This method works both inside and outside of an existing tokio runtime.
-    /// Use `sqlite_in_memory()` if you already have a runtime and want to avoid
-    /// creating a new one.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use eidetica::backend::database::sql::SqlxBackend;
-    ///
-    /// let backend = SqlxBackend::in_memory().unwrap();
-    /// ```
-    pub fn in_memory() -> Result<Self> {
-        // Check if we're already in a tokio runtime
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // We're in an async context - spawn on a separate thread to create runtime
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let rt = Arc::new(tokio::runtime::Runtime::new().map_err(|e| {
-                        BackendError::SqlxError {
-                            reason: format!("Failed to create tokio runtime: {e}"),
-                            source: None,
-                        }
-                    })?);
-
-                    let mut backend = rt.block_on(Self::sqlite_in_memory())?;
-                    backend.runtime = Some(rt);
-                    Ok(backend)
-                })();
-                tx.send(result).ok();
-            });
-            rx.recv().expect("Thread panicked")
-        } else {
-            // Not in async context, create runtime directly
-            let rt =
-                Arc::new(
-                    tokio::runtime::Runtime::new().map_err(|e| BackendError::SqlxError {
-                        reason: format!("Failed to create tokio runtime: {e}"),
-                        source: None,
-                    })?,
-                );
-
-            let mut backend = rt.block_on(Self::sqlite_in_memory())?;
-            backend.runtime = Some(rt);
-            Ok(backend)
-        }
     }
 }
 
@@ -380,7 +323,6 @@ impl SqlxBackend {
         let backend = Self {
             pool,
             kind: DbKind::Postgres,
-            runtime: None,
         };
 
         // Initialize schema (tables will be created in the current search_path)
@@ -412,74 +354,6 @@ impl SqlxBackend {
         let unique_id = uuid::Uuid::new_v4().simple().to_string();
         let schema_name = format!("test_{unique_id}");
         Self::connect_postgres_with_schema(url, Some(schema_name)).await
-    }
-
-    /// Connect to a PostgreSQL database (sync).
-    ///
-    /// This is a convenience method that creates a tokio runtime internally.
-    /// Use `connect_postgres()` if you already have a runtime.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use eidetica::backend::database::sql::SqlxBackend;
-    ///
-    /// let backend = SqlxBackend::connect("postgres://localhost/eidetica").unwrap();
-    /// ```
-    pub fn connect(url: &str) -> Result<Self> {
-        let rt = Arc::new(
-            tokio::runtime::Runtime::new().map_err(|e| BackendError::SqlxError {
-                reason: format!("Failed to create tokio runtime: {e}"),
-                source: None,
-            })?,
-        );
-
-        let mut backend = rt.block_on(Self::connect_postgres(url))?;
-        backend.runtime = Some(rt);
-        Ok(backend)
-    }
-
-    /// Connect to a PostgreSQL database with test isolation (sync).
-    ///
-    /// This method works both inside and outside of an existing tokio runtime.
-    /// Creates a unique schema for this backend instance.
-    pub fn connect_isolated(url: &str) -> Result<Self> {
-        // Check if we're already in a tokio runtime
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // We're in an async context - spawn on a separate thread to create runtime
-            // This is necessary because we can't create a runtime from within a runtime
-            let url = url.to_string();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = (|| {
-                    let rt = Arc::new(tokio::runtime::Runtime::new().map_err(|e| {
-                        BackendError::SqlxError {
-                            reason: format!("Failed to create tokio runtime: {e}"),
-                            source: None,
-                        }
-                    })?);
-
-                    let mut backend = rt.block_on(Self::connect_postgres_isolated(&url))?;
-                    backend.runtime = Some(rt);
-                    Ok(backend)
-                })();
-                tx.send(result).ok();
-            });
-            rx.recv().expect("Thread panicked")
-        } else {
-            // Not in async context, create runtime directly
-            let rt =
-                Arc::new(
-                    tokio::runtime::Runtime::new().map_err(|e| BackendError::SqlxError {
-                        reason: format!("Failed to create tokio runtime: {e}"),
-                        source: None,
-                    })?,
-                );
-
-            let mut backend = rt.block_on(Self::connect_postgres_isolated(url))?;
-            backend.runtime = Some(rt);
-            Ok(backend)
-        }
     }
 }
 
@@ -611,24 +485,6 @@ impl BackendImpl for SqlxBackend {
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         traversal::get_path_from_to(self, tree_id, store, from_id, to_ids).await
-    }
-}
-
-impl Drop for SqlxBackend {
-    fn drop(&mut self) {
-        // If we have an owned runtime and we're inside another tokio runtime,
-        // we need to drop it on a separate thread to avoid blocking issues
-        if let Some(runtime) = self.runtime.take() {
-            if tokio::runtime::Handle::try_current().is_ok() {
-                // We're in an async context - drop the runtime on a separate thread
-                std::thread::spawn(move || {
-                    drop(runtime);
-                });
-            } else {
-                // Not in async context, can drop normally
-                drop(runtime);
-            }
-        }
     }
 }
 

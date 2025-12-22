@@ -78,7 +78,7 @@ async fn test_backend_complex_tree_structure() {
 
 #[tokio::test]
 async fn test_backend_get_tree_from_tips() {
-    let backend = test_backend();
+    let backend = test_backend().await;
     let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
@@ -200,7 +200,7 @@ async fn test_backend_get_tree_from_tips() {
 
 #[tokio::test]
 async fn test_get_tips() {
-    let backend = test_backend();
+    let backend = test_backend().await;
 
     // Create a simple tree structure:
     // Root -> A -> B
