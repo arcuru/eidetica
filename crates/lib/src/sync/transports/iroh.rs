@@ -556,21 +556,7 @@ impl IrohTransport {
         };
 
         // Handle the request using the SyncHandler
-        // Use spawn_blocking with a LocalSet to handle non-Send futures
-        // This is required because SyncHandler::handle_request returns non-Send futures
-        // (internal types use Rc/RefCell), but this function runs in a spawned task.
-        let response = tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create runtime");
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async {
-                handler.handle_request(&request, &context).await
-            })
-        })
-        .await
-        .expect("spawn_blocking task panicked");
+        let response = handler.handle_request(&request, &context).await;
 
         // Serialize and send response using JsonHandler
         match JsonHandler::serialize_response(&response) {
