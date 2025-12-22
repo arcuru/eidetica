@@ -10,7 +10,6 @@ Eidetica is a Rust library for managing structured data with built-in history tr
 - **History tracking** for all changes via immutable [Entries](concepts/entries_databases.md) forming a DAG
 - **Structured data types** via named, typed [Stores](concepts/stores.md) within logical [Databases](concepts/entries_databases.md)
 - **Atomic changes** across multiple data structures using [Transactions](transactions.md)
-- **Designed for distribution** (future capability)
 
 ## How to Use This Guide
 

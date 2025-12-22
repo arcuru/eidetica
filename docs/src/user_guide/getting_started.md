@@ -13,9 +13,12 @@ Add Eidetica to your project dependencies:
 ```toml
 [dependencies]
 eidetica = "0.1.0"  # Update version as appropriate
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Or if using from a local workspace:
 # eidetica = { path = "path/to/eidetica/crates/lib" }
 ```
+
+Eidetica uses an async-first API built on Tokio. All database operations are async and must be called within a Tokio runtime.
 
 ## Setting up the Database
 

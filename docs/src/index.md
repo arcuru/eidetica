@@ -9,6 +9,7 @@ Welcome to the official documentation for Eidetica - a decentralized database bu
 - **Content-Addressable Storage**: Immutable, hash-identified data entries
 - **Real-time Synchronization**: Background sync with configurable batching and timing
 - **Multiple Transport Protocols**: HTTP and Iroh P2P with NAT traversal
+- **Async-First API**: Built on Tokio for efficient, non-blocking operations
 - **Authentication & Security**: Ed25519 signatures for all operations
 - **Flexible Data Models**: Support for documents, key-value, and structured data
 

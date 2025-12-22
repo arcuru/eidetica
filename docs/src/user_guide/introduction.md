@@ -12,7 +12,6 @@ Eidetica is a specialized database library that combines concepts from modern di
 - **Structured Data**: Type-safe storage for different kinds of data through specialized stores.
 - **Atomic Operations**: Complex changes across multiple data structures are committed as a single transaction.
 - **Content-Addressable**: Data is identified by its content, ensuring integrity and enabling efficient synchronization.
-- **Designed for Distribution**: Architecture supports eventual consistency and conflict resolution (future capability).
 
 ## When to Use Eidetica
 
