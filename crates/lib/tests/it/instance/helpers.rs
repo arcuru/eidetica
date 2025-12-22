@@ -29,10 +29,17 @@ pub async fn create_database_with_default_key(user: &mut User) -> Database {
 }
 
 /// Create tree with initial settings using User API
-pub async fn create_database_with_settings(user: &mut User, tree_name: &str, version: &str) -> Database {
+pub async fn create_database_with_settings(
+    user: &mut User,
+    tree_name: &str,
+    version: &str,
+) -> Database {
     let tree = create_database_with_default_key(user).await;
 
-    let op = tree.new_transaction().await.expect("Failed to start operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to start operation");
     {
         let settings = op
             .get_store::<DocStore>(SETTINGS)
@@ -73,7 +80,10 @@ pub async fn create_tree_with_data(
 ) -> Database {
     let tree = create_database_with_default_key(user).await;
 
-    let op = tree.new_transaction().await.expect("Failed to start operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to start operation");
     {
         let data_store = op
             .get_store::<DocStore>(subtree_name)
@@ -81,7 +91,10 @@ pub async fn create_tree_with_data(
             .expect("Failed to get data subtree");
 
         for (key, value) in data {
-            data_store.set(*key, *value).await.expect("Failed to set data");
+            data_store
+                .set(*key, *value)
+                .await
+                .expect("Failed to set data");
         }
     }
     op.commit().await.expect("Failed to commit data");
@@ -101,7 +114,10 @@ pub async fn test_tree_load_workflow(user: &mut User) -> (ID, Database) {
     drop(tree);
 
     // Load tree from ID
-    let loaded_tree = user.open_database(&root_id).await.expect("Failed to load tree");
+    let loaded_tree = user
+        .open_database(&root_id)
+        .await
+        .expect("Failed to load tree");
 
     (root_id, loaded_tree)
 }
@@ -133,7 +149,10 @@ pub async fn setup_trees_for_find_testing(user: &mut User) -> Vec<Database> {
 
 /// Set multiple settings in a tree
 pub async fn set_tree_settings(tree: &Database, settings_data: &[(&str, &str)]) -> ID {
-    let op = tree.new_transaction().await.expect("Failed to start operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to start operation");
     {
         let settings = op
             .get_store::<DocStore>(SETTINGS)
@@ -141,14 +160,22 @@ pub async fn set_tree_settings(tree: &Database, settings_data: &[(&str, &str)]) 
             .expect("Failed to get settings subtree");
 
         for (key, value) in settings_data {
-            settings.set(*key, *value).await.expect("Failed to set setting");
+            settings
+                .set(*key, *value)
+                .await
+                .expect("Failed to set setting");
         }
     }
     op.commit().await.expect("Failed to commit settings")
 }
 
 /// Update tree metadata (name, version, description)
-pub async fn update_tree_metadata(tree: &Database, name: &str, version: &str, description: &str) -> ID {
+pub async fn update_tree_metadata(
+    tree: &Database,
+    name: &str,
+    version: &str,
+    description: &str,
+) -> ID {
     let metadata = &[
         ("name", name),
         ("version", version),
@@ -165,7 +192,10 @@ pub async fn perform_basic_subtree_operations(
     subtree_name: &str,
     operations: &[(&str, &str)],
 ) -> ID {
-    let op = tree.new_transaction().await.expect("Failed to start operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to start operation");
     {
         let data_store = op
             .get_store::<DocStore>(subtree_name)
@@ -173,7 +203,10 @@ pub async fn perform_basic_subtree_operations(
             .expect("Failed to get data subtree");
 
         for (key, value) in operations {
-            data_store.set(*key, *value).await.expect("Failed to set data");
+            data_store
+                .set(*key, *value)
+                .await
+                .expect("Failed to set data");
         }
     }
     op.commit().await.expect("Failed to commit operations")
@@ -186,7 +219,11 @@ pub async fn create_user_profile(tree: &Database, user_id: &str, name: &str, ema
 }
 
 /// Create application configuration in a tree
-pub async fn create_app_config(tree: &Database, app_name: &str, config_data: &[(&str, &str)]) -> ID {
+pub async fn create_app_config(
+    tree: &Database,
+    app_name: &str,
+    config_data: &[(&str, &str)],
+) -> ID {
     let mut all_config = vec![("app_name", app_name)];
     all_config.extend_from_slice(config_data);
     perform_basic_subtree_operations(tree, "app_config", &all_config).await
@@ -300,7 +337,8 @@ pub async fn test_complete_instance_workflow(username: &str) -> (Instance, User,
         &mut user,
         "user_profiles",
         &[("user1", "alice"), ("user2", "bob")],
-    ).await;
+    )
+    .await;
 
     // Add settings to second tree
     set_tree_settings(&tree2, &[("name", "DataTree"), ("purpose", "user_storage")]).await;
@@ -324,7 +362,8 @@ pub async fn test_concurrent_tree_operations(user: &mut User) -> Vec<Database> {
             &format!("user{i}"),
             &format!("User {i}"),
             &format!("user{i}@test.com"),
-        ).await;
+        )
+        .await;
 
         trees.push(tree);
     }

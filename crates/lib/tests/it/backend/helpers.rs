@@ -93,7 +93,11 @@ pub async fn assert_single_tip(backend: &dyn BackendImpl, tree_id: &ID, expected
 }
 
 /// Assert that a tree contains the specified entry IDs
-pub async fn assert_tree_contains_ids(backend: &dyn BackendImpl, tree_id: &ID, expected_ids: &[&ID]) {
+pub async fn assert_tree_contains_ids(
+    backend: &dyn BackendImpl,
+    tree_id: &ID,
+    expected_ids: &[&ID],
+) {
     let tree = backend.get_tree(tree_id).await.unwrap();
     let tree_ids: Vec<ID> = tree.iter().map(|e| e.id()).collect();
 

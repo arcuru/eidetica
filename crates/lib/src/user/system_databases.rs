@@ -186,7 +186,9 @@ pub async fn create_user(
     // For now, duplicate detection happens at login time.
 
     // Check if username already exists
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+    let users_table = users_db
+        .get_store_viewer::<Table<UserInfo>>("users")
+        .await?;
     let existing = users_table.search(|u| u.username == username).await?;
     if !existing.is_empty() {
         return Err(UserError::UsernameAlreadyExists {
@@ -334,7 +336,9 @@ pub async fn login_user(
     let username = username.as_ref();
 
     // 1. Search for user by username
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+    let users_table = users_db
+        .get_store_viewer::<Table<UserInfo>>("users")
+        .await?;
     let results = users_table.search(|u| u.username == username).await?;
 
     // Check for duplicate users (race condition detection)
@@ -394,7 +398,9 @@ pub async fn login_user(
     let temp_user_database = Database::open_readonly(user_info.user_database_id.clone(), instance)?;
 
     // 4. Load keys from user database
-    let keys_table = temp_user_database.get_store_viewer::<Table<UserKey>>("keys").await?;
+    let keys_table = temp_user_database
+        .get_store_viewer::<Table<UserKey>>("keys")
+        .await?;
     let keys: Vec<UserKey> = keys_table
         .search(|_| true)
         .await? // Get all keys
@@ -442,7 +448,9 @@ pub async fn login_user(
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
     let tx = users_db.new_transaction().await?;
     let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
-    last_login_table.set(&user_uuid, current_timestamp()?).await?;
+    last_login_table
+        .set(&user_uuid, current_timestamp()?)
+        .await?;
     tx.commit().await?;
 
     // 8. Create User session
@@ -463,7 +471,9 @@ pub async fn login_user(
 /// # Returns
 /// Vector of usernames
 pub async fn list_users(users_db: &Database) -> Result<Vec<String>> {
-    let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+    let users_table = users_db
+        .get_store_viewer::<Table<UserInfo>>("users")
+        .await?;
     let users: Vec<UserInfo> = users_table
         .search(|_| true)
         .await? // Get all users
@@ -505,14 +515,19 @@ mod tests {
     async fn test_create_instance_database() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
 
-        let instance_db = create_instance_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let instance_db = create_instance_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Verify database was created
         assert!(!instance_db.root_id().to_string().is_empty());
 
         // Verify settings
         let transaction = instance_db.new_transaction().await.unwrap();
-        let doc_store = transaction.get_store::<DocStore>("_settings").await.unwrap();
+        let doc_store = transaction
+            .get_store::<DocStore>("_settings")
+            .await
+            .unwrap();
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, INSTANCE);
 
@@ -528,14 +543,19 @@ mod tests {
     async fn test_create_users_database() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
 
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Verify database was created
         assert!(!users_db.root_id().to_string().is_empty());
 
         // Verify settings
         let transaction = users_db.new_transaction().await.unwrap();
-        let doc_store = transaction.get_store::<DocStore>("_settings").await.unwrap();
+        let doc_store = transaction
+            .get_store::<DocStore>("_settings")
+            .await
+            .unwrap();
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, USERS);
     }
@@ -544,14 +564,19 @@ mod tests {
     async fn test_create_databases_tracking() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
 
-        let databases_db = create_databases_tracking(&instance, &device_key, &pubkey_str).await.unwrap();
+        let databases_db = create_databases_tracking(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Verify database was created
         assert!(!databases_db.root_id().to_string().is_empty());
 
         // Verify settings
         let transaction = databases_db.new_transaction().await.unwrap();
-        let doc_store = transaction.get_store::<DocStore>("_settings").await.unwrap();
+        let doc_store = transaction
+            .get_store::<DocStore>("_settings")
+            .await
+            .unwrap();
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, DATABASES);
     }
@@ -560,7 +585,9 @@ mod tests {
     async fn test_system_databases_have_device_key_auth() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
 
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Verify _device_key has admin access
         let transaction = users_db.new_transaction().await.unwrap();
@@ -575,11 +602,15 @@ mod tests {
     #[tokio::test]
     async fn test_create_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a user with password
         let (user_uuid, user_info) =
-            create_user(&users_db, &instance, "alice", Some("password123")).await.unwrap();
+            create_user(&users_db, &instance, "alice", Some("password123"))
+                .await
+                .unwrap();
 
         // Verify user info
         assert_eq!(user_info.username, "alice");
@@ -600,10 +631,14 @@ mod tests {
     #[tokio::test]
     async fn test_create_user_passwordless() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a passwordless user
-        let (user_uuid, user_info) = create_user(&users_db, &instance, "bob", None).await.unwrap();
+        let (user_uuid, user_info) = create_user(&users_db, &instance, "bob", None)
+            .await
+            .unwrap();
 
         // Verify user info
         assert_eq!(user_info.username, "bob");
@@ -624,10 +659,14 @@ mod tests {
     #[tokio::test]
     async fn test_create_duplicate_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create first user
-        create_user(&users_db, &instance, "alice", Some("password123")).await.unwrap();
+        create_user(&users_db, &instance, "alice", Some("password123"))
+            .await
+            .unwrap();
 
         // Try to create duplicate
         let result = create_user(&users_db, &instance, "alice", Some("password456")).await;
@@ -637,13 +676,19 @@ mod tests {
     #[tokio::test]
     async fn test_login_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a user with password
-        create_user(&users_db, &instance, "bob", Some("bobpassword")).await.unwrap();
+        create_user(&users_db, &instance, "bob", Some("bobpassword"))
+            .await
+            .unwrap();
 
         // Login user
-        let user = login_user(&users_db, &instance, "bob", Some("bobpassword")).await.unwrap();
+        let user = login_user(&users_db, &instance, "bob", Some("bobpassword"))
+            .await
+            .unwrap();
 
         // Verify user session
         assert_eq!(user.username(), "bob");
@@ -660,13 +705,19 @@ mod tests {
     #[tokio::test]
     async fn test_login_user_passwordless() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a passwordless user
-        create_user(&users_db, &instance, "charlie", None).await.unwrap();
+        create_user(&users_db, &instance, "charlie", None)
+            .await
+            .unwrap();
 
         // Login user without password
-        let user = login_user(&users_db, &instance, "charlie", None).await.unwrap();
+        let user = login_user(&users_db, &instance, "charlie", None)
+            .await
+            .unwrap();
 
         // Verify user session
         assert_eq!(user.username(), "charlie");
@@ -683,10 +734,14 @@ mod tests {
     #[tokio::test]
     async fn test_login_wrong_password() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a user
-        create_user(&users_db, &instance, "dave", Some("correct_password")).await.unwrap();
+        create_user(&users_db, &instance, "dave", Some("correct_password"))
+            .await
+            .unwrap();
 
         // Try to login with wrong password
         let result = login_user(&users_db, &instance, "dave", Some("wrong_password")).await;
@@ -696,17 +751,23 @@ mod tests {
     #[tokio::test]
     async fn test_login_password_mismatch() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Create a passwordless user
-        create_user(&users_db, &instance, "eve", None).await.unwrap();
+        create_user(&users_db, &instance, "eve", None)
+            .await
+            .unwrap();
 
         // Try to login with password (should fail)
         let result = login_user(&users_db, &instance, "eve", Some("password")).await;
         assert!(result.is_err());
 
         // Create a password-protected user
-        create_user(&users_db, &instance, "frank", Some("password")).await.unwrap();
+        create_user(&users_db, &instance, "frank", Some("password"))
+            .await
+            .unwrap();
 
         // Try to login without password (should fail)
         let result = login_user(&users_db, &instance, "frank", None).await;
@@ -716,7 +777,9 @@ mod tests {
     #[tokio::test]
     async fn test_login_nonexistent_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Try to login user that doesn't exist
         let result = login_user(&users_db, &instance, "nonexistent", Some("password")).await;
@@ -726,16 +789,24 @@ mod tests {
     #[tokio::test]
     async fn test_list_users() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str).await.unwrap();
+        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
+            .await
+            .unwrap();
 
         // Initially no users
         let users = list_users(&users_db).await.unwrap();
         assert_eq!(users.len(), 0);
 
         // Create some users (mix of password-protected and passwordless)
-        create_user(&users_db, &instance, "alice", Some("pass1")).await.unwrap();
-        create_user(&users_db, &instance, "bob", None).await.unwrap();
-        create_user(&users_db, &instance, "charlie", Some("pass3")).await.unwrap();
+        create_user(&users_db, &instance, "alice", Some("pass1"))
+            .await
+            .unwrap();
+        create_user(&users_db, &instance, "bob", None)
+            .await
+            .unwrap();
+        create_user(&users_db, &instance, "charlie", Some("pass3"))
+            .await
+            .unwrap();
 
         // List users
         let users = list_users(&users_db).await.unwrap();

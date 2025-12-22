@@ -162,8 +162,12 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     http_client_sync.enable_http_transport().await?;
 
     // Register server as peer
-    http_client_sync.register_peer(&server_pubkey, Some("server")).await?;
-    http_client_sync.add_peer_address(&server_pubkey, Address::http(&http_addr)).await?;
+    http_client_sync
+        .register_peer(&server_pubkey, Some("server"))
+        .await?;
+    http_client_sync
+        .add_peer_address(&server_pubkey, Address::http(&http_addr))
+        .await?;
 
     // HTTP client bootstraps the database from server
     println!("HTTP client bootstrapping database from server...");
@@ -187,7 +191,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         &tree_id,
         http_client_instance
             .backend()
-            .get_private_key("_device_key").await?
+            .get_private_key("_device_key")
+            .await?
             .expect("Should have device key"),
         "*".to_string(), // Use wildcard permission
     )?;
@@ -230,8 +235,12 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .await?;
 
     // Register server as peer with Iroh address
-    iroh_client_sync.register_peer(&server_pubkey, Some("server")).await?;
-    iroh_client_sync.add_peer_address(&server_pubkey, Address::iroh(&iroh_addr)).await?;
+    iroh_client_sync
+        .register_peer(&server_pubkey, Some("server"))
+        .await?;
+    iroh_client_sync
+        .add_peer_address(&server_pubkey, Address::iroh(&iroh_addr))
+        .await?;
 
     // Verify entry is NOT on Iroh client yet
     assert!(
@@ -252,7 +261,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     // Verify Iroh client received the entry
     let synced_entry = iroh_client_instance
         .backend()
-        .get(&entry_id).await
+        .get(&entry_id)
+        .await
         .expect("Iroh client should have received the entry via Iroh transport");
 
     println!(

@@ -172,7 +172,8 @@ async fn test_tree_metadata_management() {
         "MetadataTree",
         "2.1.3",
         "A tree for testing metadata",
-    ).await;
+    )
+    .await;
 
     // Verify metadata was set correctly
     assert_tree_settings(
@@ -182,7 +183,8 @@ async fn test_tree_metadata_management() {
             ("version", "2.1.3"),
             ("description", "A tree for testing metadata"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_name(&tree, "MetadataTree").await;
 }
@@ -227,7 +229,8 @@ async fn test_tree_listing_and_searching() {
     assert_tree_settings(
         &production[0],
         &[("name", "ProductionApp"), ("version", "3.0")],
-    ).await;
+    )
+    .await;
 
     let staging = user
         .find_database("StagingApp")
@@ -237,7 +240,8 @@ async fn test_tree_listing_and_searching() {
     assert_tree_settings(
         &staging[0],
         &[("name", "StagingApp"), ("version", "3.0-beta")],
-    ).await;
+    )
+    .await;
 
     let development = user
         .find_database("DevelopmentApp")
@@ -247,5 +251,6 @@ async fn test_tree_listing_and_searching() {
     assert_tree_settings(
         &development[0],
         &[("name", "DevelopmentApp"), ("version", "3.1-alpha")],
-    ).await;
+    )
+    .await;
 }

@@ -86,11 +86,19 @@ async fn test_dag_sync_linear_chain() {
 
     // Store entire chain in backend1
     for entry in &chain {
-        base_db1.backend().put_verified(entry.clone()).await.unwrap();
+        base_db1
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Backend2 only has the root entry
-    base_db2.backend().put_verified(chain[0].clone()).await.unwrap();
+    base_db2
+        .backend()
+        .put_verified(chain[0].clone())
+        .await
+        .unwrap();
 
     // Test DAG traversal to find missing entries
     // Simulate sync by checking what backend2 would need
@@ -135,7 +143,11 @@ async fn test_dag_sync_branching_structure() {
 
     // Store all entries in backend1
     for entry in &dag_entries {
-        base_db1.backend().put_verified(entry.clone()).await.unwrap();
+        base_db1
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Backend2 only has the root
@@ -193,12 +205,20 @@ async fn test_dag_sync_partial_overlap() {
 
     // Backend1 has all entries
     for entry in &chain {
-        base_db1.backend().put_verified(entry.clone()).await.unwrap();
+        base_db1
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Backend2 has first 3 entries
     for entry in &chain[0..3] {
-        base_db2.backend().put_verified(entry.clone()).await.unwrap();
+        base_db2
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     let backend2 = base_db2.backend();
@@ -281,7 +301,11 @@ async fn test_sync_flow_integration() {
 
     // Store all entries in backend1
     for entry in &dag_entries {
-        base_db1.backend().put_verified(entry.clone()).await.unwrap();
+        base_db1
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Simulate what would happen during sync:
@@ -352,12 +376,20 @@ async fn test_bidirectional_sync_flow() {
 
     // Store chain1 in backend1
     for entry in &chain1 {
-        base_db1.backend().put_verified(entry.clone()).await.unwrap();
+        base_db1
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Store chain2 in backend2 (sharing the root)
     for entry in &chain2 {
-        base_db2.backend().put_verified(entry.clone()).await.unwrap();
+        base_db2
+            .backend()
+            .put_verified(entry.clone())
+            .await
+            .unwrap();
     }
 
     // Simulate bidirectional sync
@@ -430,13 +462,19 @@ async fn test_real_sync_transport_setup() {
     let server_address = Address::http(server_addr);
 
     // Register peers with each other
-    sync1.register_peer(&sync2_pubkey, Some("peer2")).await.unwrap();
+    sync1
+        .register_peer(&sync2_pubkey, Some("peer2"))
+        .await
+        .unwrap();
     sync1
         .add_peer_address(&sync2_pubkey, server_address.clone())
         .await
         .unwrap();
 
-    sync2.register_peer(&sync1_pubkey, Some("peer1")).await.unwrap();
+    sync2
+        .register_peer(&sync1_pubkey, Some("peer1"))
+        .await
+        .unwrap();
 
     // Verify peer registration worked
     let peer_info = sync1.get_peer_info(&sync2_pubkey).await.unwrap().unwrap();
@@ -578,7 +616,10 @@ async fn test_sync_protocol_implementation() {
         let op = tree1.new_transaction().await.unwrap();
         let doc_store = op.get_store::<DocStore>("data").await.unwrap();
         doc_store.set("second_key", "second_value").await.unwrap();
-        doc_store.set("sync_test", "actually_working").await.unwrap();
+        doc_store
+            .set("sync_test", "actually_working")
+            .await
+            .unwrap();
         op.commit().await.unwrap()
     };
 
@@ -618,10 +659,19 @@ async fn test_sync_protocol_implementation() {
     {
         let doc_store = tree2.get_store_viewer::<DocStore>("data").await.unwrap();
         // First entry data
-        assert_eq!(doc_store.get_string("test_key").await.unwrap(), "test_value");
-        assert_eq!(doc_store.get_string("protocol").await.unwrap(), "implemented");
+        assert_eq!(
+            doc_store.get_string("test_key").await.unwrap(),
+            "test_value"
+        );
+        assert_eq!(
+            doc_store.get_string("protocol").await.unwrap(),
+            "implemented"
+        );
         // Second entry data
-        assert_eq!(doc_store.get_string("second_key").await.unwrap(), "second_value");
+        assert_eq!(
+            doc_store.get_string("second_key").await.unwrap(),
+            "second_value"
+        );
         assert_eq!(
             doc_store.get_string("sync_test").await.unwrap(),
             "actually_working"

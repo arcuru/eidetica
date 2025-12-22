@@ -29,14 +29,20 @@ async fn setup_iroh_sync_pair() -> (
     use eidetica::{Instance, backend::database::InMemory, sync::Sync};
 
     // Create databases
-    let base_db1 =
-        Arc::new(Instance::open(Box::new(InMemory::new())).expect("Benchmark setup failed"));
-    let base_db2 =
-        Arc::new(Instance::open(Box::new(InMemory::new())).expect("Benchmark setup failed"));
+    let base_db1 = Arc::new(
+        Instance::open(Box::new(InMemory::new()))
+            .await
+            .expect("Benchmark setup failed"),
+    );
+    let base_db2 = Arc::new(
+        Instance::open(Box::new(InMemory::new()))
+            .await
+            .expect("Benchmark setup failed"),
+    );
 
     // Create sync engines
-    let sync1 = Sync::new((*base_db1).clone()).unwrap();
-    let sync2 = Sync::new((*base_db2).clone()).unwrap();
+    let sync1 = Sync::new((*base_db1).clone()).await.unwrap();
+    let sync2 = Sync::new((*base_db2).clone()).await.unwrap();
 
     // Configure Iroh transports for local testing (no relays for consistent benchmarks)
     let transport1 = IrohTransport::builder()
@@ -48,8 +54,14 @@ async fn setup_iroh_sync_pair() -> (
         .build()
         .unwrap();
 
-    sync1.enable_iroh_transport_with_config(transport1).unwrap();
-    sync2.enable_iroh_transport_with_config(transport2).unwrap();
+    sync1
+        .enable_iroh_transport_with_config(transport1)
+        .await
+        .unwrap();
+    sync2
+        .enable_iroh_transport_with_config(transport2)
+        .await
+        .unwrap();
 
     // Start servers
     sync1.start_server("ignored").await.unwrap();
@@ -60,11 +72,15 @@ async fn setup_iroh_sync_pair() -> (
 
     // Setup peer relationship
     let addr2 = sync2.get_server_address().await.unwrap();
-    let pubkey2 = sync2.get_device_public_key().unwrap();
+    let pubkey2 = sync2.get_device_public_key().await.unwrap();
 
-    sync1.register_peer(&pubkey2, Some("bench_peer")).unwrap();
+    sync1
+        .register_peer(&pubkey2, Some("bench_peer"))
+        .await
+        .unwrap();
     sync1
         .add_peer_address(&pubkey2, Address::iroh(&addr2))
+        .await
         .unwrap();
 
     (base_db1, sync1, base_db2, sync2, Address::iroh(&addr2))
@@ -78,7 +94,9 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
         rt.block_on(async { setup_iroh_sync_pair().await });
 
     // Add authentication key
-    base_db1.add_private_key("bench_key").unwrap();
+    rt.block_on(async {
+        base_db1.add_private_key("bench_key").await.unwrap();
+    });
 
     let mut group = c.benchmark_group("iroh_sync_throughput");
 
@@ -102,7 +120,11 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
                                     &format!("bench_tree_{iter}_{i}"),
                                     vec![],
                                 );
-                                base_db1.backend().put_verified(entry.clone()).unwrap();
+                                base_db1
+                                    .backend()
+                                    .put_verified(entry.clone())
+                                    .await
+                                    .unwrap();
                                 entries.push(entry);
                             }
 

@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use async_trait::async_trait;
 use crate::{
     Result, Store, Transaction,
     crdt::{
@@ -9,6 +8,7 @@ use crate::{
     },
     store::{Registered, errors::StoreError},
 };
+use async_trait::async_trait;
 
 /// A document-oriented Store providing ergonomic access to Doc CRDT data.
 ///
@@ -35,7 +35,7 @@ impl Registered for DocStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Store for DocStore {
     async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
@@ -1426,6 +1426,8 @@ impl<'a> ValueEditor<'a> {
     pub async fn delete_child(&self, key: impl Into<String>) -> Result<()> {
         let mut path_to_delete = self.keys.clone();
         path_to_delete.push(key.into());
-        self.kv_store.set_at_path(&path_to_delete, Value::Deleted).await
+        self.kv_store
+            .set_at_path(&path_to_delete, Value::Deleted)
+            .await
     }
 }

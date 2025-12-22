@@ -19,7 +19,10 @@ use eidetica::{
 
 /// Create operation and add data to specific subtree
 pub async fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     {
         let store = op
             .get_store::<DocStore>(subtree_name)
@@ -33,8 +36,15 @@ pub async fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&
 }
 
 /// Create transaction and add data
-pub async fn add_authenticated_data(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+pub async fn add_authenticated_data(
+    tree: &Database,
+    subtree_name: &str,
+    data: &[(&str, &str)],
+) -> ID {
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     {
         let store = op
             .get_store::<DocStore>(subtree_name)
@@ -135,7 +145,10 @@ pub async fn assert_entry_belongs_to_tree(tree: &Database, entry_id: &ID) {
 // ===== COMPLEX SCENARIO HELPERS =====
 
 /// Create diamond pattern for testing complex merges
-pub async fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)]) -> (ID, ID, ID, ID) {
+pub async fn create_diamond_pattern(
+    tree: &Database,
+    base_data: &[(&str, &str)],
+) -> (ID, ID, ID, ID) {
     // Create base entry (A)
     let base_id = add_data_to_subtree(tree, "data", base_data).await;
 
@@ -145,14 +158,16 @@ pub async fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)])
         &base_id,
         "data",
         &[("branch", "B"), ("b_specific", "B_data")],
-    ).await;
+    )
+    .await;
 
     let branch_c_id = create_branch_from_entry(
         tree,
         &base_id,
         "data",
         &[("branch", "C"), ("c_specific", "C_data")],
-    ).await;
+    )
+    .await;
 
     // Create merge entry (D) from both branches
     let merge_tips = vec![branch_b_id.clone(), branch_c_id.clone()];
@@ -165,7 +180,10 @@ pub async fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)])
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get data store");
-        store.set("merge", "D").await.expect("Failed to set merge data");
+        store
+            .set("merge", "D")
+            .await
+            .expect("Failed to set merge data");
         store
             .set("final", "merged")
             .await
@@ -177,7 +195,11 @@ pub async fn create_diamond_pattern(tree: &Database, base_data: &[(&str, &str)])
 }
 
 /// Create linear chain of entries
-pub async fn create_linear_chain(tree: &Database, subtree_name: &str, chain_length: usize) -> Vec<ID> {
+pub async fn create_linear_chain(
+    tree: &Database,
+    subtree_name: &str,
+    chain_length: usize,
+) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     for i in 0..chain_length {
@@ -199,7 +221,10 @@ pub async fn create_linear_chain(tree: &Database, subtree_name: &str, chain_leng
 #[allow(deprecated)]
 pub async fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
     let db = crate::helpers::test_instance().await;
-    let public_key = db.add_private_key(key_name).await.expect("Failed to add key");
+    let public_key = db
+        .add_private_key(key_name)
+        .await
+        .expect("Failed to add key");
 
     // Create auth settings
     let mut settings = Doc::new();

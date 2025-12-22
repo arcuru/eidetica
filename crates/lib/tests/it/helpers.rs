@@ -40,6 +40,54 @@ pub use crate::context::TestContext;
 /// TEST_BACKEND=postgres TEST_POSTGRES_URL="host=localhost dbname=eidetica_test" \
 ///   cargo test --features postgres
 /// ```
+/// Creates a test backend based on TEST_BACKEND env var (async version).
+///
+/// This async version is preferred as it avoids runtime nesting issues
+/// with SQLite in-memory databases.
+pub async fn test_backend_async() -> Box<dyn BackendImpl> {
+    match std::env::var("TEST_BACKEND").as_deref() {
+        Ok("sqlite") => {
+            #[cfg(feature = "sqlite")]
+            {
+                use eidetica::backend::database::sql::SqlxBackend;
+                Box::new(
+                    SqlxBackend::sqlite_in_memory()
+                        .await
+                        .expect("Failed to create SQLite backend"),
+                )
+            }
+            #[cfg(not(feature = "sqlite"))]
+            {
+                panic!("TEST_BACKEND=sqlite requires the 'sqlite' feature to be enabled")
+            }
+        }
+        Ok("postgres") => {
+            #[cfg(feature = "postgres")]
+            {
+                use eidetica::backend::database::sql::SqlxBackend;
+                let url = std::env::var("TEST_POSTGRES_URL")
+                    .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+                Box::new(
+                    SqlxBackend::connect_postgres_isolated(&url)
+                        .await
+                        .expect("Failed to connect to PostgreSQL"),
+                )
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                panic!("TEST_BACKEND=postgres requires the 'postgres' feature to be enabled")
+            }
+        }
+        Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
+        Ok(other) => {
+            panic!("Unknown TEST_BACKEND value: {other}. Supported: inmemory, sqlite, postgres")
+        }
+    }
+}
+
+/// Sync version for backwards compatibility (uses internal runtime for SQL backends).
+///
+/// Prefer `test_backend_async()` for new tests, especially those using SQLite.
 pub fn test_backend() -> Box<dyn BackendImpl> {
     match std::env::var("TEST_BACKEND").as_deref() {
         Ok("sqlite") => {
@@ -78,7 +126,9 @@ pub fn test_backend() -> Box<dyn BackendImpl> {
 
 /// Creates a basic Instance with no users or keys
 pub async fn test_instance() -> Instance {
-    Instance::open(test_backend()).await.expect("Failed to create test instance")
+    Instance::open(test_backend_async().await)
+        .await
+        .expect("Failed to create test instance")
 }
 
 /// Creates an Instance wrapped in Arc (common for sync tests)
@@ -205,7 +255,10 @@ pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, e
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     {
         let settings_store = op
             .get_store::<DocStore>("_settings")

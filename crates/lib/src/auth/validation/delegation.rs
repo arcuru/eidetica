@@ -102,8 +102,9 @@ impl DelegationResolver {
                     }
                 })?;
 
-                let tips_valid =
-                    self.validate_tip_ancestry(tips, &current_tips, &current_backend).await?;
+                let tips_valid = self
+                    .validate_tip_ancestry(tips, &current_tips, &current_backend)
+                    .await?;
                 if !tips_valid {
                     return Err(AuthError::InvalidDelegationTips {
                         tree_id: root_id.to_string(),
@@ -118,11 +119,12 @@ impl DelegationResolver {
                         reason: format!("Failed to get delegated tree settings: {e}"),
                     }
                 })?;
-                current_auth_settings = delegated_settings.get_auth_settings().await.map_err(|e| {
-                    AuthError::InvalidAuthConfiguration {
-                        reason: format!("Failed to get delegated tree auth settings: {e}"),
-                    }
-                })?;
+                current_auth_settings =
+                    delegated_settings.get_auth_settings().await.map_err(|e| {
+                        AuthError::InvalidAuthConfiguration {
+                            reason: format!("Failed to get delegated tree auth settings: {e}"),
+                        }
+                    })?;
 
                 // Accumulate permission bounds
                 if let Some(existing_bounds) = cumulative_bounds {

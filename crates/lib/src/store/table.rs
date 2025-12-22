@@ -46,10 +46,10 @@ where
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl<T> Store for Table<T>
 where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
+    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
 {
     async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {

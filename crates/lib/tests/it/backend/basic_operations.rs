@@ -41,7 +41,9 @@ async fn test_backend_error_handling() {
     );
 
     // get_store for non-existent tree returns an empty vector
-    let subtree_result = backend.get_store(&non_existent_id, "non_existent_subtree").await;
+    let subtree_result = backend
+        .get_store(&non_existent_id, "non_existent_subtree")
+        .await;
     assert!(
         subtree_result.is_ok(),
         "get_store should succeed for non-existent tree"
@@ -52,7 +54,9 @@ async fn test_backend_error_handling() {
     );
 
     // get_store_tips for non-existent tree returns an empty vector
-    let subtree_tips_result = backend.get_store_tips(&non_existent_id, "non_existent_subtree").await;
+    let subtree_tips_result = backend
+        .get_store_tips(&non_existent_id, "non_existent_subtree")
+        .await;
     assert!(
         subtree_tips_result.is_ok(),
         "get_store_tips should succeed for non-existent tree"

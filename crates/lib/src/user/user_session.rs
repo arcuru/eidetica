@@ -317,9 +317,10 @@ impl User {
         for tracked_db in tracked {
             if let Ok(database) = self.instance.load_database(&tracked_db.database_id).await
                 && let Ok(db_name) = database.get_name().await
-                    && db_name == name {
-                        matching.push(database);
-                    }
+                && db_name == name
+            {
+                matching.push(database);
+            }
         }
 
         if matching.is_empty() {
@@ -413,7 +414,8 @@ impl User {
         sigkey: &str,
     ) -> Result<()> {
         let tx = self.user_database.new_transaction().await?;
-        self.map_key_in_txn(&tx, key_id, database_id, sigkey).await?;
+        self.map_key_in_txn(&tx, key_id, database_id, sigkey)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -507,7 +509,8 @@ impl User {
         };
 
         // Create the key mapping within the provided transaction
-        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str).await?;
+        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str)
+            .await?;
 
         Ok(())
     }
@@ -973,7 +976,7 @@ mod tests {
     };
     use std::{collections::HashMap, sync::Arc};
 
-    fn create_test_user_session() -> User {
+    async fn create_test_user_session() -> User {
         let backend = Arc::new(InMemory::new());
 
         // Create user database
@@ -982,6 +985,7 @@ mod tests {
 
         backend
             .store_private_key("_device_key", device_key.clone())
+            .await
             .unwrap();
 
         let mut db_settings = crate::crdt::Doc::new();
@@ -1001,7 +1005,7 @@ mod tests {
         db_settings.set("auth", auth_settings.as_doc().clone());
 
         // Create Instance for test
-        let instance = Instance::create_internal(backend.handle()).unwrap();
+        let instance = Instance::create_internal(backend.handle()).await.unwrap();
 
         let user_database = Database::create(
             db_settings,
@@ -1009,6 +1013,7 @@ mod tests {
             device_key.clone(),
             "_device_key".to_string(),
         )
+        .await
         .unwrap();
 
         // Create user info
@@ -1052,16 +1057,16 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_user_creation() {
-        let user = create_test_user_session();
+    #[tokio::test]
+    async fn test_user_creation() {
+        let user = create_test_user_session().await;
         assert_eq!(user.username(), "test_user");
         assert_eq!(user.user_uuid(), "test-uuid-1234");
     }
 
-    #[test]
-    fn test_user_getters() {
-        let user = create_test_user_session();
+    #[tokio::test]
+    async fn test_user_getters() {
+        let user = create_test_user_session().await;
 
         assert_eq!(user.username(), "test_user");
         assert_eq!(user.user_uuid(), "test-uuid-1234");
@@ -1069,9 +1074,9 @@ mod tests {
         assert!(!user.user_database().root_id().to_string().is_empty());
     }
 
-    #[test]
-    fn test_user_logout() {
-        let user = create_test_user_session();
+    #[tokio::test]
+    async fn test_user_logout() {
+        let user = create_test_user_session().await;
         let username = user.username().to_string();
 
         // Logout consumes the user
@@ -1081,10 +1086,10 @@ mod tests {
         assert_eq!(username, "test_user");
     }
 
-    #[test]
-    fn test_user_drop() {
+    #[tokio::test]
+    async fn test_user_drop() {
         {
-            let _user = create_test_user_session();
+            let _user = create_test_user_session().await;
             // User will be dropped when it goes out of scope
         }
         // Keys should be cleared automatically

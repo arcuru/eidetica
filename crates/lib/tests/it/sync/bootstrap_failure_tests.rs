@@ -126,15 +126,20 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     // EXPECTED SECURE BEHAVIOR: Client should not receive the database
     assert!(
-        client_instance.load_database(&restricted_tree_id).await.is_err(),
+        client_instance
+            .load_database(&restricted_tree_id)
+            .await
+            .is_err(),
         "Client should be DENIED access to restricted database - test fails because security is not implemented"
     );
 
     // EXPECTED SECURE BEHAVIOR: Server database auth config should NOT be modified
     let server_auth_settings = server_database
-        .get_settings().await
+        .get_settings()
+        .await
         .expect("Failed to get server database settings")
-        .get_all().await
+        .get_all()
+        .await
         .expect("Failed to get all settings");
 
     // Check that auth section was NOT modified to include unauthorized key
@@ -253,15 +258,20 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
     // EXPECTED SECURE BEHAVIOR: Client should not receive database without proper authorization
     assert!(
-        client_instance.load_database(&unprotected_tree_id).await.is_err(),
+        client_instance
+            .load_database(&unprotected_tree_id)
+            .await
+            .is_err(),
         "Client should not receive database without proper authorization framework - test fails because security is not implemented"
     );
 
     // EXPECTED SECURE BEHAVIOR: Server database should NOT have auth config modified without authorization
     let server_auth_settings = server_database
-        .get_settings().await
+        .get_settings()
+        .await
         .expect("Failed to get server database settings")
-        .get_all().await
+        .get_all()
+        .await
         .expect("Failed to get all settings");
 
     // Check that NO auth section was created by unauthorized bootstrap
@@ -599,9 +609,11 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     // EXPECTED SECURE BEHAVIOR: No permissions should be granted for failed bootstrap
     let server_auth_settings = server_database
-        .get_settings().await
+        .get_settings()
+        .await
         .expect("Failed to get server database settings")
-        .get_all().await
+        .get_all()
+        .await
         .expect("Failed to get all settings");
 
     if let Some(auth_node) = server_auth_settings.get("auth")

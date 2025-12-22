@@ -49,7 +49,11 @@ async fn test_peer_registration_without_display_name() {
     sync.register_peer(&*TEST_PEER_PUBKEY, None).await.unwrap();
 
     // Verify peer was registered
-    let peer_info = sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().unwrap();
+    let peer_info = sync
+        .get_peer_info(&*TEST_PEER_PUBKEY)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(peer_info.pubkey, *TEST_PEER_PUBKEY);
     assert_eq!(peer_info.display_name, None);
     assert_eq!(peer_info.status, PeerStatus::Active);
@@ -68,7 +72,11 @@ async fn test_update_peer_status() {
         .unwrap();
 
     // Verify status was updated
-    let peer_info = sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().unwrap();
+    let peer_info = sync
+        .get_peer_info(&*TEST_PEER_PUBKEY)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(peer_info.status, PeerStatus::Inactive);
 }
 
@@ -77,7 +85,9 @@ async fn test_update_nonexistent_peer_status() {
     let (_base_db, sync) = setup().await;
 
     // Try to update status of non-existent peer
-    let result = sync.update_peer_status(&*TEST_PEER_PUBKEY, PeerStatus::Blocked).await;
+    let result = sync
+        .update_peer_status(&*TEST_PEER_PUBKEY, PeerStatus::Blocked)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }
@@ -117,13 +127,23 @@ async fn test_remove_peer() {
         .unwrap();
 
     // Verify peer exists
-    assert!(sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().is_some());
+    assert!(
+        sync.get_peer_info(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // Remove peer
     sync.remove_peer(&*TEST_PEER_PUBKEY).await.unwrap();
 
     // Verify peer was removed
-    assert!(sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().is_none());
+    assert!(
+        sync.get_peer_info(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -469,8 +489,19 @@ async fn test_peer_removal_cleans_all_data() {
         .unwrap();
 
     // Verify all data is present
-    assert!(sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().is_some());
-    assert!(!sync.get_peer_trees(&*TEST_PEER_PUBKEY).await.unwrap().is_empty());
+    assert!(
+        sync.get_peer_info(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        !sync
+            .get_peer_trees(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let http_addresses = sync
         .get_peer_addresses(&*TEST_PEER_PUBKEY, Some("http"))
         .await
@@ -486,8 +517,18 @@ async fn test_peer_removal_cleans_all_data() {
     sync.remove_peer(&*TEST_PEER_PUBKEY).await.unwrap();
 
     // Verify all data was cleaned up
-    assert!(sync.get_peer_info(&*TEST_PEER_PUBKEY).await.unwrap().is_none());
-    assert!(sync.get_peer_trees(&*TEST_PEER_PUBKEY).await.unwrap().is_empty());
+    assert!(
+        sync.get_peer_info(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        sync.get_peer_trees(&*TEST_PEER_PUBKEY)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let http_addresses = sync
         .get_peer_addresses(&*TEST_PEER_PUBKEY, Some("http"))
         .await

@@ -120,7 +120,8 @@ pub(crate) async fn calculate_heights(
             drop(heights_cache);
 
             // Compute heights and cache them
-            let computed_heights = calculate_heights_original(backend, tree, Some(subtree_name)).await?;
+            let computed_heights =
+                calculate_heights_original(backend, tree, Some(subtree_name)).await?;
 
             // Update cache
             let mut heights_cache = backend.heights.write().await;

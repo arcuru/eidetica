@@ -30,6 +30,7 @@ pub mod schema;
 
 use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
@@ -153,24 +154,50 @@ impl SqlxBackend {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
-        let pool = AnyPoolOptions::new()
-            .max_connections(5)
-            .connect(url)
-            .await
-            .sql_context("Failed to connect to SQLite")?;
+        // Detect if this is an in-memory database
+        let is_in_memory = url.contains("mode=memory");
 
-        // Configure SQLite:
-        // - journal_mode=WAL: Write-Ahead Logging for better concurrency
-        // - synchronous=NORMAL: Balanced durability (safe with WAL)
-        // - busy_timeout=5000: Wait up to 5s for locks before failing
-        sqlx::query(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA busy_timeout = 5000;",
-        )
-        .execute(&pool)
-        .await
-        .sql_context("Failed to configure SQLite")?;
+        // For SQLite in-memory databases with shared cache, we must prevent
+        // all connections from being closed. When the last connection closes,
+        // the in-memory database is destroyed and all data is lost.
+        let pool = if is_in_memory {
+            AnyPoolOptions::new()
+                .max_connections(5)
+                .min_connections(1)
+                .idle_timeout(None)
+                .max_lifetime(None)
+                .connect(url)
+                .await
+                .sql_context("Failed to connect to SQLite")?
+        } else {
+            AnyPoolOptions::new()
+                .max_connections(5)
+                .connect(url)
+                .await
+                .sql_context("Failed to connect to SQLite")?
+        };
+
+        // Configure SQLite pragmas
+        if is_in_memory {
+            // In-memory databases don't need WAL mode (all in RAM)
+            sqlx::query("PRAGMA busy_timeout = 5000;")
+                .execute(&pool)
+                .await
+                .sql_context("Failed to configure SQLite")?;
+        } else {
+            // File-based SQLite:
+            // - journal_mode=WAL: Write-Ahead Logging for better concurrency
+            // - synchronous=NORMAL: Balanced durability (safe with WAL)
+            // - busy_timeout=5000: Wait up to 5s for locks before failing
+            sqlx::query(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;
+                 PRAGMA busy_timeout = 5000;",
+            )
+            .execute(&pool)
+            .await
+            .sql_context("Failed to configure SQLite")?;
+        }
 
         let backend = Self {
             pool,
@@ -318,9 +345,24 @@ impl SqlxBackend {
         }
 
         // Build pool with after_connect hook to set search_path on each connection
+        // For isolated (test) connections, use smaller pool to avoid exhausting
+        // PostgreSQL's max_connections when running many tests in parallel.
         let schema_for_hook = schema_name.clone();
-        let pool = AnyPoolOptions::new()
-            .max_connections(5)
+        let is_isolated = schema_name.is_some();
+        let mut pool_options = AnyPoolOptions::new();
+
+        if is_isolated {
+            // Test isolation: 2 connections is enough, with longer timeout to wait
+            // rather than fail when many tests run in parallel
+            pool_options = pool_options
+                .max_connections(2)
+                .acquire_timeout(Duration::from_secs(30));
+        } else {
+            // Production: 5 connections for real concurrency needs
+            pool_options = pool_options.max_connections(5);
+        }
+
+        let pool = pool_options
             .after_connect(move |conn, _meta| {
                 let schema = schema_for_hook.clone();
                 Box::pin(async move {
@@ -463,7 +505,10 @@ impl BackendImpl for SqlxBackend {
         storage::update_verification_status(self, id, verification_status).await
     }
 
-    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
+    async fn get_entries_by_verification_status(
+        &self,
+        status: VerificationStatus,
+    ) -> Result<Vec<ID>> {
         storage::get_entries_by_verification_status(self, status).await
     }
 
@@ -492,7 +537,12 @@ impl BackendImpl for SqlxBackend {
         traversal::find_lca(self, tree, store, entry_ids).await
     }
 
-    async fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>> {
+    async fn collect_root_to_target(
+        &self,
+        tree: &ID,
+        store: &str,
+        target_entry: &ID,
+    ) -> Result<Vec<ID>> {
         traversal::collect_root_to_target(self, tree, store, target_entry).await
     }
 

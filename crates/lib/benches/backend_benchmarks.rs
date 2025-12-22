@@ -9,27 +9,33 @@ use eidetica::{
 use std::hint::black_box;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
-fn setup_tree() -> eidetica::Database {
+async fn setup_tree_async() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Benchmark setup failed");
+    let db = Instance::open(backend)
+        .await
+        .expect("Benchmark setup failed");
     db.add_private_key("BENCH_KEY")
+        .await
         .expect("Failed to add benchmark key");
     db.new_database_default("BENCH_KEY")
+        .await
         .expect("Failed to create tree")
 }
 
 /// Create a linear chain of entries for testing LCA performance
-fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
+async fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
-        let op = tree.new_transaction().expect("Failed to create op");
+        let op = tree.new_transaction().await.expect("Failed to create op");
         let kv = op
             .get_store::<DocStore>("data")
+            .await
             .expect("Failed to get DocStore");
         kv.set(format!("key{i}"), format!("value{i}"))
+            .await
             .expect("Failed to set value");
-        let entry_id = op.commit().expect("Failed to commit");
+        let entry_id = op.commit().await.expect("Failed to commit");
         entry_ids.push(entry_id);
     }
 
@@ -37,40 +43,51 @@ fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
 }
 
 /// Create a diamond pattern for testing merge scenarios
-fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
+async fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
     // Create root A
-    let op_a = tree.new_transaction().expect("Failed to create op");
+    let op_a = tree.new_transaction().await.expect("Failed to create op");
     let kv_a = op_a
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get DocStore");
-    kv_a.set("key_a", "value_a").expect("Failed to set value");
-    let entry_a = op_a.commit().expect("Failed to commit");
+    kv_a.set("key_a", "value_a")
+        .await
+        .expect("Failed to set value");
+    let entry_a = op_a.commit().await.expect("Failed to commit");
 
     // Create B and C from A
     let op_b = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a))
+        .await
         .expect("Failed to create op");
     let kv_b = op_b
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get DocStore");
-    kv_b.set("key_b", "value_b").expect("Failed to set value");
-    let entry_b = op_b.commit().expect("Failed to commit");
+    kv_b.set("key_b", "value_b")
+        .await
+        .expect("Failed to set value");
+    let entry_b = op_b.commit().await.expect("Failed to commit");
 
     let op_c = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a))
+        .await
         .expect("Failed to create op");
     let kv_c = op_c
         .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get DocStore");
-    kv_c.set("key_c", "value_c").expect("Failed to set value");
-    let entry_c = op_c.commit().expect("Failed to commit");
+    kv_c.set("key_c", "value_c")
+        .await
+        .expect("Failed to set value");
+    let entry_c = op_c.commit().await.expect("Failed to commit");
 
     // Return B and C for LCA testing (LCA should be A)
     (vec![entry_b, entry_c], entry_a)
 }
 
 /// Create multiple branches for testing tips performance
-fn create_branching_tree(
+async fn create_branching_tree(
     tree: &eidetica::Database,
     num_branches: usize,
     entries_per_branch: usize,
@@ -81,6 +98,7 @@ fn create_branching_tree(
     let backend = tree.backend().expect("Failed to get backend");
     let root_entries = backend
         .get_tree(tree.root_id())
+        .await
         .expect("Failed to get tree");
     let root_entry = root_entries
         .first()
@@ -94,13 +112,16 @@ fn create_branching_tree(
         for entry_idx in 0..entries_per_branch {
             let op = tree
                 .new_transaction_with_tips([current_tip])
+                .await
                 .expect("Failed to create op");
             let kv = op
                 .get_store::<DocStore>("data")
+                .await
                 .expect("Failed to get DocStore");
             kv.set(format!("branch_{branch_idx}_entry_{entry_idx}"), "value")
+                .await
                 .expect("Failed to set value");
-            let entry_id = op.commit().expect("Failed to commit");
+            let entry_id = op.commit().await.expect("Failed to commit");
             branch_entries.push(entry_id.clone());
             current_tip = entry_id; // Update tip for next entry in this branch
         }
@@ -112,19 +133,25 @@ fn create_branching_tree(
 }
 
 /// Create a large tree with specified structure
-fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &str) -> Vec<ID> {
+async fn create_large_tree(
+    tree: &eidetica::Database,
+    num_entries: usize,
+    structure: &str,
+) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     match structure {
         "linear" => {
             for i in 0..num_entries {
-                let op = tree.new_transaction().expect("Failed to create op");
+                let op = tree.new_transaction().await.expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
+                    .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
+                    .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().expect("Failed to commit");
+                let entry_id = op.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -135,6 +162,7 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
             let backend = tree.backend().expect("Failed to get backend");
             let root_entries = backend
                 .get_tree(tree.root_id())
+                .await
                 .expect("Failed to get tree");
             let root_entry = root_entries
                 .first()
@@ -144,13 +172,16 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
             for i in 0..num_entries {
                 let op = tree
                     .new_transaction_with_tips(std::slice::from_ref(&root_entry))
+                    .await
                     .expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
+                    .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
+                    .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().expect("Failed to commit");
+                let entry_id = op.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -158,13 +189,15 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
         _ => {
             // Default to linear
             for i in 0..num_entries {
-                let op = tree.new_transaction().expect("Failed to create op");
+                let op = tree.new_transaction().await.expect("Failed to create op");
                 let kv = op
                     .get_store::<DocStore>("data")
+                    .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
+                    .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().expect("Failed to commit");
+                let entry_id = op.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -175,6 +208,10 @@ fn create_large_tree(tree: &eidetica::Database, num_entries: usize, structure: &
 
 /// Benchmark find_lca performance with linear chains
 pub fn bench_lca_linear_chains(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("find_lca_linear");
 
     for chain_length in [10, 50, 100] {
@@ -184,29 +221,35 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
             |b, &length| {
                 b.iter_with_setup(
                     || {
-                        let tree = setup_tree();
-                        let entry_ids = create_linear_chain(&tree, length);
-                        (tree, entry_ids)
+                        rt.block_on(async {
+                            let tree = setup_tree_async().await;
+                            let entry_ids = create_linear_chain(&tree, length).await;
+                            (tree, entry_ids)
+                        })
                     },
                     |(tree, entry_ids)| {
-                        // Test LCA of first and last entries
-                        let endpoints = vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
-                        let expected_lca = &entry_ids[0]; // In a linear chain, LCA of first and last is the first
+                        rt.block_on(async {
+                            // Test LCA of first and last entries
+                            let endpoints =
+                                vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
+                            let expected_lca = &entry_ids[0]; // In a linear chain, LCA of first and last is the first
 
-                        // Access database to call find_lca
-                        let backend = tree.backend().expect("Failed to get backend");
-                        let in_memory = backend
-                            .as_any()
-                            .downcast_ref::<InMemory>()
-                            .expect("Failed to downcast database");
+                            // Access database to call find_lca
+                            let backend = tree.backend().expect("Failed to get backend");
+                            let in_memory = backend
+                                .as_any()
+                                .downcast_ref::<InMemory>()
+                                .expect("Failed to downcast database");
 
-                        let lca = in_memory
-                            .find_lca(tree.root_id(), "data", &endpoints)
-                            .expect("Failed to find LCA");
+                            let lca = in_memory
+                                .find_lca(tree.root_id(), "data", &endpoints)
+                                .await
+                                .expect("Failed to find LCA");
 
-                        // Verify correctness
-                        assert_eq!(&lca, expected_lca, "LCA mismatch in linear chain");
-                        black_box(lca);
+                            // Verify correctness
+                            assert_eq!(&lca, expected_lca, "LCA mismatch in linear chain");
+                            black_box(lca);
+                        });
                     },
                 );
             },
@@ -218,23 +261,32 @@ pub fn bench_lca_linear_chains(c: &mut Criterion) {
 
 /// Benchmark find_lca performance with diamond patterns
 pub fn bench_lca_diamond_merge(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     c.bench_function("find_lca_diamond", |b| {
         b.iter_with_setup(
             || {
-                let tree = setup_tree();
-                let (test_entries, expected_lca) = create_diamond_pattern(&tree);
-                (tree, test_entries, expected_lca)
+                rt.block_on(async {
+                    let tree = setup_tree_async().await;
+                    let (test_entries, expected_lca) = create_diamond_pattern(&tree).await;
+                    (tree, test_entries, expected_lca)
+                })
             },
             |(tree, test_entries, expected_lca)| {
-                let backend = tree.backend().expect("Failed to get backend");
+                rt.block_on(async {
+                    let backend = tree.backend().expect("Failed to get backend");
 
-                let lca = backend
-                    .find_lca(tree.root_id(), "data", &test_entries)
-                    .expect("Failed to find LCA");
+                    let lca = backend
+                        .find_lca(tree.root_id(), "data", &test_entries)
+                        .await
+                        .expect("Failed to find LCA");
 
-                // Verify correctness
-                assert_eq!(lca, expected_lca, "LCA mismatch in diamond pattern");
-                black_box(lca);
+                    // Verify correctness
+                    assert_eq!(lca, expected_lca, "LCA mismatch in diamond pattern");
+                    black_box(lca);
+                });
             },
         );
     });
@@ -242,27 +294,36 @@ pub fn bench_lca_diamond_merge(c: &mut Criterion) {
 
 /// Benchmark height calculation performance
 pub fn bench_tree_heights(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("height_calculation");
 
     for depth in [10, 50] {
         group.bench_with_input(BenchmarkId::new("depth", depth), &depth, |b, &depth| {
             b.iter_with_setup(
                 || {
-                    let tree = setup_tree();
-                    let _ = create_linear_chain(&tree, depth);
-                    tree
+                    rt.block_on(async {
+                        let tree = setup_tree_async().await;
+                        let _ = create_linear_chain(&tree, depth).await;
+                        tree
+                    })
                 },
                 |tree| {
-                    let backend = tree.backend().expect("Failed to get backend");
-                    let in_memory = backend
-                        .as_any()
-                        .downcast_ref::<InMemory>()
-                        .expect("Failed to downcast backend");
+                    rt.block_on(async {
+                        let backend = tree.backend().expect("Failed to get backend");
+                        let in_memory = backend
+                            .as_any()
+                            .downcast_ref::<InMemory>()
+                            .expect("Failed to downcast backend");
 
-                    let heights = in_memory
-                        .calculate_heights(tree.root_id(), None)
-                        .expect("Failed to calculate heights");
-                    black_box(heights);
+                        let heights = in_memory
+                            .calculate_heights(tree.root_id(), None)
+                            .await
+                            .expect("Failed to calculate heights");
+                        black_box(heights);
+                    });
                 },
             );
         });
@@ -273,6 +334,10 @@ pub fn bench_tree_heights(c: &mut Criterion) {
 
 /// Benchmark repeated height calculations
 pub fn bench_height_calculation_overhead(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("repeated_height_calculations");
     group.sample_size(20); // Reduce sample size for repeated calculations
 
@@ -283,24 +348,29 @@ pub fn bench_height_calculation_overhead(c: &mut Criterion) {
             |b, &size| {
                 b.iter_with_setup(
                     || {
-                        let tree = setup_tree();
-                        let _ = create_linear_chain(&tree, size);
-                        tree
+                        rt.block_on(async {
+                            let tree = setup_tree_async().await;
+                            let _ = create_linear_chain(&tree, size).await;
+                            tree
+                        })
                     },
                     |tree| {
-                        let backend = tree.backend().expect("Failed to get backend");
-                        let in_memory = backend
-                            .as_any()
-                            .downcast_ref::<InMemory>()
-                            .expect("Failed to downcast database");
+                        rt.block_on(async {
+                            let backend = tree.backend().expect("Failed to get backend");
+                            let in_memory = backend
+                                .as_any()
+                                .downcast_ref::<InMemory>()
+                                .expect("Failed to downcast database");
 
-                        // Simulate 5 operations that need height info
-                        for _ in 0..5 {
-                            let heights = in_memory
-                                .calculate_heights(tree.root_id(), None)
-                                .expect("Failed to calculate heights");
-                            black_box(heights);
-                        }
+                            // Simulate 5 operations that need height info
+                            for _ in 0..5 {
+                                let heights = in_memory
+                                    .calculate_heights(tree.root_id(), None)
+                                    .await
+                                    .expect("Failed to calculate heights");
+                                black_box(heights);
+                            }
+                        });
                     },
                 );
             },
@@ -312,6 +382,10 @@ pub fn bench_height_calculation_overhead(c: &mut Criterion) {
 
 /// Benchmark tips finding performance
 pub fn bench_tips_finding(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("get_tips");
 
     for num_tips in [5, 10, 25] {
@@ -321,16 +395,21 @@ pub fn bench_tips_finding(c: &mut Criterion) {
             |b, &num| {
                 b.iter_with_setup(
                     || {
-                        let tree = setup_tree();
-                        let _ = create_branching_tree(&tree, num, 3); // Create branches as tips
-                        tree
+                        rt.block_on(async {
+                            let tree = setup_tree_async().await;
+                            let _ = create_branching_tree(&tree, num, 3).await; // Create branches as tips
+                            tree
+                        })
                     },
                     |tree| {
-                        let backend = tree.backend().expect("Failed to get backend");
-                        let tips = backend
-                            .get_tips(tree.root_id())
-                            .expect("Failed to get tips");
-                        black_box(tips);
+                        rt.block_on(async {
+                            let backend = tree.backend().expect("Failed to get backend");
+                            let tips = backend
+                                .get_tips(tree.root_id())
+                                .await
+                                .expect("Failed to get tips");
+                            black_box(tips);
+                        });
                     },
                 );
             },
@@ -342,6 +421,10 @@ pub fn bench_tips_finding(c: &mut Criterion) {
 
 /// Benchmark tree traversal scalability
 pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("large_tree_operations");
     group.sample_size(10); // Reduce sample size for large tree operations
 
@@ -357,16 +440,21 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                 |b, &(size, structure)| {
                     b.iter_with_setup(
                         || {
-                            let tree = setup_tree();
-                            let _ = create_large_tree(&tree, size, structure);
-                            tree
+                            rt.block_on(async {
+                                let tree = setup_tree_async().await;
+                                let _ = create_large_tree(&tree, size, structure).await;
+                                tree
+                            })
                         },
                         |tree| {
-                            let backend = tree.backend().expect("Failed to get backend");
-                            let entries = backend
-                                .get_tree(tree.root_id())
-                                .expect("Failed to get tree");
-                            black_box(entries);
+                            rt.block_on(async {
+                                let backend = tree.backend().expect("Failed to get backend");
+                                let entries = backend
+                                    .get_tree(tree.root_id())
+                                    .await
+                                    .expect("Failed to get tree");
+                                black_box(entries);
+                            });
                         },
                     );
                 },
@@ -379,6 +467,10 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
 
 /// Benchmark CRDT merge operations
 pub fn bench_crdt_merge_operations(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("crdt_computation");
 
     for tree_depth in [10, 20] {
@@ -388,24 +480,31 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
             |b, &depth| {
                 b.iter_with_setup(
                     || {
-                        let tree = setup_tree();
-                        let entry_ids = create_linear_chain(&tree, depth);
-                        let tip_entry = entry_ids.last().unwrap().clone();
-                        (tree, tip_entry)
+                        rt.block_on(async {
+                            let tree = setup_tree_async().await;
+                            let entry_ids = create_linear_chain(&tree, depth).await;
+                            let tip_entry = entry_ids.last().unwrap().clone();
+                            (tree, tip_entry)
+                        })
                     },
                     |(tree, tip_entry)| {
-                        let op = tree
-                            .new_transaction_with_tips([tip_entry])
-                            .expect("Failed to create op");
-                        let kv = op
-                            .get_store::<DocStore>("data")
-                            .expect("Failed to get DocStore");
+                        rt.block_on(async {
+                            let op = tree
+                                .new_transaction_with_tips([tip_entry])
+                                .await
+                                .expect("Failed to create op");
+                            let kv = op
+                                .get_store::<DocStore>("data")
+                                .await
+                                .expect("Failed to get DocStore");
 
-                        // Perform a simple operation that requires CRDT computation
-                        kv.set("test_key", "test_value")
-                            .expect("Failed to set value");
-                        let result = op.commit().expect("Failed to commit");
-                        black_box(result);
+                            // Perform a simple operation that requires CRDT computation
+                            kv.set("test_key", "test_value")
+                                .await
+                                .expect("Failed to set value");
+                            let result = op.commit().await.expect("Failed to commit");
+                            black_box(result);
+                        });
                     },
                 );
             },
@@ -417,6 +516,10 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
 
 /// Benchmark individual tip validation
 pub fn bench_tip_validation(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("is_tip");
 
     for tree_size in [50, 100] {
@@ -426,20 +529,24 @@ pub fn bench_tip_validation(c: &mut Criterion) {
             |b, &size| {
                 b.iter_with_setup(
                     || {
-                        let tree = setup_tree();
-                        let entry_ids = create_linear_chain(&tree, size);
-                        let last_entry_id = entry_ids.last().unwrap().clone();
-                        (tree, last_entry_id)
+                        rt.block_on(async {
+                            let tree = setup_tree_async().await;
+                            let entry_ids = create_linear_chain(&tree, size).await;
+                            let last_entry_id = entry_ids.last().unwrap().clone();
+                            (tree, last_entry_id)
+                        })
                     },
                     |(tree, last_entry_id)| {
-                        let backend = tree.backend().expect("Failed to get backend");
-                        let in_memory = backend
-                            .as_any()
-                            .downcast_ref::<InMemory>()
-                            .expect("Failed to downcast database");
+                        rt.block_on(async {
+                            let backend = tree.backend().expect("Failed to get backend");
+                            let in_memory = backend
+                                .as_any()
+                                .downcast_ref::<InMemory>()
+                                .expect("Failed to downcast database");
 
-                        let is_tip = in_memory.is_tip(tree.root_id(), &last_entry_id);
-                        black_box(is_tip);
+                            let is_tip = in_memory.is_tip(tree.root_id(), &last_entry_id).await;
+                            black_box(is_tip);
+                        });
                     },
                 );
             },

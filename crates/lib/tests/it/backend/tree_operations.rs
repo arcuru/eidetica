@@ -30,8 +30,10 @@ async fn test_backend_complex_tree_structure() {
     // Create a diamond pattern: root -> A, B -> C
     // Add subtree data to distinguish the branches
     let diamond = {
-        let a_id = create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "a").await;
-        let b_id = create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "b").await;
+        let a_id =
+            create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "a").await;
+        let b_id =
+            create_and_store_subtree_entry(&*backend, &root_id, &root_id, "branch", "b").await;
 
         // Create merge entry with both parents
         let c_entry = Entry::builder(root_id.clone())
@@ -64,7 +66,8 @@ async fn test_backend_complex_tree_structure() {
             &diamond.right_id,
             &diamond.merge_id,
         ],
-    ).await;
+    )
+    .await;
 
     // Extend the diamond by adding D which has C as a parent
     let d_id = create_and_store_child(&*backend, &root_id, &diamond.merge_id).await;
@@ -151,7 +154,9 @@ async fn test_backend_get_tree_from_tips() {
     assert!(last_two.contains(&e2b_id));
 
     // --- Test with non-existent tip ---
-    let result = backend.get_tree_from_tips(&root_id, &["bad_tip_id".into()]).await;
+    let result = backend
+        .get_tree_from_tips(&root_id, &["bad_tip_id".into()])
+        .await;
     assert!(result.is_err(), "Non-existent tip should return an error");
     let err = result.unwrap_err();
     assert!(
@@ -166,7 +171,9 @@ async fn test_backend_get_tree_from_tips() {
     // When given a valid tip but an invalid root (tree_id doesn't match),
     // the function should return an error because the tip doesn't belong to the specified tree.
     let bad_root_id: ID = "bad_root".into();
-    let result = backend.get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id)).await;
+    let result = backend
+        .get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id))
+        .await;
     assert!(result.is_err(), "Mismatched tree should return an error");
     let err = result.unwrap_err();
     assert!(
@@ -179,7 +186,10 @@ async fn test_backend_get_tree_from_tips() {
 
     // --- Test get_tree() convenience function ---
     // This function should get the full tree from current tips
-    let full_tree = backend.get_tree(&root_id).await.expect("Failed to get full tree");
+    let full_tree = backend
+        .get_tree(&root_id)
+        .await
+        .expect("Failed to get full tree");
     assert_eq!(full_tree.len(), 4, "Full tree should have all 4 entries");
     let full_tree_ids: Vec<_> = full_tree.iter().map(|e| e.id()).collect();
     assert!(full_tree_ids.contains(&root_entry_id));

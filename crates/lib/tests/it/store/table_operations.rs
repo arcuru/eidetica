@@ -401,7 +401,9 @@ async fn test_table_delete_nonexistent() {
 
         // Try to delete non-existent key
         let deleted = table
-            .delete("non-existent-uuid").await.expect("Delete should not error on non-existent key");
+            .delete("non-existent-uuid")
+            .await
+            .expect("Delete should not error on non-existent key");
         assert!(
             !deleted,
             "Should return false when deleting non-existent record"

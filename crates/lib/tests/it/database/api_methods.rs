@@ -17,7 +17,10 @@ async fn test_get_entry_basic() {
     let entry_id = add_data_to_subtree(&tree, "data", &[("test_key", "test_value")]).await;
 
     // Test get_entry
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
     assert_eq!(entry.sig.key, SigKey::Direct("test_key".to_string()));
     assert!(entry.sig.sig.is_some());
@@ -32,7 +35,10 @@ async fn test_get_entries_multiple() {
     let entry_ids = create_linear_chain(&tree, "data", 3).await;
 
     // Test get_entries
-    let entries = tree.get_entries(&entry_ids).await.expect("Failed to get entries");
+    let entries = tree
+        .get_entries(&entry_ids)
+        .await
+        .expect("Failed to get entries");
     assert_eq!(entries.len(), 3);
 
     for (i, entry) in entries.iter().enumerate() {
@@ -101,7 +107,10 @@ async fn test_tree_validation_rejects_foreign_entries() {
         .set("key", "value1")
         .await
         .expect("Failed to set value in tree1");
-    let entry1_id = op1.commit().await.expect("Failed to commit operation in tree1");
+    let entry1_id = op1
+        .commit()
+        .await
+        .expect("Failed to commit operation in tree1");
 
     // Create an entry in tree2
     let op2 = tree2
@@ -116,7 +125,10 @@ async fn test_tree_validation_rejects_foreign_entries() {
         .set("key", "value2")
         .await
         .expect("Failed to set value in tree2");
-    let entry2_id = op2.commit().await.expect("Failed to commit operation in tree2");
+    let entry2_id = op2
+        .commit()
+        .await
+        .expect("Failed to commit operation in tree2");
 
     // Verify tree1 can access its own entry
     assert!(tree1.get_entry(&entry1_id).await.is_ok());
@@ -172,7 +184,10 @@ async fn test_tree_validation_get_entries() {
             .set("key", format!("value1_{i}"))
             .await
             .expect("Failed to set value in tree1");
-        let entry_id = op.commit().await.expect("Failed to commit operation in tree1");
+        let entry_id = op
+            .commit()
+            .await
+            .expect("Failed to commit operation in tree1");
         tree1_entries.push(entry_id);
     }
 
@@ -189,7 +204,10 @@ async fn test_tree_validation_get_entries() {
         .set("key", "value2")
         .await
         .expect("Failed to set value in tree2");
-    let entry2_id = op2.commit().await.expect("Failed to commit operation in tree2");
+    let entry2_id = op2
+        .commit()
+        .await
+        .expect("Failed to commit operation in tree2");
 
     // Verify tree1 can get all its own entries
     let entries = tree1
@@ -209,19 +227,22 @@ async fn test_tree_validation_get_entries() {
 /// Test authentication helpers with signed entries
 #[tokio::test]
 async fn test_auth_helpers_signed_entries() {
-    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY");
+    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY").await;
 
     // Create signed entry using helper
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, "TEST_KEY");
+    assert_entry_authentication(&tree, &entry_id, "TEST_KEY").await;
 
     // Test entry belongs to tree
-    assert_entry_belongs_to_tree(&tree, &entry_id);
+    assert_entry_belongs_to_tree(&tree, &entry_id).await;
 
     // Test manual auth checks
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     let sig_info = &entry.sig;
     assert!(sig_info.is_signed_by("TEST_KEY"));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
@@ -236,10 +257,13 @@ async fn test_auth_helpers_default_authenticated_entries() {
     let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, "test_key");
+    assert_entry_authentication(&tree, &entry_id, "test_key").await;
 
     // Test manual auth checks
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     let sig_info = &entry.sig;
     assert!(sig_info.is_signed_by("test_key"));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
@@ -248,13 +272,13 @@ async fn test_auth_helpers_default_authenticated_entries() {
 /// Test verify_entry_signature with different authentication scenarios
 #[tokio::test]
 async fn test_verify_entry_signature_auth_scenarios() {
-    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY");
+    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY").await;
 
     // Test 1: Create entry signed with valid key using helper
     let signed_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
     // Should verify successfully using helper
-    assert_entry_authentication(&tree, &signed_entry_id, "TEST_KEY");
+    assert_entry_authentication(&tree, &signed_entry_id, "TEST_KEY").await;
 
     // Test 2: Create unsigned entry using helper
     let unsigned_entry_id = add_data_to_subtree(&tree, "data", &[("key", "value2")]).await;
@@ -270,7 +294,7 @@ async fn test_verify_entry_signature_auth_scenarios() {
 /// Test verify_entry_signature with unauthorized key
 #[tokio::test]
 async fn test_verify_entry_signature_unauthorized_key() {
-    let (instance, tree) = setup_tree_with_auth_config("AUTHORIZED_KEY");
+    let (instance, tree) = setup_tree_with_auth_config("AUTHORIZED_KEY").await;
 
     // Add unauthorized key to backend (but not to tree's auth settings)
     let _unauthorized_public_key = instance
@@ -281,7 +305,7 @@ async fn test_verify_entry_signature_unauthorized_key() {
     // Test with authorized key (should succeed) using helper
     let authorized_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
-    assert_entry_authentication(&tree, &authorized_entry_id, "AUTHORIZED_KEY");
+    assert_entry_authentication(&tree, &authorized_entry_id, "AUTHORIZED_KEY").await;
 
     // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
     let unauthorized_signing_key = instance
@@ -307,7 +331,10 @@ async fn test_verify_entry_signature_unauthorized_key() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
-    store2.set("key", "value2").await.expect("Failed to set value");
+    store2
+        .set("key", "value2")
+        .await
+        .expect("Failed to set value");
     let commit_result = op2.commit().await;
 
     // The commit should fail because the unauthorized key is not in the tree's auth settings
@@ -323,13 +350,13 @@ async fn test_verify_entry_signature_unauthorized_key() {
 /// Test that verify_entry_signature validates against tree auth configuration
 #[tokio::test]
 async fn test_verify_entry_signature_validates_tree_auth() {
-    let (_instance, tree) = setup_tree_with_auth_config("VALID_KEY");
+    let (_instance, tree) = setup_tree_with_auth_config("VALID_KEY").await;
 
     // Create a signed entry using helper
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Verify the entry using helper - should validate against tree's auth settings
-    assert_entry_authentication(&tree, &entry_id, "VALID_KEY");
+    assert_entry_authentication(&tree, &entry_id, "VALID_KEY").await;
 
     // Note: In the future, this test should also verify that:
     // 1. Entries remain valid even if the key is later revoked (historical validation)
@@ -353,7 +380,10 @@ async fn test_tree_queries() {
     // Create a few entries
     let mut entry_ids = Vec::new();
     for i in 0..3 {
-        let op = tree.new_transaction().await.expect("Failed to create operation");
+        let op = tree
+            .new_transaction()
+            .await
+            .expect("Failed to create operation");
         let store = op
             .get_store::<DocStore>("data")
             .await
@@ -367,7 +397,10 @@ async fn test_tree_queries() {
     }
 
     // Test get_all_entries
-    let all_entries = tree.get_all_entries().await.expect("Failed to get all entries");
+    let all_entries = tree
+        .get_all_entries()
+        .await
+        .expect("Failed to get all entries");
     assert_eq!(all_entries.len(), initial_count + 3);
 
     // Verify all our created entries are in the result
@@ -385,7 +418,10 @@ async fn test_batch_vs_individual_retrieval() {
     // Create multiple entries
     let mut entry_ids = Vec::new();
     for i in 0..5 {
-        let op = tree.new_transaction().await.expect("Failed to create operation");
+        let op = tree
+            .new_transaction()
+            .await
+            .expect("Failed to create operation");
         let store = op
             .get_store::<DocStore>("data")
             .await
@@ -406,7 +442,10 @@ async fn test_batch_vs_individual_retrieval() {
     }
 
     // Test batch retrieval
-    let batch_entries = tree.get_entries(&entry_ids).await.expect("Failed to get entries");
+    let batch_entries = tree
+        .get_entries(&entry_ids)
+        .await
+        .expect("Failed to get entries");
 
     // Results should be identical
     assert_eq!(individual_entries.len(), batch_entries.len());

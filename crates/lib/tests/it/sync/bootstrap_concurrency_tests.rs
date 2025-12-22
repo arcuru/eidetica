@@ -12,7 +12,7 @@ use tracing::info;
 /// NOTE: This test is currently disabled because Instance is not Send, which prevents
 /// it from being used across await points in tokio::spawn. This test needs to be
 /// redesigned to work within the async architecture constraints.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "Instance is not Send - test needs redesign for async"]
 async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     info!("Running test: test_multiple_clients_bootstrap_same_database");
@@ -29,7 +29,8 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
     server_sync
         .backend()
         .unwrap()
-        .put_verified(root_entry).await
+        .put_verified(root_entry)
+        .await
         .unwrap();
 
     // Enable sync for this tree
@@ -42,13 +43,14 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 
     // 3. Create multiple clients and bootstrap them concurrently
     let num_clients = 3; // Use fewer clients to avoid overloading
-    let mut client_handles = Vec::new();
+    let local = tokio::task::LocalSet::new();
+    let mut client_handles = Vec::with_capacity(num_clients);
 
     for i in 0..num_clients {
         let tree_id = test_tree_id.clone();
         let addr = server_addr.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = local.spawn_local(async move {
             info!("Starting client {}", i);
 
             // Create client instance
@@ -79,15 +81,18 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             info!("Client {} successfully bootstrapped", i);
             Ok::<_, eidetica::Error>((i, client_instance))
         });
-
         client_handles.push(handle);
     }
 
     // 5. Wait for all clients to complete bootstrapping and verify their state
-    for handle in client_handles {
-        let (client_id, _client_instance) = handle.await.unwrap().unwrap();
-        info!("Client {} completed successfully", client_id);
-    }
+    local
+        .run_until(async {
+            for handle in client_handles {
+                let (client_id, _client_instance) = handle.await.unwrap().unwrap();
+                info!("Client {} completed successfully", client_id);
+            }
+        })
+        .await;
 
     // Cleanup
     let server_sync = server_instance.sync().unwrap();
@@ -107,7 +112,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 /// NOTE: This test is currently disabled because Instance is not Send, which prevents
 /// it from being used across await points in tokio::spawn. This test needs to be
 /// redesigned to work within the async architecture constraints.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "Instance is not Send - test needs redesign for async"]
 async fn test_concurrent_key_approval_requests() -> Result<()> {
     info!("Running test: test_concurrent_key_approval_requests (User API version)");
@@ -127,17 +132,19 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
 
     // 2. Create multiple clients that will request key approval concurrently
     let num_clients = 4;
-    let mut client_handles = Vec::new();
+    let local = tokio::task::LocalSet::new();
+    let mut client_handles = Vec::with_capacity(num_clients);
 
     for i in 0..num_clients {
         let tree_id = test_tree_id.clone();
         let addr = server_addr.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = local.spawn_local(async move {
             info!("Starting client {} key approval request", i);
 
             // Create client instance with user and key
-            let (mut client_instance, mut client_user, client_key_id) = setup_indexed_client(i).await;
+            let (mut client_instance, mut client_user, client_key_id) =
+                setup_indexed_client(i).await;
 
             // Verify client doesn't have the database initially
             assert!(
@@ -168,15 +175,18 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
             info!("Client {} successfully got key approval", i);
             Ok::<_, eidetica::Error>((i, client_instance, client_user))
         });
-
         client_handles.push(handle);
     }
 
     // 3. Wait for all clients to complete key approval and verify their state
-    for handle in client_handles {
-        let (client_id, _client_instance, _client_user) = handle.await.unwrap().unwrap();
-        info!("Client {} key approval completed successfully", client_id);
-    }
+    local
+        .run_until(async {
+            for handle in client_handles {
+                let (client_id, _client_instance, _client_user) = handle.await.unwrap().unwrap();
+                info!("Client {} key approval completed successfully", client_id);
+            }
+        })
+        .await;
 
     // Cleanup
     let server_sync = server_instance.sync().unwrap();

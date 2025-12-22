@@ -116,9 +116,11 @@ async fn test_database_operations_using_helpers() {
         &trees[1],
         "user_profiles",
         &[("user1", "alice"), ("user2", "bob")],
-    ).await;
+    )
+    .await;
     assert_tree_settings(
         &trees[1],
         &[("name", "DataTree"), ("purpose", "user_storage")],
-    ).await;
+    )
+    .await;
 }

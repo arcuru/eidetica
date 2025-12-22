@@ -28,7 +28,9 @@ async fn test_empty_delegation_path() -> Result<()> {
     let auth_settings = AuthSettings::new();
     let db = test_instance().await;
 
-    let result = validator.resolve_sig_key(&empty_delegation, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&empty_delegation, &auth_settings, Some(&db))
+        .await;
     assert!(result.is_err());
 
     Ok(())
@@ -61,7 +63,9 @@ async fn test_direct_key_empty_id() -> Result<()> {
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
-    let result = validator.resolve_sig_key(&empty_key, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&empty_key, &auth_settings, Some(&db))
+        .await;
     assert!(
         result.is_ok(),
         "Failed to resolve empty key: {:?}",
@@ -89,7 +93,9 @@ async fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     let auth_settings = AuthSettings::new();
     let db = test_instance().await;
 
-    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&delegation_path, &auth_settings, Some(&db))
+        .await;
     // Should error because intermediate steps need tips
     assert!(result.is_err());
 
@@ -288,13 +294,17 @@ async fn test_circular_delegation_simple() -> Result<()> {
 
     // Add self-referencing delegation to the tree
     let op = tree.new_transaction().await?.with_auth("admin");
-    let _dict = op.get_store::<eidetica::store::DocStore>("_settings").await?;
+    let _dict = op
+        .get_store::<eidetica::store::DocStore>("_settings")
+        .await?;
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
     let mut validator = AuthValidator::new();
-    let result = validator.resolve_sig_key(&circular_delegation, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&circular_delegation, &auth_settings, Some(&db))
+        .await;
 
     // Should either work or fail gracefully (not crash)
     match result {

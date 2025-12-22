@@ -20,7 +20,7 @@
 //!
 //! This module is only available when the "y-crdt" feature is enabled.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -200,7 +200,7 @@ pub struct YDoc {
     atomic_op: Transaction,
     /// Cached backend data to avoid expensive get_full_state() calls
     /// This contains the merged historical state as Y-CRDT binary data
-    cached_backend_data: RefCell<Option<YrsBinary>>,
+    cached_backend_data: Mutex<Option<YrsBinary>>,
 }
 
 impl Registered for YDoc {
@@ -209,13 +209,13 @@ impl Registered for YDoc {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Store for YDoc {
     async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
             atomic_op: op.clone(),
-            cached_backend_data: RefCell::new(None),
+            cached_backend_data: Mutex::new(None),
         })
     }
 
@@ -439,9 +439,7 @@ impl YDoc {
 
         let yrs_binary = YrsBinary::new(update);
         let serialized = serde_json::to_string(&yrs_binary)?;
-        self.atomic_op
-            .update_subtree(&self.name, &serialized)
-            .await
+        self.atomic_op.update_subtree(&self.name, &serialized).await
     }
 
     /// Saves the document state using efficient differential encoding.
@@ -611,15 +609,18 @@ impl YDoc {
     /// Returns an error if the backend data cannot be retrieved or deserialized.
     async fn get_cached_backend_data(&self) -> Result<YrsBinary> {
         // Check if we already have the backend data cached
-        if let Some(backend_data) = self.cached_backend_data.borrow().as_ref() {
+        if let Some(backend_data) = self.cached_backend_data.lock().unwrap().as_ref() {
             return Ok(backend_data.clone());
         }
 
         // Perform the expensive operation once
-        let backend_data = self.atomic_op.get_full_state::<YrsBinary>(&self.name).await?;
+        let backend_data = self
+            .atomic_op
+            .get_full_state::<YrsBinary>(&self.name)
+            .await?;
 
         // Cache it for future use
-        *self.cached_backend_data.borrow_mut() = Some(backend_data.clone());
+        *self.cached_backend_data.lock().unwrap() = Some(backend_data.clone());
 
         Ok(backend_data)
     }

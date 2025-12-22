@@ -30,7 +30,10 @@ async fn test_key_management() {
 
     // Add another key
     let key_id2 = "TEST_KEY_2";
-    let public_key2 = db.add_private_key(key_id2).await.expect("Failed to add key");
+    let public_key2 = db
+        .add_private_key(key_id2)
+        .await
+        .expect("Failed to add key");
 
     // List keys should now show three keys (_device_key + TEST_KEY + TEST_KEY_2)
     let keys = db.list_private_keys().await.expect("Failed to list keys");
@@ -50,7 +53,10 @@ async fn test_key_management() {
         .new_database(Doc::new(), key_id)
         .await
         .expect("Failed to create tree");
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .await
@@ -63,7 +69,10 @@ async fn test_key_management() {
     let entry_id = op.commit().await.expect("Failed to commit");
 
     // Verify the entry was signed correctly
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
     assert!(entry.sig.sig.is_some());
 
@@ -103,7 +112,10 @@ async fn test_import_private_key() {
         .new_database(Doc::new(), key_id)
         .await
         .expect("Failed to create tree");
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .await
@@ -116,7 +128,10 @@ async fn test_import_private_key() {
     let entry_id = op.commit().await.expect("Failed to commit");
 
     // Verify the entry was signed correctly
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id)
@@ -172,7 +187,10 @@ async fn test_backend_serialization() {
         .expect("Failed to create tree");
 
     // Create an entry with first key (tree is already loaded with key_id1)
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .await
@@ -185,7 +203,10 @@ async fn test_backend_serialization() {
     let entry_id = op.commit().await.expect("Failed to commit");
 
     // Verify entry can be retrieved and is properly signed
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     assert_eq!(entry.sig.key, SigKey::Direct(key_id1.to_string()));
     assert!(entry.sig.sig.is_some());
     assert!(
@@ -223,7 +244,10 @@ async fn test_backend_serialization() {
     let entry_id2 = op2.commit().await.expect("Failed to commit");
 
     // Verify second entry (can verify from either tree instance)
-    let entry2 = tree.get_entry(&entry_id2).await.expect("Failed to get entry2");
+    let entry2 = tree
+        .get_entry(&entry_id2)
+        .await
+        .expect("Failed to get entry2");
     assert_eq!(entry2.sig.key, SigKey::Direct(key_id2.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id2)
@@ -265,7 +289,10 @@ async fn test_overwrite_existing_key() {
         .new_database(Doc::new(), key_id)
         .await
         .expect("Failed to create tree");
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<eidetica::store::DocStore>("data")
         .await

@@ -98,7 +98,8 @@ impl<'a> BootstrapRequestManager<'a> {
     pub(super) async fn get_request(&self, request_id: &str) -> Result<Option<BootstrapRequest>> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
 
         match requests.get(request_id).await {
             Ok(request) => Ok(Some(request)),
@@ -114,11 +115,14 @@ impl<'a> BootstrapRequestManager<'a> {
     ) -> Result<Vec<(String, BootstrapRequest)>> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
 
-        let results = requests.search(|request| {
-            std::mem::discriminant(status_filter) == std::mem::discriminant(&request.status)
-        }).await?;
+        let results = requests
+            .search(|request| {
+                std::mem::discriminant(status_filter) == std::mem::discriminant(&request.status)
+            })
+            .await?;
 
         Ok(results)
     }
@@ -139,7 +143,8 @@ impl<'a> BootstrapRequestManager<'a> {
         self.filter_requests(&RequestStatus::Approved {
             approved_by: String::new(),
             approval_time: String::new(),
-        }).await
+        })
+        .await
     }
 
     /// Get all rejected bootstrap requests.
@@ -150,7 +155,8 @@ impl<'a> BootstrapRequestManager<'a> {
         self.filter_requests(&RequestStatus::Rejected {
             rejected_by: String::new(),
             rejection_time: String::new(),
-        }).await
+        })
+        .await
     }
 
     /// Update the status of a bootstrap request.
@@ -161,10 +167,15 @@ impl<'a> BootstrapRequestManager<'a> {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub(super) async fn update_status(&self, request_id: &str, new_status: RequestStatus) -> Result<()> {
+    pub(super) async fn update_status(
+        &self,
+        request_id: &str,
+        new_status: RequestStatus,
+    ) -> Result<()> {
         let requests = self
             .op
-            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE).await?;
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
 
         // Get the existing request
         let mut request = requests.get(request_id).await?;
@@ -195,7 +206,9 @@ mod tests {
 
     async fn create_test_sync_tree() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend).await.expect("Failed to create test instance");
+        let instance = Instance::open(backend)
+            .await
+            .expect("Failed to create test instance");
 
         // Create sync tree similar to how Sync::new does it
         let mut sync_settings = crate::crdt::Doc::new();

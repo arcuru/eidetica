@@ -27,7 +27,8 @@ async fn test_simple_tree_creation_with_auth() -> Result<()> {
     let (_db, mut _user, tree, _) = setup_complete_auth_environment_with_user(
         "main_admin_user",
         &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
-    ).await;
+    )
+    .await;
 
     assert!(!tree.root_id().to_string().is_empty());
     Ok(())
@@ -42,13 +43,15 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
         &mut user,
         &[("delegated_user", Permission::Admin(5), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
 
     // Create main tree with delegation
     let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
         "main_admin_user",
         &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
-    ).await;
+    )
+    .await;
 
     // Add delegation to main tree auth settings
     let op = main_tree.new_transaction().await?;
@@ -58,10 +61,13 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
         &delegated_tree,
         Permission::Write(10),
         Some(Permission::Read),
-    ).await?;
+    )
+    .await?;
     let mut new_auth_settings = main_tree.get_settings().await?.get_all().await?;
     new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings)).await?;
+    settings_store
+        .set_value("auth", Value::Doc(new_auth_settings))
+        .await?;
     op.commit().await?;
 
     // Test delegated tree validation
@@ -81,7 +87,8 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
         Some(&db),
         Permission::Write(10),
         KeyStatus::Active,
-    );
+    )
+    .await;
 
     Ok(())
 }
@@ -95,13 +102,15 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
         &mut user,
         &[("delegated_user", Permission::Admin(0), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
 
     // Create main tree with Read-only delegation
     let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
         "main_admin_user",
         &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
-    ).await;
+    )
+    .await;
 
     // Add read-only delegation
     let op = main_tree.new_transaction().await?;
@@ -110,7 +119,9 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None).await?;
     let mut new_auth_settings = main_tree.get_settings().await?.get_all().await?;
     new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings)).await?;
+    settings_store
+        .set_value("auth", Value::Doc(new_auth_settings))
+        .await?;
     op.commit().await?;
 
     // Test permission clamping
@@ -131,7 +142,8 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
         Some(&db),
         Permission::Read,
         KeyStatus::Active,
-    );
+    )
+    .await;
 
     Ok(())
 }
@@ -152,7 +164,8 @@ async fn test_nested_delegation() -> Result<()> {
     configure_database_auth(
         &user_tree,
         &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
 
     // Create org tree (middle level) that delegates to user tree using SettingsStore API
     let org_tree = user.create_database(Doc::new(), &org_admin_key).await?;
@@ -164,7 +177,8 @@ async fn test_nested_delegation() -> Result<()> {
             Permission::Admin(5),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation to user tree
     let user_tips = user_tree.get_tips().await?;
@@ -172,10 +186,12 @@ async fn test_nested_delegation() -> Result<()> {
     {
         let settings = op.get_settings()?;
         let delegation_ref = create_delegation_ref(&user_tree, Permission::Write(20), None).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
-            Ok(())
-        }).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -189,7 +205,8 @@ async fn test_nested_delegation() -> Result<()> {
             Permission::Admin(0),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation to org tree
     let org_tips = org_tree.get_tips().await?;
@@ -198,10 +215,12 @@ async fn test_nested_delegation() -> Result<()> {
         let settings = op.get_settings()?;
         let delegation_ref =
             create_delegation_ref(&org_tree, Permission::Write(15), Some(Permission::Read)).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_to_org", delegation_ref)?;
-            Ok(())
-        }).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_to_org", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -227,8 +246,9 @@ async fn test_nested_delegation() -> Result<()> {
     ]);
 
     // This should resolve with Write permissions (clamped through the chain)
-    let resolved_auth =
-        validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db)).await?;
+    let resolved_auth = validator
+        .resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db))
+        .await?;
 
     // Permissions should be clamped: user has Admin(10) -> org clamps to Write(20) -> main doesn't clamp further
     // Final result should be Write(20) (clamped at org level)
@@ -249,7 +269,9 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user")).await?;
 
     // Create delegated tree with user key (initially active) using SettingsStore API
-    let delegated_tree = user.create_database(Doc::new(), &delegated_user_key).await?;
+    let delegated_tree = user
+        .create_database(Doc::new(), &delegated_user_key)
+        .await?;
     configure_database_auth(
         &delegated_tree,
         &[(
@@ -258,7 +280,8 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             Permission::Admin(10),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Create main tree with delegation using SettingsStore API
     let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
@@ -270,18 +293,22 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             Permission::Admin(0),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
-        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_to_tree", delegation_ref)?;
-            Ok(())
-        }).await?;
+        let delegation_ref =
+            create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_to_tree", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -300,8 +327,9 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
         },
     ]);
 
-    let resolved_auth =
-        validator.resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(&db)).await?;
+    let resolved_auth = validator
+        .resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(&db))
+        .await?;
 
     assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
@@ -310,27 +338,35 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let op = delegated_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
-        settings.update_auth_settings(|auth| {
-            // Update the existing key to be revoked (use overwrite_key since it already exists)
-            let public_key = eidetica::auth::crypto::parse_public_key(&delegated_user_key)?;
-            let revoked_key = AuthKey::new(
-                format_public_key(&public_key),
-                Permission::Write(10),
-                KeyStatus::Revoked,
-            )?;
-            auth.overwrite_key("delegated_user", revoked_key)?;
-            Ok(())
-        }).await?;
+        settings
+            .update_auth_settings(|auth| {
+                // Update the existing key to be revoked (use overwrite_key since it already exists)
+                let public_key = eidetica::auth::crypto::parse_public_key(&delegated_user_key)?;
+                let revoked_key = AuthKey::new(
+                    format_public_key(&public_key),
+                    Permission::Write(10),
+                    KeyStatus::Revoked,
+                )?;
+                auth.overwrite_key("delegated_user", revoked_key)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
     // Test validation against revoked key
-    let revoked_auth_settings = delegated_tree.get_settings().await?.get_auth_settings().await?;
-    let resolved_auth_revoked = validator.resolve_sig_key(
-        &SigKey::Direct("delegated_user".to_string()),
-        &revoked_auth_settings,
-        Some(&db),
-    ).await?;
+    let revoked_auth_settings = delegated_tree
+        .get_settings()
+        .await?
+        .get_auth_settings()
+        .await?;
+    let resolved_auth_revoked = validator
+        .resolve_sig_key(
+            &SigKey::Direct("delegated_user".to_string()),
+            &revoked_auth_settings,
+            Some(&db),
+        )
+        .await?;
 
     assert_eq!(resolved_auth_revoked.key_status, KeyStatus::Revoked);
 
@@ -353,25 +389,30 @@ async fn test_delegation_depth_limits() -> Result<()> {
     configure_database_auth(
         &delegated_tree,
         &[("user", &user_key, Permission::Admin(10), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
 
     // Create main tree using SettingsStore API
     let main_tree = user.create_database(Doc::new(), &admin_key).await?;
     configure_database_auth(
         &main_tree,
         &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
-        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
-            Ok(())
-        }).await?;
+        let delegation_ref =
+            create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -398,7 +439,9 @@ async fn test_delegation_depth_limits() -> Result<()> {
     // Test depth limit validation
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
-    let result = validator.resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db))
+        .await;
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
@@ -420,7 +463,9 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user")).await?;
 
     // ---------------- Delegated tree using SettingsStore API ----------------
-    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key).await?;
+    let delegated_tree = user
+        .create_database(Doc::new(), &delegated_admin_key)
+        .await?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -437,7 +482,8 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
                 KeyStatus::Active,
             ),
         ],
-    ).await?;
+    )
+    .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // ---------------- Main tree with delegation using SettingsStore API ----------------
@@ -450,7 +496,8 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             Permission::Admin(0),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation with bounds using SettingsStore API
     let op = main_tree.new_transaction().await?;
@@ -460,11 +507,14 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             &delegated_tree,
             Permission::Write(0),       // max: Highest possible Write permission
             Some(Permission::Write(7)), // min: Minimum permission level
-        ).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_user_min_upgrade", delegation_ref)?;
-            Ok(())
-        }).await?;
+        )
+        .await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_user_min_upgrade", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -483,7 +533,9 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db)).await?;
+    let resolved = validator
+        .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
+        .await?;
 
     // Expect permission upgraded to Write(7)
     assert_eq!(resolved.effective_permission, Permission::Write(7));
@@ -505,7 +557,9 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
     let delegated_user_key = user.add_private_key(Some("delegated_user")).await?;
 
     // Delegated tree with user key Write(12) using SettingsStore API
-    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key).await?;
+    let delegated_tree = user
+        .create_database(Doc::new(), &delegated_admin_key)
+        .await?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -522,7 +576,8 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
                 KeyStatus::Active,
             ),
         ],
-    ).await?;
+    )
+    .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Main tree delegates with max Write(8) (more privileged) and no min using SettingsStore API
@@ -535,17 +590,21 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
             Permission::Admin(0),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation using SettingsStore API
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
-        let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Write(8), None).await?;
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_user_priority", delegation_ref)?;
-            Ok(())
-        }).await?;
+        let delegation_ref =
+            create_delegation_ref(&delegated_tree, Permission::Write(8), None).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_user_priority", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -564,7 +623,9 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
         },
     ]);
 
-    let resolved = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db)).await?;
+    let resolved = validator
+        .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
+        .await?;
 
     // Because Write(12) is within bounds (less privileged than Write(8)), it is preserved
     assert_eq!(resolved.effective_permission, Permission::Write(12));
@@ -585,7 +646,8 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     configure_database_auth(
         &tree,
         &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
-    ).await?;
+    )
+    .await?;
     let tips = tree.get_tips().await?;
 
     // Build a chain exactly 10 levels deep
@@ -610,7 +672,9 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
-    let result = validator.resolve_sig_key(&auth_id, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&auth_id, &auth_settings, Some(&db))
+        .await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("Maximum delegation depth") || msg.contains("not found"));
@@ -630,7 +694,9 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
     let delegated_admin_key = user.add_private_key(Some("delegated_admin")).await?;
     let delegated_user_key = user.add_private_key(Some("delegated_user")).await?;
 
-    let delegated_tree = user.create_database(Doc::new(), &delegated_admin_key).await?;
+    let delegated_tree = user
+        .create_database(Doc::new(), &delegated_admin_key)
+        .await?;
     configure_database_auth(
         &delegated_tree,
         &[
@@ -647,7 +713,8 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
                 KeyStatus::Active,
             ),
         ],
-    ).await?;
+    )
+    .await?;
 
     // Fake tip that does not exist
     let bogus_tip = ID::new("nonexistent_tip_hash");
@@ -662,7 +729,8 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
             Permission::Admin(0),
             KeyStatus::Active,
         )],
-    ).await?;
+    )
+    .await?;
 
     // Add delegation with bogus tips using SettingsStore API
     let op = main_tree.new_transaction().await?;
@@ -679,10 +747,12 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
                 tips: vec![bogus_tip.clone()],
             },
         };
-        settings.update_auth_settings(|auth| {
-            auth.add_delegated_tree("delegate_with_bad_tip", delegation_ref)?;
-            Ok(())
-        }).await?;
+        settings
+            .update_auth_settings(|auth| {
+                auth.add_delegated_tree("delegate_with_bad_tip", delegation_ref)?;
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
 
@@ -700,7 +770,9 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&auth_id, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
+        .await;
     assert!(result.is_err());
 
     Ok(())

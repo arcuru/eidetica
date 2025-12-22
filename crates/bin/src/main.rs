@@ -94,7 +94,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Sync enabled on instance");
 
     // Ensure default user exists (for single-user server mode)
-    let user_exists = instance.list_users().await?.iter().any(|u| u == DEFAULT_USER);
+    let user_exists = instance
+        .list_users()
+        .await?
+        .iter()
+        .any(|u| u == DEFAULT_USER);
 
     if !user_exists {
         tracing::info!("Creating default user '{DEFAULT_USER}'");
@@ -108,7 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_keys = default_user.list_keys()?;
     let device_key_id = if user_keys.is_empty() {
         tracing::info!("Creating initial device key for default user");
-        default_user.add_private_key(Some("Server Device Key")).await?
+        default_user
+            .add_private_key(Some("Server Device Key"))
+            .await?
     } else {
         user_keys[0].clone()
     };
@@ -321,9 +327,7 @@ async fn handle_login_submit(
             cookies.add(cookie);
             Redirect::to("/dashboard").into_response()
         }
-        Err(error_msg) => {
-            Html(templates::login_page(Some(&error_msg))).into_response()
-        }
+        Err(error_msg) => Html(templates::login_page(Some(&error_msg))).into_response(),
     }
 }
 
@@ -431,9 +435,7 @@ async fn handle_register_submit(
             // User created but login failed - redirect to login page
             Redirect::to("/login").into_response()
         }
-        Err(error_msg) => {
-            Html(templates::register_page(Some(&error_msg))).into_response()
-        }
+        Err(error_msg) => Html(templates::register_page(Some(&error_msg))).into_response(),
     }
 }
 
@@ -659,8 +661,14 @@ async fn handle_track_database(
             // Request database access via bootstrap
             let bootstrap_result = {
                 let user = user_lock.read().await;
-                user.request_database_access(&sync, &peer_address, &database_id, &key_id, permission)
-                    .await
+                user.request_database_access(
+                    &sync,
+                    &peer_address,
+                    &database_id,
+                    &key_id,
+                    permission,
+                )
+                .await
             };
 
             match bootstrap_result {

@@ -1,11 +1,23 @@
-use std::{fs, io::Write, path::PathBuf};
+use std::{fs, io::Write, path::PathBuf, sync::Arc};
 
 use tempfile::TempDir;
 
 use eidetica::{
-    Entry,
+    Entry, Result,
     backend::{BackendImpl, database::InMemory},
 };
+
+async fn save_backend(backend: Arc<InMemory>, path: PathBuf) -> Result<()> {
+    tokio::task::spawn_blocking(move || backend.save_to_file(&path))
+        .await
+        .expect("Failed to join blocking task")
+}
+
+async fn load_backend(path: PathBuf) -> Result<InMemory> {
+    tokio::task::spawn_blocking(move || InMemory::load_from_file(&path))
+        .await
+        .expect("Failed to join blocking task")
+}
 
 #[tokio::test]
 async fn test_in_memory_backend_save_and_load() {
@@ -15,14 +27,14 @@ async fn test_in_memory_backend_save_and_load() {
 
     // Setup: Create a backend with some data
     {
-        let backend = InMemory::new();
+        let backend = Arc::new(InMemory::new());
         let entry = Entry::root_builder()
             .build()
             .expect("Root entry should build successfully");
         backend.put_verified(entry).await.unwrap();
 
         // Save to file
-        let save_result = backend.save_to_file(&file_path);
+        let save_result = save_backend(backend.clone(), file_path.clone()).await;
         assert!(save_result.is_ok());
     }
 
@@ -30,7 +42,7 @@ async fn test_in_memory_backend_save_and_load() {
     assert!(file_path.exists());
 
     // Load from file
-    let load_result = InMemory::load_from_file(&file_path);
+    let load_result = load_backend(file_path.clone()).await;
     assert!(load_result.is_ok());
     let loaded_backend = load_result.unwrap();
 
@@ -50,7 +62,7 @@ async fn test_load_non_existent_file() {
     let _ = fs::remove_file(&path); // Ignore error if it doesn't exist
 
     // Load
-    let backend = InMemory::load_from_file(&path);
+    let backend = load_backend(path.clone()).await;
 
     // Verify it's empty
     assert_eq!(backend.unwrap().all_roots().await.unwrap().len(), 0);
@@ -70,7 +82,7 @@ async fn test_load_invalid_file() {
     }
 
     // Attempt to load
-    let result = InMemory::load_from_file(&path);
+    let result = load_backend(path.clone()).await;
 
     // Verify it's an error
     assert!(result.is_err());
@@ -87,7 +99,7 @@ async fn test_save_load_with_various_entries() {
     let file_path = test_dir.join("test_various_entries.json");
 
     // Setup a tree with multiple entries
-    let backend = InMemory::new();
+    let backend = Arc::new(InMemory::new());
 
     // Top-level root
     let root_entry = Entry::root_builder()
@@ -132,10 +144,12 @@ async fn test_save_load_with_various_entries() {
     backend.put_verified(entry_with_subtree).await.unwrap();
 
     // Save to file
-    backend.save_to_file(&file_path).unwrap();
+    save_backend(backend.clone(), file_path.clone())
+        .await
+        .unwrap();
 
     // Load back into a new backend
-    let loaded_backend = InMemory::load_from_file(&file_path).unwrap();
+    let loaded_backend = load_backend(file_path.clone()).await.unwrap();
 
     // Verify loaded data
 
@@ -193,7 +207,7 @@ async fn test_load_wrong_version_fails() {
         .unwrap();
     }
 
-    let result = InMemory::load_from_file(&path);
+    let result = load_backend(path.to_path_buf()).await;
     assert!(
         result.is_err(),
         "Should fail to load file with wrong version"
@@ -215,7 +229,7 @@ async fn test_load_missing_version_defaults_to_v0() {
         .unwrap();
     }
 
-    let result = InMemory::load_from_file(&path);
+    let result = load_backend(path.to_path_buf()).await;
     assert!(
         result.is_ok(),
         "Should load file without version (defaults to v0): {:?}",

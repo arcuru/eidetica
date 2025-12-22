@@ -46,18 +46,15 @@ pub enum WriteSource {
 
 /// Type alias for async write callback return type.
 ///
-/// We use a boxed future for callbacks. Note: The future is NOT `Send` because
-/// internal operations use `Rc`/`RefCell`. Callbacks must run on the current thread.
-pub type AsyncWriteCallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+/// We use a boxed future for callbacks. The future is `Send` since internal
+/// operations use `Arc`/`Mutex` for thread-safety.
+pub type AsyncWriteCallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 
 /// Async callback function type for write operations.
 ///
 /// Receives the entry that was written, the database it was written to, and the instance.
 /// Returns a boxed future that resolves to a Result.
 /// Used for both local and remote write callbacks.
-///
-/// Note: Callbacks are NOT `Send` because internal operations use non-thread-safe types.
-/// They must be executed on the current thread.
 pub type AsyncWriteCallback = Arc<
     dyn for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> AsyncWriteCallbackFuture<'a>
         + Send
@@ -354,7 +351,9 @@ impl Instance {
         // 1. Generate and store instance device key (_device_key)
         let (device_key, device_pubkey) = generate_keypair();
         let device_pubkey_str = format_public_key(&device_pubkey);
-        backend.store_private_key(DEVICE_KEY_NAME, device_key.clone()).await?;
+        backend
+            .store_private_key(DEVICE_KEY_NAME, device_key.clone())
+            .await?;
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -376,7 +375,8 @@ impl Instance {
                 global_write_callbacks: Mutex::new(HashMap::new()),
             }),
         };
-        let users_db = create_users_database(&temp_instance, &device_key, &device_pubkey_str).await?;
+        let users_db =
+            create_users_database(&temp_instance, &device_key, &device_pubkey_str).await?;
         let databases_db =
             create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str).await?;
 
@@ -631,13 +631,16 @@ impl Instance {
 
         // Register global callback for automatic sync on local writes
         let sync_for_callback = Arc::clone(&sync_arc);
-        self.register_global_write_callback(WriteSource::Local, move |entry, database, instance| {
-            let sync = Arc::clone(&sync_for_callback);
-            let entry = entry.clone();
-            let database = database.clone();
-            let instance = instance.clone();
-            async move { sync.on_local_write(&entry, &database, &instance).await }
-        })?;
+        self.register_global_write_callback(
+            WriteSource::Local,
+            move |entry, database, instance| {
+                let sync = Arc::clone(&sync_for_callback);
+                let entry = entry.clone();
+                let database = database.clone();
+                let instance = instance.clone();
+                async move { sync.on_local_write(&entry, &database, &instance).await }
+            },
+        )?;
 
         let _ = self.inner.sync.set(sync_arc);
         Ok(())
@@ -684,12 +687,15 @@ impl Instance {
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let mut callbacks = self.inner.write_callbacks.lock().unwrap();
-        callbacks.entry((source, tree_id)).or_default().push(Arc::new(
-            move |entry: &Entry, database: &Database, instance: &Instance| {
-                let fut = callback(entry, database, instance);
-                Box::pin(fut) as AsyncWriteCallbackFuture<'_>
-            },
-        ));
+        callbacks
+            .entry((source, tree_id))
+            .or_default()
+            .push(Arc::new(
+                move |entry: &Entry, database: &Database, instance: &Instance| {
+                    let fut = callback(entry, database, instance);
+                    Box::pin(fut) as AsyncWriteCallbackFuture<'_>
+                },
+            ));
         Ok(())
     }
 
@@ -711,8 +717,11 @@ impl Instance {
         callback: F,
     ) -> Result<()>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut + Send + std::marker::Sync + 'static,
-        Fut: Future<Output = Result<()>> + 'static,
+        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+            + Send
+            + std::marker::Sync
+            + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let mut callbacks = self.inner.global_write_callbacks.lock().unwrap();
         callbacks.entry(source).or_default().push(Arc::new(
@@ -855,6 +864,29 @@ impl WeakInstance {
 mod tests {
     use super::*;
     use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};
+    use std::path::Path;
+
+    async fn save_in_memory_backend(instance: &Instance, path: &Path) -> Result<(), Error> {
+        let backend = instance.backend().as_arc_backend_impl().clone();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let in_memory = backend
+                .as_any()
+                .downcast_ref::<InMemory>()
+                .expect("Expected in-memory backend");
+            in_memory.save_to_file(&path)
+        })
+        .await
+        .expect("Failed to join blocking task")?;
+        Ok(())
+    }
+
+    async fn load_in_memory_backend(path: &Path) -> Result<InMemory, Error> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || InMemory::load_from_file(&path))
+            .await
+            .expect("Failed to join blocking task")
+    }
 
     #[tokio::test]
     async fn test_create_user() -> Result<(), Error> {
@@ -862,7 +894,10 @@ mod tests {
         let instance = Instance::open(Box::new(backend)).await?;
 
         // Create user with password
-        let user_uuid = instance.create_user("alice", Some("password123")).await.unwrap();
+        let user_uuid = instance
+            .create_user("alice", Some("password123"))
+            .await
+            .unwrap();
 
         assert!(!user_uuid.is_empty());
 
@@ -879,10 +914,16 @@ mod tests {
         let instance = Instance::open(Box::new(backend)).await?;
 
         // Create user
-        instance.create_user("alice", Some("password123")).await.unwrap();
+        instance
+            .create_user("alice", Some("password123"))
+            .await
+            .unwrap();
 
         // Login user
-        let user = instance.login_user("alice", Some("password123")).await.unwrap();
+        let user = instance
+            .login_user("alice", Some("password123"))
+            .await
+            .unwrap();
         assert_eq!(user.username(), "alice");
 
         // Invalid password should fail
@@ -894,27 +935,34 @@ mod tests {
     #[tokio::test]
     async fn test_new_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
 
         // Create database with deprecated API
         let mut settings = Doc::new();
         settings.set("name", "test_db");
 
-        let database = instance.new_database(settings, "_device_key").await.unwrap();
+        let database = instance
+            .new_database(settings, "_device_key")
+            .await
+            .unwrap();
         assert_eq!(database.get_name().await.unwrap(), "test_db");
     }
 
     #[tokio::test]
     async fn test_new_database_default() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
 
         // Create database with default settings
         let database = instance.new_database_default("_device_key").await.unwrap();
         let settings = database.get_settings().await.unwrap();
 
         // Should have auto-generated database_id
-        assert!(settings.get_string("database_id").is_ok());
+        assert!(settings.get_string("database_id").await.is_ok());
     }
 
     #[tokio::test]
@@ -935,12 +983,17 @@ mod tests {
     #[tokio::test]
     async fn test_load_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
 
         // Create a database
         let mut settings = Doc::new();
         settings.set("name", "test_db");
-        let database = instance.new_database(settings, "_device_key").await.unwrap();
+        let database = instance
+            .new_database(settings, "_device_key")
+            .await
+            .unwrap();
         let root_id = database.root_id().clone();
 
         // Load the database
@@ -951,16 +1004,24 @@ mod tests {
     #[tokio::test]
     async fn test_all_databases() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
 
         // Create multiple databases
         let mut settings1 = Doc::new();
         settings1.set("name", "db1");
-        instance.new_database(settings1, "_device_key").await.unwrap();
+        instance
+            .new_database(settings1, "_device_key")
+            .await
+            .unwrap();
 
         let mut settings2 = Doc::new();
         settings2.set("name", "db2");
-        instance.new_database(settings2, "_device_key").await.unwrap();
+        instance
+            .new_database(settings2, "_device_key")
+            .await
+            .unwrap();
 
         // Get all databases (should include system databases + user databases)
         let databases = instance.all_databases().await.unwrap();
@@ -970,12 +1031,17 @@ mod tests {
     #[tokio::test]
     async fn test_find_database() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let instance = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
 
         // Create database with name
         let mut settings = Doc::new();
         settings.set("name", "my_special_db");
-        instance.new_database(settings, "_device_key").await.unwrap();
+        instance
+            .new_database(settings, "_device_key")
+            .await
+            .unwrap();
 
         // Find by name
         let found = instance.find_database("my_special_db").await.unwrap();
@@ -1025,17 +1091,14 @@ mod tests {
         user1.create_database(settings, &default_key).await?;
 
         // Save the backend to file
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
 
         // Drop the first instance
         drop(instance1);
         drop(user1);
 
         // Load a new backend from the saved file
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
 
         // Verify the user still exists
@@ -1067,14 +1130,11 @@ mod tests {
         let device_id1 = instance1.device_id_string().await?;
 
         // Save backend
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Load backend and verify device_id is the same
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
         let device_id2 = instance2.device_id_string().await?;
 
@@ -1100,28 +1160,33 @@ mod tests {
         // Create instance with password-protected user
         let backend1 = InMemory::new();
         let instance1 = Instance::open(Box::new(backend1)).await?;
-        instance1.create_user("secure_alice", Some("secret123")).await?;
-        let user1 = instance1.login_user("secure_alice", Some("secret123")).await?;
+        instance1
+            .create_user("secure_alice", Some("secret123"))
+            .await?;
+        let user1 = instance1
+            .login_user("secure_alice", Some("secret123"))
+            .await?;
         assert_eq!(user1.username(), "secure_alice");
         drop(user1);
 
         // Save backend
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Reload and verify password still works
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
 
         // Correct password should work
-        let user2 = instance2.login_user("secure_alice", Some("secret123")).await?;
+        let user2 = instance2
+            .login_user("secure_alice", Some("secret123"))
+            .await?;
         assert_eq!(user2.username(), "secure_alice");
 
         // Wrong password should fail
-        let result = instance2.login_user("secure_alice", Some("wrong_password")).await;
+        let result = instance2
+            .login_user("secure_alice", Some("wrong_password"))
+            .await;
         assert!(result.is_err(), "Login with wrong password should fail");
 
         // No password should fail
@@ -1161,14 +1226,11 @@ mod tests {
         instance1.login_user("diana", Some("dianapass")).await?;
 
         // Save backend
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Reload and verify all users still exist and can login
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
 
         let users = instance2.list_users().await?;
@@ -1225,14 +1287,11 @@ mod tests {
         drop(user1);
 
         // Save backend
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Reload and verify databases still exist
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
         let _user2 = instance2.login_user("eve", None).await?;
 
@@ -1240,12 +1299,12 @@ mod tests {
         let loaded_db1 = instance2.load_database(&db1_root).await?;
         assert_eq!(loaded_db1.get_name().await?, "database_one");
         let settings1_doc = loaded_db1.get_settings().await?;
-        assert_eq!(settings1_doc.get_string("purpose")?, "testing");
+        assert_eq!(settings1_doc.get_string("purpose").await?, "testing");
 
         let loaded_db2 = instance2.load_database(&db2_root).await?;
         assert_eq!(loaded_db2.get_name().await?, "database_two");
         let settings2_doc = loaded_db2.get_settings().await?;
-        assert_eq!(settings2_doc.get_string("purpose")?, "production");
+        assert_eq!(settings2_doc.get_string("purpose").await?, "production");
 
         // Clean up
         if path.exists() {
@@ -1267,15 +1326,12 @@ mod tests {
         instance1.create_user("frank", None).await?;
         let device_id1 = instance1.device_id_string().await?;
 
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Load the same backend multiple times and verify consistency
         for i in 0..3 {
-            let backend = InMemory::load_from_file(&path)?;
+            let backend = load_in_memory_backend(&path).await?;
             let instance = Instance::open(Box::new(backend)).await?;
 
             // Device ID should be the same every time
@@ -1318,14 +1374,11 @@ mod tests {
         let device_id1 = instance1.device_id_string().await?;
         instance1.create_user("grace", None).await?;
 
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Load existing backend
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
         let device_id2 = instance2.device_id_string().await?;
 
@@ -1370,14 +1423,11 @@ mod tests {
         instance1.create_user("alice", None).await?;
 
         // Save backend
-        let backend_guard = instance1.backend();
-        if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-            in_memory.save_to_file(&path)?;
-        }
+        save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
 
         // Try to create() on the existing backend - should fail
-        let backend2 = InMemory::load_from_file(&path)?;
+        let backend2 = load_in_memory_backend(&path).await?;
         let result = Instance::create(Box::new(backend2)).await;
         assert!(result.is_err(), "create() should fail on existing backend");
 
@@ -1394,7 +1444,7 @@ mod tests {
         }
 
         // Verify open() still works
-        let backend3 = InMemory::load_from_file(&path)?;
+        let backend3 = load_in_memory_backend(&path).await?;
         let instance3 = Instance::open(Box::new(backend3)).await?;
         let users = instance3.list_users().await?;
         assert_eq!(users.len(), 1);

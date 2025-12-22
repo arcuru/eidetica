@@ -146,7 +146,9 @@ pub struct SyncHandle {
 impl SyncHandle {
     /// Get the current sync status.
     pub async fn status(&self) -> Result<SyncStatus> {
-        self.sync.get_sync_status(&self.tree_id, &self.peer_pubkey).await
+        self.sync
+            .get_sync_status(&self.tree_id, &self.peer_pubkey)
+            .await
     }
 
     /// Add another address hint for this peer.
@@ -331,7 +333,11 @@ impl Sync {
     /// # Arguments
     /// * `key` - The setting key
     /// * `value` - The setting value
-    pub async fn set_setting(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
+    pub async fn set_setting(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<()> {
         let op = self.sync_tree.new_transaction().await?;
         let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE).await?;
         sync_settings.set(key, Value::Text(value.into())).await?;
@@ -429,7 +435,11 @@ impl Sync {
     /// config.get_or_create_secret_key(); // Generate key
     /// sync.save_transport_config("iroh", &config)?;
     /// ```
-    pub async fn save_transport_config<T: TransportConfig>(&self, name: &str, config: &T) -> Result<()> {
+    pub async fn save_transport_config<T: TransportConfig>(
+        &self,
+        name: &str,
+        config: &T,
+    ) -> Result<()> {
         let json = serde_json::to_string(config).map_err(|e| {
             SyncError::SerializationError(format!(
                 "Failed to serialize transport config '{name}': {e}"
@@ -485,12 +495,15 @@ impl Sync {
     /// The device's private signing key if available.
     pub(crate) async fn get_device_signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
         let backend = self.backend()?;
-        backend.get_private_key(DEVICE_KEY_NAME).await?.ok_or_else(|| {
-            SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            }
-            .into()
-        })
+        backend
+            .get_private_key(DEVICE_KEY_NAME)
+            .await?
+            .ok_or_else(|| {
+                SyncError::DeviceKeyNotFound {
+                    key_name: DEVICE_KEY_NAME.to_string(),
+                }
+                .into()
+            })
     }
 
     // === Peer Management Methods ===
@@ -512,7 +525,9 @@ impl Sync {
 
         // Store in sync tree via PeerManager
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).register_peer(&pubkey_str, display_name).await?;
+        PeerManager::new(&op)
+            .register_peer(&pubkey_str, display_name)
+            .await?;
         op.commit().await?;
 
         // Background sync will read peer info directly from sync tree when needed
@@ -527,9 +542,15 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn update_peer_status(&self, pubkey: impl AsRef<str>, status: PeerStatus) -> Result<()> {
+    pub async fn update_peer_status(
+        &self,
+        pubkey: impl AsRef<str>,
+        status: PeerStatus,
+    ) -> Result<()> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).update_peer_status(pubkey.as_ref(), status).await?;
+        PeerManager::new(&op)
+            .update_peer_status(pubkey.as_ref(), status)
+            .await?;
         op.commit().await?;
         Ok(())
     }
@@ -619,16 +640,22 @@ impl Sync {
 
         // Register peer if it doesn't exist
         if peer_mgr.get_peer_info(&info.peer_pubkey).await?.is_none() {
-            peer_mgr.register_peer(&info.peer_pubkey, info.display_name.as_deref()).await?;
+            peer_mgr
+                .register_peer(&info.peer_pubkey, info.display_name.as_deref())
+                .await?;
         }
 
         // Add all address hints
         for addr in &info.addresses {
-            peer_mgr.add_address(&info.peer_pubkey, addr.clone()).await?;
+            peer_mgr
+                .add_address(&info.peer_pubkey, addr.clone())
+                .await?;
         }
 
         // Register the tree/peer relationship
-        peer_mgr.add_tree_sync(&info.peer_pubkey, &info.tree_id).await?;
+        peer_mgr
+            .add_tree_sync(&info.peer_pubkey, &info.tree_id)
+            .await?;
 
         // TODO: Store auth params if provided for bootstrap
         // For now, auth is passed during the actual sync handshake via on_local_write callback
@@ -687,7 +714,9 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).add_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref()).await?;
+        PeerManager::new(&op)
+            .add_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .await?;
         op.commit().await?;
         Ok(())
     }
@@ -706,7 +735,9 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).remove_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref()).await?;
+        PeerManager::new(&op)
+            .remove_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .await?;
         op.commit().await?;
         Ok(())
     }
@@ -720,7 +751,9 @@ impl Sync {
     /// A vector of tree root IDs synced with this peer.
     pub async fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).get_peer_trees(peer_pubkey.as_ref()).await
+        PeerManager::new(&op)
+            .get_peer_trees(peer_pubkey.as_ref())
+            .await
         // No commit - just reading
     }
 
@@ -733,7 +766,9 @@ impl Sync {
     /// A vector of peer public keys that sync this tree.
     pub async fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).get_tree_peers(tree_root_id.as_ref()).await
+        PeerManager::new(&op)
+            .get_tree_peers(tree_root_id.as_ref())
+            .await
         // No commit - just reading
     }
 
@@ -791,7 +826,9 @@ impl Sync {
         peer_info.touch();
 
         // Save updated peer info
-        peer_manager.update_peer_info(pubkey.as_ref(), peer_info).await?;
+        peer_manager
+            .update_peer_info(pubkey.as_ref(), peer_info)
+            .await?;
         op.commit().await?;
         Ok(())
     }
@@ -810,7 +847,9 @@ impl Sync {
         tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).is_tree_synced_with_peer(peer_pubkey.as_ref(), tree_root_id.as_ref()).await
+        PeerManager::new(&op)
+            .is_tree_synced_with_peer(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .await
         // No commit - just reading
     }
 
@@ -824,10 +863,16 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn add_peer_address(&self, peer_pubkey: impl AsRef<str>, address: Address) -> Result<()> {
+    pub async fn add_peer_address(
+        &self,
+        peer_pubkey: impl AsRef<str>,
+        address: Address,
+    ) -> Result<()> {
         // Update sync tree via PeerManager
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).add_address(peer_pubkey.as_ref(), address).await?;
+        PeerManager::new(&op)
+            .add_address(peer_pubkey.as_ref(), address)
+            .await?;
         op.commit().await?;
 
         // Background sync will read updated peer info directly from sync tree when needed
@@ -848,7 +893,9 @@ impl Sync {
         address: &Address,
     ) -> Result<bool> {
         let op = self.sync_tree.new_transaction().await?;
-        let result = PeerManager::new(&op).remove_address(peer_pubkey.as_ref(), address).await?;
+        let result = PeerManager::new(&op)
+            .remove_address(peer_pubkey.as_ref(), address)
+            .await?;
         op.commit().await?;
         Ok(result)
     }
@@ -867,7 +914,9 @@ impl Sync {
         transport_type: Option<&str>,
     ) -> Result<Vec<Address>> {
         let op = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&op).get_addresses(peer_pubkey.as_ref(), transport_type).await
+        PeerManager::new(&op)
+            .get_addresses(peer_pubkey.as_ref(), transport_type)
+            .await
         // No commit - just reading
     }
 
@@ -996,9 +1045,7 @@ impl Sync {
             let mut settings_list = Vec::new();
             for uuid in &users {
                 // Read preferences from each user's database
-                if let Some((user_prefs_db_id, _)) =
-                    user_mgr.get_tracked_user_state(uuid).await?
-                {
+                if let Some((user_prefs_db_id, _)) = user_mgr.get_tracked_user_state(uuid).await? {
                     let user_db = crate::Database::open_readonly(user_prefs_db_id, &instance)?;
                     let user_table = user_db
                         .get_store_viewer::<Table<TrackedDatabase>>("databases")
@@ -1023,7 +1070,9 @@ impl Sync {
         }
 
         // Update stored tips to reflect processed state
-        user_mgr.update_tracked_tips(user_uuid_str, &current_tips).await?;
+        user_mgr
+            .update_tracked_tips(user_uuid_str, &current_tips)
+            .await?;
 
         // Commit all changes atomically
         tx.commit().await?;
@@ -1052,7 +1101,9 @@ impl Sync {
 
         // Remove user from each database
         for db_id in &databases {
-            user_mgr.unlink_user_from_database(db_id, user_uuid_str).await?;
+            user_mgr
+                .unlink_user_from_database(db_id, user_uuid_str)
+                .await?;
 
             // Recompute combined settings for this database
             let remaining_users = user_mgr.get_linked_users(db_id).await?;
@@ -1142,8 +1193,9 @@ impl Sync {
     /// the existing key is loaded from storage.
     pub async fn enable_iroh_transport(&self) -> Result<()> {
         // Load existing config or create default
-        let mut config: IrohTransportConfig =
-            self.load_transport_config(IrohTransport::TRANSPORT_TYPE).await?;
+        let mut config: IrohTransportConfig = self
+            .load_transport_config(IrohTransport::TRANSPORT_TYPE)
+            .await?;
 
         // Track if config will change (no key yet means one will be generated)
         let config_changed = !config.has_secret_key();
@@ -1153,7 +1205,8 @@ impl Sync {
 
         // Only save config if it changed (new key was generated)
         if config_changed {
-            self.save_transport_config(IrohTransport::TRANSPORT_TYPE, &config).await?;
+            self.save_transport_config(IrohTransport::TRANSPORT_TYPE, &config)
+                .await?;
         }
 
         // Build transport with the persistent secret key
@@ -1301,7 +1354,8 @@ impl Sync {
     ) -> Result<()> {
         // Get peer information and address
         let peer_info = self
-            .get_peer_info(peer_pubkey).await?
+            .get_peer_info(peer_pubkey)
+            .await?
             .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
 
         let address = peer_info
@@ -1432,7 +1486,8 @@ impl Sync {
                 backend.as_backend_impl(),
                 &missing_tip_ids,
                 their_tips,
-            ).await?;
+            )
+            .await?;
 
             if !entries_for_server.is_empty() {
                 // Send these entries back to server
@@ -1741,11 +1796,14 @@ impl Sync {
             // New sync tree - register all users from _users database
             let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
             let users_db = instance.users_db().await?;
-            let users_table = users_db.get_store_viewer::<Table<UserInfo>>("users").await?;
+            let users_table = users_db
+                .get_store_viewer::<Table<UserInfo>>("users")
+                .await?;
             let all_users = users_table.search(|_| true).await?;
 
             for (user_uuid, user_info) in all_users {
-                self.sync_user(&user_uuid, &user_info.user_database_id).await?;
+                self.sync_user(&user_uuid, &user_info.user_database_id)
+                    .await?;
             }
         } else {
             // Existing sync tree - update settings for tracked users if changed
@@ -1753,7 +1811,8 @@ impl Sync {
             let user_mgr = UserSyncManager::new(&tx);
 
             for user_uuid in all_tracked.keys() {
-                if let Some((prefs_db_id, _tips)) = user_mgr.get_tracked_user_state(user_uuid).await?
+                if let Some((prefs_db_id, _tips)) =
+                    user_mgr.get_tracked_user_state(user_uuid).await?
                 {
                     self.sync_user(user_uuid, &prefs_db_id).await?;
                 }
@@ -1901,7 +1960,8 @@ impl Sync {
     ) -> Result<()> {
         // Get peer information and address
         let peer_info = self
-            .get_peer_info(peer_pubkey).await?
+            .get_peer_info(peer_pubkey)
+            .await?
             .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
 
         let address = peer_info
@@ -2301,9 +2361,7 @@ impl Sync {
             .get_private_key(approving_key_name)
             .await?
             .ok_or_else(|| {
-                SyncError::BackendError(format!(
-                    "Approving key not found: {approving_key_name}"
-                ))
+                SyncError::BackendError(format!("Approving key not found: {approving_key_name}"))
             })?;
 
         let database = Database::open(
@@ -2325,7 +2383,9 @@ impl Sync {
 
         // Add the new key to auth settings using SettingsStore API
         // This provides proper upsert behavior and validation
-        settings_store.set_auth_key(&request.requesting_key_name, auth_key).await?;
+        settings_store
+            .set_auth_key(&request.requesting_key_name, auth_key)
+            .await?;
 
         tx.commit().await?;
 
@@ -2429,7 +2489,9 @@ impl Sync {
 
         // Add the new key to auth settings using SettingsStore API
         // This provides proper upsert behavior and validation
-        settings_store.set_auth_key(&request.requesting_key_name, auth_key).await?;
+        settings_store
+            .set_auth_key(&request.requesting_key_name, auth_key)
+            .await?;
 
         // Commit will validate that the user's key has Admin permission
         // If this fails, it means the user lacks the necessary permission

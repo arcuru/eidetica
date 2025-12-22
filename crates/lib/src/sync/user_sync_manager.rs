@@ -166,7 +166,10 @@ impl<'a> UserSyncManager<'a> {
         database_id: &crate::entry::ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let db_id_str = database_id.to_string();
 
         // Get existing users list for this database
@@ -193,9 +196,7 @@ impl<'a> UserSyncManager<'a> {
 
             // Store updated users list
             let users_json = serde_json::to_string(&users).unwrap();
-            database_users
-                .set_path(&users_path, users_json)
-                .await?;
+            database_users.set_path(&users_path, users_json).await?;
 
             debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Linked user to database for sync tracking");
         }
@@ -216,7 +217,10 @@ impl<'a> UserSyncManager<'a> {
         database_id: &crate::entry::ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let db_id_str = database_id.to_string();
 
         // Get existing users list
@@ -241,9 +245,7 @@ impl<'a> UserSyncManager<'a> {
                 } else {
                     // Update users list
                     let updated_json = serde_json::to_string(&users).unwrap();
-                    database_users
-                        .set_path(&users_path, updated_json)
-                        .await?;
+                    database_users.set_path(&users_path, updated_json).await?;
                 }
 
                 debug!(database_id = %database_id, user_uuid = %user_uuid.as_ref(), "Unlinked user from database sync tracking");
@@ -267,7 +269,10 @@ impl<'a> UserSyncManager<'a> {
         &self,
         database_id: &crate::entry::ID,
     ) -> Result<Vec<String>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let db_id_str = database_id.to_string();
 
         let users_path = path!(&db_id_str, "users");
@@ -298,7 +303,10 @@ impl<'a> UserSyncManager<'a> {
         &self,
         user_uuid: impl AsRef<str>,
     ) -> Result<Vec<crate::entry::ID>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let all_databases = database_users.get_all().await?;
         let mut result = Vec::new();
 
@@ -341,7 +349,10 @@ impl<'a> UserSyncManager<'a> {
         database_id: &crate::entry::ID,
         settings: &crate::user::types::SyncSettings,
     ) -> Result<()> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let db_id_str = database_id.to_string();
 
         let settings_json = serde_json::to_string(settings)
@@ -369,7 +380,10 @@ impl<'a> UserSyncManager<'a> {
         &self,
         database_id: &crate::entry::ID,
     ) -> Result<Option<crate::user::types::SyncSettings>> {
-        let database_users = self.op.get_store::<DocStore>(DATABASE_USERS_SUBTREE).await?;
+        let database_users = self
+            .op
+            .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
+            .await?;
         let db_id_str = database_id.to_string();
 
         let settings_path = path!(&db_id_str, "combined_settings");

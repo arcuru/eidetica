@@ -52,7 +52,8 @@ async fn test_multiple_settings_updates() {
             ("version", "1.0"),
             ("author", "TestSuite"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify first update
     assert_tree_settings(
@@ -62,7 +63,8 @@ async fn test_multiple_settings_updates() {
             ("version", "1.0"),
             ("author", "TestSuite"),
         ],
-    ).await;
+    )
+    .await;
 
     // Second update: add more metadata
     set_tree_settings(
@@ -72,7 +74,8 @@ async fn test_multiple_settings_updates() {
             ("category", "testing"),
             ("environment", "development"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify all settings are present
     assert_tree_settings(
@@ -85,7 +88,8 @@ async fn test_multiple_settings_updates() {
             ("category", "testing"),
             ("environment", "development"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -105,7 +109,8 @@ async fn test_settings_overwrite() {
             ("version", "2.0"),
             ("updated", "true"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify settings were overwritten and new ones added
     assert_tree_settings(
@@ -115,7 +120,8 @@ async fn test_settings_overwrite() {
             ("version", "2.0"),
             ("updated", "true"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify tree name reflects the change
     assert_tree_name(&tree, "UpdatedTree").await;
@@ -139,7 +145,8 @@ async fn test_metadata_helper_functions() {
         "MetadataTestTree",
         "3.1.4",
         "Comprehensive metadata test",
-    ).await;
+    )
+    .await;
 
     // Verify all metadata was set
     assert_tree_settings(
@@ -149,7 +156,8 @@ async fn test_metadata_helper_functions() {
             ("version", "3.1.4"),
             ("description", "Comprehensive metadata test"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_name(&tree, "MetadataTestTree").await;
 }
@@ -181,7 +189,8 @@ async fn test_settings_with_complex_values() {
             ("multiline", "Line 1\nLine 2\nLine 3"),
             ("unicode", "测试 Unicode 🚀"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify all complex settings were stored correctly
     assert_tree_settings(
@@ -198,7 +207,8 @@ async fn test_settings_with_complex_values() {
             ("multiline", "Line 1\nLine 2\nLine 3"),
             ("unicode", "测试 Unicode 🚀"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -219,7 +229,8 @@ async fn test_settings_persistence_across_operations() {
     set_tree_settings(
         &tree,
         &[("last_modified", "2023-01-01"), ("status", "active")],
-    ).await;
+    )
+    .await;
 
     // Verify all settings coexist
     assert_tree_settings(
@@ -230,7 +241,8 @@ async fn test_settings_persistence_across_operations() {
             ("last_modified", "2023-01-01"),
             ("status", "active"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -256,7 +268,8 @@ async fn test_settings_in_multiple_trees() {
             ("purpose", "development"),
             ("team", "frontend"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_settings(
         &tree2,
@@ -266,7 +279,8 @@ async fn test_settings_in_multiple_trees() {
             ("purpose", "staging"),
             ("team", "backend"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_settings(
         &tree3,
@@ -276,7 +290,8 @@ async fn test_settings_in_multiple_trees() {
             ("purpose", "production"),
             ("team", "devops"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -302,7 +317,8 @@ async fn test_empty_and_edge_case_settings() {
             ("boolean_string", "true"),
             ("null_string", "null"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify edge case settings
     assert_tree_settings(
@@ -315,5 +331,6 @@ async fn test_empty_and_edge_case_settings() {
             ("boolean_string", "true"),
             ("null_string", "null"),
         ],
-    ).await;
+    )
+    .await;
 }

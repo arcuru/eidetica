@@ -407,7 +407,7 @@ impl Registered for PasswordStore {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Store for PasswordStore {
     async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state

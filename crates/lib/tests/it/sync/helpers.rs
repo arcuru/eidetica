@@ -136,7 +136,7 @@ pub async fn assert_multiple_settings(sync: &Sync, expected: &[(&str, &str)]) {
 ///     test_sync_with_any_transport(HttpTransportFactory).await.unwrap();
 /// }
 /// ```
-#[async_trait(?Send)]
+#[async_trait]
 pub trait TransportFactory: Send + std::marker::Sync {
     /// Create a sync instance with this transport enabled
     async fn create_sync(&self, instance: Instance) -> Result<Sync>;
@@ -160,7 +160,7 @@ pub trait TransportFactory: Send + std::marker::Sync {
 /// Factory for HTTP transport instances
 pub struct HttpTransportFactory;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl TransportFactory for HttpTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance).await?;
@@ -180,7 +180,7 @@ impl TransportFactory for HttpTransportFactory {
 /// Factory for Iroh transport instances (relay disabled for fast local testing)
 pub struct IrohTransportFactory;
 
-#[async_trait(?Send)]
+#[async_trait]
 impl TransportFactory for IrohTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance).await?;

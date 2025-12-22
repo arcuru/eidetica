@@ -582,7 +582,9 @@ impl Database {
         let instance = self.instance()?;
         let id = entry.id();
 
-        instance.put(crate::backend::VerificationStatus::Verified, entry).await?;
+        instance
+            .put(crate::backend::VerificationStatus::Verified, entry)
+            .await?;
 
         Ok(id)
     }
@@ -917,7 +919,8 @@ mod tests {
         settings.set("auth", auth_settings.as_doc().clone());
 
         // Create database
-        let db = Database::create(settings, &instance, signing_key, "key_admin".to_string()).await?;
+        let db =
+            Database::create(settings, &instance, signing_key, "key_admin".to_string()).await?;
 
         // Call find_sigkeys
         let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str).await?;

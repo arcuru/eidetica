@@ -3,42 +3,64 @@ use eidetica::{
     Instance, backend::database::InMemory, instance::LegacyInstanceOps, store::DocStore,
 };
 use std::hint::black_box;
+use tokio::runtime::Runtime;
 
 /// Creates a fresh empty tree with in-memory backend for benchmarking
-fn setup_tree() -> eidetica::Database {
+async fn setup_tree_async() -> eidetica::Database {
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).expect("Benchmark setup failed");
+    let db = Instance::open(backend)
+        .await
+        .expect("Benchmark setup failed");
     db.add_private_key("BENCH_KEY")
+        .await
         .expect("Failed to add benchmark key");
     db.new_database_default("BENCH_KEY")
+        .await
         .expect("Failed to create tree")
+}
+
+fn setup_tree(rt: &Runtime) -> eidetica::Database {
+    rt.block_on(setup_tree_async())
 }
 
 /// Creates a tree pre-populated with the specified number of key-value entries
 /// Each entry has format "key_N" -> "value_N" where N is the entry index
-fn setup_tree_with_entries(entry_count: usize) -> eidetica::Database {
-    let tree = setup_tree();
+async fn setup_tree_with_entries_async(entry_count: usize) -> eidetica::Database {
+    let tree = setup_tree_async().await;
 
     for i in 0..entry_count {
-        let op = tree.new_transaction().expect("Failed to start operation");
+        let op = tree
+            .new_transaction()
+            .await
+            .expect("Failed to start operation");
         let doc_store = op
             .get_store::<DocStore>("data")
+            .await
             .expect("Failed to get DocStore");
 
         doc_store
             .set(format!("key_{i}"), format!("value_{i}"))
+            .await
             .expect("Failed to set value");
 
-        op.commit().expect("Failed to commit operation");
+        op.commit().await.expect("Failed to commit operation");
     }
 
     tree
+}
+
+fn setup_tree_with_entries(rt: &Runtime, entry_count: usize) -> eidetica::Database {
+    rt.block_on(setup_tree_with_entries_async(entry_count))
 }
 
 /// Benchmarks adding a single entry to trees of varying sizes
 /// Measures how insertion performance scales with existing tree size
 /// Creates fresh trees for each measurement to avoid accumulated state effects
 fn bench_add_entries(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("add_entries");
 
     for tree_size in [0, 10, 100].iter() {
@@ -47,21 +69,28 @@ fn bench_add_entries(c: &mut Criterion) {
             tree_size,
             |b, &tree_size| {
                 b.iter_with_setup(
-                    || setup_tree_with_entries(tree_size),
+                    || setup_tree_with_entries(&rt, tree_size),
                     |tree| {
-                        let op = tree.new_transaction().expect("Failed to start operation");
-                        let doc_store = op
-                            .get_store::<DocStore>("data")
-                            .expect("Failed to get DocStore");
+                        rt.block_on(async {
+                            let op = tree
+                                .new_transaction()
+                                .await
+                                .expect("Failed to start operation");
+                            let doc_store = op
+                                .get_store::<DocStore>("data")
+                                .await
+                                .expect("Failed to get DocStore");
 
-                        doc_store
-                            .set(
-                                black_box(&format!("new_key_{tree_size}")),
-                                black_box(format!("new_value_{tree_size}").as_str()),
-                            )
-                            .expect("Failed to set value");
+                            doc_store
+                                .set(
+                                    black_box(&format!("new_key_{tree_size}")),
+                                    black_box(format!("new_value_{tree_size}").as_str()),
+                                )
+                                .await
+                                .expect("Failed to set value");
 
-                        op.commit().expect("Failed to commit operation");
+                            op.commit().await.expect("Failed to commit operation");
+                        });
                     },
                 );
             },
@@ -75,6 +104,10 @@ fn bench_add_entries(c: &mut Criterion) {
 /// Tests atomic operation overhead vs per-KV-pair costs
 /// Throughput metrics allow comparing efficiency per key-value pair
 fn bench_batch_add_entries(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("batch_add_entries");
 
     for batch_size in [1, 10, 50, 100].iter() {
@@ -83,23 +116,33 @@ fn bench_batch_add_entries(c: &mut Criterion) {
             BenchmarkId::new("batch", batch_size),
             batch_size,
             |b, &batch_size| {
-                b.iter_with_setup(setup_tree, |tree| {
-                    let op = tree.new_transaction().expect("Failed to start operation");
-                    let doc_store = op
-                        .get_store::<DocStore>("data")
-                        .expect("Failed to get DocStore");
+                b.iter_with_setup(
+                    || setup_tree(&rt),
+                    |tree| {
+                        rt.block_on(async {
+                            let op = tree
+                                .new_transaction()
+                                .await
+                                .expect("Failed to start operation");
+                            let doc_store = op
+                                .get_store::<DocStore>("data")
+                                .await
+                                .expect("Failed to get DocStore");
 
-                    for i in 0..batch_size {
-                        doc_store
-                            .set(
-                                black_box(&format!("batch_key_{i}")),
-                                black_box(format!("batch_value_{i}").as_str()),
-                            )
-                            .expect("Failed to set value");
-                    }
+                            for i in 0..batch_size {
+                                doc_store
+                                    .set(
+                                        black_box(&format!("batch_key_{i}")),
+                                        black_box(format!("batch_value_{i}").as_str()),
+                                    )
+                                    .await
+                                    .expect("Failed to set value");
+                            }
 
-                    op.commit().expect("Failed to commit operation");
-                });
+                            op.commit().await.expect("Failed to commit operation");
+                        });
+                    },
+                );
             },
         );
     }
@@ -112,6 +155,10 @@ fn bench_batch_add_entries(c: &mut Criterion) {
 /// Measures amortized insertion cost as the tree continuously grows
 /// Useful for understanding long-term performance characteristics
 fn bench_incremental_add_entries(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("incremental_add_entries");
 
     for initial_size in [0, 100].iter() {
@@ -119,24 +166,31 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
             BenchmarkId::new("incremental_single", initial_size),
             initial_size,
             |b, &initial_size| {
-                let tree = setup_tree_with_entries(initial_size);
+                let tree = setup_tree_with_entries(&rt, initial_size);
                 let mut counter = initial_size;
 
                 b.iter(|| {
-                    let op = tree.new_transaction().expect("Failed to start operation");
-                    let doc_store = op
-                        .get_store::<DocStore>("data")
-                        .expect("Failed to get DocStore");
+                    rt.block_on(async {
+                        let op = tree
+                            .new_transaction()
+                            .await
+                            .expect("Failed to start operation");
+                        let doc_store = op
+                            .get_store::<DocStore>("data")
+                            .await
+                            .expect("Failed to get DocStore");
 
-                    doc_store
-                        .set(
-                            black_box(&format!("inc_key_{counter}")),
-                            black_box(format!("inc_value_{counter}").as_str()),
-                        )
-                        .expect("Failed to set value");
+                        doc_store
+                            .set(
+                                black_box(&format!("inc_key_{counter}")),
+                                black_box(format!("inc_value_{counter}").as_str()),
+                            )
+                            .await
+                            .expect("Failed to set value");
 
-                    op.commit().expect("Failed to commit operation");
-                    counter += 1;
+                        op.commit().await.expect("Failed to commit operation");
+                        counter += 1;
+                    });
                 });
             },
         );
@@ -149,6 +203,10 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
 /// Tests lookup performance scaling with tree size
 /// Always accesses the middle entry to avoid edge cases
 fn bench_access_entries(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("access_entries");
 
     for tree_size in [10, 100].iter() {
@@ -156,18 +214,25 @@ fn bench_access_entries(c: &mut Criterion) {
             BenchmarkId::new("random_access", tree_size),
             tree_size,
             |b, &tree_size| {
-                let tree = setup_tree_with_entries(tree_size);
+                let tree = setup_tree_with_entries(&rt, tree_size);
                 let target_key = format!("key_{}", tree_size / 2);
 
                 b.iter(|| {
-                    let op = tree.new_transaction().expect("Failed to start operation");
-                    let doc_store = op
-                        .get_store::<DocStore>("data")
-                        .expect("Failed to get DocStore");
+                    rt.block_on(async {
+                        let op = tree
+                            .new_transaction()
+                            .await
+                            .expect("Failed to start operation");
+                        let doc_store = op
+                            .get_store::<DocStore>("data")
+                            .await
+                            .expect("Failed to get DocStore");
 
-                    let _value = doc_store
-                        .get(black_box(&target_key))
-                        .expect("Failed to get value");
+                        let _value = doc_store
+                            .get(black_box(&target_key))
+                            .await
+                            .expect("Failed to get value");
+                    });
                 });
             },
         );
@@ -180,18 +245,28 @@ fn bench_access_entries(c: &mut Criterion) {
 /// Measures overhead of tree creation and operation initialization
 /// Tests how operation creation scales with tree size
 fn bench_tree_operations(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
     let mut group = c.benchmark_group("tree_operations");
 
     group.bench_function("create_tree", |b| {
         b.iter(|| {
-            let backend = Box::new(InMemory::new());
-            let db = Instance::open(backend).expect("Benchmark setup failed");
-            db.add_private_key("BENCH_KEY")
-                .expect("Failed to add benchmark key");
-            black_box(
-                db.new_database_default("BENCH_KEY")
-                    .expect("Failed to create tree"),
-            );
+            rt.block_on(async {
+                let backend = Box::new(InMemory::new());
+                let db = Instance::open(backend)
+                    .await
+                    .expect("Benchmark setup failed");
+                db.add_private_key("BENCH_KEY")
+                    .await
+                    .expect("Failed to add benchmark key");
+                black_box(
+                    db.new_database_default("BENCH_KEY")
+                        .await
+                        .expect("Failed to create tree"),
+                );
+            });
         });
     });
 
@@ -200,10 +275,16 @@ fn bench_tree_operations(c: &mut Criterion) {
             BenchmarkId::new("create_operation", tree_size),
             tree_size,
             |b, &tree_size| {
-                let tree = setup_tree_with_entries(tree_size);
+                let tree = setup_tree_with_entries(&rt, tree_size);
 
                 b.iter(|| {
-                    let _op = black_box(tree.new_transaction().expect("Failed to start operation"));
+                    rt.block_on(async {
+                        let _op = black_box(
+                            tree.new_transaction()
+                                .await
+                                .expect("Failed to start operation"),
+                        );
+                    });
                 });
             },
         );

@@ -39,7 +39,10 @@ use crate::{
 /// let missing = collect_missing_ancestors(&backend, &missing_ids).await?;
 /// // Returns IDs of entries that need to be fetched from peer
 /// ```
-pub async fn collect_missing_ancestors(backend: &dyn BackendImpl, entry_ids: &[ID]) -> Result<Vec<ID>> {
+pub async fn collect_missing_ancestors(
+    backend: &dyn BackendImpl,
+    entry_ids: &[ID],
+) -> Result<Vec<ID>> {
     let mut missing = Vec::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -179,7 +182,9 @@ mod tests {
     #[tokio::test]
     async fn test_collect_missing_ancestors_empty() {
         let backend = create_test_backend();
-        let result = collect_missing_ancestors(backend.as_ref(), &[]).await.unwrap();
+        let result = collect_missing_ancestors(backend.as_ref(), &[])
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -188,8 +193,9 @@ mod tests {
         let backend = create_test_backend();
         let missing_id = ID::from("missing123");
 
-        let result =
-            collect_missing_ancestors(backend.as_ref(), std::slice::from_ref(&missing_id)).await.unwrap();
+        let result = collect_missing_ancestors(backend.as_ref(), std::slice::from_ref(&missing_id))
+            .await
+            .unwrap();
         assert_eq!(result, vec![missing_id]);
     }
 
@@ -204,14 +210,18 @@ mod tests {
         // Store the entry
         backend.put_verified(entry).await.unwrap();
 
-        let result = collect_missing_ancestors(backend.as_ref(), &[entry_id]).await.unwrap();
+        let result = collect_missing_ancestors(backend.as_ref(), &[entry_id])
+            .await
+            .unwrap();
         assert!(result.is_empty()); // Entry exists, so nothing missing
     }
 
     #[tokio::test]
     async fn test_collect_ancestors_to_send_empty() {
         let backend = create_test_backend();
-        let result = collect_ancestors_to_send(backend.as_ref(), &[], &[]).await.unwrap();
+        let result = collect_ancestors_to_send(backend.as_ref(), &[], &[])
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -226,7 +236,9 @@ mod tests {
         // Store the entry
         backend.put_verified(entry.clone()).await.unwrap();
 
-        let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[]).await.unwrap();
+        let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[])
+            .await
+            .unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id(), entry.id());
     }

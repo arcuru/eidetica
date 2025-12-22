@@ -55,7 +55,8 @@ async fn test_user_profile_creation() {
             ("name", "John Smith"),
             ("email", "john@company.com"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -93,7 +94,8 @@ async fn test_multiple_subtree_operations() {
         &tree,
         "custom_data",
         &[("setting1", "value1"), ("setting2", "value2")],
-    ).await;
+    )
+    .await;
 
     // Verify all subtrees have correct data
     assert_tree_data(
@@ -104,7 +106,8 @@ async fn test_multiple_subtree_operations() {
             ("name", "Multi User"),
             ("email", "multi@test.com"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_data(
         &tree,
@@ -114,13 +117,15 @@ async fn test_multiple_subtree_operations() {
             ("version", "1.0"),
             ("env", "test"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_data(
         &tree,
         "custom_data",
         &[("setting1", "value1"), ("setting2", "value2")],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -134,14 +139,16 @@ async fn test_data_persistence_across_operations() {
         "persistent_user",
         "Persistent User",
         "persist@test.com",
-    ).await;
+    )
+    .await;
 
     // Second operation: add more user data
     perform_basic_subtree_operations(
         &tree,
         "user_data",
         &[("last_login", "2023-01-01"), ("preferences", "dark_mode")],
-    ).await;
+    )
+    .await;
 
     // Third operation: create separate config
     create_app_config(&tree, "PersistentApp", &[("theme", "dark")]).await;
@@ -157,13 +164,15 @@ async fn test_data_persistence_across_operations() {
             ("last_login", "2023-01-01"),
             ("preferences", "dark_mode"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_data(
         &tree,
         "app_config",
         &[("app_name", "PersistentApp"), ("theme", "dark")],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -207,7 +216,8 @@ async fn test_data_overwrite_operations() {
             ("key2", "initial_value2"),
             ("key3", "initial_value3"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify initial data
     assert_tree_data(
@@ -218,7 +228,8 @@ async fn test_data_overwrite_operations() {
             ("key2", "initial_value2"),
             ("key3", "initial_value3"),
         ],
-    ).await;
+    )
+    .await;
 
     // Overwrite some values and add new ones
     perform_basic_subtree_operations(
@@ -229,7 +240,8 @@ async fn test_data_overwrite_operations() {
             ("key3", "updated_value3"),
             ("key4", "new_value4"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify updated data (key2 should remain, others updated/added)
     assert_tree_data(
@@ -241,7 +253,8 @@ async fn test_data_overwrite_operations() {
             ("key3", "updated_value3"),
             ("key4", "new_value4"),
         ],
-    ).await;
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -311,14 +324,16 @@ async fn test_basic_operations_integration() {
         "integration_user",
         "Integration User",
         "integration@test.com",
-    ).await;
+    )
+    .await;
 
     // Add app configuration
     create_app_config(
         &tree,
         "IntegrationApp",
         &[("environment", "testing"), ("features", "all_enabled")],
-    ).await;
+    )
+    .await;
 
     // Add custom business data
     perform_basic_subtree_operations(
@@ -329,7 +344,8 @@ async fn test_basic_operations_integration() {
             ("project", "integration_tests"),
             ("status", "active"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify the complete integration
     assert_tree_name(&tree, "IntegrationTree").await;
@@ -343,7 +359,8 @@ async fn test_basic_operations_integration() {
             ("name", "Integration User"),
             ("email", "integration@test.com"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_data(
         &tree,
@@ -353,7 +370,8 @@ async fn test_basic_operations_integration() {
             ("environment", "testing"),
             ("features", "all_enabled"),
         ],
-    ).await;
+    )
+    .await;
 
     assert_tree_data(
         &tree,
@@ -363,5 +381,6 @@ async fn test_basic_operations_integration() {
             ("project", "integration_tests"),
             ("status", "active"),
         ],
-    ).await;
+    )
+    .await;
 }

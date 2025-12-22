@@ -147,18 +147,20 @@ pub async fn configure_database_auth(
     let op = database.new_transaction().await?;
     {
         let settings = op.get_settings()?;
-        settings.update_auth_settings(|auth| {
-            for (display_name, key_id, permission, status) in auth_config {
-                let public_key = eidetica::auth::crypto::parse_public_key(key_id)?;
-                let auth_key = AuthKey::new(
-                    format_public_key(&public_key),
-                    permission.clone(),
-                    status.clone(),
-                )?;
-                auth.add_key(*display_name, auth_key)?;
-            }
-            Ok(())
-        }).await?;
+        settings
+            .update_auth_settings(|auth| {
+                for (display_name, key_id, permission, status) in auth_config {
+                    let public_key = eidetica::auth::crypto::parse_public_key(key_id)?;
+                    let auth_key = AuthKey::new(
+                        format_public_key(&public_key),
+                        permission.clone(),
+                        status.clone(),
+                    )?;
+                    auth.add_key(*display_name, auth_key)?;
+                }
+                Ok(())
+            })
+            .await?;
     }
     op.commit().await?;
     Ok(())
@@ -172,7 +174,10 @@ pub async fn setup_test_db_with_keys(
 
     let mut public_keys = Vec::new();
     for (key_name, _permission, _status) in keys {
-        let public_key = db.add_private_key(key_name).await.expect("Failed to add key");
+        let public_key = db
+            .add_private_key(key_name)
+            .await
+            .expect("Failed to add key");
         public_keys.push(public_key);
     }
 
@@ -266,7 +271,9 @@ pub async fn setup_complete_auth_environment_with_user(
         })
         .collect();
 
-    configure_database_auth(&database, &auth_config).await.expect("Failed to configure auth");
+    configure_database_auth(&database, &auth_config)
+        .await
+        .expect("Failed to configure auth");
 
     (instance, user, database, key_ids)
 }
@@ -435,12 +442,18 @@ impl DelegationChain {
 
 /// Test that an operation succeeds
 pub async fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
 
     let result = op.commit().await;
     assert!(result.is_ok(), "{test_name}: Operation should succeed");
@@ -448,12 +461,18 @@ pub async fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_n
 
 /// Test that an operation fails
 pub async fn test_operation_fails(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
 
     let result = op.commit().await;
     assert!(result.is_err(), "{test_name}: Operation should fail");
@@ -491,7 +510,9 @@ pub async fn assert_permission_resolution_fails(
     instance: Option<&Instance>,
     expected_error_pattern: &str,
 ) {
-    let result = validator.resolve_sig_key(sig_key, auth_settings, instance).await;
+    let result = validator
+        .resolve_sig_key(sig_key, auth_settings, instance)
+        .await;
     assert!(
         result.is_err(),
         "Permission resolution should fail for {sig_key:?}"
@@ -512,7 +533,10 @@ pub async fn assert_operation_permissions(
     should_succeed: bool,
     test_description: &str,
 ) {
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
         .get_store::<DocStore>(subtree_name)
         .await

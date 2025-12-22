@@ -34,7 +34,11 @@ async fn test_bootstrap_sync_from_zero_state() {
     };
 
     // Debug server state
-    let server_tips = server_instance.backend().get_tips(&test_tree_id).await.unwrap();
+    let server_tips = server_instance
+        .backend()
+        .get_tips(&test_tree_id)
+        .await
+        .unwrap();
     println!("🧪 DEBUG: Server tips: {server_tips:?}");
 
     // Start server
@@ -166,7 +170,11 @@ async fn test_incremental_sync_after_bootstrap() {
     );
 
     // Verify tips have been updated
-    let tips = client_instance.backend().get_tips(&test_tree_id).await.unwrap();
+    let tips = client_instance
+        .backend()
+        .get_tips(&test_tree_id)
+        .await
+        .unwrap();
     assert!(
         tips.contains(&entry2_id),
         "Client tips should include the new entry"

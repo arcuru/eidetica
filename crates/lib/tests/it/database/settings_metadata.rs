@@ -27,7 +27,10 @@ async fn test_settings_tips_in_metadata() {
 
     // Create an operation to add some data
     let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+    let kv = op1
+        .get_store::<eidetica::store::DocStore>("data")
+        .await
+        .unwrap();
     kv.set("key1", "value1").await.unwrap();
     let entry1_id = op1.commit().await.unwrap();
 
@@ -51,12 +54,18 @@ async fn test_settings_tips_in_metadata() {
         .get_store::<eidetica::store::DocStore>("_settings")
         .await
         .unwrap();
-    settings_store.set("description", "A test tree").await.unwrap();
+    settings_store
+        .set("description", "A test tree")
+        .await
+        .unwrap();
     let entry2_id = op2.commit().await.unwrap();
 
     // Create a third operation that doesn't modify settings
     let op3 = tree.new_transaction().await.unwrap();
-    let kv3 = op3.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+    let kv3 = op3
+        .get_store::<eidetica::store::DocStore>("data")
+        .await
+        .unwrap();
     kv3.set("key2", "value2").await.unwrap();
     let entry3_id = op3.commit().await.unwrap();
 
@@ -150,7 +159,10 @@ async fn test_settings_tips_propagation() {
 
     // Create a chain of entries
     let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+    let kv = op1
+        .get_store::<eidetica::store::DocStore>("data")
+        .await
+        .unwrap();
     kv.set("entry", "1").await.unwrap();
     let entry1_id = op1.commit().await.unwrap();
 
@@ -165,7 +177,10 @@ async fn test_settings_tips_propagation() {
 
     // Create another entry after settings change
     let op3 = tree.new_transaction().await.unwrap();
-    let kv = op3.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+    let kv = op3
+        .get_store::<eidetica::store::DocStore>("data")
+        .await
+        .unwrap();
     kv.set("entry", "3").await.unwrap();
     let entry3_id = op3.commit().await.unwrap();
 
@@ -230,7 +245,10 @@ async fn test_settings_metadata_with_complex_operations() {
     let mut data_entry_ids = Vec::new();
     for i in 0..3 {
         let op = tree.new_transaction().await.unwrap();
-        let data_store = op.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+        let data_store = op
+            .get_store::<eidetica::store::DocStore>("data")
+            .await
+            .unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
@@ -257,7 +275,10 @@ async fn test_settings_metadata_with_complex_operations() {
     let mut post_settings_entry_ids = Vec::new();
     for i in 3..6 {
         let op = tree.new_transaction().await.unwrap();
-        let data_store = op.get_store::<eidetica::store::DocStore>("data").await.unwrap();
+        let data_store = op
+            .get_store::<eidetica::store::DocStore>("data")
+            .await
+            .unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
@@ -365,7 +386,10 @@ async fn test_settings_metadata_with_branching() {
         .get_store::<eidetica::store::DocStore>("_settings")
         .await
         .unwrap();
-    settings_store.set("branch_settings", "updated").await.unwrap();
+    settings_store
+        .set("branch_settings", "updated")
+        .await
+        .unwrap();
     let settings_id = settings_op.commit().await.unwrap();
 
     // Create merge operation

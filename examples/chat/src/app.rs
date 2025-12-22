@@ -85,7 +85,8 @@ impl App {
                     interval_seconds: Some(2), // Sync every 2 seconds
                     properties: std::collections::HashMap::new(),
                 },
-            }).await?;
+            })
+            .await?;
 
         // Open the new room
         self.enter_room(database).await?;
@@ -199,9 +200,7 @@ impl App {
             let key_id = self.user.get_default_key()?;
             let sync_result = if is_bootstrap {
                 // Bootstrap sync - authenticate and sync a room we don't have locally
-                info!(
-                    " Starting authenticated bootstrap sync (we don't have this room yet)..."
-                );
+                info!(" Starting authenticated bootstrap sync (we don't have this room yet)...");
 
                 println!(
                     "DEBUG: Starting bootstrap sync with server_addr={server_addr}, room_id={room_id}"
@@ -253,7 +252,9 @@ impl App {
                                     interval_seconds: Some(2), // Sync every 2 seconds
                                     properties: std::collections::HashMap::new(),
                                 },
-                            }).await {
+                            })
+                            .await
+                        {
                             Ok(_) => {
                                 println!("DEBUG: ✓ Database registered with User");
                                 info!(" ✓ Database registered with User's key manager");

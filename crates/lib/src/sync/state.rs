@@ -469,7 +469,9 @@ mod tests {
     #[tokio::test]
     async fn test_sync_state_manager() {
         let backend = InMemory::new();
-        let db = Instance::open(Box::new(backend)).await.expect("Failed to create test instance");
+        let db = Instance::open(Box::new(backend))
+            .await
+            .expect("Failed to create test instance");
         db.enable_sync().await.unwrap();
 
         // Create a user tree for testing tree ID
@@ -510,7 +512,10 @@ mod tests {
         // Test history
         let mut history_entry = SyncHistoryEntry::new(peer_pubkey.to_string(), tree_id.clone());
         history_entry.complete_success(3, 512);
-        state_manager.add_sync_history(&history_entry).await.unwrap();
+        state_manager
+            .add_sync_history(&history_entry)
+            .await
+            .unwrap();
 
         // Commit the changes and test
         op.commit().await.unwrap();

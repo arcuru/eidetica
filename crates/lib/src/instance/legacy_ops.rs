@@ -48,7 +48,7 @@ use crate::{Database, Result, auth::crypto::format_public_key, crdt::Doc};
 /// ```rust,ignore
 /// use eidetica::instance::LegacyInstanceOps;
 /// ```
-#[async_trait(?Send)]
+#[async_trait]
 pub trait LegacyInstanceOps {
     /// Create a new database in the instance (deprecated).
     ///
@@ -123,16 +123,11 @@ pub trait LegacyInstanceOps {
     async fn get_formatted_public_key(&self, key_name: &str) -> Result<String>;
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl LegacyInstanceOps for Instance {
     async fn new_database(&self, settings: Doc, signing_key_name: &str) -> Result<Database> {
         use crate::auth::AuthError;
-        let signing_key = match self
-            .inner
-            .backend
-            .get_private_key(signing_key_name)
-            .await?
-        {
+        let signing_key = match self.inner.backend.get_private_key(signing_key_name).await? {
             Some(key) => key,
             None => {
                 return Err(AuthError::KeyNotFound {
@@ -141,13 +136,8 @@ impl LegacyInstanceOps for Instance {
                 .into());
             }
         };
-        let database = Database::create(
-            settings,
-            self,
-            signing_key,
-            signing_key_name.to_string(),
-        )
-        .await?;
+        let database =
+            Database::create(settings, self, signing_key, signing_key_name.to_string()).await?;
         Ok(database)
     }
 

@@ -104,12 +104,12 @@ async fn main() -> Result<()> {
 
     // Handle the command with proper error context
     let result = match &cli.command {
-        Commands::Add { title } => {
-            add_todo(&todo_database, title.clone()).await.map(|_| println!("✓ Task added: {title}"))
-        }
-        Commands::Complete { id } => {
-            complete_todo(&todo_database, id).await.map(|_| println!("✓ Task completed: {id}"))
-        }
+        Commands::Add { title } => add_todo(&todo_database, title.clone())
+            .await
+            .map(|_| println!("✓ Task added: {title}")),
+        Commands::Complete { id } => complete_todo(&todo_database, id)
+            .await
+            .map(|_| println!("✓ Task completed: {id}")),
         Commands::List => list_todos(&todo_database).await,
         Commands::SetUser { name, email, bio } => {
             set_user_info(&todo_database, name.as_ref(), email.as_ref(), bio.as_ref())
@@ -328,22 +328,24 @@ async fn set_user_info(
     let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
     // Update user information using the Y-CRDT document
-    user_info_store.with_doc_mut(|doc| {
-        let user_info_map = doc.get_or_insert_map("user_info");
-        let mut txn = doc.transact_mut();
+    user_info_store
+        .with_doc_mut(|doc| {
+            let user_info_map = doc.get_or_insert_map("user_info");
+            let mut txn = doc.transact_mut();
 
-        if let Some(name) = name {
-            user_info_map.insert(&mut txn, "name", name.clone());
-        }
-        if let Some(email) = email {
-            user_info_map.insert(&mut txn, "email", email.clone());
-        }
-        if let Some(bio) = bio {
-            user_info_map.insert(&mut txn, "bio", bio.clone());
-        }
+            if let Some(name) = name {
+                user_info_map.insert(&mut txn, "name", name.clone());
+            }
+            if let Some(email) = email {
+                user_info_map.insert(&mut txn, "email", email.clone());
+            }
+            if let Some(bio) = bio {
+                user_info_map.insert(&mut txn, "bio", bio.clone());
+            }
 
-        Ok(())
-    }).await?;
+            Ok(())
+        })
+        .await?;
 
     // Commit the transaction
     op.commit().await?;
@@ -359,29 +361,31 @@ async fn show_user_info(database: &Database) -> Result<()> {
     let user_info_store = op.get_store::<YDoc>("user_info").await?;
 
     // Read user information from the Y-CRDT document
-    user_info_store.with_doc(|doc| {
-        let user_info_map = doc.get_or_insert_map("user_info");
-        let txn = doc.transact();
+    user_info_store
+        .with_doc(|doc| {
+            let user_info_map = doc.get_or_insert_map("user_info");
+            let txn = doc.transact();
 
-        println!("User Information:");
+            println!("User Information:");
 
-        if let Some(name) = user_info_map.get(&txn, "name") {
-            let name_str = name.to_string(&txn);
-            println!("Name: {name_str}");
-        }
+            if let Some(name) = user_info_map.get(&txn, "name") {
+                let name_str = name.to_string(&txn);
+                println!("Name: {name_str}");
+            }
 
-        if let Some(email) = user_info_map.get(&txn, "email") {
-            let email_str = email.to_string(&txn);
-            println!("Email: {email_str}");
-        }
+            if let Some(email) = user_info_map.get(&txn, "email") {
+                let email_str = email.to_string(&txn);
+                println!("Email: {email_str}");
+            }
 
-        if let Some(bio) = user_info_map.get(&txn, "bio") {
-            let bio_str = bio.to_string(&txn);
-            println!("Bio: {bio_str}");
-        }
+            if let Some(bio) = user_info_map.get(&txn, "bio") {
+                let bio_str = bio.to_string(&txn);
+                println!("Bio: {bio_str}");
+            }
 
-        Ok(())
-    }).await?;
+            Ok(())
+        })
+        .await?;
 
     Ok(())
 }
@@ -394,12 +398,14 @@ async fn set_user_preference(database: &Database, key: String, value: String) ->
     let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
 
     // Update user preference using the Y-CRDT document
-    user_prefs_store.with_doc_mut(|doc| {
-        let prefs_map = doc.get_or_insert_map("preferences");
-        let mut txn = doc.transact_mut();
-        prefs_map.insert(&mut txn, key, value);
-        Ok(())
-    }).await?;
+    user_prefs_store
+        .with_doc_mut(|doc| {
+            let prefs_map = doc.get_or_insert_map("preferences");
+            let mut txn = doc.transact_mut();
+            prefs_map.insert(&mut txn, key, value);
+            Ok(())
+        })
+        .await?;
 
     // Commit the transaction
     op.commit().await?;
@@ -415,20 +421,22 @@ async fn show_user_preferences(database: &Database) -> Result<()> {
     let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
 
     // Read user preferences from the Y-CRDT document
-    user_prefs_store.with_doc(|doc| {
-        let prefs_map = doc.get_or_insert_map("preferences");
-        let txn = doc.transact();
+    user_prefs_store
+        .with_doc(|doc| {
+            let prefs_map = doc.get_or_insert_map("preferences");
+            let txn = doc.transact();
 
-        println!("User Preferences:");
+            println!("User Preferences:");
 
-        // Iterate over all preferences
-        for (key, value) in prefs_map.iter(&txn) {
-            let value_str = value.to_string(&txn);
-            println!("{key}: {value_str}");
-        }
+            // Iterate over all preferences
+            for (key, value) in prefs_map.iter(&txn) {
+                let value_str = value.to_string(&txn);
+                println!("{key}: {value_str}");
+            }
 
-        Ok(())
-    }).await?;
+            Ok(())
+        })
+        .await?;
 
     Ok(())
 }

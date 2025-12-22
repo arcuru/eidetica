@@ -172,7 +172,8 @@ async fn test_bootstrap_key_not_stored_in_backend() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_key_fails() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, _tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _server_db, server_sync, _tree_id) =
+        setup_global_wildcard_server().await;
 
     server_sync
         .backend()
@@ -269,7 +270,11 @@ async fn test_multiple_clients_with_different_keys() {
 
         // Verify client has the tree
         assert!(
-            sync.backend().expect("Failed to get backend").get(&tree_id).await.is_ok(),
+            sync.backend()
+                .expect("Failed to get backend")
+                .get(&tree_id)
+                .await
+                .is_ok(),
             "Client {i} should have the tree after bootstrap (tree_id: {tree_id})"
         );
 
@@ -559,7 +564,8 @@ async fn test_bootstrap_with_invalid_keys() {
 #[tokio::test]
 async fn test_full_e2e_bootstrap_with_database_instances() {
     // Setup server with a proper Database instance
-    let (_server_instance, server_database, server_sync, _tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, server_database, server_sync, _tree_id) =
+        setup_global_wildcard_server().await;
 
     let tree_id = server_database.root_id().clone();
 
@@ -626,7 +632,10 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .await
         .unwrap();
 
-    let msg1 = client_messages.get_node("msg1").await.expect("Should have msg1");
+    let msg1 = client_messages
+        .get_node("msg1")
+        .await
+        .expect("Should have msg1");
     let text = msg1
         .get_as::<String>("text")
         .expect("Should have text field");

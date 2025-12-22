@@ -250,7 +250,10 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs with the specified status.
-    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>> {
+    async fn get_entries_by_verification_status(
+        &self,
+        status: VerificationStatus,
+    ) -> Result<Vec<ID>> {
         let verification_status_map = self.verification_status.read().await;
         let ids = verification_status_map
             .iter()
@@ -325,7 +328,12 @@ impl BackendImpl for InMemory {
         storage::get_tree_from_tips(self, tree, tips).await
     }
 
-    async fn get_store_from_tips(&self, tree: &ID, subtree: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+    async fn get_store_from_tips(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        tips: &[ID],
+    ) -> Result<Vec<Entry>> {
         storage::get_store_from_tips(self, tree, subtree, tips).await
     }
 

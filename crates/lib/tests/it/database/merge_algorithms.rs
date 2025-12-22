@@ -125,7 +125,10 @@ async fn test_parent_merge_semantics() {
     let op_child = tree.new_transaction().await.unwrap();
     let subtree_child = op_child.get_store::<DocStore>("data").await.unwrap();
     subtree_child.set("shared_field", "updated").await.unwrap();
-    subtree_child.set("child_field", "child_value").await.unwrap();
+    subtree_child
+        .set("child_field", "child_value")
+        .await
+        .unwrap();
     op_child.commit().await.unwrap();
 
     // Check the merged state
@@ -590,12 +593,13 @@ async fn test_merge_algorithm_helpers() {
 
     // Test diamond pattern creation helper
     let base_data = &[("foundation", "solid"), ("version", "1.0")];
-    let (base_id, branch_b_id, branch_c_id, merge_id) = create_diamond_pattern(&tree, base_data).await;
+    let (base_id, branch_b_id, branch_c_id, merge_id) =
+        create_diamond_pattern(&tree, base_data).await;
 
     // Verify diamond structure
-    assert_entry_parents(&tree, &branch_b_id, std::slice::from_ref(&base_id));
-    assert_entry_parents(&tree, &branch_c_id, std::slice::from_ref(&base_id));
-    assert_entry_parents(&tree, &merge_id, &[branch_b_id, branch_c_id]);
+    assert_entry_parents(&tree, &branch_b_id, std::slice::from_ref(&base_id)).await;
+    assert_entry_parents(&tree, &branch_c_id, std::slice::from_ref(&base_id)).await;
+    assert_entry_parents(&tree, &merge_id, &[branch_b_id, branch_c_id]).await;
 
     // Verify final state contains expected non-conflicting data
     assert_subtree_data(
@@ -609,7 +613,8 @@ async fn test_merge_algorithm_helpers() {
             ("merge", "D"),
             ("final", "merged"),
         ],
-    ).await;
+    )
+    .await;
 
     // Verify that conflicting field "branch" has one of the expected values
     let viewer = tree
@@ -646,7 +651,7 @@ async fn test_merge_performance_with_deep_chains() {
 
     // Verify chain structure - each entry should have previous as parent (except first)
     for i in 1..chain_ids.len() {
-        assert_entry_parents(&tree, &chain_ids[i], &[chain_ids[i - 1].clone()]);
+        assert_entry_parents(&tree, &chain_ids[i], &[chain_ids[i - 1].clone()]).await;
     }
 
     // Verify final state has all accumulated data

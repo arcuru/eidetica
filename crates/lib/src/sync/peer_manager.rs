@@ -558,7 +558,10 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A vector of peer public keys that sync this tree.
-    pub(super) async fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
+    pub(super) async fn get_tree_peers(
+        &self,
+        tree_root_id: impl AsRef<str>,
+    ) -> Result<Vec<String>> {
         let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
         let peer_list_result = trees.get_path_as::<String>(&peer_list_path).await;

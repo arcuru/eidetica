@@ -36,7 +36,7 @@ use crate::{
 /// Implementations of this trait can process sync requests and generate
 /// appropriate responses, with full access to the database backend for
 /// storing and retrieving entries.
-#[async_trait(?Send)]
+#[async_trait]
 pub trait SyncHandler: Send + std::marker::Sync {
     /// Handle a sync request and generate an appropriate response.
     ///
@@ -145,7 +145,7 @@ impl SyncHandlerImpl {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl SyncHandler for SyncHandlerImpl {
     async fn handle_request(
         &self,
@@ -437,9 +437,10 @@ impl SyncHandlerImpl {
 
         // Add the remote address from transport if available
         if let Some(addr) = remote_address
-            && let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()).await {
-                warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
-            }
+            && let Err(e) = peer_manager.add_address(peer_pubkey, addr.clone()).await
+        {
+            warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
+        }
 
         op.commit().await?;
         Ok(())
@@ -922,7 +923,10 @@ impl SyncHandlerImpl {
         };
 
         // Find entries peer is missing
-        let missing_entries = match self.find_missing_entries_for_peer(&our_tips, peer_tips).await {
+        let missing_entries = match self
+            .find_missing_entries_for_peer(&our_tips, peer_tips)
+            .await
+        {
             Ok(entries) => entries,
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to find missing entries");
@@ -1096,7 +1100,8 @@ impl SyncHandlerImpl {
             self.instance()?.backend().as_backend_impl(),
             &missing_tip_ids,
             peer_tips,
-        ).await
+        )
+        .await
     }
 
     /// Count entries in a tree

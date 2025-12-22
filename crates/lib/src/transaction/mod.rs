@@ -17,7 +17,10 @@
 
 pub mod errors;
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use base64ct::{Base64, Encoding};
 pub use errors::TransactionError;
@@ -122,7 +125,7 @@ struct EntryMetadata {
 #[derive(Clone)]
 pub struct Transaction {
     /// The entry builder being modified, wrapped in Option to support consuming on commit
-    entry_builder: Rc<RefCell<Option<EntryBuilder>>>,
+    entry_builder: Arc<Mutex<Option<EntryBuilder>>>,
     /// The database this transaction belongs to
     db: Database,
     /// Optional authentication key name for backend lookup
@@ -134,7 +137,7 @@ pub struct Transaction {
     /// Maps subtree name -> encryptor implementation
     /// When an encryptor is registered, the transaction automatically encrypts writes
     /// and decrypts reads for that subtree
-    encryptors: Rc<RefCell<HashMap<String, Box<dyn Encryptor>>>>,
+    encryptors: Arc<Mutex<HashMap<String, Box<dyn Encryptor>>>>,
 }
 
 impl Transaction {
@@ -187,11 +190,11 @@ impl Transaction {
         }
 
         Ok(Self {
-            entry_builder: Rc::new(RefCell::new(Some(builder))),
+            entry_builder: Arc::new(Mutex::new(Some(builder))),
             db: database.clone(),
             auth_key_name: None,
             provided_signing_key: None,
-            encryptors: Rc::new(RefCell::new(HashMap::new())),
+            encryptors: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -288,7 +291,8 @@ impl Transaction {
         encryptor: Box<dyn Encryptor>,
     ) -> Result<()> {
         self.encryptors
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(subtree.into(), encryptor);
         Ok(())
     }
@@ -299,7 +303,7 @@ impl Transaction {
     /// before deserializing into CRDT types. Encrypted data is stored as base64-encoded
     /// bytes in the entry.
     fn decrypt_if_needed(&self, subtree: &str, data: &str) -> Result<String> {
-        if let Some(encryptor) = self.encryptors.borrow().get(subtree) {
+        if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
             // Decode base64 to get ciphertext bytes
             let ciphertext =
                 Base64::decode_vec(data).map_err(|e| StoreError::DeserializationFailed {
@@ -325,7 +329,7 @@ impl Transaction {
     /// Encrypts data if an encryptor is registered for the subtree.
     /// Returns the original data unchanged if no encryptor is registered.
     fn encrypt_if_needed(&self, subtree: &str, plaintext: &str) -> Result<String> {
-        if let Some(encryptor) = self.encryptors.borrow().get(subtree) {
+        if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
             // Encrypt the data
             let ciphertext = encryptor.encrypt(plaintext.as_bytes())?;
             // Encode as base64 for storage
@@ -404,7 +408,7 @@ impl Transaction {
     /// # Arguments
     /// * `root` - The tree root ID to set (use empty string for top-level roots)
     pub(crate) fn set_entry_root(&self, root: impl Into<String>) -> Result<()> {
-        let mut builder_ref = self.entry_builder.borrow_mut();
+        let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -420,7 +424,7 @@ impl Transaction {
     /// # Arguments
     /// * `entropy` - Random entropy value
     pub(crate) fn set_metadata_entropy(&self, entropy: u64) -> Result<()> {
-        let mut builder_ref = self.entry_builder.borrow_mut();
+        let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -467,22 +471,34 @@ impl Transaction {
     ) -> Result<()> {
         let subtree = subtree.as_ref();
         let data = data.as_ref();
-        let mut builder_ref = self.entry_builder.borrow_mut();
+
+        // Check if we need to fetch tips (check without holding borrow across await)
+        let needs_tips = {
+            let builder_ref = self.entry_builder.lock().unwrap();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            !builder.subtrees().contains(&subtree.to_string())
+        };
+
+        // Fetch tips if needed (no borrow held across this await)
+        let tips = if needs_tips {
+            let backend = self.db.backend()?;
+            // FIXME: we should get the subtree tips while still using the parent pointers
+            Some(backend.get_store_tips(self.db.root_id(), subtree).await?)
+        } else {
+            None
+        };
+
+        // Now update the builder
+        let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-        // If we haven't cached the tips for this subtree yet, get them now
-        let subtrees = builder.subtrees();
-
-        if !subtrees.contains(&subtree.to_string()) {
-            // FIXME: we should get the subtree tips while still using the parent pointers
-            let backend = self.db.backend()?;
-            let tips = backend.get_store_tips(self.db.root_id(), subtree).await?;
-            builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
+        builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
+        if let Some(tips) = tips {
             builder.set_subtree_parents_mut(subtree, tips);
-        } else {
-            builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
         }
 
         Ok(())
@@ -506,9 +522,9 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the `Store` handle.
-    pub async fn get_store<T>(&self, subtree_name: impl Into<String>) -> Result<T>
+    pub async fn get_store<T>(&self, subtree_name: impl Into<String> + Send) -> Result<T>
     where
-        T: Store,
+        T: Store + Send,
     {
         let subtree_name = subtree_name.into();
 
@@ -549,18 +565,17 @@ impl Transaction {
 
     /// Get the subtree tips reachable from the given main tree entries.
     async fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
-        self.db.backend()?.get_store_tips_up_to_entries(
-            self.db.root_id(),
-            subtree_name,
-            main_parents,
-        ).await
+        self.db
+            .backend()?
+            .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, main_parents)
+            .await
     }
 
     /// Initialize subtree parents if this is the first time accessing this subtree
     /// in this transaction.
     pub(crate) async fn init_subtree_parents(&self, subtree_name: &str) -> Result<()> {
         let main_parents = {
-            let builder_ref = self.entry_builder.borrow();
+            let builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -574,7 +589,7 @@ impl Transaction {
 
         let tips = self.get_subtree_tips(subtree_name, &main_parents).await?;
 
-        let mut builder_ref = self.entry_builder.borrow_mut();
+        let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -614,7 +629,7 @@ impl Transaction {
         T: crate::crdt::Data + Default,
     {
         let subtree_name = subtree_name.as_ref();
-        let builder_ref = self.entry_builder.borrow();
+        let builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_ref()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -658,15 +673,15 @@ impl Transaction {
     /// # Returns
     /// A `Result<T>` containing the merged historical data of type `T`. Returns `Ok(T::default())`
     /// if the subtree has no history prior to this transaction.
-    pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
+    pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str> + Send) -> Result<T>
     where
-        T: CRDT + Default,
+        T: CRDT + Default + Send,
     {
         let subtree_name = subtree_name.as_ref();
 
         // Check if we need to initialize subtree tips (get data from RefCell before await)
         let (needs_init, main_parents) = {
-            let builder_ref = self.entry_builder.borrow();
+            let builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -685,18 +700,19 @@ impl Transaction {
 
             let tips = if main_parents == current_database_tips {
                 let backend = self.db.backend()?;
-                backend.get_store_tips(self.db.root_id(), subtree_name).await?
+                backend
+                    .get_store_tips(self.db.root_id(), subtree_name)
+                    .await?
             } else {
                 // This transaction uses custom tips - use special handler
-                self.db.backend()?.get_store_tips_up_to_entries(
-                    self.db.root_id(),
-                    subtree_name,
-                    &main_parents,
-                ).await?
+                self.db
+                    .backend()?
+                    .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, &main_parents)
+                    .await?
             };
 
             // Update RefCell after async operations
-            let mut builder_ref = self.entry_builder.borrow_mut();
+            let mut builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -705,7 +721,7 @@ impl Transaction {
 
         // Get the parent pointers for this subtree
         let parents = {
-            let builder_ref = self.entry_builder.borrow();
+            let builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -718,7 +734,8 @@ impl Transaction {
         }
 
         // Compute the CRDT state using LCA-based ROOT-to-target computation
-        self.compute_subtree_state_lca_based(subtree_name, &parents).await
+        self.compute_subtree_state_lca_based(subtree_name, &parents)
+            .await
     }
 
     /// Computes the CRDT state for a subtree using correct recursive LCA-based algorithm.
@@ -739,11 +756,11 @@ impl Transaction {
     /// A `Result<T>` containing the computed CRDT state
     async fn compute_subtree_state_lca_based<T>(
         &self,
-        subtree_name: impl AsRef<str>,
+        subtree_name: impl AsRef<str> + Send,
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT + Default,
+        T: CRDT + Default + Send,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -754,30 +771,35 @@ impl Transaction {
 
         // If we have a single entry, compute its state recursively
         if entry_ids.len() == 1 {
-            return self.compute_single_entry_state_recursive(subtree_name, &entry_ids[0]).await;
+            return self
+                .compute_single_entry_state_recursive(subtree_name, &entry_ids[0])
+                .await;
         }
 
         // Multiple entries: find LCA and compute state from there
         let lca_id = self
             .db
             .backend()?
-            .find_lca(self.db.root_id(), subtree_name, entry_ids).await?;
+            .find_lca(self.db.root_id(), subtree_name, entry_ids)
+            .await?;
 
         // Get the LCA state recursively
-        let mut result = self.compute_single_entry_state_recursive(subtree_name, &lca_id).await?;
+        let mut result = self
+            .compute_single_entry_state_recursive(subtree_name, &lca_id)
+            .await?;
 
         // Get all entries from LCA to all tip entries (deduplicated and sorted)
         let path_entries = {
-            self.db.backend()?.get_path_from_to(
-                self.db.root_id(),
-                subtree_name,
-                &lca_id,
-                entry_ids,
-            ).await?
+            self.db
+                .backend()?
+                .get_path_from_to(self.db.root_id(), subtree_name, &lca_id, entry_ids)
+                .await?
         };
 
         // Merge all path entries in order
-        result = self.merge_path_entries(subtree_name, result, &path_entries).await?;
+        result = self
+            .merge_path_entries(subtree_name, result, &path_entries)
+            .await?;
 
         Ok(result)
     }
@@ -802,9 +824,9 @@ impl Transaction {
         &'a self,
         subtree_name: &'a str,
         entry_id: &'a ID,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + 'a>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
-        T: CRDT + Default + 'a,
+        T: CRDT + Default + Send + 'a,
     {
         Box::pin(async move {
             // Step 1: Check if already cached
@@ -821,11 +843,11 @@ impl Transaction {
             }
 
             // Get the parents of this entry in the subtree
-            let parents = self.db.backend()?.get_sorted_store_parents(
-                self.db.root_id(),
-                entry_id,
-                subtree_name,
-            ).await?;
+            let parents = self
+                .db
+                .backend()?
+                .get_sorted_store_parents(self.db.root_id(), entry_id, subtree_name)
+                .await?;
 
             // Step 2: Compute LCA state recursively
             let (lca_state, lca_id_opt) = if parents.is_empty() {
@@ -834,16 +856,20 @@ impl Transaction {
             } else if parents.len() == 1 {
                 // Single parent - recursively get its state
                 (
-                    self.compute_single_entry_state_recursive(subtree_name, &parents[0]).await?,
+                    self.compute_single_entry_state_recursive(subtree_name, &parents[0])
+                        .await?,
                     None,
                 )
             } else {
                 // Multiple parents - find LCA and get its state
-                let lca_id = self.db
+                let lca_id = self
+                    .db
                     .backend()?
                     .find_lca(self.db.root_id(), subtree_name, &parents)
                     .await?;
-                let lca_state = self.compute_single_entry_state_recursive(subtree_name, &lca_id).await?;
+                let lca_state = self
+                    .compute_single_entry_state_recursive(subtree_name, &lca_id)
+                    .await?;
                 (lca_state, Some(lca_id))
             };
 
@@ -853,15 +879,16 @@ impl Transaction {
             // If we have multiple parents, we need to merge paths from LCA to all parents
             if let Some(lca_id) = lca_id_opt {
                 // Get all entries from LCA to all parents (deduplicated and sorted)
-                let path_entries = self.db.backend()?.get_path_from_to(
-                    self.db.root_id(),
-                    subtree_name,
-                    &lca_id,
-                    &parents,
-                ).await?;
+                let path_entries = self
+                    .db
+                    .backend()?
+                    .get_path_from_to(self.db.root_id(), subtree_name, &lca_id, &parents)
+                    .await?;
 
                 // Merge all path entries in order
-                result = self.merge_path_entries(subtree_name, result, &path_entries).await?;
+                result = self
+                    .merge_path_entries(subtree_name, result, &path_entries)
+                    .await?;
             }
 
             // Finally, merge the current entry's local data
@@ -899,7 +926,12 @@ impl Transaction {
     ///
     /// # Returns
     /// A `Result<T>` containing the merged CRDT state
-    async fn merge_path_entries<T>(&self, subtree_name: &str, mut state: T, entry_ids: &[ID]) -> Result<T>
+    async fn merge_path_entries<T>(
+        &self,
+        subtree_name: &str,
+        mut state: T,
+        entry_ids: &[ID],
+    ) -> Result<T>
     where
         T: CRDT + Clone + Default + serde::de::DeserializeOwned,
     {
@@ -943,7 +975,7 @@ impl Transaction {
     pub async fn commit(self) -> Result<ID> {
         // Check if this is a settings subtree update and get the effective settings before any borrowing
         let has_settings_update = {
-            let builder_cell = self.entry_builder.borrow();
+            let builder_cell = self.entry_builder.lock().unwrap();
             let builder = builder_cell
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -997,7 +1029,7 @@ impl Transaction {
         // This adds subtrees with None data if they're referenced in _index but not yet in builder.
         // First, get the data we need before any async operations
         let (_index_data_opt, main_parents, missing_subtrees) = {
-            let builder_ref = self.entry_builder.borrow();
+            let builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -1010,7 +1042,8 @@ impl Transaction {
             let missing = if let Some(ref index_data) = index_data_opt
                 && let Ok(index_doc) = serde_json::from_str::<Doc>(index_data)
             {
-                index_doc.keys()
+                index_doc
+                    .keys()
                     .filter(|name| !existing_subtrees.contains(&name.to_string()))
                     .cloned()
                     .collect::<Vec<_>>()
@@ -1030,7 +1063,7 @@ impl Transaction {
 
         // Now update the builder with the tips
         {
-            let mut builder_ref = self.entry_builder.borrow_mut();
+            let mut builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
@@ -1045,20 +1078,20 @@ impl Transaction {
         // Add metadata with settings tips for all entries
         // Get the backend to access settings tips (do async ops before RefCell borrow)
         let db_tips = self.db.get_tips().await?;
-        let settings_tips = self.db.backend()?.get_store_tips_up_to_entries(
-            self.db.root_id(),
-            SETTINGS,
-            &db_tips,
-        ).await?;
+        let settings_tips = self
+            .db
+            .backend()?
+            .get_store_tips_up_to_entries(self.db.root_id(), SETTINGS, &db_tips)
+            .await?;
 
-        // Get the entry out of the RefCell, consuming self in the process
-        let builder_cell = self.entry_builder.borrow_mut();
-        let builder_from_cell = builder_cell
-            .as_ref()
-            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-
-        // Clone the builder since we can't easily take ownership from RefCell<Option<>>
-        let mut builder = builder_from_cell.clone();
+        // Clone the builder from RefCell (limit borrow scope to avoid holding across await)
+        let mut builder = {
+            let builder_cell = self.entry_builder.lock().unwrap();
+            let builder_from_cell = builder_cell
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            builder_from_cell.clone()
+        };
 
         // Parse existing metadata if present, or create new
         let mut metadata = builder
@@ -1108,7 +1141,7 @@ impl Transaction {
         // Encrypt subtree data if encryptors are registered
         // This must happen before building the entry to ensure encrypted data is persisted
         {
-            let encryptors = self.encryptors.borrow();
+            let encryptors = self.encryptors.lock().unwrap();
             for subtree_name in builder.subtrees() {
                 if let Some(encryptor) = encryptors.get(&subtree_name) {
                     // Get the plaintext data from the builder
@@ -1262,12 +1295,14 @@ impl Transaction {
 
         // Write entry through Instance which handles backend storage and callback dispatch
         let instance = self.db.instance()?;
-        instance.put_entry(
-            self.db.root_id(),
-            verification_status,
-            entry.clone(),
-            crate::instance::WriteSource::Local,
-        ).await?;
+        instance
+            .put_entry(
+                self.db.root_id(),
+                verification_status,
+                entry.clone(),
+                crate::instance::WriteSource::Local,
+            )
+            .await?;
 
         Ok(id)
     }
@@ -1285,28 +1320,29 @@ mod tests {
     ///
     /// Validates that transactions reject changes that would corrupt the auth configuration,
     /// preventing corrupted entries from entering the Merkle DAG.
-    #[test]
-    fn test_prevent_auth_corruption() {
+    #[tokio::test]
+    async fn test_prevent_auth_corruption() {
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).unwrap();
+        let instance = Instance::open(Box::new(backend)).await.unwrap();
         let (private_key, _) = generate_keypair();
 
         // Create database with the test key
-        let database =
-            Database::create(Doc::new(), &instance, private_key, "test_key".to_string()).unwrap();
+        let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+            .await
+            .unwrap();
 
         // Initial operation should work
-        let tx = database.new_transaction().unwrap();
-        let store = tx.get_store::<DocStore>("data").unwrap();
-        store.set("initial", "value").unwrap();
-        tx.commit().expect("Initial operation should succeed");
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("data").await.unwrap();
+        store.set("initial", "value").await.unwrap();
+        tx.commit().await.expect("Initial operation should succeed");
 
         // Test corruption path 1: Set auth to wrong type (String instead of Doc)
-        let tx = database.new_transaction().unwrap();
-        let settings = tx.get_store::<DocStore>("_settings").unwrap();
-        settings.set("auth", "corrupted_string").unwrap();
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_store::<DocStore>("_settings").await.unwrap();
+        settings.set("auth", "corrupted_string").await.unwrap();
 
-        let result = tx.commit();
+        let result = tx.commit().await;
         assert!(
             result.is_err(),
             "Corruption commit (wrong type) should fail immediately"
@@ -1317,11 +1353,11 @@ mod tests {
         );
 
         // Test corruption path 2: Delete auth (creates CRDT tombstone)
-        let tx = database.new_transaction().unwrap();
-        let settings = tx.get_store::<DocStore>("_settings").unwrap();
-        settings.delete("auth").unwrap();
+        let tx = database.new_transaction().await.unwrap();
+        let settings = tx.get_store::<DocStore>("_settings").await.unwrap();
+        settings.delete("auth").await.unwrap();
 
-        let result = tx.commit();
+        let result = tx.commit().await;
         assert!(
             result.is_err(),
             "Deletion commit (tombstone) should fail immediately"
@@ -1332,9 +1368,14 @@ mod tests {
         );
 
         // Verify database is still functional after preventing corruption
-        let tx = database.new_transaction().unwrap();
-        let store = tx.get_store::<DocStore>("data").unwrap();
-        store.set("after_prevented_corruption", "value").unwrap();
-        tx.commit().expect("Normal operations should still work");
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("data").await.unwrap();
+        store
+            .set("after_prevented_corruption", "value")
+            .await
+            .unwrap();
+        tx.commit()
+            .await
+            .expect("Normal operations should still work");
     }
 }

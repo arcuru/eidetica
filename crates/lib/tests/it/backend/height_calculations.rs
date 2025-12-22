@@ -178,7 +178,10 @@ async fn test_calculate_subtree_height() {
     assert_eq!(main_heights.get(&id_c).unwrap_or(&9999), &3);
 
     // Calculate heights for subtree
-    let sub_heights = backend.calculate_heights(&root_id, Some("sub1")).await.unwrap();
+    let sub_heights = backend
+        .calculate_heights(&root_id, Some("sub1"))
+        .await
+        .unwrap();
 
     // Subtree structure:
     // A   B

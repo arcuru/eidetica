@@ -494,10 +494,9 @@ pub(crate) async fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
 
     for (id, is_root, entry_id) in entry_info {
         let is_tip_result = super::storage::is_tip(backend, tree, &id).await;
-        if is_tip_result
-            && (!is_root || entry_id == *tree) {
-                tips.push(id);
-            }
+        if is_tip_result && (!is_root || entry_id == *tree) {
+            tips.push(id);
+        }
     }
 
     // Cache the result
@@ -521,7 +520,11 @@ pub(crate) async fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the subtree.
-pub(crate) async fn get_store_tips(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
+pub(crate) async fn get_store_tips(
+    backend: &InMemory,
+    tree: &ID,
+    subtree: &str,
+) -> Result<Vec<ID>> {
     // Check if we have cached subtree tips
     let tips_cache = backend.tips.read().await;
     if let Some(cache) = tips_cache.get(tree)

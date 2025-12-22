@@ -2,6 +2,7 @@ use eidetica::{
     backend::{BackendImpl, VerificationStatus, database::InMemory},
     entry::{Entry, ID},
 };
+use std::sync::Arc;
 
 use super::helpers::test_backend;
 
@@ -65,7 +66,10 @@ async fn test_verification_status_default_behavior() {
     let entry_id = entry.id();
 
     // Store with Verified (default)
-    backend.put_verified(entry).await.expect("Failed to put entry");
+    backend
+        .put_verified(entry)
+        .await
+        .expect("Failed to put entry");
 
     // Status should be Verified
     let status = backend
@@ -103,8 +107,14 @@ async fn test_verification_status_multiple_entries() {
     let entry3_id = entry3.id();
 
     // Store with different statuses
-    backend.put_verified(entry1).await.expect("Failed to put entry1");
-    backend.put_verified(entry2).await.expect("Failed to put entry2");
+    backend
+        .put_verified(entry1)
+        .await
+        .expect("Failed to put entry1");
+    backend
+        .put_verified(entry2)
+        .await
+        .expect("Failed to put entry2");
     backend
         .put_unverified(entry3)
         .await
@@ -140,15 +150,16 @@ async fn test_verification_status_not_found_errors() {
 
     // Test updating status for nonexistent entry
     let mutable_backend = backend;
-    let result =
-        mutable_backend.update_verification_status(&nonexistent_id, VerificationStatus::Verified).await;
+    let result = mutable_backend
+        .update_verification_status(&nonexistent_id, VerificationStatus::Verified)
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }
 
 #[tokio::test]
 async fn test_verification_status_serialization() {
-    let backend = InMemory::new();
+    let backend = Arc::new(InMemory::new());
 
     // Create test entries with different verification statuses
     let entry1 = Entry::root_builder()
@@ -161,19 +172,33 @@ async fn test_verification_status_serialization() {
     let entry1_id = entry1.id();
     let entry2_id = entry2.id();
 
-    backend.put_verified(entry1).await.expect("Failed to put entry1");
+    backend
+        .put_verified(entry1)
+        .await
+        .expect("Failed to put entry1");
     backend
         .put_unverified(entry2)
         .await
         .expect("Failed to put entry2");
 
     // Save and load
-    let temp_file = "/tmp/test_verification_status.json";
-    backend
-        .save_to_file(temp_file)
-        .expect("Failed to save backend");
+    let temp_file = "/tmp/test_verification_status.json".to_string();
+    tokio::task::spawn_blocking({
+        let backend = backend.clone();
+        let temp_file = temp_file.clone();
+        move || backend.save_to_file(&temp_file)
+    })
+    .await
+    .expect("Failed to join blocking task")
+    .expect("Failed to save backend");
 
-    let loaded_backend = InMemory::load_from_file(temp_file).expect("Failed to load backend");
+    let loaded_backend = tokio::task::spawn_blocking({
+        let temp_file = temp_file.clone();
+        move || InMemory::load_from_file(&temp_file)
+    })
+    .await
+    .expect("Failed to join blocking task")
+    .expect("Failed to load backend");
 
     // Verify statuses are preserved
     let status1 = loaded_backend

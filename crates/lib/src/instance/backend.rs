@@ -59,8 +59,14 @@ impl Backend {
     }
 
     /// Update verification status of an entry
-    pub async fn update_verification_status(&self, id: &ID, status: VerificationStatus) -> Result<()> {
-        self.backend_impl.update_verification_status(id, status).await
+    pub async fn update_verification_status(
+        &self,
+        id: &ID,
+        status: VerificationStatus,
+    ) -> Result<()> {
+        self.backend_impl
+            .update_verification_status(id, status)
+            .await
     }
 
     /// Get entries by verification status
@@ -68,7 +74,9 @@ impl Backend {
         &self,
         status: VerificationStatus,
     ) -> Result<Vec<ID>> {
-        self.backend_impl.get_entries_by_verification_status(status).await
+        self.backend_impl
+            .get_entries_by_verification_status(status)
+            .await
     }
 
     /// Get tips for a tree
@@ -104,7 +112,12 @@ impl Backend {
     }
 
     /// Collect root to target path
-    pub async fn collect_root_to_target(&self, tree: &ID, store: &str, target: &ID) -> Result<Vec<ID>> {
+    pub async fn collect_root_to_target(
+        &self,
+        tree: &ID,
+        store: &str,
+        target: &ID,
+    ) -> Result<Vec<ID>> {
         self.backend_impl
             .collect_root_to_target(tree, store, target)
             .await
@@ -126,13 +139,22 @@ impl Backend {
     }
 
     /// Get store entries from tips
-    pub async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.backend_impl.get_store_from_tips(tree, store, tips).await
+    pub async fn get_store_from_tips(
+        &self,
+        tree: &ID,
+        store: &str,
+        tips: &[ID],
+    ) -> Result<Vec<Entry>> {
+        self.backend_impl
+            .get_store_from_tips(tree, store, tips)
+            .await
     }
 
     /// Store a private key
     pub async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        self.backend_impl.store_private_key(key_name, private_key).await
+        self.backend_impl
+            .store_private_key(key_name, private_key)
+            .await
     }
 
     /// Get a private key
@@ -151,13 +173,21 @@ impl Backend {
     }
 
     /// Get cached CRDT state
-    pub async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
-        self.backend_impl.get_cached_crdt_state(entry_id, store).await
+    pub async fn get_cached_crdt_state(
+        &self,
+        entry_id: &ID,
+        store: &str,
+    ) -> Result<Option<String>> {
+        self.backend_impl
+            .get_cached_crdt_state(entry_id, store)
+            .await
     }
 
     /// Cache CRDT state
     pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
-        self.backend_impl.cache_crdt_state(entry_id, store, state).await
+        self.backend_impl
+            .cache_crdt_state(entry_id, store, state)
+            .await
     }
 
     /// Clear CRDT cache

@@ -164,7 +164,10 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs with the specified status.
-    async fn get_entries_by_verification_status(&self, status: VerificationStatus) -> Result<Vec<ID>>;
+    async fn get_entries_by_verification_status(
+        &self,
+        status: VerificationStatus,
+    ) -> Result<Vec<ID>>;
 
     /// Retrieves the IDs of the tip entries for a given tree.
     ///
@@ -253,7 +256,12 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result` containing a vector of entry IDs from root to target, sorted by height
-    async fn collect_root_to_target(&self, tree: &ID, store: &str, target_entry: &ID) -> Result<Vec<ID>>;
+    async fn collect_root_to_target(
+        &self,
+        tree: &ID,
+        store: &str,
+        target_entry: &ID,
+    ) -> Result<Vec<ID>>;
 
     /// Returns a reference to the backend instance as a dynamic `Any` type.
     ///
@@ -425,8 +433,12 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` containing a `Vec<ID>` of parent entry IDs sorted by (height, ID).
     /// Returns empty vec if the entry has no parents in the store.
-    async fn get_sorted_store_parents(&self, tree_id: &ID, entry_id: &ID, store: &str)
-    -> Result<Vec<ID>>;
+    async fn get_sorted_store_parents(
+        &self,
+        tree_id: &ID,
+        entry_id: &ID,
+        store: &str,
+    ) -> Result<Vec<ID>>;
 
     /// Gets all entries between one entry and multiple target entries (exclusive of start, inclusive of targets).
     ///

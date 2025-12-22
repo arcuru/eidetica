@@ -1549,7 +1549,11 @@ async fn test_docstore_contains_path() {
     assert!(viewer.contains_path(path!("user.profile.name")).await);
     assert!(viewer.contains_path(path!("user.profile.email")).await);
     assert!(viewer.contains_path(path!("user.settings.theme")).await);
-    assert!(viewer.contains_path(path!("app.config.database.host")).await);
+    assert!(
+        viewer
+            .contains_path(path!("app.config.database.host"))
+            .await
+    );
     assert!(viewer.contains_path(path!("temp")).await); // Should be simple value
     assert!(!viewer.contains_path(path!("temp.value")).await); // Should not exist
 

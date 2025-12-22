@@ -224,7 +224,12 @@ pub(crate) async fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool
 /// Helper function to check if an entry is a tip within a specific subtree.
 ///
 /// An entry is a subtree tip if no other entry in the same subtree lists it as a subtree parent.
-pub(crate) async fn is_subtree_tip(backend: &InMemory, tree: &ID, subtree: &str, entry_id: &ID) -> bool {
+pub(crate) async fn is_subtree_tip(
+    backend: &InMemory,
+    tree: &ID,
+    subtree: &str,
+    entry_id: &ID,
+) -> bool {
     let entries = backend.entries.read().await;
     for other_entry in entries.values() {
         if other_entry.root() == tree
@@ -313,12 +318,17 @@ pub(crate) async fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> R
     drop(entries); // Release the lock before calling sort_entries_by_subtree_height
 
     // Sort by subtree height using the cache module function
-    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries).await?;
+    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries)
+        .await?;
     Ok(subtree_entries)
 }
 
 /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
-pub(crate) async fn get_tree_from_tips(backend: &InMemory, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
+pub(crate) async fn get_tree_from_tips(
+    backend: &InMemory,
+    tree: &ID,
+    tips: &[ID],
+) -> Result<Vec<Entry>> {
     if tips.is_empty() {
         return Ok(vec![]);
     }

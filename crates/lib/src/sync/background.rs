@@ -197,16 +197,9 @@ impl BackgroundSync {
             command_rx: rx,
         };
 
-        // Spawn in a dedicated thread with a single-threaded runtime
-        // since Transaction is not Send (contains Rc<RefCell>)
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, background.run());
-        });
+        // Spawn background sync as a regular tokio task
+        // (Transaction is now Send since it uses Arc<Mutex>)
+        tokio::spawn(background.run());
         tx
     }
 

@@ -8,11 +8,13 @@ use super::helpers::*;
 
 #[tokio::test]
 async fn test_authenticated_operations() {
-    let (_instance, _user, tree, test_key) = setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
+    let (_instance, _user, tree, test_key) =
+        setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
 
     // Create an operation - database automatically uses its configured key
     let op = tree
-        .new_transaction().await
+        .new_transaction()
+        .await
         .expect("Failed to create transaction");
 
     // The operation should have the correct auth key ID
@@ -20,15 +22,22 @@ async fn test_authenticated_operations() {
 
     // Test that we can use the operation
     let store = op
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
 
     // Commit should work
     let entry_id = op.commit().await.expect("Failed to commit");
 
     // Verify the entry is signed
-    let entry = tree.get_entry(&entry_id).await.expect("Failed to get entry");
+    let entry = tree
+        .get_entry(&entry_id)
+        .await
+        .expect("Failed to get entry");
     assert!(entry.sig.is_signed_by(&test_key));
 }
 
@@ -41,7 +50,10 @@ async fn test_tree_default_authentication() {
     assert_eq!(tree.default_auth_key(), Some(default_key.as_str()));
 
     // Operations should inherit the default key
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     assert_eq!(op.auth_key_name(), Some(default_key.as_str()));
 
     // Add another key and reload database with it
@@ -71,7 +83,8 @@ async fn test_tree_default_authentication() {
     );
 
     let op2 = tree_with_other_key
-        .new_transaction().await
+        .new_transaction()
+        .await
         .expect("Failed to create operation");
     assert_eq!(op2.auth_key_name(), Some(other_key.as_str()));
 
@@ -83,34 +96,47 @@ async fn test_tree_default_authentication() {
 
     // New transactions should not have a key and should fail at commit
     let op3 = tree_no_key
-        .new_transaction().await
+        .new_transaction()
+        .await
         .expect("Failed to create operation");
     assert_eq!(op3.auth_key_name(), None);
 
     // Try to use the transaction - should fail at commit
     let store = op3
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
     let result = op3.commit().await;
     assert!(result.is_err(), "Should fail without authentication");
 }
 
 #[tokio::test]
 async fn test_mandatory_authentication() {
-    let (_instance, _user, tree, test_key) = setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
+    let (_instance, _user, tree, test_key) =
+        setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
 
     // Create an operation - should automatically get the default auth key
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
 
     // Should have the default auth key ID set automatically
     assert_eq!(op.auth_key_name(), Some(test_key.as_str()));
 
     // Should be able to use it normally
     let store = op
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
 
     // Commit should succeed with authentication
     let result = op.commit().await;
@@ -152,7 +178,10 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to create tree");
 
     // Create operation that adds KEY2 to auth settings
-    let op1 = tree.new_transaction().await.expect("Failed to create operation");
+    let op1 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let settings_store = op1.get_settings().expect("Failed to get settings store");
 
     // Add KEY2 to auth settings using SettingsStore
@@ -163,7 +192,10 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .await
         .expect("Failed to add KEY2 to auth settings");
 
-    let entry_id1 = op1.commit().await.expect("Failed to commit settings change");
+    let entry_id1 = op1
+        .commit()
+        .await
+        .expect("Failed to commit settings change");
 
     // Now reload the database with KEY2 to use it (User API pattern)
     let key2_signing_key = user
@@ -181,10 +213,12 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
 
     // Create operation with KEY2 (should work after settings change)
     let op2 = tree_with_key2
-        .new_transaction().await
+        .new_transaction()
+        .await
         .expect("Failed to create operation with KEY2");
     let data_store = op2
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get data subtree");
     data_store
         .set("test", "value")
@@ -194,7 +228,10 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
     let entry_id2 = op2.commit().await.expect("Failed to commit with KEY2");
 
     // Verify both entries exist and are properly signed
-    let entry1 = tree.get_entry(&entry_id1).await.expect("Failed to get entry1");
+    let entry1 = tree
+        .get_entry(&entry_id1)
+        .await
+        .expect("Failed to get entry1");
     assert!(entry1.sig.is_signed_by(&key1_id));
     let entry2 = tree_with_key2
         .get_entry(&entry_id2)
@@ -235,9 +272,13 @@ async fn test_prevent_auth_corruption() {
         .expect("Failed to create tree");
 
     // Valid operation should work
-    let op_valid = tree.new_transaction().await.expect("Failed to create operation");
+    let op_valid = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let data_store_valid = op_valid
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get subtree");
     data_store_valid
         .set("test", "value")
@@ -249,9 +290,13 @@ async fn test_prevent_auth_corruption() {
     );
 
     // Test corruption path 1: Try to corrupt auth settings by setting to wrong type (String instead of Doc)
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let settings_store = op
-        .get_store::<DocStore>("_settings").await
+        .get_store::<DocStore>("_settings")
+        .await
         .expect("Failed to get settings subtree");
 
     // Corrupt the auth settings by setting it to a string instead of a map
@@ -272,9 +317,13 @@ async fn test_prevent_auth_corruption() {
     );
 
     // Test corruption path 2: Delete auth (creates CRDT tombstone)
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let settings_store = op
-        .get_store::<DocStore>("_settings").await
+        .get_store::<DocStore>("_settings")
+        .await
         .expect("Failed to get settings");
     settings_store
         .delete("auth")
@@ -292,14 +341,19 @@ async fn test_prevent_auth_corruption() {
     );
 
     // Verify database is still functional after preventing corruption
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store = op
-        .get_store::<DocStore>("data").await
+        .get_store::<DocStore>("data")
+        .await
         .expect("Failed to get store");
     store
         .set("after_prevented_corruption", "value")
         .await
         .expect("Failed to set value");
-    op.commit().await
+    op.commit()
+        .await
         .expect("Normal operations should still work after preventing corruption");
 }

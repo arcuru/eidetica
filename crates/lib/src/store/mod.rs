@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::{Result, Transaction};
+use async_trait::async_trait;
 
 mod errors;
 pub use errors::StoreError;
@@ -39,8 +39,8 @@ pub use ydoc::{YDoc, YrsBinary};
 /// 2. `Transaction::get_store`: For staging modifications within an atomic operation.
 ///
 /// Store types must also implement [`Registered`] to provide their type identifier.
-#[async_trait(?Send)]
-pub trait Store: Sized + Registered {
+#[async_trait]
+pub trait Store: Sized + Registered + Send + Sync {
     /// Creates a new `Store` handle associated with a specific transaction.
     ///
     /// This constructor is typically called internally by `Transaction::get_store` or
@@ -130,7 +130,7 @@ pub trait Store: Sized + Registered {
     ///
     /// # Returns
     /// A `Result<()>` indicating success or failure.
-    async fn set_config(&self, config: impl Into<String>) -> Result<()> {
+    async fn set_config(&self, config: impl Into<String> + Send) -> Result<()> {
         let index = self.transaction().get_index().await?;
         index
             .set_entry(self.name(), Self::type_id(), config.into())

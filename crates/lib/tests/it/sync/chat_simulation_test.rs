@@ -394,7 +394,10 @@ async fn test_chat_app_authenticated_bootstrap() {
             .await
             .expect("Failed to get messages store");
 
-        let messages = store.search(|_| true).await.expect("Failed to search messages");
+        let messages = store
+            .search(|_| true)
+            .await
+            .expect("Failed to search messages");
 
         println!("📬 Client found {} messages", messages.len());
         assert_eq!(messages.len(), 1, "Client should see the initial message");
@@ -453,7 +456,11 @@ async fn test_chat_app_authenticated_bootstrap() {
         println!("  Client has {} tips: {:?}", client_tips.len(), client_tips);
 
         // Check what messages the client has
-        if let Ok(entries) = client_instance.backend().get_store(&room_id, "messages").await {
+        if let Ok(entries) = client_instance
+            .backend()
+            .get_store(&room_id, "messages")
+            .await
+        {
             println!("  Client has {} entries in messages store", entries.len());
             for entry in &entries {
                 if let Ok(data) = entry.data("messages") {
@@ -488,7 +495,10 @@ async fn test_chat_app_authenticated_bootstrap() {
             .await
             .expect("Failed to get messages store");
 
-        let messages = store.search(|_| true).await.expect("Failed to search messages");
+        let messages = store
+            .search(|_| true)
+            .await
+            .expect("Failed to search messages");
 
         println!("📬 Server found {} messages", messages.len());
 
@@ -683,7 +693,9 @@ async fn test_global_key_bootstrap() {
             .insert(msg)
             .await
             .expect("Should insert with global permission");
-        op.commit().await.expect("Should commit with global permission");
+        op.commit()
+            .await
+            .expect("Should commit with global permission");
     }
 
     println!("✅ TEST COMPLETED: Global key bootstrap works!");
@@ -833,7 +845,10 @@ async fn test_multiple_databases_sync() {
             .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
 
         // Verify room name
-        let settings = database.get_settings().await.expect("Failed to get settings");
+        let settings = database
+            .get_settings()
+            .await
+            .expect("Failed to get settings");
         let name = settings
             .get_string("name")
             .await

@@ -279,11 +279,14 @@ mod tests {
         },
         backend::database::InMemory,
         instance::LegacyInstanceOps,
+        store::Store,
     };
 
     async fn create_test_database() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend).await.expect("Failed to create test instance");
+        let instance = Instance::open(backend)
+            .await
+            .expect("Failed to create test instance");
 
         let database = instance.new_database_default("_device_key").await.unwrap();
 
@@ -415,7 +418,10 @@ mod tests {
         // Add a key
         let valid_pubkey = generate_public_key();
         let auth_key = AuthKey::active(valid_pubkey.clone(), Permission::Read).unwrap();
-        settings_store.set_auth_key("validator", auth_key).await.unwrap();
+        settings_store
+            .set_auth_key("validator", auth_key)
+            .await
+            .unwrap();
 
         // Get auth doc for validation
         let auth_doc = settings_store.get_auth_doc_for_validation().await.unwrap();

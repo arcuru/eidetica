@@ -148,7 +148,9 @@ async fn test_missing_key() {
     let auth_settings = AuthSettings::new(); // Empty auth settings
 
     let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None).await;
+    let result = validator
+        .resolve_sig_key(&sig_key, &auth_settings, None)
+        .await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -173,7 +175,9 @@ async fn test_delegated_tree_requires_backend() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, None).await;
+    let result = validator
+        .resolve_sig_key(&sig_key, &auth_settings, None)
+        .await;
     assert!(result.is_err());
     assert!(
         result
@@ -202,7 +206,9 @@ async fn test_validate_entry_with_auth_info_against_empty_settings() {
 
     // Validate against empty settings (no auth configuration)
     let empty_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &empty_auth_settings, None).await;
+    let result = validator
+        .validate_entry(&entry, &empty_auth_settings, None)
+        .await;
 
     // Should succeed because there's no auth configuration to validate against
     assert!(result.is_ok(), "Validation failed: {:?}", result.err());
@@ -312,13 +318,16 @@ async fn test_complete_delegation_workflow() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).await.expect("Failed to create test instance");
+    let db = Instance::open(backend)
+        .await
+        .expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
     let main_key = db
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap()
         .verifying_key();
@@ -343,7 +352,10 @@ async fn test_complete_delegation_workflow() {
         .unwrap();
     delegated_settings.set("auth", delegated_auth);
 
-    let delegated_tree = db.new_database(delegated_settings, "_device_key").await.unwrap();
+    let delegated_tree = db
+        .new_database(delegated_settings, "_device_key")
+        .await
+        .unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -394,6 +406,7 @@ async fn test_complete_delegation_workflow() {
         .await
         .unwrap()
         .get_auth_settings()
+        .await
         .unwrap();
 
     let delegated_sig_key = SigKey::DelegationPath(vec![
@@ -407,7 +420,9 @@ async fn test_complete_delegation_workflow() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&db))
+        .await;
 
     // Should succeed with permission clamping (Admin -> Write due to bounds)
     assert!(
@@ -430,20 +445,26 @@ async fn test_delegated_tree_requires_tips() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).await.expect("Failed to create test instance");
+    let db = Instance::open(backend)
+        .await
+        .expect("Failed to create test instance");
 
     // Single-user mode automatically handles key management
     // Use the default user's device key for main admin
     let main_key = db
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap()
         .verifying_key();
 
     // Create a simple delegated tree
     let delegated_settings = Doc::new();
-    let delegated_tree = db.new_database(delegated_settings, "_device_key").await.unwrap();
+    let delegated_tree = db
+        .new_database(delegated_settings, "_device_key")
+        .await
+        .unwrap();
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
@@ -492,7 +513,9 @@ async fn test_delegated_tree_requires_tips() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
+        .await;
 
     // Should fail because tips are required for delegated tree resolution
     assert!(result.is_err());
@@ -513,12 +536,15 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let db = Instance::open(backend).await.expect("Failed to create test instance");
+    let db = Instance::open(backend)
+        .await
+        .expect("Failed to create test instance");
 
     // Use the default user's device key for all operations
     let main_key = db
         .backend()
         .get_private_key("_device_key")
+        .await
         .unwrap()
         .unwrap()
         .verifying_key();
@@ -639,6 +665,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .await
         .unwrap()
         .get_auth_settings()
+        .await
         .unwrap();
 
     // Create nested delegation SigKey:
@@ -660,7 +687,9 @@ async fn test_nested_delegation_with_permission_clamping() {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&db))
+        .await;
 
     // Should succeed with multi-level permission clamping:
     // Admin(3) -> Write(8) (at intermediate level) -> Write(5) (at main level, further clamping)
@@ -693,11 +722,10 @@ async fn test_delegation_depth_limit() {
     let simple_sig_key = SigKey::Direct("base_key".to_string());
 
     // This should succeed (just under the limit)
-    let result =
-        validator
-            .resolver
-            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9)
-            .await;
+    let result = validator
+        .resolver
+        .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9)
+        .await;
     // Should fail due to missing auth configuration, not depth limit
     assert!(result.is_err());
     let error = result.unwrap_err();
@@ -708,11 +736,10 @@ async fn test_delegation_depth_limit() {
     );
 
     // This should fail due to depth limit (at the limit)
-    let result =
-        validator
-            .resolver
-            .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10)
-            .await;
+    let result = validator
+        .resolver
+        .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10)
+        .await;
     assert!(result.is_err());
     let error = result.unwrap_err();
     assert!(error.to_string().contains("Maximum delegation depth"));
@@ -803,8 +830,9 @@ async fn test_global_permission_resolver() {
     let actual_pubkey = format_public_key(&verifying_key);
 
     // Test with pubkey provided - should succeed now that we implemented global permissions
-    let result =
-        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey)).await;
+    let result = validator
+        .resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey))
+        .await;
 
     assert!(
         result.is_ok(),
@@ -834,8 +862,9 @@ async fn test_global_permission_insufficient_perms() {
     let sig_key = SigKey::Direct("*".to_string());
     let actual_pubkey = format_public_key(&verifying_key);
 
-    let result =
-        validator.resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey)).await;
+    let result = validator
+        .resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey))
+        .await;
     assert!(result.is_ok(), "Resolution should succeed");
 
     let resolved = result.unwrap();
@@ -894,7 +923,9 @@ async fn test_global_permission_vs_specific_key() {
     let signature1 = sign_entry(&entry1, &signing_key1).unwrap();
     entry1.sig.sig = Some(signature1);
 
-    let result1 = validator.validate_entry(&entry1, &auth_settings, None).await;
+    let result1 = validator
+        .validate_entry(&entry1, &auth_settings, None)
+        .await;
     assert!(result1.is_ok(), "Specific key validation should work");
 
     // Test 2: Entry using global permission should also work
@@ -909,7 +940,9 @@ async fn test_global_permission_vs_specific_key() {
     entry2.sig.sig = Some(signature2);
 
     // Global permissions should now work with the pubkey field
-    let result2 = validator.validate_entry(&entry2, &auth_settings, None).await;
+    let result2 = validator
+        .validate_entry(&entry2, &auth_settings, None)
+        .await;
     assert!(
         result2.is_ok(),
         "Global permission validation should work: {:?}",

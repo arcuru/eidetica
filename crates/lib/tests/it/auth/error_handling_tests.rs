@@ -40,7 +40,8 @@ async fn test_delegation_without_backend() {
         &auth_settings,
         None,
         "database",
-    );
+    )
+    .await;
 }
 
 /// Test delegation with non-existent delegated tree
@@ -54,7 +55,9 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Add delegation to non-existent tree using operations
     let op = tree.new_transaction().await?;
-    let settings_store = op.get_store::<eidetica::store::DocStore>("_settings").await?;
+    let settings_store = op
+        .get_store::<eidetica::store::DocStore>("_settings")
+        .await?;
 
     let nonexistent_delegation = DelegatedTreeRef {
         permission_bounds: PermissionBounds {
@@ -69,7 +72,9 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 
     let mut new_auth_settings = tree.get_settings().await?.get_all().await?;
     new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
-    settings_store.set_value("auth", Value::Doc(new_auth_settings)).await?;
+    settings_store
+        .set_value("auth", Value::Doc(new_auth_settings))
+        .await?;
     op.commit().await?;
 
     // Try to resolve delegation to non-existent tree
@@ -90,7 +95,8 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
         &auth_settings,
         Some(&db),
         "key",
-    );
+    )
+    .await;
 
     Ok(())
 }
@@ -135,7 +141,9 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
-    let result = validator.resolve_sig_key(&delegation_path, &auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&delegation_path, &auth_settings, Some(&db))
+        .await;
 
     // Should fail with appropriate error
     assert!(result.is_err());
@@ -167,7 +175,9 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "admin_in_delegated_tree").await?;
+    let delegated_tree = db
+        .new_database(delegated_settings, "admin_in_delegated_tree")
+        .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Create main tree that delegates with restricted permissions
@@ -214,7 +224,9 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
-    let result = validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db))
+        .await;
 
     // Should succeed but with clamped permissions
     assert!(result.is_ok());
@@ -258,7 +270,9 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "delegated_admin").await?;
+    let delegated_tree = db
+        .new_database(delegated_settings, "delegated_admin")
+        .await?;
     let real_tips = delegated_tree.get_tips().await?;
 
     // Create main tree with delegation
@@ -305,7 +319,9 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
-    let result = validator.resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db))
+        .await;
 
     // Should fail because tips are invalid
     assert!(result.is_err());
@@ -356,7 +372,9 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
 
     let mut delegated_settings = Doc::new();
     delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db.new_database(delegated_settings, "delegated_admin").await?;
+    let delegated_tree = db
+        .new_database(delegated_settings, "delegated_admin")
+        .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Create main tree with delegation
@@ -402,7 +420,9 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
-    let result = validator.resolve_sig_key(&active_delegation, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&active_delegation, &main_auth_settings, Some(&db))
+        .await;
 
     // Should succeed for active key
     assert!(result.is_ok());
@@ -421,7 +441,9 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
         },
     ]);
 
-    let result = validator.resolve_sig_key(&revoked_delegation, &main_auth_settings, Some(&db)).await;
+    let result = validator
+        .resolve_sig_key(&revoked_delegation, &main_auth_settings, Some(&db))
+        .await;
 
     // Should succeed in resolving but key should be marked as revoked
     assert!(result.is_ok());
@@ -456,16 +478,22 @@ async fn test_validation_cache_error_conditions() -> Result<()> {
 
     // First resolution should succeed and populate cache
     let sig_key = SigKey::Direct("admin".to_string());
-    let result1 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db)).await;
+    let result1 = validator
+        .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
+        .await;
     assert!(result1.is_ok());
 
     // Try to resolve non-existent key (should fail but not corrupt cache)
     let fake_key = SigKey::Direct("nonexistent".to_string());
-    let result2 = validator.resolve_sig_key(&fake_key, &auth_settings, Some(&db)).await;
+    let result2 = validator
+        .resolve_sig_key(&fake_key, &auth_settings, Some(&db))
+        .await;
     assert!(result2.is_err());
 
     // Original key should still resolve correctly (cache should be intact)
-    let result3 = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db)).await;
+    let result3 = validator
+        .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
+        .await;
     assert!(result3.is_ok());
 
     Ok(())
@@ -497,7 +525,9 @@ async fn test_error_message_consistency() {
     let db = test_instance().await;
 
     for (sig_key, expected_error_type) in test_cases {
-        let result = validator.resolve_sig_key(&sig_key, &auth_settings, Some(&db)).await;
+        let result = validator
+            .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
+            .await;
         assert!(result.is_err());
 
         let error_msg = result.unwrap_err().to_string().to_lowercase();
@@ -517,9 +547,9 @@ async fn test_error_message_consistency() {
 }
 
 /// Test concurrent validation scenarios (basic thread safety)
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn test_concurrent_validation_basic() -> Result<()> {
-    use std::{sync::Arc, thread};
+    use std::sync::Arc;
 
     let db = Arc::new(test_instance().await);
 
@@ -539,32 +569,36 @@ async fn test_concurrent_validation_basic() -> Result<()> {
     let tree = db.new_database(settings, "admin").await?;
     let auth_settings = Arc::new(tree.get_settings().await?.get_auth_settings().await?);
 
-    let handles: Vec<_> = (0..4)
-        .map(|_| {
-            let db_clone = Arc::clone(&db);
-            let settings_clone = Arc::clone(&auth_settings);
+    let local = tokio::task::LocalSet::new();
+    let mut handles = Vec::new();
 
-            thread::spawn(move || {
-                let mut validator = AuthValidator::new();
-                let sig_key = SigKey::Direct("admin".to_string());
+    for _ in 0..4 {
+        let db_clone = Arc::clone(&db);
+        let settings_clone = Arc::clone(&auth_settings);
 
-                // Each thread should be able to validate independently
-                for _ in 0..10 {
-                    let result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(
-                            validator.resolve_sig_key(&sig_key, &settings_clone, Some(&db_clone))
-                        )
-                    });
-                    assert!(result.is_ok());
-                }
-            })
-        })
-        .collect();
+        let handle = local.spawn_local(async move {
+            let mut validator = AuthValidator::new();
+            let sig_key = SigKey::Direct("admin".to_string());
 
-    // Wait for all threads to complete
-    for handle in handles {
-        handle.join().unwrap();
+            // Each task should be able to validate independently
+            for _ in 0..10 {
+                let result = validator
+                    .resolve_sig_key(&sig_key, &settings_clone, Some(&db_clone))
+                    .await;
+                assert!(result.is_ok());
+            }
+        });
+
+        handles.push(handle);
     }
+
+    local
+        .run_until(async {
+            for handle in handles {
+                handle.await.unwrap();
+            }
+        })
+        .await;
 
     Ok(())
 }

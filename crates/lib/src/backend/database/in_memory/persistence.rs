@@ -6,8 +6,8 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use ed25519_dalek::SigningKey;
-use tokio::sync::RwLock;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tokio::sync::RwLock;
 
 use super::{InMemory, TreeHeightsCache, TreeTipsCache};
 use crate::{

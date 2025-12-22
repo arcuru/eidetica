@@ -47,7 +47,10 @@ async fn test_authentication_validation_revoked_key() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
-    store.set("test", "value").await.expect("Failed to set value");
+    store
+        .set("test", "value")
+        .await
+        .expect("Failed to set value");
 
     let result = op.commit().await;
     assert!(result.is_err(), "Revoked key test: Operation should fail");
@@ -131,7 +134,10 @@ async fn test_multiple_authenticated_entries() {
     let db = auth_setup_db().await;
 
     // Generate a key for testing
-    let public_key = db.add_private_key("TEST_KEY").await.expect("Failed to add key");
+    let public_key = db
+        .add_private_key("TEST_KEY")
+        .await
+        .expect("Failed to add key");
 
     // Create a tree with authentication enabled
     let mut settings = Doc::new();
@@ -151,24 +157,39 @@ async fn test_multiple_authenticated_entries() {
         .expect("Failed to create tree");
 
     // Create multiple signed entries (should all succeed)
-    let op1 = tree.new_transaction().await.expect("Failed to create operation");
+    let op1 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store1 = op1
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
-    store1.set("entry", "first").await.expect("Failed to set value");
+    store1
+        .set("entry", "first")
+        .await
+        .expect("Failed to set value");
     let entry_id1 = op1.commit().await.expect("Failed to commit first entry");
 
-    let op2 = tree.new_transaction().await.expect("Failed to create operation");
+    let op2 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let store2 = op2
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
-    store2.set("entry", "second").await.expect("Failed to set value");
+    store2
+        .set("entry", "second")
+        .await
+        .expect("Failed to set value");
     let entry_id2 = op2.commit().await.expect("Failed to commit second entry");
 
     // Verify both entries were stored correctly
-    let entry1 = tree.get_entry(&entry_id1).await.expect("Failed to get entry1");
+    let entry1 = tree
+        .get_entry(&entry_id1)
+        .await
+        .expect("Failed to get entry1");
     assert!(entry1.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id1)
@@ -176,7 +197,10 @@ async fn test_multiple_authenticated_entries() {
             .expect("Failed to verify entry1")
     );
 
-    let entry2 = tree.get_entry(&entry_id2).await.expect("Failed to get entry2");
+    let entry2 = tree
+        .get_entry(&entry_id2)
+        .await
+        .expect("Failed to get entry2");
     assert!(entry2.sig.is_signed_by("TEST_KEY"));
     assert!(
         tree.verify_entry_signature(&entry_id2)
@@ -206,7 +230,9 @@ async fn test_entry_validation_with_corrupted_auth_section() {
 
     // Test with no auth section at all
     let empty_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &empty_auth_settings, None).await;
+    let result = validator
+        .validate_entry(&entry, &empty_auth_settings, None)
+        .await;
     assert!(
         result.is_ok(),
         "Should allow unsigned when no auth configured"
@@ -218,7 +244,9 @@ async fn test_entry_validation_with_corrupted_auth_section() {
 
     // Extract auth settings (will be empty since auth is not a Doc)
     let corrupted_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &corrupted_auth_settings, None).await;
+    let result = validator
+        .validate_entry(&entry, &corrupted_auth_settings, None)
+        .await;
     assert!(result.is_ok(), "Should allow unsigned when auth is invalid");
 
     // Test with settings containing deleted auth section
@@ -227,7 +255,9 @@ async fn test_entry_validation_with_corrupted_auth_section() {
 
     // Extract auth settings (will be empty since auth is deleted)
     let deleted_auth_settings = AuthSettings::new();
-    let result = validator.validate_entry(&entry, &deleted_auth_settings, None).await;
+    let result = validator
+        .validate_entry(&entry, &deleted_auth_settings, None)
+        .await;
     assert!(result.is_ok(), "Should allow unsigned when auth is deleted");
 }
 
@@ -324,7 +354,9 @@ async fn test_entry_validation_cache_behavior() {
     };
 
     // Validate the entry - should work
-    let result1 = validator.validate_entry(&entry, &auth_settings_from_doc, None).await;
+    let result1 = validator
+        .validate_entry(&entry, &auth_settings_from_doc, None)
+        .await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "First validation should succeed"
@@ -348,14 +380,18 @@ async fn test_entry_validation_cache_behavior() {
     };
 
     // Validate with revoked key - should fail
-    let result2 = validator.validate_entry(&entry, &new_auth_settings_from_doc, None).await;
+    let result2 = validator
+        .validate_entry(&entry, &new_auth_settings_from_doc, None)
+        .await;
     assert!(
         result2.is_ok() && !result2.unwrap(),
         "Validation with revoked key should fail"
     );
 
     // Validate with original settings again - should work (no stale cache)
-    let result3 = validator.validate_entry(&entry, &auth_settings_from_doc, None).await;
+    let result3 = validator
+        .validate_entry(&entry, &auth_settings_from_doc, None)
+        .await;
     assert!(
         result3.is_ok() && result3.unwrap(),
         "Validation should work again with active key"
@@ -398,7 +434,9 @@ async fn test_entry_validation_with_malformed_keys() {
     };
 
     // Should validate successfully with correct settings
-    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None).await;
+    let result1 = validator
+        .validate_entry(&correct_entry, &auth_settings, None)
+        .await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -414,7 +452,9 @@ async fn test_entry_validation_with_malformed_keys() {
     entry_with_wrong_sig.sig.sig = Some(wrong_signature);
 
     // Should fail validation because signature doesn't match the key in settings
-    let result_wrong_sig = validator.validate_entry(&entry_with_wrong_sig, &auth_settings, None).await;
+    let result_wrong_sig = validator
+        .validate_entry(&entry_with_wrong_sig, &auth_settings, None)
+        .await;
     assert!(
         result_wrong_sig.is_err() || (result_wrong_sig.is_ok() && !result_wrong_sig.unwrap()),
         "Entry should fail validation with mismatched signature"
@@ -424,7 +464,9 @@ async fn test_entry_validation_with_malformed_keys() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None).await;
+    let result2 = validator
+        .validate_entry(&corrupted_entry, &auth_settings, None)
+        .await;
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {
@@ -448,7 +490,9 @@ async fn test_entry_validation_with_malformed_keys() {
         eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
     wrong_signature_entry.sig.sig = Some(wrong_signature);
 
-    let result3 = validator.validate_entry(&wrong_signature_entry, &auth_settings, None).await;
+    let result3 = validator
+        .validate_entry(&wrong_signature_entry, &auth_settings, None)
+        .await;
     assert!(
         result3.is_ok() && !result3.unwrap(),
         "Entry with wrong key signature should fail validation"
@@ -466,7 +510,9 @@ async fn test_entry_validation_unsigned_entry_detection() {
 
     // Test with no auth settings
     let empty_auth_settings = AuthSettings::new();
-    let result1 = validator.validate_entry(&entry, &empty_auth_settings, None).await;
+    let result1 = validator
+        .validate_entry(&entry, &empty_auth_settings, None)
+        .await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Unsigned entry should be valid when no auth configured"
@@ -525,7 +571,9 @@ async fn test_entry_validation_with_invalid_signatures() {
     };
 
     // Should validate successfully
-    let result1 = validator.validate_entry(&correct_entry, &auth_settings, None).await;
+    let result1 = validator
+        .validate_entry(&correct_entry, &auth_settings, None)
+        .await;
     assert!(
         result1.is_ok() && result1.unwrap(),
         "Correctly signed entry should validate"
@@ -535,7 +583,9 @@ async fn test_entry_validation_with_invalid_signatures() {
     let mut corrupted_entry = correct_entry.clone();
     corrupted_entry.sig.sig = Some("invalid_base64_signature!@#".to_string());
 
-    let result2 = validator.validate_entry(&corrupted_entry, &auth_settings, None).await;
+    let result2 = validator
+        .validate_entry(&corrupted_entry, &auth_settings, None)
+        .await;
     // The validation might return an error for invalid base64, or false for invalid signature
     // Let's check both cases
     if let Ok(valid) = result2 {

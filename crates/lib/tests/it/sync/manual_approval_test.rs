@@ -1209,7 +1209,10 @@ async fn test_global_permission_enables_transactions() {
     // Setup client instance
     let client_instance = setup_instance_with_initialized().await;
     let client_key_name = "client_device";
-    client_instance.add_private_key(client_key_name).await.unwrap();
+    client_instance
+        .add_private_key(client_key_name)
+        .await
+        .unwrap();
 
     let client_pubkey = client_instance
         .get_formatted_public_key(client_key_name)

@@ -13,11 +13,17 @@ async fn test_insert_into_tree() {
     let (_instance, tree) = setup_tree().await;
 
     // Create and commit first entry using an atomic operation
-    let op1 = tree.new_transaction().await.expect("Failed to create operation");
+    let op1 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let id1 = op1.commit().await.expect("Failed to commit operation");
 
     // Create and commit second entry
-    let op2 = tree.new_transaction().await.expect("Failed to create operation");
+    let op2 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     let id2 = op2.commit().await.expect("Failed to commit operation");
 
     // Verify tips include id2
@@ -56,7 +62,10 @@ async fn test_subtree_operations() {
     let (_instance, tree) = setup_tree().await;
 
     // Create and commit the initial data with operation
-    let op1 = tree.new_transaction().await.expect("Failed to create operation");
+    let op1 = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     {
         let users_store = op1
             .get_store::<DocStore>("users")
@@ -121,7 +130,9 @@ async fn test_subtree_operations() {
     }
 
     // Commit the second operation
-    op2.commit().await.expect("Failed to commit second operation");
+    op2.commit()
+        .await
+        .expect("Failed to commit second operation");
 
     // --- Test Store viewers for reading final data ---
     let users_viewer2 = tree
@@ -167,7 +178,10 @@ async fn test_get_name_from_settings() {
     assert_eq!(name, "TestTree");
 
     // Update the name using an operation
-    let op = tree.new_transaction().await.expect("Failed to create operation");
+    let op = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create operation");
     {
         let settings_store = op
             .get_store::<DocStore>(SETTINGS)
@@ -178,10 +192,15 @@ async fn test_get_name_from_settings() {
             .await
             .expect("Failed to update name in op");
     }
-    op.commit().await.expect("Failed to commit name update operation");
+    op.commit()
+        .await
+        .expect("Failed to commit name update operation");
 
     // Get updated name
-    let updated_name = tree.get_name().await.expect("Failed to get updated tree name");
+    let updated_name = tree
+        .get_name()
+        .await
+        .expect("Failed to get updated tree name");
     assert_eq!(updated_name, "UpdatedTreeName");
 }
 
@@ -197,13 +216,19 @@ async fn test_atomic_op_scenarios() {
             .get_store::<DocStore>("sub_a")
             .await
             .expect("Op1: Failed get A");
-        store_a.set("key_a", "val_a1").await.expect("Op1: Failed set A");
+        store_a
+            .set("key_a", "val_a1")
+            .await
+            .expect("Op1: Failed set A");
 
         let store_b = op1
             .get_store::<DocStore>("sub_b")
             .await
             .expect("Op1: Failed get B");
-        store_b.set("key_b", "val_b1").await.expect("Op1: Failed set B");
+        store_b
+            .set("key_b", "val_b1")
+            .await
+            .expect("Op1: Failed set B");
 
         // Read staged data within the op
         assert_eq!(
@@ -247,7 +272,10 @@ async fn test_atomic_op_scenarios() {
     );
 
     // --- 2. Commit an empty operation ---
-    let op_empty = tree.new_transaction().await.expect("OpEmpty: Failed to start");
+    let op_empty = tree
+        .new_transaction()
+        .await
+        .expect("OpEmpty: Failed to start");
     let commit_empty_result = op_empty.commit().await;
     // If it's not an error, check the tip is still changed to the empty commit
     assert!(commit_empty_result.is_ok());
@@ -264,7 +292,10 @@ async fn test_atomic_op_scenarios() {
             .get_store::<DocStore>("sub_a")
             .await
             .expect("Op3: Failed get A");
-        store_a.set("key_a", "val_a3").await.expect("Op3: Failed set A");
+        store_a
+            .set("key_a", "val_a3")
+            .await
+            .expect("Op3: Failed set A");
     }
     let _commit3_id = op3.commit().await.expect("Op3: First commit failed");
 
@@ -315,7 +346,10 @@ async fn test_get_store_viewer() {
             .set("key1", "value1_updated")
             .await
             .expect("Op2: Failed update key1"); // Update existing
-        store.set("key2", "value2").await.expect("Op2: Failed set key2"); // Add new
+        store
+            .set("key2", "value2")
+            .await
+            .expect("Op2: Failed set key2"); // Add new
     }
     op2.commit().await.expect("Op2: Failed commit");
 
@@ -353,7 +387,9 @@ async fn test_get_store_viewer() {
     );
 
     // --- Test viewer for non-existent subtree ---
-    let non_existent_viewer_result = tree.get_store_viewer::<DocStore>("non_existent_subtree").await;
+    let non_existent_viewer_result = tree
+        .get_store_viewer::<DocStore>("non_existent_subtree")
+        .await;
     // Depending on implementation, this might create an empty viewer or return an error.
     // Let's assume it successfully returns an empty viewer for now.
     assert!(
@@ -438,7 +474,10 @@ async fn test_new_transaction_with_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get normal store");
-    let normal_state = normal_store.get_all().await.expect("Failed to get normal state");
+    let normal_state = normal_store
+        .get_all()
+        .await
+        .expect("Failed to get normal state");
     assert!(
         normal_state.get("key1").is_some(),
         "Normal operation should see key1"
@@ -457,7 +496,10 @@ async fn test_new_transaction_with_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get custom store");
-    let custom_state = custom_store.get_all().await.expect("Failed to get custom state");
+    let custom_state = custom_store
+        .get_all()
+        .await
+        .expect("Failed to get custom state");
     assert!(
         custom_state.get("key1").is_some(),
         "Custom operation should see key1"
@@ -469,10 +511,14 @@ async fn test_new_transaction_with_tips() {
 
     // Commit the custom operation to create a branch using helper
     let custom_entry_id =
-        create_branch_from_entry(&tree, &entry1_id, "data", &[("custom_key", "custom_value")]).await;
+        create_branch_from_entry(&tree, &entry1_id, "data", &[("custom_key", "custom_value")])
+            .await;
 
     // Now we should have two tips: entry2_id and custom_entry_id
-    let tips_after_branch = tree.get_tips().await.expect("Failed to get tips after branch");
+    let tips_after_branch = tree
+        .get_tips()
+        .await
+        .expect("Failed to get tips after branch");
     assert_eq!(
         tips_after_branch.len(),
         2,
@@ -496,7 +542,10 @@ async fn test_new_transaction_with_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get merge store");
-    let merge_state = merge_store.get_all().await.expect("Failed to get merge state");
+    let merge_state = merge_store
+        .get_all()
+        .await
+        .expect("Failed to get merge state");
 
     // Merge operation should see data from all paths
     assert!(merge_state.get("key1").is_some(), "Merge should see key1");
@@ -525,7 +574,10 @@ async fn test_new_transaction_with_specific_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get store from A");
-    let state_from_a = store_from_a.get_all().await.expect("Failed to get state from A");
+    let state_from_a = store_from_a
+        .get_all()
+        .await
+        .expect("Failed to get state from A");
 
     assert!(
         state_from_a.get("from_a").is_some(),
@@ -549,7 +601,10 @@ async fn test_new_transaction_with_specific_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get store from B");
-    let state_from_b = store_from_b.get_all().await.expect("Failed to get state from B");
+    let state_from_b = store_from_b
+        .get_all()
+        .await
+        .expect("Failed to get state from B");
 
     assert!(
         state_from_b.get("from_a").is_some(),
@@ -573,7 +628,10 @@ async fn test_new_transaction_with_specific_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get store from C");
-    let state_from_c = store_from_c.get_all().await.expect("Failed to get state from C");
+    let state_from_c = store_from_c
+        .get_all()
+        .await
+        .expect("Failed to get state from C");
 
     assert!(
         state_from_c.get("from_a").is_some(),
@@ -594,7 +652,8 @@ async fn test_new_transaction_with_specific_tips() {
         &entry_a_id,
         "data",
         &[("branch_data", "branch_value")],
-    ).await;
+    )
+    .await;
 
     // Verify the branch only sees data from A
     let op_verify_branch = tree
@@ -636,9 +695,11 @@ async fn test_new_transaction_with_multiple_tips() {
     let base_id = add_data_to_subtree(&tree, "data", &[("base", "value")]).await;
 
     // Create two parallel branches from base using helpers
-    let branch1_id = create_branch_from_entry(&tree, &base_id, "data", &[("branch1", "value1")]).await;
+    let branch1_id =
+        create_branch_from_entry(&tree, &base_id, "data", &[("branch1", "value1")]).await;
 
-    let branch2_id = create_branch_from_entry(&tree, &base_id, "data", &[("branch2", "value2")]).await;
+    let branch2_id =
+        create_branch_from_entry(&tree, &base_id, "data", &[("branch2", "value2")]).await;
 
     // Create operation with multiple tips (merge operation)
     let merge_tips = vec![branch1_id.clone(), branch2_id.clone()];
@@ -650,7 +711,10 @@ async fn test_new_transaction_with_multiple_tips() {
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get merge store");
-    let state_merge = store_merge.get_all().await.expect("Failed to get merge state");
+    let state_merge = store_merge
+        .get_all()
+        .await
+        .expect("Failed to get merge state");
 
     // Merge operation should see data from all branches
     assert!(
@@ -675,7 +739,10 @@ async fn test_new_transaction_with_multiple_tips() {
 
     // Verify the merge operation correctly set up parents
     let backend = tree.backend().expect("Failed to get backend");
-    let merge_entry = backend.get(&merge_id).await.expect("Failed to get merge entry");
+    let merge_entry = backend
+        .get(&merge_id)
+        .await
+        .expect("Failed to get merge entry");
     let merge_parents = merge_entry.parents().expect("Failed to get merge parents");
 
     assert_eq!(
