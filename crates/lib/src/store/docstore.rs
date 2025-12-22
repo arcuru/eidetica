@@ -379,15 +379,16 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// store.set_path(path!("user.profile.name"), "Alice")?;
+    /// store.set_path(path!("user.profile.name"), "Alice").await?;
     ///
     /// // Navigate nested structure
-    /// let name = store.get_path(path!("user.profile.name"))?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// let name = store.get_path(path!("user.profile.name")).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Returns
@@ -452,20 +453,21 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// store.set("name", "Alice")?;
-    /// store.set("age", 30)?;
+    /// store.set("name", "Alice").await?;
+    /// store.set("age", 30).await?;
     ///
     /// // Type inference makes this clean
-    /// let name: String = store.get_as("name")?;
-    /// let age: i64 = store.get_as("age")?;
+    /// let name: String = store.get_as("name").await?;
+    /// let age: i64 = store.get_as("age").await?;
     ///
     /// assert_eq!(name, "Alice");
     /// assert_eq!(age, 30);
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn get_as<T>(&self, key: impl AsRef<str>) -> Result<T>
     where
@@ -487,18 +489,19 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Assuming nested structure exists
     /// // Type inference with path access
-    /// let name: String = store.get_path_as(path!("user.profile.name"))?;
-    /// let age: i64 = store.get_path_as(path!("user.profile.age"))?;
+    /// let name: String = store.get_path_as(path!("user.profile.name")).await?;
+    /// let age: i64 = store.get_path_as(path!("user.profile.age")).await?;
     ///
     /// assert_eq!(name, "Alice");
     /// assert_eq!(age, 30);
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors
@@ -531,19 +534,20 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Key doesn't exist - will set default
-    /// let count1: i64 = store.get_or_insert("counter", 0)?;
+    /// let count1: i64 = store.get_or_insert("counter", 0).await?;
     /// assert_eq!(count1, 0);
     ///
     /// // Key exists - will return existing value
-    /// store.set("counter", 5)?;
-    /// let count2: i64 = store.get_or_insert("counter", 100)?;
+    /// store.set("counter", 5).await?;
+    /// let count2: i64 = store.get_or_insert("counter", 100).await?;
     /// assert_eq!(count2, 5);
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn get_or_insert<T>(&self, key: impl AsRef<str>, default: T) -> Result<T>
     where
@@ -586,25 +590,26 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// store.set("count", 5)?;
-    /// store.set("text", "hello")?;
+    /// store.set("count", 5).await?;
+    /// store.set("text", "hello").await?;
     ///
     /// // Modify counter
     /// store.modify::<i64, _>("count", |count| {
     ///     *count += 10;
-    /// })?;
-    /// assert_eq!(store.get_as::<i64>("count")?, 15);
+    /// }).await?;
+    /// assert_eq!(store.get_as::<i64>("count").await?, 15);
     ///
     /// // Modify string
     /// store.modify::<String, _>("text", |text| {
     ///     text.push_str(" world");
-    /// })?;
-    /// assert_eq!(store.get_as::<String>("text")?, "hello world");
-    /// # Ok::<(), eidetica::Error>(())
+    /// }).await?;
+    /// assert_eq!(store.get_as::<String>("text").await?, "hello world");
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn modify<T, F>(&self, key: impl AsRef<str>, f: F) -> Result<()>
     where
@@ -634,22 +639,23 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Key doesn't exist - will create with default then modify
     /// store.modify_or_insert::<i64, _>("counter", 0, |count| {
     ///     *count += 5;
-    /// })?;
-    /// assert_eq!(store.get_as::<i64>("counter")?, 5);
+    /// }).await?;
+    /// assert_eq!(store.get_as::<i64>("counter").await?, 5);
     ///
     /// // Key exists - will just modify
     /// store.modify_or_insert::<i64, _>("counter", 100, |count| {
     ///     *count *= 2;
-    /// })?;
-    /// assert_eq!(store.get_as::<i64>("counter")?, 10);
-    /// # Ok::<(), eidetica::Error>(())
+    /// }).await?;
+    /// assert_eq!(store.get_as::<i64>("counter").await?, 10);
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn modify_or_insert<T, F>(&self, key: impl AsRef<str>, default: T, f: F) -> Result<()>
     where
@@ -682,19 +688,20 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Path doesn't exist - will create structure and set default
-    /// let count1: i64 = store.get_or_insert_path(path!("user.stats.score"), 0)?;
+    /// let count1: i64 = store.get_or_insert_path(path!("user.stats.score"), 0).await?;
     /// assert_eq!(count1, 0);
     ///
     /// // Path exists - will return existing value
-    /// store.set_path(path!("user.stats.score"), 42)?;
-    /// let count2: i64 = store.get_or_insert_path(path!("user.stats.score"), 100)?;
+    /// store.set_path(path!("user.stats.score"), 42).await?;
+    /// let count2: i64 = store.get_or_insert_path(path!("user.stats.score"), 100).await?;
     /// assert_eq!(count2, 42);
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn get_or_insert_path<T>(&self, path: impl AsRef<Path>, default: T) -> Result<T>
     where
@@ -731,22 +738,23 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
     /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 0, |score| {
     ///     *score += 10;
-    /// })?;
-    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score"))?, 10);
+    /// }).await?;
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score")).await?, 10);
     ///
     /// // Path exists - will just modify
     /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 100, |score| {
     ///     *score *= 2;
-    /// })?;
-    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score"))?, 20);
-    /// # Ok::<(), eidetica::Error>(())
+    /// }).await?;
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.stats.score")).await?, 20);
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn modify_or_insert_path<T, F>(
         &self,
@@ -812,14 +820,14 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Set nested values, creating structure as needed
-    /// store.set_path(path!("user.profile.name"), "Alice")?;
-    /// store.set_path(path!("user.profile.age"), 30)?;
-    /// store.set_path(path!("user.settings.theme"), "dark")?;
+    /// store.set_path(path!("user.profile.name"), "Alice").await?;
+    /// store.set_path(path!("user.profile.age"), 30).await?;
+    /// store.set_path(path!("user.settings.theme"), "dark").await?;
     ///
     /// // This creates nested structure:
     /// // {
@@ -830,17 +838,18 @@ impl DocStore {
     /// // }
     ///
     /// // Access with get_path methods
-    /// assert_eq!(store.get_path_as::<String>(path!("user.profile.name"))?, "Alice");
+    /// assert_eq!(store.get_path_as::<String>(path!("user.profile.name")).await?, "Alice");
     ///
     /// // Or navigate the nested structure manually from get_all()
-    /// let all = store.get_all()?;
+    /// let all = store.get_all().await?;
     /// // all.get("user") returns a Doc, NOT all.get("user.profile.name")
     /// if let Some(Value::Doc(user)) = all.get("user") {
     ///     if let Some(Value::Doc(profile)) = user.get("profile") {
     ///         assert_eq!(profile.get("name"), Some(&Value::Text("Alice".to_string())));
     ///     }
     /// }
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors
@@ -891,18 +900,19 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// store.set_path(path!("user.score"), 100)?;
+    /// store.set_path(path!("user.score"), 100).await?;
     ///
     /// store.modify_path::<i64, _>(path!("user.score"), |score| {
     ///     *score += 50;
-    /// })?;
+    /// }).await?;
     ///
-    /// assert_eq!(store.get_path_as::<i64>(path!("user.score"))?, 150);
-    /// # Ok::<(), eidetica::Error>(())
+    /// assert_eq!(store.get_path_as::<i64>(path!("user.score")).await?, 150);
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn modify_path<T, F>(&self, path: impl AsRef<Path>, f: F) -> Result<()>
     where
@@ -945,22 +955,24 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction().unwrap();
-    /// let store = op.get_store::<DocStore>("my_data").unwrap();
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("my_data").await?;
     ///
     /// // First set a value
-    /// store.set("user1", "Alice").unwrap();
+    /// store.set("user1", "Alice").await?;
     ///
     /// // Later delete the value
-    /// store.delete("user1").unwrap();
+    /// store.delete("user1").await?;
     ///
     /// // Attempting to get the deleted key will return NotFound
-    /// assert!(store.get("user1").is_err());
+    /// assert!(store.get("user1").await.is_err());
     ///
     /// // You can verify the tombstone exists by checking the full state
-    /// let all_data = store.get_all().unwrap();
+    /// let all_data = store.get_all().await?;
     /// assert!(all_data.is_tombstone("user1"));
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Arguments
@@ -1014,16 +1026,16 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
     /// // Using set_path creates nested structure
-    /// store.set_path(path!("user.name"), "Alice")?;
-    /// store.set_path(path!("user.age"), 30)?;
-    /// store.set_path(path!("config.theme"), "dark")?;
+    /// store.set_path(path!("user.name"), "Alice").await?;
+    /// store.set_path(path!("user.age"), 30).await?;
+    /// store.set_path(path!("config.theme"), "dark").await?;
     ///
-    /// let all_data = store.get_all()?;
+    /// let all_data = store.get_all().await?;
     ///
     /// // The top-level map has keys "user" and "config", NOT "user.name", "user.age", etc.
     /// assert_eq!(all_data.len(), 2); // Only 2 top-level keys
@@ -1036,8 +1048,9 @@ impl DocStore {
     /// }
     ///
     /// // For direct access, use get_path() or get_path_as() instead:
-    /// assert_eq!(store.get_path_as::<String>(path!("user.name"))?, "Alice");
-    /// # Ok::<(), eidetica::Error>(())
+    /// assert_eq!(store.get_path_as::<String>(path!("user.name")).await?, "Alice");
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Returns
@@ -1071,18 +1084,19 @@ impl DocStore {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// assert!(!store.contains_key("missing")); // Key doesn't exist
+    /// assert!(!store.contains_key("missing").await); // Key doesn't exist
     ///
-    /// store.set("name", "Alice")?;
-    /// assert!(store.contains_key("name")); // Key exists in staging
+    /// store.set("name", "Alice").await?;
+    /// assert!(store.contains_key("name").await); // Key exists in staging
     ///
-    /// store.delete("name")?;
-    /// assert!(!store.contains_key("name")); // Key deleted (tombstone)
-    /// # Ok::<(), eidetica::Error>(())
+    /// store.delete("name").await?;
+    /// assert!(!store.contains_key("name").await); // Key deleted (tombstone)
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn contains_key(&self, key: impl AsRef<str>) -> bool {
         let key = key.as_ref();
@@ -1122,18 +1136,19 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
-    /// let store = op.get_store::<DocStore>("data")?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
+    /// let store = op.get_store::<DocStore>("data").await?;
     ///
-    /// assert!(!store.contains_path(path!("user.name"))); // Path doesn't exist
+    /// assert!(!store.contains_path(path!("user.name")).await); // Path doesn't exist
     ///
-    /// store.set_path(path!("user.profile.name"), "Alice")?;
-    /// assert!(store.contains_path(path!("user"))); // Intermediate path exists
-    /// assert!(store.contains_path(path!("user.profile"))); // Intermediate path exists
-    /// assert!(store.contains_path(path!("user.profile.name"))); // Full path exists
-    /// assert!(!store.contains_path(path!("user.profile.age"))); // Path doesn't exist
-    /// # Ok::<(), eidetica::Error>(())
+    /// store.set_path(path!("user.profile.name"), "Alice").await?;
+    /// assert!(store.contains_path(path!("user")).await); // Intermediate path exists
+    /// assert!(store.contains_path(path!("user.profile")).await); // Intermediate path exists
+    /// assert!(store.contains_path(path!("user.profile.name")).await); // Full path exists
+    /// assert!(!store.contains_path(path!("user.profile.age")).await); // Path doesn't exist
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first

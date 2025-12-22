@@ -358,18 +358,19 @@ impl Transaction {
     ///
     /// ```rust,no_run
     /// # use eidetica::Database;
-    /// # let database: Database = unimplemented!();
-    /// let op = database.new_transaction()?;
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
+    /// let op = database.new_transaction().await?;
     /// let settings = op.get_settings()?;
     ///
     /// // Read a setting
-    /// if let Ok(name) = settings.get_name() {
+    /// if let Ok(name) = settings.get_name().await {
     ///     println!("Database name: {}", name);
     /// }
     ///
     /// // Modify a setting
-    /// settings.set_name("Updated Database Name")?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// settings.set_name("Updated Database Name").await?;
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Errors

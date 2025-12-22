@@ -178,7 +178,7 @@ impl YrsBinary {
 /// use eidetica::store::YDoc;
 /// use yrs::{Map, Text, Transact};
 /// # use eidetica::Result;
-/// # fn example(store: &YDoc) -> Result<()> {
+/// # async fn example(store: &YDoc) -> Result<()> {
 /// // Work directly with the yrs document
 /// store.with_doc_mut(|doc| {
 ///     let map = doc.get_or_insert_map("root");
@@ -189,7 +189,7 @@ impl YrsBinary {
 ///     text.insert(&mut txn, 0, "Hello, World!");
 ///
 ///     Ok(())
-/// })?;
+/// }).await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -289,12 +289,12 @@ impl YDoc {
     /// ```rust,no_run
     /// # use eidetica::Result;
     /// # use yrs::{Transact, GetString};
-    /// # fn example(store: &eidetica::store::YDoc) -> Result<()> {
+    /// # async fn example(store: &eidetica::store::YDoc) -> Result<()> {
     /// let content = store.with_doc(|doc| {
     ///     let text = doc.get_or_insert_text("document");
     ///     let txn = doc.transact();
     ///     Ok(text.get_string(&txn))
-    /// })?;
+    /// }).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -328,13 +328,13 @@ impl YDoc {
     /// ```rust,no_run
     /// # use eidetica::Result;
     /// # use yrs::{Transact, Text};
-    /// # fn example(store: &eidetica::store::YDoc) -> Result<()> {
+    /// # async fn example(store: &eidetica::store::YDoc) -> Result<()> {
     /// store.with_doc_mut(|doc| {
     ///     let text = doc.get_or_insert_text("document");
     ///     let mut txn = doc.transact_mut();
     ///     text.insert(&mut txn, 0, "Hello, World!");
     ///     Ok(())
-    /// })?;
+    /// }).await?;
     /// # Ok(())
     /// # }
     /// ```

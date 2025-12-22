@@ -623,13 +623,13 @@ impl Sync {
     ///     }],
     ///     auth: None,
     ///     display_name: Some("My Peer".to_string()),
-    /// })?;
+    /// }).await?;
     ///
     /// // Optionally wait for initial sync
     /// handle.wait_for_initial_sync().await?;
     ///
     /// // Check status anytime
-    /// let status = handle.status()?;
+    /// let status = handle.status().await?;
     /// println!("Has local data: {}", status.has_local_data);
     /// # Ok(())
     /// # }

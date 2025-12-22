@@ -87,8 +87,9 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::crdt::Doc;
-    /// # fn example() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// let (signing_key, public_key) = generate_keypair();
     /// let sigkey = format_public_key(&public_key);
     ///
@@ -101,10 +102,10 @@ impl Database {
     ///     &instance,
     ///     signing_key,
     ///     sigkey,
-    /// )?;
+    /// ).await?;
     ///
     /// // All transactions automatically use the provided key
-    /// let tx = database.new_transaction()?;
+    /// let tx = database.new_transaction().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -251,13 +252,14 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::auth::types::SigKey;
-    /// # fn example() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, verifying_key) = generate_keypair();
     /// # let root_id = "existing_database_root_id".into();
     /// // Find all SigKeys this public key can use
     /// let pubkey = format_public_key(&verifying_key);
-    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey)?;
+    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey).await?;
     ///
     /// // Use the first available SigKey
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
@@ -270,7 +272,7 @@ impl Database {
     ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str)?;
     ///
     ///     // All transactions automatically use the provided key
-    ///     let tx = database.new_transaction()?;
+    ///     let tx = database.new_transaction().await?;
     /// }
     /// # Ok(())
     /// # }
@@ -325,15 +327,16 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::auth::types::SigKey;
-    /// # fn example() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, verifying_key) = generate_keypair();
     /// # let root_id = "database_root_id".into();
     /// // Get the public key string
     /// let pubkey = format_public_key(&verifying_key);
     ///
     /// // Find all SigKeys this pubkey can use (sorted highest permission first)
-    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey)?;
+    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey).await?;
     ///
     /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
@@ -393,15 +396,20 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
     /// # use ed25519_dalek::SigningKey;
-    /// # fn example() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let settings = eidetica::crdt::Doc::new();
     /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
-    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string())?;
+    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string()).await?;
     ///
-    /// database.on_local_write(|entry, db, instance| {
-    ///     println!("Entry {} written to database {}", entry.id(), db.root_id());
-    ///     Ok(())
+    /// database.on_local_write(|entry, db, _instance| {
+    ///     let entry_id = entry.id().clone();
+    ///     let db_id = db.root_id().clone();
+    ///     Box::pin(async move {
+    ///         println!("Entry {} written to database {}", entry_id, db_id);
+    ///         Ok(())
+    ///     })
     /// })?;
     /// # Ok(())
     /// # }
@@ -443,15 +451,20 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
     /// # use ed25519_dalek::SigningKey;
-    /// # fn example() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let settings = eidetica::crdt::Doc::new();
     /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
-    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string())?;
+    /// # let database = Database::create(settings, &instance, signing_key, "key".to_string()).await?;
     ///
-    /// database.on_remote_write(|entry, db, instance| {
-    ///     println!("Remote entry {} synced to database {}", entry.id(), db.root_id());
-    ///     Ok(())
+    /// database.on_remote_write(|entry, db, _instance| {
+    ///     let entry_id = entry.id().clone();
+    ///     let db_id = db.root_id().clone();
+    ///     Box::pin(async move {
+    ///         println!("Remote entry {} synced to database {}", entry_id, db_id);
+    ///         Ok(())
+    ///     })
     /// })?;
     /// # Ok(())
     /// # }
@@ -513,17 +526,18 @@ impl Database {
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::Database;
-    /// # let database: Database = unimplemented!();
+    /// # async fn example(database: Database) -> eidetica::Result<()> {
     /// // Read-only access
-    /// let settings = database.get_settings()?;
-    /// let name = settings.get_name()?;
+    /// let settings = database.get_settings().await?;
+    /// let name = settings.get_name().await?;
     ///
     /// // For modifications, use a transaction:
-    /// let txn = database.new_transaction()?;
+    /// let txn = database.new_transaction().await?;
     /// let settings = txn.get_settings()?;
-    /// settings.set_name("new_name")?;
-    /// txn.commit()?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// settings.set_name("new_name").await?;
+    /// txn.commit().await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn get_settings(&self) -> Result<SettingsStore> {
         let txn = self.new_transaction().await?;
@@ -649,16 +663,17 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
     /// # use eidetica::instance::LegacyInstanceOps;
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::open(backend)?;
-    /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
-    /// # let op = tree.new_transaction()?;
-    /// let entry_id = op.commit()?;
-    /// let entry = tree.get_entry(&entry_id)?;           // Using &String
-    /// let entry = tree.get_entry("some_entry_id")?;     // Using &str
-    /// let entry = tree.get_entry(entry_id.clone())?;    // Using String
+    /// # let db = Instance::open(backend).await?;
+    /// # db.add_private_key("TEST_KEY").await?;
+    /// # let tree = db.new_database(Doc::new(), "TEST_KEY").await?;
+    /// # let op = tree.new_transaction().await?;
+    /// let entry_id = op.commit().await?;
+    /// let entry = tree.get_entry(&entry_id).await?;           // Using &String
+    /// let entry = tree.get_entry("some_entry_id").await?;     // Using &str
+    /// let entry = tree.get_entry(entry_id.clone()).await?;    // Using String
     /// println!("Entry signature: {:?}", entry.sig);
     /// # Ok(())
     /// # }
@@ -702,13 +717,14 @@ impl Database {
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
     /// # use eidetica::instance::LegacyInstanceOps;
-    /// # fn main() -> Result<()> {
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::open(backend)?;
-    /// # db.add_private_key("TEST_KEY")?;
-    /// # let tree = db.new_database(Doc::new(), "TEST_KEY")?;
+    /// # let db = Instance::open(backend).await?;
+    /// # db.add_private_key("TEST_KEY").await?;
+    /// # let tree = db.new_database(Doc::new(), "TEST_KEY").await?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
-    /// let entries = tree.get_entries(entry_ids)?;
+    /// let entries = tree.get_entries(entry_ids).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -806,17 +822,18 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
-    /// # fn example() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<()> {
+    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _) = generate_keypair();
     /// # let database = Database::create(
     /// #     eidetica::crdt::Doc::new(),
     /// #     &instance,
     /// #     signing_key,
     /// #     "my_key".to_string(),
-    /// # )?;
+    /// # ).await?;
     /// // Check if a key has Admin permission
-    /// let permission = database.get_sigkey_permission("my_key")?;
+    /// let permission = database.get_sigkey_permission("my_key").await?;
     /// if permission.can_admin() {
     ///     println!("Key has Admin permission!");
     /// }

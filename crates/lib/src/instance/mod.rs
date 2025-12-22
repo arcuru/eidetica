@@ -126,18 +126,21 @@ impl std::fmt::Debug for InstanceInternal {
 ///
 /// ```
 /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-/// let instance = Instance::open(Box::new(InMemory::new()))?;
+/// # #[tokio::main]
+/// # async fn main() -> eidetica::Result<()> {
+/// let instance = Instance::open(Box::new(InMemory::new())).await?;
 ///
 /// // Create passwordless user
-/// instance.create_user("alice", None)?;
-/// let mut user = instance.login_user("alice", None)?;
+/// instance.create_user("alice", None).await?;
+/// let mut user = instance.login_user("alice", None).await?;
 ///
 /// // Use User API for operations
 /// let mut settings = Doc::new();
 /// settings.set("name", "my_database");
 /// let default_key = user.get_default_key()?;
-/// let db = user.create_database(settings, &default_key)?;
-/// # Ok::<(), eidetica::Error>(())
+/// let db = user.create_database(settings, &default_key).await?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone, Debug, Handle)]
 pub struct Instance {
@@ -179,19 +182,22 @@ impl Instance {
     /// # Example
     /// ```
     /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
     /// let backend = InMemory::new();
-    /// let instance = Instance::open(Box::new(backend))?;
+    /// let instance = Instance::open(Box::new(backend)).await?;
     ///
     /// // Create and login user explicitly
-    /// instance.create_user("alice", None)?;
-    /// let mut user = instance.login_user("alice", None)?;
+    /// instance.create_user("alice", None).await?;
+    /// let mut user = instance.login_user("alice", None).await?;
     ///
     /// // Use User API for operations
     /// let mut settings = Doc::new();
     /// settings.set("name", "my_database");
     /// let default_key = user.get_default_key()?;
-    /// let db = user.create_database(settings, &default_key)?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// let db = user.create_database(settings, &default_key).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
         use crate::constants::{DATABASES, USERS};
@@ -315,19 +321,22 @@ impl Instance {
     /// # Example
     /// ```
     /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
     /// let backend = InMemory::new();
-    /// let instance = Instance::create(Box::new(backend))?;
+    /// let instance = Instance::create(Box::new(backend)).await?;
     ///
     /// // Create and login user explicitly
-    /// instance.create_user("alice", None)?;
-    /// let mut user = instance.login_user("alice", None)?;
+    /// instance.create_user("alice", None).await?;
+    /// let mut user = instance.login_user("alice", None).await?;
     ///
     /// // Use User API for operations
     /// let mut settings = Doc::new();
     /// settings.set("name", "my_database");
     /// let default_key = user.get_default_key()?;
-    /// let db = user.create_database(settings, &default_key)?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// let db = user.create_database(settings, &default_key).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn create(backend: Box<dyn BackendImpl>) -> Result<Self> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
@@ -844,7 +853,9 @@ impl WeakInstance {
     /// # Example
     /// ```
     /// # use eidetica::{backend::database::InMemory, Instance};
-    /// let instance = Instance::open(Box::new(InMemory::new()))?;
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
+    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// let weak = instance.downgrade();
     ///
     /// // Upgrade works while instance exists
@@ -853,7 +864,8 @@ impl WeakInstance {
     /// drop(instance);
     /// // Upgrade fails after instance is dropped
     /// assert!(weak.upgrade().is_none());
-    /// # Ok::<(), eidetica::Error>(())
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn upgrade(&self) -> Option<Instance> {
         self.inner.upgrade().map(|inner| Instance { inner })

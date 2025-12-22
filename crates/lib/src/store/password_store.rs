@@ -340,18 +340,18 @@ impl crate::transaction::Encryptor for PasswordEncryptor {
 /// # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, Database};
 /// # use eidetica::store::{PasswordStore, DocStore};
 /// # use eidetica::auth::generate_keypair;
-/// # fn example() -> eidetica::Result<()> {
+/// # async fn example() -> eidetica::Result<()> {
 /// # let backend = InMemory::new();
-/// # let instance = Instance::open(Box::new(backend))?;
+/// # let instance = Instance::open(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
-/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
-/// let tx = db.new_transaction()?;
-/// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-/// encrypted.initialize("my_password", "docstore:v0", "{}")?;
+/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+/// let tx = db.new_transaction().await?;
+/// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
+/// encrypted.initialize("my_password", "docstore:v0", "{}").await?;
 ///
-/// let docstore = encrypted.unwrap::<DocStore>()?;
-/// docstore.set("key", "secret value")?;
-/// tx.commit()?;
+/// let docstore = encrypted.unwrap::<DocStore>().await?;
+/// docstore.set("key", "secret value").await?;
+/// tx.commit().await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -362,17 +362,17 @@ impl crate::transaction::Encryptor for PasswordEncryptor {
 /// # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, Database};
 /// # use eidetica::store::{PasswordStore, DocStore};
 /// # use eidetica::auth::generate_keypair;
-/// # fn example() -> eidetica::Result<()> {
+/// # async fn example() -> eidetica::Result<()> {
 /// # let backend = InMemory::new();
-/// # let instance = Instance::open(Box::new(backend))?;
+/// # let instance = Instance::open(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
-/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
-/// let tx = db.new_transaction()?;
-/// let mut store = tx.get_store::<PasswordStore>("secrets")?;
+/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+/// let tx = db.new_transaction().await?;
+/// let mut store = tx.get_store::<PasswordStore>("secrets").await?;
 /// store.open("my_password")?;
 ///
-/// let docstore = store.unwrap::<DocStore>()?;
-/// let value = docstore.get("key")?;
+/// let docstore = store.unwrap::<DocStore>().await?;
+/// let value = docstore.get("key").await?;
 /// # Ok(())
 /// # }
 /// ```
@@ -530,18 +530,18 @@ impl PasswordStore {
     /// # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, Database};
     /// # use eidetica::store::{PasswordStore, DocStore};
     /// # use eidetica::auth::generate_keypair;
-    /// # fn example() -> eidetica::Result<()> {
+    /// # async fn example() -> eidetica::Result<()> {
     /// # let backend = InMemory::new();
-    /// # let instance = Instance::open(Box::new(backend))?;
+    /// # let instance = Instance::open(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
-    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
-    /// let tx = db.new_transaction()?;
-    /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-    /// encrypted.initialize("my_password", "docstore:v0", "{}")?;
+    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+    /// let tx = db.new_transaction().await?;
+    /// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
+    /// encrypted.initialize("my_password", "docstore:v0", "{}").await?;
     ///
-    /// let docstore = encrypted.unwrap::<DocStore>()?;
-    /// docstore.set("key", "secret value")?;
-    /// tx.commit()?;
+    /// let docstore = encrypted.unwrap::<DocStore>().await?;
+    /// docstore.set("key", "secret value").await?;
+    /// tx.commit().await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -868,22 +868,22 @@ impl PasswordStore {
     /// # use eidetica::{Instance, backend::database::InMemory, crdt::Doc, Database};
     /// # use eidetica::store::{PasswordStore, DocStore};
     /// # use eidetica::auth::generate_keypair;
-    /// # fn example() -> eidetica::Result<()> {
+    /// # async fn example() -> eidetica::Result<()> {
     /// # let backend = InMemory::new();
-    /// # let instance = Instance::open(Box::new(backend))?;
+    /// # let instance = Instance::open(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
-    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string())?;
-    /// # let tx = db.new_transaction()?;
-    /// # let mut encrypted = tx.get_store::<PasswordStore>("test")?;
-    /// # encrypted.initialize("pass", "docstore:v0", "{}")?;
-    /// # tx.commit()?;
-    /// # let tx2 = db.new_transaction()?;
-    /// let mut encrypted = tx2.get_store::<PasswordStore>("test")?;
+    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+    /// # let tx = db.new_transaction().await?;
+    /// # let mut encrypted = tx.get_store::<PasswordStore>("test").await?;
+    /// # encrypted.initialize("pass", "docstore:v0", "{}").await?;
+    /// # tx.commit().await?;
+    /// # let tx2 = db.new_transaction().await?;
+    /// let mut encrypted = tx2.get_store::<PasswordStore>("test").await?;
     /// encrypted.open("pass")?;
     ///
     /// // Unwrap to DocStore - type must match
-    /// let docstore = encrypted.unwrap::<DocStore>()?;
-    /// docstore.set("key", "value")?; // Automatically encrypted
+    /// let docstore = encrypted.unwrap::<DocStore>().await?;
+    /// docstore.set("key", "value").await?; // Automatically encrypted
     /// # Ok(())
     /// # }
     /// ```
