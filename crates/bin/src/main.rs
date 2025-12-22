@@ -269,8 +269,6 @@ async fn handle_login_page(State(state): State<AppState>, cookies: Cookies) -> R
 }
 
 /// Handler for POST /login - Process login
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from Instance/User.
 async fn handle_login_submit(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -281,42 +279,28 @@ async fn handle_login_submit(
     let username = form.username.clone();
     let password = form.password.clone();
 
-    // Use spawn_blocking to handle non-Send futures from Instance/User
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            // Attempt to login
-            let login_result = instance.login_user(&username, password.as_deref()).await;
-
-            match login_result {
-                Ok(user) => {
-                    // Enable background sync for this user's databases
-                    if let Some(sync) = instance.sync() {
-                        let user_uuid = user.user_uuid();
-                        let user_db_id = user.user_database().root_id().clone();
-                        if let Err(e) = sync.sync_user(user_uuid, &user_db_id).await {
-                            tracing::warn!(
-                                "Failed to enable background sync for user {}: {}",
-                                username,
-                                e
-                            );
-                        }
-                    }
-
-                    // Create session
-                    let session_token = sessions.create_session(user).await;
-                    Ok(session_token)
+    // Attempt to login
+    let result = match instance.login_user(&username, password.as_deref()).await {
+        Ok(user) => {
+            // Enable background sync for this user's databases
+            if let Some(sync) = instance.sync() {
+                let user_uuid = user.user_uuid();
+                let user_db_id = user.user_database().root_id().clone();
+                if let Err(e) = sync.sync_user(user_uuid, &user_db_id).await {
+                    tracing::warn!(
+                        "Failed to enable background sync for user {}: {}",
+                        username,
+                        e
+                    );
                 }
-                Err(e) => Err(format!("Login failed: {e}")),
             }
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
+
+            // Create session
+            let session_token = sessions.create_session(user).await;
+            Ok(session_token)
+        }
+        Err(e) => Err(format!("Login failed: {e}")),
+    };
 
     match result {
         Ok(session_token) => {
@@ -353,19 +337,17 @@ async fn handle_register_page(State(state): State<AppState>, cookies: Cookies) -
 }
 
 /// Handler for POST /register - Process registration
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from Instance/User.
 async fn handle_register_submit(
     State(state): State<AppState>,
     cookies: Cookies,
     Form(form): Form<RegisterForm>,
 ) -> Response {
-    // Validate username (sync - can do outside spawn_blocking)
+    // Validate username
     if form.username.is_empty() {
         return Html(templates::register_page(Some("Username cannot be empty"))).into_response();
     }
 
-    // Handle password validation (sync)
+    // Handle password validation
     let password: Option<String> = if let Some(ref pwd) = form.password {
         if pwd.is_empty() {
             None
@@ -384,27 +366,17 @@ async fn handle_register_submit(
     let sessions = state.sessions.clone();
     let username = form.username.clone();
 
-    // Use spawn_blocking for all async Instance/User operations
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            // Check if user already exists
-            if let Ok(users) = instance.list_users().await
-                && users.iter().any(|u| u == &username)
-            {
-                return Err("Username already exists".to_string());
-            }
-
-            // Create the user
-            let pwd_ref = password.as_deref();
-            if let Err(e) = instance.create_user(&username, pwd_ref).await {
-                return Err(format!("Registration failed: {e}"));
-            }
-
+    // Check if user already exists
+    let result = if let Ok(users) = instance.list_users().await
+        && users.iter().any(|u| u == &username)
+    {
+        Err("Username already exists".to_string())
+    } else {
+        // Create the user
+        let pwd_ref = password.as_deref();
+        if let Err(e) = instance.create_user(&username, pwd_ref).await {
+            Err(format!("Registration failed: {e}"))
+        } else {
             tracing::info!("Created new user: {}", username);
 
             // Log in the new user automatically
@@ -418,10 +390,8 @@ async fn handle_register_submit(
                     Ok(None) // User created, but login failed
                 }
             }
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
+        }
+    };
 
     match result {
         Ok(Some(session_token)) => {
@@ -444,10 +414,8 @@ async fn handle_register_submit(
 // ============================================================================
 
 /// Handler for GET /dashboard - Show user dashboard
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from User.
 async fn handle_dashboard(State(state): State<AppState>, cookies: Cookies) -> Response {
-    // Check session (sync)
+    // Check session
     let session_token = match cookies.get(SESSION_COOKIE) {
         Some(cookie) => cookie.value().to_string(),
         None => return Redirect::to("/login").into_response(),
@@ -458,32 +426,19 @@ async fn handle_dashboard(State(state): State<AppState>, cookies: Cookies) -> Re
         None => return Redirect::to("/login").into_response(),
     };
 
-    // Use spawn_blocking for all User operations
-    let html = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            let user = user_lock.read().await;
+    let user = user_lock.read().await;
 
-            // Get user's tracked databases
-            let tracked_dbs = user.databases().await.unwrap_or_default();
+    // Get user's tracked databases
+    let tracked_dbs = user.databases().await.unwrap_or_default();
 
-            // Convert to display info
-            let mut databases = Vec::new();
-            for tracked in &tracked_dbs {
-                let db = user.open_database(&tracked.database_id).await.ok();
-                databases.push(DatabaseInfo::from_tracked(tracked, db.as_ref()).await);
-            }
+    // Convert to display info
+    let mut databases = Vec::new();
+    for tracked in &tracked_dbs {
+        let db = user.open_database(&tracked.database_id).await.ok();
+        databases.push(DatabaseInfo::from_tracked(tracked, db.as_ref()).await);
+    }
 
-            templates::dashboard_page(&user, databases)
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
-
+    let html = templates::dashboard_page(&user, databases);
     Html(html).into_response()
 }
 
@@ -494,14 +449,12 @@ struct DatabaseQuery {
 }
 
 /// Handler for GET /dashboard/database?id=... - Show database details
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from User.
 async fn handle_database_detail(
     State(state): State<AppState>,
     cookies: Cookies,
     Query(query): Query<DatabaseQuery>,
 ) -> Response {
-    // Check session (sync)
+    // Check session
     let session_token = match cookies.get(SESSION_COOKIE) {
         Some(cookie) => cookie.value().to_string(),
         None => return Redirect::to("/login").into_response(),
@@ -512,7 +465,7 @@ async fn handle_database_detail(
         None => return Redirect::to("/login").into_response(),
     };
 
-    // Parse database ID (sync)
+    // Parse database ID
     let database_id = match eidetica::entry::ID::parse(&query.id) {
         Ok(id) => id,
         Err(_) => {
@@ -520,71 +473,54 @@ async fn handle_database_detail(
         }
     };
 
-    // Use spawn_blocking for all User operations
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            let user = user_lock.read().await;
+    let user = user_lock.read().await;
 
-            // Get tracked database info
-            let tracked = match user.database(&database_id).await {
-                Ok(t) => t,
-                Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to get tracked database: {e}"),
-                    ));
-                }
-            };
+    // Get tracked database info
+    let tracked = match user.database(&database_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to get tracked database: {e}"),
+            )
+                .into_response();
+        }
+    };
 
-            // Open the database
-            let db = match user.open_database(&database_id).await {
-                Ok(d) => d,
-                Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to open database: {e}"),
-                    ));
-                }
-            };
+    // Open the database
+    let db = match user.open_database(&database_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to open database: {e}"),
+            )
+                .into_response();
+        }
+    };
 
-            // Get database info
-            let db_info = DatabaseInfo::from_tracked(&tracked, Some(&db)).await;
+    // Get database info
+    let db_info = DatabaseInfo::from_tracked(&tracked, Some(&db)).await;
 
-            // Get all entries
-            let entries: Vec<String> = db
-                .get_all_entries()
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| e.id().to_string())
-                .collect();
+    // Get all entries
+    let entries: Vec<String> = db
+        .get_all_entries()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id().to_string())
+        .collect();
 
-            Ok(templates::database_detail_page(&user, db_info, entries))
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
-
-    match result {
-        Ok(html) => Html(html).into_response(),
-        Err((status, msg)) => (status, msg).into_response(),
-    }
+    Html(templates::database_detail_page(&user, db_info, entries)).into_response()
 }
 
 /// Handler for POST /dashboard/track - Request database access (bootstrap)
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from User.
 async fn handle_track_database(
     State(state): State<AppState>,
     cookies: Cookies,
     Form(form): Form<TrackDatabaseForm>,
 ) -> Response {
-    // Check session (sync)
+    // Check session
     let session_token = match cookies.get(SESSION_COOKIE) {
         Some(cookie) => cookie.value().to_string(),
         None => return Redirect::to("/login").into_response(),
@@ -595,7 +531,7 @@ async fn handle_track_database(
         None => return Redirect::to("/login").into_response(),
     };
 
-    // Parse the database ID (sync)
+    // Parse the database ID
     let database_id = match eidetica::entry::ID::parse(&form.database_id) {
         Ok(id) => id,
         Err(e) => {
@@ -607,7 +543,7 @@ async fn handle_track_database(
         }
     };
 
-    // Parse requested permission (sync)
+    // Parse requested permission
     let permission = match form.permission.as_str() {
         "read" => eidetica::auth::Permission::Read,
         "write" => eidetica::auth::Permission::Write(10),
@@ -621,7 +557,7 @@ async fn handle_track_database(
         }
     };
 
-    // Get sync object from instance (sync)
+    // Get sync object from instance
     let sync = match state.instance.sync() {
         Some(s) => s,
         None => {
@@ -636,91 +572,70 @@ async fn handle_track_database(
     let peer_address = form.peer_address.clone();
     let database_id_str = form.database_id.clone();
 
-    // Use spawn_blocking for all User operations
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            // Get user's default key
-            let key_id = {
-                let user = user_lock.read().await;
-                match user.get_default_key() {
-                    Ok(key) => key,
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("Failed to get default key: {e}"),
-                        ));
-                    }
-                }
-            };
-
-            // Request database access via bootstrap
-            let bootstrap_result = {
-                let user = user_lock.read().await;
-                user.request_database_access(
-                    &sync,
-                    &peer_address,
-                    &database_id,
-                    &key_id,
-                    permission,
-                )
-                .await
-            };
-
-            match bootstrap_result {
-                Ok(_) => {
-                    // Bootstrap succeeded - now add database to user's tracked list
-                    let mut user = user_lock.write().await;
-
-                    let mut properties = std::collections::HashMap::new();
-                    properties.insert("peer_address".to_string(), peer_address);
-
-                    let tracked = eidetica::user::TrackedDatabase {
-                        database_id: database_id.clone(),
-                        key_id: key_id.clone(),
-                        sync_settings: eidetica::user::SyncSettings {
-                            sync_enabled: true,
-                            sync_on_commit: false,
-                            interval_seconds: Some(13),
-                            properties,
-                        },
-                    };
-
-                    match user.track_database(tracked).await {
-                        Ok(_) => {
-                            tracing::info!(
-                                "Successfully bootstrapped and tracked database {} for user {}",
-                                database_id_str,
-                                user.username()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Bootstrapped database {} but failed to add to tracking: {}",
-                                database_id_str,
-                                e
-                            );
-                        }
-                    }
-                    Ok(())
-                }
-                Err(e) => Err((
+    // Get user's default key
+    let key_id = {
+        let user = user_lock.read().await;
+        match user.get_default_key() {
+            Ok(key) => key,
+            Err(e) => {
+                return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to request database access: {e}"),
-                )),
+                    format!("Failed to get default key: {e}"),
+                )
+                    .into_response();
             }
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
+        }
+    };
 
-    match result {
-        Ok(()) => Redirect::to("/dashboard").into_response(),
-        Err((status, msg)) => (status, msg).into_response(),
+    // Request database access via bootstrap
+    let bootstrap_result = {
+        let user = user_lock.read().await;
+        user.request_database_access(&sync, &peer_address, &database_id, &key_id, permission)
+            .await
+    };
+
+    match bootstrap_result {
+        Ok(_) => {
+            // Bootstrap succeeded - now add database to user's tracked list
+            let mut user = user_lock.write().await;
+
+            let mut properties = std::collections::HashMap::new();
+            properties.insert("peer_address".to_string(), peer_address);
+
+            let tracked = eidetica::user::TrackedDatabase {
+                database_id: database_id.clone(),
+                key_id: key_id.clone(),
+                sync_settings: eidetica::user::SyncSettings {
+                    sync_enabled: true,
+                    sync_on_commit: false,
+                    interval_seconds: Some(13),
+                    properties,
+                },
+            };
+
+            match user.track_database(tracked).await {
+                Ok(_) => {
+                    tracing::info!(
+                        "Successfully bootstrapped and tracked database {} for user {}",
+                        database_id_str,
+                        user.username()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Bootstrapped database {} but failed to add to tracking: {}",
+                        database_id_str,
+                        e
+                    );
+                }
+            }
+            Redirect::to("/dashboard").into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to request database access: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -769,8 +684,6 @@ async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {
 }
 
 /// Handler for POST /api/v0 - Eidetica sync endpoint
-///
-/// Uses spawn_blocking with LocalSet to handle non-Send futures from SyncHandler.
 async fn handle_sync_request(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -785,21 +698,6 @@ async fn handle_sync_request(
         peer_pubkey: None,
     };
 
-    let handler = state.sync_handler.clone();
-
-    // Use spawn_blocking to handle non-Send futures from SyncHandler
-    let response = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async {
-            handler.handle_request(&request, &context).await
-        })
-    })
-    .await
-    .expect("spawn_blocking panicked");
-
+    let response = state.sync_handler.handle_request(&request, &context).await;
     axum::Json(response)
 }
