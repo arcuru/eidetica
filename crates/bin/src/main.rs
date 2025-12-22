@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load or create database instance
     let backend_box: Box<dyn eidetica::backend::BackendImpl> =
-        match InMemory::load_from_file(DB_FILE) {
+        match InMemory::load_from_file(DB_FILE).await {
             Ok(backend) => {
                 tracing::info!("Loaded database from {DB_FILE}");
                 Box::new(backend)
@@ -223,7 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_any()
             .downcast_ref::<InMemory>()
         {
-            match in_memory_backend.save_to_file(DB_FILE) {
+            match in_memory_backend.save_to_file(DB_FILE).await {
                 Ok(_) => {
                     tracing::info!("Database saved successfully");
                     println!("\nDatabase saved successfully");

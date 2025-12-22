@@ -867,25 +867,16 @@ mod tests {
     use std::path::Path;
 
     async fn save_in_memory_backend(instance: &Instance, path: &Path) -> Result<(), Error> {
-        let backend = instance.backend().as_arc_backend_impl().clone();
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let in_memory = backend
-                .as_any()
-                .downcast_ref::<InMemory>()
-                .expect("Expected in-memory backend");
-            in_memory.save_to_file(&path)
-        })
-        .await
-        .expect("Failed to join blocking task")?;
-        Ok(())
+        let backend = instance.backend().as_arc_backend_impl();
+        let in_memory = backend
+            .as_any()
+            .downcast_ref::<InMemory>()
+            .expect("Expected in-memory backend");
+        in_memory.save_to_file(path).await
     }
 
     async fn load_in_memory_backend(path: &Path) -> Result<InMemory, Error> {
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || InMemory::load_from_file(&path))
-            .await
-            .expect("Failed to join blocking task")
+        InMemory::load_from_file(path).await
     }
 
     #[tokio::test]

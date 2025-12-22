@@ -94,8 +94,8 @@ impl InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or an I/O or serialization error.
-    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        persistence::save_to_file(self, path)
+    pub async fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        persistence::save_to_file(self, path).await
     }
 
     /// Loads the database state from a specified JSON file.
@@ -107,8 +107,8 @@ impl InMemory {
     ///
     /// # Returns
     /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        persistence::load_from_file(path)
+    pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        persistence::load_from_file(path).await
     }
 
     /// Calculate heights for entries in a tree or subtree (exposed for testing)

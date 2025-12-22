@@ -142,12 +142,12 @@ async fn main() -> Result<()> {
     }
 
     // Save the instance
-    save_instance(&instance, &cli.database_path)
+    save_instance(&instance, &cli.database_path).await
 }
 
 async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
     let instance = if path.exists() {
-        let backend = InMemory::load_from_file(path)?;
+        let backend = InMemory::load_from_file(path).await?;
         Instance::open(Box::new(backend)).await?
     } else {
         let backend = InMemory::new();
@@ -181,7 +181,7 @@ async fn get_or_create_user(instance: &Instance) -> Result<User> {
     }
 }
 
-fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
+async fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
     let database = instance.backend();
 
     // Cast the database to InMemory to access save_to_file
@@ -194,7 +194,7 @@ fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
             ))
         })?;
 
-    in_memory_database.save_to_file(path)?;
+    in_memory_database.save_to_file(path).await?;
     Ok(())
 }
 

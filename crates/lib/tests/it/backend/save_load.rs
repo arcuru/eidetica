@@ -1,4 +1,9 @@
-use std::{fs, io::Write, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use tempfile::TempDir;
 
@@ -7,16 +12,12 @@ use eidetica::{
     backend::{BackendImpl, database::InMemory},
 };
 
-async fn save_backend(backend: Arc<InMemory>, path: PathBuf) -> Result<()> {
-    tokio::task::spawn_blocking(move || backend.save_to_file(&path))
-        .await
-        .expect("Failed to join blocking task")
+async fn save_backend(backend: &InMemory, path: &Path) -> Result<()> {
+    backend.save_to_file(path).await
 }
 
-async fn load_backend(path: PathBuf) -> Result<InMemory> {
-    tokio::task::spawn_blocking(move || InMemory::load_from_file(&path))
-        .await
-        .expect("Failed to join blocking task")
+async fn load_backend(path: &Path) -> Result<InMemory> {
+    InMemory::load_from_file(path).await
 }
 
 #[tokio::test]
@@ -34,7 +35,7 @@ async fn test_in_memory_backend_save_and_load() {
         backend.put_verified(entry).await.unwrap();
 
         // Save to file
-        let save_result = save_backend(backend.clone(), file_path.clone()).await;
+        let save_result = save_backend(&backend, &file_path).await;
         assert!(save_result.is_ok());
     }
 
@@ -42,7 +43,7 @@ async fn test_in_memory_backend_save_and_load() {
     assert!(file_path.exists());
 
     // Load from file
-    let load_result = load_backend(file_path.clone()).await;
+    let load_result = load_backend(&file_path).await;
     assert!(load_result.is_ok());
     let loaded_backend = load_result.unwrap();
 
@@ -62,7 +63,7 @@ async fn test_load_non_existent_file() {
     let _ = fs::remove_file(&path); // Ignore error if it doesn't exist
 
     // Load
-    let backend = load_backend(path.clone()).await;
+    let backend = load_backend(&path).await;
 
     // Verify it's empty
     assert_eq!(backend.unwrap().all_roots().await.unwrap().len(), 0);
@@ -82,7 +83,7 @@ async fn test_load_invalid_file() {
     }
 
     // Attempt to load
-    let result = load_backend(path.clone()).await;
+    let result = load_backend(&path).await;
 
     // Verify it's an error
     assert!(result.is_err());
@@ -144,12 +145,10 @@ async fn test_save_load_with_various_entries() {
     backend.put_verified(entry_with_subtree).await.unwrap();
 
     // Save to file
-    save_backend(backend.clone(), file_path.clone())
-        .await
-        .unwrap();
+    save_backend(&backend, &file_path).await.unwrap();
 
     // Load back into a new backend
-    let loaded_backend = load_backend(file_path.clone()).await.unwrap();
+    let loaded_backend = load_backend(&file_path).await.unwrap();
 
     // Verify loaded data
 
@@ -207,7 +206,7 @@ async fn test_load_wrong_version_fails() {
         .unwrap();
     }
 
-    let result = load_backend(path.to_path_buf()).await;
+    let result = load_backend(&path).await;
     assert!(
         result.is_err(),
         "Should fail to load file with wrong version"
@@ -229,7 +228,7 @@ async fn test_load_missing_version_defaults_to_v0() {
         .unwrap();
     }
 
-    let result = load_backend(path.to_path_buf()).await;
+    let result = load_backend(&path).await;
     assert!(
         result.is_ok(),
         "Should load file without version (defaults to v0): {:?}",

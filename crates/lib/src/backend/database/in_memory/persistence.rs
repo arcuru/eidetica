@@ -3,7 +3,7 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -136,10 +136,35 @@ impl<'de> Deserialize<'de> for InMemory {
 ///
 /// # Returns
 /// A `Result` indicating success or an I/O or serialization error.
-pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
-    let json = serde_json::to_string_pretty(backend)
+pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
+    // Extract data from locks asynchronously (can't use blocking_read in async context)
+    let entries = backend.entries.read().await.clone();
+    let verification_status = backend.verification_status.read().await.clone();
+    let private_keys = backend.private_keys.read().await;
+    let private_keys_bytes = private_keys
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_bytes()))
+        .collect();
+    drop(private_keys);
+    let cache = backend.cache.read().await.clone();
+    let heights = backend.heights.read().await.clone();
+    let tips = backend.tips.read().await.clone();
+
+    let serializable = SerializableDatabase {
+        version: PERSISTENCE_VERSION,
+        entries,
+        verification_status,
+        private_keys_bytes,
+        cache,
+        heights,
+        tips,
+    };
+
+    let json = serde_json::to_string_pretty(&serializable)
         .map_err(|e| -> Error { BackendError::SerializationFailed { source: e }.into() })?;
-    fs::write(path, json).map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
+    tokio::fs::write(path, json)
+        .await
+        .map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
 }
 
 /// Loads the database state from a specified JSON file.
@@ -151,15 +176,15 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
 ///
 /// # Returns
 /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
-pub(crate) fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
-    if !path.as_ref().exists() {
-        return Ok(InMemory::new());
+pub(crate) async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
+    match tokio::fs::read_to_string(path).await {
+        Ok(json) => {
+            let database: InMemory = serde_json::from_str(&json).map_err(|e| -> Error {
+                BackendError::DeserializationFailed { source: e }.into()
+            })?;
+            Ok(database)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InMemory::new()),
+        Err(e) => Err(BackendError::FileIo { source: e }.into()),
     }
-
-    let json = fs::read_to_string(path)
-        .map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })?;
-    let database: InMemory = serde_json::from_str(&json)
-        .map_err(|e| -> Error { BackendError::DeserializationFailed { source: e }.into() })?;
-
-    Ok(database)
 }

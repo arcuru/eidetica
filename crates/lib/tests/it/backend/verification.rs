@@ -182,23 +182,15 @@ async fn test_verification_status_serialization() {
         .expect("Failed to put entry2");
 
     // Save and load
-    let temp_file = "/tmp/test_verification_status.json".to_string();
-    tokio::task::spawn_blocking({
-        let backend = backend.clone();
-        let temp_file = temp_file.clone();
-        move || backend.save_to_file(&temp_file)
-    })
-    .await
-    .expect("Failed to join blocking task")
-    .expect("Failed to save backend");
+    let temp_file = "/tmp/test_verification_status.json";
+    backend
+        .save_to_file(temp_file)
+        .await
+        .expect("Failed to save backend");
 
-    let loaded_backend = tokio::task::spawn_blocking({
-        let temp_file = temp_file.clone();
-        move || InMemory::load_from_file(&temp_file)
-    })
-    .await
-    .expect("Failed to join blocking task")
-    .expect("Failed to load backend");
+    let loaded_backend = InMemory::load_from_file(temp_file)
+        .await
+        .expect("Failed to load backend");
 
     // Verify statuses are preserved
     let status1 = loaded_backend
