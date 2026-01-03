@@ -32,7 +32,7 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install mdbook and plugins
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cc33365ec7e3350bc47bf935f247582cc6f68344 # v2
         with:
           tool: mdbook@0.4,mdbook-mermaid@0.15
 
