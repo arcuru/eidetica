@@ -44,7 +44,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
 
       - name: Install cargo-audit
-        uses: https://github.com/taiki-e/install-action@v2
+        uses: https://github.com/taiki-e/install-action@cc33365ec7e3350bc47bf935f247582cc6f68344 # v2
         with:
           tool: cargo-audit
 
