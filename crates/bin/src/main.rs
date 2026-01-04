@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Form, Router,
@@ -7,16 +7,131 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use clap::{Parser, ValueEnum};
 
 use eidetica::{
     Instance,
-    backend::database::InMemory,
+    backend::{
+        BackendImpl,
+        database::{InMemory, SqlxBackend},
+    },
     sync::{
         handler::SyncHandlerImpl,
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
     },
 };
+
+/// Storage backend type
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Backend {
+    /// SQLite database (default, production-ready)
+    Sqlite,
+    /// PostgreSQL database (for distributed deployments)
+    Postgres,
+    /// In-memory with JSON persistence (for development and ephemeral deployments)
+    Inmemory,
+}
+
+/// Eidetica decentralized database server
+#[derive(Parser, Debug)]
+#[command(name = "eidetica")]
+#[command(about = "Eidetica: Remember Everything - Decentralized Database Server")]
+#[command(version)]
+struct Args {
+    /// Port to listen on
+    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
+    port: u16,
+
+    /// Bind address
+    #[arg(long, default_value = "0.0.0.0", env = "EIDETICA_HOST")]
+    host: String,
+
+    /// Storage backend to use
+    #[arg(short, long, default_value = "sqlite", env = "EIDETICA_BACKEND")]
+    backend: Backend,
+
+    /// Data directory for storage files.
+    /// For SQLite: stores eidetica.db
+    /// For InMemory: stores eidetica.json
+    #[arg(short = 'D', long, env = "EIDETICA_DATA_DIR")]
+    data_dir: Option<PathBuf>,
+
+    /// PostgreSQL connection URL (required when backend=postgres)
+    #[arg(long, env = "EIDETICA_POSTGRES_URL")]
+    postgres_url: Option<String>,
+}
+
+/// Redact credentials from a PostgreSQL connection URL for safe logging
+fn redact_postgres_url(url: &str) -> String {
+    // Try to parse and redact credentials, fall back to generic message on failure
+    if let Ok(parsed) = url::Url::parse(url) {
+        let mut redacted = parsed.clone();
+        if !parsed.username().is_empty() {
+            let _ = redacted.set_username("***");
+        }
+        if parsed.password().is_some() {
+            let _ = redacted.set_password(Some("***"));
+        }
+        redacted.to_string()
+    } else {
+        // Can't parse URL, just indicate we have a postgres URL
+        "postgres://***@<unparseable-url>".to_string()
+    }
+}
+
+/// Create the appropriate backend based on configuration
+async fn create_backend(args: &Args) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
+    let data_dir = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+
+    // Ensure data directory exists
+    tokio::fs::create_dir_all(&data_dir).await?;
+
+    match args.backend {
+        Backend::Sqlite => {
+            let db_path = data_dir.join("eidetica.db");
+            tracing::info!("Using SQLite backend at {}", db_path.display());
+            Ok(Box::new(SqlxBackend::open_sqlite(&db_path).await?))
+        }
+        Backend::Postgres => {
+            let url = args
+                .postgres_url
+                .as_ref()
+                .ok_or("PostgreSQL backend requires --postgres-url or EIDETICA_POSTGRES_URL")?;
+
+            // Log connection info without credentials
+            let display_url = redact_postgres_url(url);
+            tracing::info!("Connecting to PostgreSQL backend at {}", display_url);
+
+            match SqlxBackend::connect_postgres(url).await {
+                Ok(backend) => {
+                    tracing::info!("Connected to PostgreSQL successfully");
+                    Ok(Box::new(backend))
+                }
+                Err(e) => {
+                    Err(format!("Failed to connect to PostgreSQL at {}: {}", display_url, e).into())
+                }
+            }
+        }
+        Backend::Inmemory => {
+            let json_path = data_dir.join("eidetica.json");
+            tracing::info!(
+                "Using in-memory backend with persistence at {}",
+                json_path.display()
+            );
+            match InMemory::load_from_file(&json_path).await {
+                Ok(backend) => {
+                    tracing::info!("Loaded existing data from {}", json_path.display());
+                    Ok(Box::new(backend))
+                }
+                Err(_) => {
+                    tracing::info!("Starting with fresh database");
+                    Ok(Box::new(InMemory::new()))
+                }
+            }
+        }
+    }
+}
 use serde::Deserialize;
 use signal_hook::flag as signal_flag;
 use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
@@ -28,8 +143,6 @@ mod templates;
 use session::SessionStore;
 use templates::DatabaseInfo;
 
-const DB_FILE: &str = "eidetica.json";
-const PORT: u16 = 3000;
 const DEFAULT_USER: &str = "default";
 const SESSION_COOKIE: &str = "eidetica_session";
 
@@ -66,6 +179,9 @@ struct TrackDatabaseForm {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments
+    let args = Args::parse();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -73,18 +189,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    // Load or create database instance
-    let backend_box: Box<dyn eidetica::backend::BackendImpl> =
-        match InMemory::load_from_file(DB_FILE).await {
-            Ok(backend) => {
-                tracing::info!("Loaded database from {DB_FILE}");
-                Box::new(backend)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load database: {e:?}. Creating a new one.");
-                Box::new(InMemory::new())
-            }
-        };
+    // Create the storage backend
+    let backend_box = create_backend(&args).await?;
 
     // Initialize Instance using open API
     let instance = Instance::open(backend_box).await?;
@@ -172,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Bind server
-    let addr = format!("0.0.0.0:{PORT}");
+    let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local_addr = listener.local_addr()?;
 
@@ -199,9 +305,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    // Clone instance and term_signal for shutdown handler
+    // Clone values for shutdown handler
     let instance_for_shutdown = app_state.instance.clone();
     let term_signal_for_shutdown = term_signal.clone();
+    // If the data_dir is not set use the CWD
+    let data_dir_for_shutdown = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
 
     // Start server with graceful shutdown
     // Convert app to service with ConnectInfo support
@@ -215,17 +323,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        tracing::info!("Shutdown signal received, saving database...");
+        tracing::info!("Shutdown signal received...");
 
-        // Save database on shutdown
+        // Save database on shutdown (only needed for InMemory backend)
         if let Some(in_memory_backend) = instance_for_shutdown
             .backend()
             .as_any()
             .downcast_ref::<InMemory>()
         {
-            match in_memory_backend.save_to_file(DB_FILE).await {
+            let json_path = data_dir_for_shutdown.join("eidetica.json");
+            match in_memory_backend.save_to_file(&json_path).await {
                 Ok(_) => {
-                    tracing::info!("Database saved successfully");
+                    tracing::info!("Database saved to {}", json_path.display());
                     println!("\nDatabase saved successfully");
                 }
                 Err(e) => {
