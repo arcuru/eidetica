@@ -40,6 +40,19 @@
         inputs.treefmt-nix.flakeModule
       ];
 
+      # System-level outputs (not per-system)
+      flake = {
+        nixosModules = {
+          default = import ./nix/nixos-module.nix;
+          eidetica = import ./nix/nixos-module.nix;
+        };
+
+        homeManagerModules = {
+          default = import ./nix/home-manager.nix;
+          eidetica = import ./nix/home-manager.nix;
+        };
+      };
+
       systems = [
         "aarch64-linux"
         "x86_64-linux"
@@ -150,9 +163,17 @@
 
           config = {
             Cmd = ["${eidetica-bin}/bin/eidetica"];
+            WorkingDir = "/data";
             ExposedPorts = {
               "3000/tcp" = {};
             };
+            Volumes = {
+              "/data" = {};
+            };
+            Env = [
+              "EIDETICA_DATA_DIR=/data"
+              "EIDETICA_HOST=0.0.0.0"
+            ];
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/arcuru/eidetica";
               "org.opencontainers.image.description" = "Eidetica: Remember Everything - Decentralized Database";
