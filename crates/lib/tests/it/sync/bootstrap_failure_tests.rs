@@ -4,6 +4,8 @@
 //! access attempts, invalid keys, and permission boundary violations. These tests
 //! expect secure behavior and will fail until proper security is implemented.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use super::helpers::*;
 use crate::helpers::test_instance;
 use eidetica::{

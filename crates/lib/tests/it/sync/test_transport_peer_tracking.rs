@@ -4,6 +4,8 @@
 //! the server should automatically track that the peer is interested in that tree
 //! WITHOUT requiring manual add_tree_sync() calls.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use std::sync::Arc;
 
 use eidetica::{

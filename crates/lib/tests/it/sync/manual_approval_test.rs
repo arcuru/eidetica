@@ -3,6 +3,8 @@
 //! This test suite verifies the complete manual approval workflow for bootstrap requests,
 //! including storing pending requests, listing them, and approving/rejecting them.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use super::helpers::*;
 
 /// Generate a valid test public key

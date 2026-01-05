@@ -3,6 +3,8 @@
 //! This module contains progressive tests to diagnose and verify global permission
 //! authentication in transactions. Tests are organized by complexity level.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     Instance,
     auth::{

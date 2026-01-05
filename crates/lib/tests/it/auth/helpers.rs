@@ -167,6 +167,7 @@ pub async fn configure_database_auth(
 }
 
 /// Create a DB with keys pre-configured for testing (uses deprecated API for auth testing)
+#[allow(deprecated)]
 pub async fn setup_test_db_with_keys(
     keys: &[(&str, Permission, KeyStatus)],
 ) -> (Instance, Vec<VerifyingKey>) {

@@ -3,6 +3,8 @@
 //! These tests verify that all transport implementations provide consistent behavior
 //! for syncing entries between Instance instances.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use std::time::Duration;
 
 use eidetica::{Instance, Result, instance::LegacyInstanceOps, sync::PeerId};

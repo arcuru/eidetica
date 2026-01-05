@@ -3,6 +3,8 @@
 //! These tests reproduce the exact sync patterns used by the chat example
 //! to debug authentication and sync issues.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use super::helpers::enable_sync_for_instance_database;
 use crate::helpers::test_instance;
 use eidetica::{

@@ -1,5 +1,7 @@
 //! Tests for User database tracking functionality
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     Database,
     auth::{

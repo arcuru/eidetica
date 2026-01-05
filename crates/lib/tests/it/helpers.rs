@@ -118,6 +118,7 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
 ///
 /// **DEPRECATED**: This helper exists only for migrating old tests. New tests should
 /// use `test_instance_with_user()` and the User API for key management.
+#[allow(deprecated)]
 pub async fn test_instance_with_legacy_key(key_name: &str) -> Instance {
     let instance = test_instance().await;
     instance
@@ -125,6 +126,56 @@ pub async fn test_instance_with_legacy_key(key_name: &str) -> Instance {
         .await
         .expect("Failed to add legacy key");
     instance
+}
+
+/// Creates an Instance with a user and key, returning user and key_id for User API tests.
+///
+/// The key_id is the public key string (e.g., "ed25519:abc123...") which is used
+/// as the SigKey when creating databases via User API.
+///
+/// # Returns
+/// - Instance: The database instance
+/// - User: Logged-in user session
+/// - String: The key_id (public key string) for database operations
+pub async fn test_instance_with_user_and_key(
+    username: &str,
+    key_display_name: Option<&str>,
+) -> (Instance, User, String) {
+    let instance = test_instance().await;
+    instance
+        .create_user(username, None)
+        .await
+        .expect("Failed to create user");
+    let mut user = instance
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user");
+
+    let key_id = user
+        .add_private_key(key_display_name)
+        .await
+        .expect("Failed to add key");
+
+    (instance, user, key_id)
+}
+
+/// Creates a tree using User API and returns (Instance, Database, key_id).
+///
+/// This is the preferred pattern for new tests. The key_id should be used
+/// in assertions like `is_signed_by(&key_id)`.
+pub async fn setup_tree_with_user_key() -> (Instance, eidetica::Database, String) {
+    let (instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "test_tree");
+
+    let tree = user
+        .create_database(settings, &key_id)
+        .await
+        .expect("Failed to create tree");
+
+    (instance, tree, key_id)
 }
 
 // ==========================
@@ -178,6 +229,7 @@ pub async fn setup_tree() -> (Instance, eidetica::Database) {
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
+#[allow(deprecated)]
 pub async fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name).await;
     let tree = db
@@ -190,6 +242,7 @@ pub async fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Databas
 /// Creates a tree and database with a specific key (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use User API for key management.
+#[allow(deprecated)]
 pub async fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
     let db = setup_db_with_key(key_name).await;
     let tree = db

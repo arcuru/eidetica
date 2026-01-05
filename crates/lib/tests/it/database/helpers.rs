@@ -245,6 +245,25 @@ pub async fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database)
     (db, tree)
 }
 
+/// Create tree with authentication using User API.
+///
+/// Returns (Instance, Database, key_id) where key_id is the public key string
+/// that should be used in assertions like `is_signed_by(&key_id)`.
+pub async fn setup_tree_with_user_auth() -> (Instance, Database, String) {
+    let (instance, mut user, key_id) =
+        crate::helpers::test_instance_with_user_and_key("test_user", Some("test_key")).await;
+
+    let mut settings = Doc::new();
+    settings.set("name", "AuthenticatedTree");
+
+    let tree = user
+        .create_database(settings, &key_id)
+        .await
+        .expect("Failed to create tree");
+
+    (instance, tree, key_id)
+}
+
 // ===== ERROR TESTING HELPERS =====
 
 // ===== PERFORMANCE TESTING HELPERS =====

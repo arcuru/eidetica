@@ -3,6 +3,8 @@
 //! This module contains tests for settings metadata management including
 //! settings tips tracking, metadata propagation, and historical validation.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,

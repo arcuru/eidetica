@@ -5,6 +5,8 @@
 //! 2. Transport auto-detection from address format (HTTP vs Iroh)
 //! 3. Iroh transport lazy initialization thread-safety
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use super::helpers::*;
 use eidetica::{
     auth::Permission as AuthPermission,

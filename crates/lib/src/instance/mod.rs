@@ -942,6 +942,7 @@ impl WeakInstance {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
     use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};

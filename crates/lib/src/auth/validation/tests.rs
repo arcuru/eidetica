@@ -1,5 +1,7 @@
 //! Tests for authentication validation
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use super::entry::AuthValidator;
 use crate::{
     Entry,

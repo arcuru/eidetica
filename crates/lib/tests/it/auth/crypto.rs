@@ -1,3 +1,7 @@
+//! Tests for cryptographic operations in the authentication system.
+
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     auth::{
         crypto::format_public_key,

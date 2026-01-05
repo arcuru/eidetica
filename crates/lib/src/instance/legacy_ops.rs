@@ -60,6 +60,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
+    #[deprecated(since = "0.1.0", note = "Use User::create_database() instead")]
     async fn new_database(&self, settings: Doc, signing_key_name: &str) -> Result<Database>;
 
     /// Create a new database with default empty settings (deprecated).
@@ -71,6 +72,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the newly created `Database` or an error.
+    #[deprecated(since = "0.1.0", note = "Use User::create_database() instead")]
     async fn new_database_default(&self, signing_key_name: &str) -> Result<Database>;
 
     /// Generate a new Ed25519 keypair (deprecated).
@@ -82,6 +84,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the key ID (public key string) or an error.
+    #[deprecated(since = "0.1.0", note = "Use User::add_private_key() instead")]
     async fn add_private_key(&self, display_name: &str) -> Result<VerifyingKey>;
 
     /// Import an existing Ed25519 keypair (deprecated).
@@ -94,6 +97,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the key ID or an error.
+    #[deprecated(since = "0.1.0", note = "Use User::add_private_key() instead")]
     async fn import_private_key(
         &self,
         key_id: &str,
@@ -109,6 +113,7 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the public key or an error.
+    #[deprecated(since = "0.1.0", note = "Use User::get_signing_key() instead")]
     async fn get_public_key(&self, key_id: &str) -> Result<VerifyingKey>;
 
     /// Get the formatted public key string for a stored private key (deprecated).
@@ -120,10 +125,12 @@ pub trait LegacyInstanceOps {
     ///
     /// # Returns
     /// A `Result` containing the formatted public key string.
+    #[deprecated(since = "0.1.0", note = "Use User::get_signing_key() instead")]
     async fn get_formatted_public_key(&self, key_name: &str) -> Result<String>;
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl LegacyInstanceOps for Instance {
     async fn new_database(&self, settings: Doc, signing_key_name: &str) -> Result<Database> {
         use crate::auth::AuthError;

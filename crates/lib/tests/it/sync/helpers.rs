@@ -3,6 +3,8 @@
 //! This module provides utilities for testing Sync functionality including
 //! setup operations, common test patterns, transport factories, and assertion helpers.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;

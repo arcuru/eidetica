@@ -3,6 +3,8 @@
 //! These tests verify that height calculation strategies work correctly
 //! when entries are created through the Transaction layer.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use std::sync::Arc;
 
 use eidetica::{

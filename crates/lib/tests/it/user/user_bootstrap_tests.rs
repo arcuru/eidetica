@@ -3,6 +3,8 @@
 //! This test suite verifies that users can approve and reject bootstrap requests
 //! using their keys, with proper permission validation and error handling.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     Instance,
     auth::{

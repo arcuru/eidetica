@@ -3,6 +3,8 @@
 //! These tests cover edge cases, error conditions, and boundary scenarios
 //! for the flat delegation structure implementation.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     Result,
     auth::{

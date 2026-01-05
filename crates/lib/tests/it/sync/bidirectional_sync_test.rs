@@ -7,6 +7,8 @@
 //! 4. Device 2 syncs back to Device 1
 //! 5. Device 1 tries to add message C -> "no common ancestor found" error
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{Result, auth::Permission, crdt::Doc, instance::LegacyInstanceOps, store::Table};
 use serde::{Deserialize, Serialize};
 

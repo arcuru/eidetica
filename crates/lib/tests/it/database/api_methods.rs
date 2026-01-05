@@ -3,6 +3,8 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{auth::types::SigKey, crdt::Doc, instance::LegacyInstanceOps, store::DocStore};
 
 use super::helpers::*;

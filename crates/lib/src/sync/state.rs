@@ -483,6 +483,7 @@ impl<'a> SyncStateManager<'a> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
     use crate::{

@@ -1,3 +1,7 @@
+//! Tests for authentication validation.
+
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use eidetica::{
     auth::{
         AuthSettings,

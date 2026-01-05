@@ -1,6 +1,8 @@
 // End-to-end integration test for Iroh transport with actual data synchronization
 // This test can be run with different relay modes to test real-world scenarios
 
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use std::time::Duration;
 
 use eidetica::{
