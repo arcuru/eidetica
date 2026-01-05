@@ -43,6 +43,16 @@ tasks:
     desc: Run Nix Build
     cmds:
       - nix build
+  nix:integration:
+    desc: Run NixOS VM integration tests (Linux only, slow)
+    cmds:
+      - nix build .#integration-nixos --no-link
+      - nix build .#integration-container --no-link
+  nix:full:
+    desc: Run all Nix checks including VM integration tests
+    cmds:
+      - task: nix:check
+      - task: nix:integration
   clippy:
     desc: Run clippy
     cmds:
