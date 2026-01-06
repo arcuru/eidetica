@@ -76,6 +76,8 @@ jobs:
         env:
           POSTGRES_DB: eidetica_test
           POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -113,7 +115,7 @@ jobs:
       - name: Run coverage (postgres)
         run: |
           TEST_BACKEND=postgres \
-          TEST_POSTGRES_URL="postgres://postgres@postgres:5432/eidetica_test" \
+          TEST_POSTGRES_URL="postgres://postgres@localhost:5432/eidetica_test" \
           cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
 
       - name: Upload coverage to Codecov
