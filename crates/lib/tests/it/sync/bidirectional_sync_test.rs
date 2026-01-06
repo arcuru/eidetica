@@ -95,7 +95,6 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
                 .expect("Failed to create device key"),
         )
         .expect("Failed to add device key auth");
-
     // Add global wildcard permission for automatic bootstrap approval
     auth_settings
         .add_key(

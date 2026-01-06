@@ -5,12 +5,10 @@
 //! 2. Transport auto-detection from address format (HTTP vs Iroh)
 //! 3. Iroh transport lazy initialization thread-safety
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use super::helpers::*;
 use eidetica::{
     auth::Permission as AuthPermission,
-    instance::LegacyInstanceOps,
+    crdt::Doc,
     sync::{handler::SyncHandler, protocol::SyncResponse},
 };
 
@@ -80,13 +78,24 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup server with manual approval
     let server_instance = setup_instance_with_initialized().await;
-    server_instance.add_private_key("server_key").await.unwrap();
+    server_instance
+        .create_user("server_user", None)
+        .await
+        .unwrap();
+    let mut server_user = server_instance
+        .login_user("server_user", None)
+        .await
+        .unwrap();
+    let server_key_id = server_user
+        .add_private_key(Some("server_key"))
+        .await
+        .unwrap();
 
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Manual Approval DB");
 
-    let database = server_instance
-        .new_database(settings, "server_key")
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -99,7 +108,18 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup client (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
-    client_instance.add_private_key("client_key").await.unwrap();
+    client_instance
+        .create_user("client_user", None)
+        .await
+        .unwrap();
+    let mut client_user = client_instance
+        .login_user("client_user", None)
+        .await
+        .unwrap();
+    let _client_key_id = client_user
+        .add_private_key(Some("client_key"))
+        .await
+        .unwrap();
 
     let client_sync = client_instance.sync().unwrap();
     client_sync.enable_http_transport().await.unwrap();
@@ -357,14 +377,25 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Setup server with authenticated database
     let server_instance = setup_instance_with_initialized().await;
-    server_instance.add_private_key("server_key").await.unwrap();
+    server_instance
+        .create_user("server_user", None)
+        .await
+        .unwrap();
+    let mut server_user = server_instance
+        .login_user("server_user", None)
+        .await
+        .unwrap();
+    let server_key_id = server_user
+        .add_private_key(Some("server_key"))
+        .await
+        .unwrap();
 
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Secure Database");
 
     // Create database - this will auto-configure auth with server_key as Admin
-    let database = server_instance
-        .new_database(settings, "server_key")
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -372,7 +403,7 @@ async fn test_unauthenticated_sync_should_fail() {
     // Verify auth is configured by checking if server_key exists
     let db_settings = database.get_settings().await.unwrap();
     let auth_settings = db_settings.get_auth_settings().await.unwrap();
-    let server_key_auth = auth_settings.get_key("server_key");
+    let server_key_auth = auth_settings.get_key(&server_key_id);
     assert!(
         server_key_auth.is_ok(),
         "Database should have auth configured with server_key"
@@ -383,7 +414,7 @@ async fn test_unauthenticated_sync_should_fail() {
     use eidetica::store::DocStore;
     let tx = database.new_transaction().await.unwrap();
     let secrets_store = tx.get_store::<DocStore>("secrets").await.unwrap();
-    let mut secret_doc = eidetica::crdt::Doc::new();
+    let mut secret_doc = Doc::new();
     secret_doc.set("password", "super_secret_123");
     secrets_store.set("admin", secret_doc).await.unwrap();
     tx.commit().await.unwrap();
@@ -403,16 +434,20 @@ async fn test_unauthenticated_sync_should_fail() {
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
     client_instance
-        .add_private_key("unauthorized_client_key")
+        .create_user("client_user", None)
+        .await
+        .unwrap();
+    let mut client_user = client_instance
+        .login_user("client_user", None)
+        .await
+        .unwrap();
+    let client_key_id = client_user
+        .add_private_key(Some("unauthorized_client_key"))
         .await
         .unwrap();
 
     // Verify client key is NOT in server's auth settings
-    let client_pubkey = client_instance
-        .get_formatted_public_key("unauthorized_client_key")
-        .await
-        .unwrap();
-    let sigkeys = eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_pubkey)
+    let sigkeys = eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_key_id)
         .await
         .unwrap();
     assert!(

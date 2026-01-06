@@ -1,13 +1,10 @@
 // End-to-end integration test for Iroh transport with actual data synchronization
 // This test can be run with different relay modes to test real-world scenarios
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use std::time::Duration;
 
 use eidetica::{
     entry::Entry,
-    instance::LegacyInstanceOps,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
@@ -58,9 +55,6 @@ async fn test_iroh_e2e_basic_local() {
         .add_peer_address(&pubkey2, Address::iroh(&addr2))
         .await
         .unwrap();
-
-    // Add authentication key
-    base_db1.add_private_key("basic_test_key").await.unwrap();
 
     // Create a small set of test entries for functional testing
     let mut entries = Vec::new();

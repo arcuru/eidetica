@@ -4,15 +4,11 @@
 //! the server should automatically track that the peer is interested in that tree
 //! WITHOUT requiring manual add_tree_sync() calls.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use std::sync::Arc;
 
 use eidetica::{
-    Database,
     auth::{AuthKey, AuthSettings, Permission},
     crdt::Doc,
-    instance::LegacyInstanceOps,
     sync::{
         Address,
         transports::{SyncTransport, http::HttpTransport},
@@ -46,24 +42,14 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let server_sync = server_instance.sync().unwrap();
 
     // Create a database with wildcard "*" permission to allow unauthenticated sync
-    let device_key = server_instance
-        .backend()
-        .get_private_key("_device_key")
-        .await
-        .unwrap()
-        .unwrap();
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_database");
 
     let mut auth_settings = AuthSettings::new();
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .unwrap();
     auth_settings
         .add_key(
-            "_device_key",
-            AuthKey::active(&device_pubkey, Permission::Admin(0)).unwrap(),
+            &server_key_id,
+            AuthKey::active(&server_key_id, Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     auth_settings
@@ -71,14 +57,10 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .unwrap();
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let server_db = Database::create(
-        db_settings,
-        &server_instance,
-        device_key,
-        "_device_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let server_db = server_user
+        .create_database(db_settings, &server_key_id)
+        .await
+        .unwrap();
     let tree_id = server_db.root_id().clone();
 
     // Enable sync for this database
