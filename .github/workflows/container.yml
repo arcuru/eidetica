@@ -167,19 +167,41 @@ jobs:
             docker manifest push "${{ env.IMAGE_NAME }}:${TAG}"
           done
 
-      - name: Get manifest digest
-        id: manifest-digest
-        if: github.event_name == 'release'
+      - name: Determine attestation tag
+        id: attest-tag
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"
-          DIGEST=$(docker manifest inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${VERSION}" -v | jq -r '.Descriptor.digest')
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get GHCR manifest digest
+        id: ghcr-digest
+        run: |
+          TAG="${{ steps.attest-tag.outputs.tag }}"
+          DIGEST=$(docker manifest inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" -v | jq -r '.Descriptor.digest')
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate attestation
+      - name: Get Docker Hub manifest digest
+        id: dockerhub-digest
+        run: |
+          TAG="${{ steps.attest-tag.outputs.tag }}"
+          DIGEST=$(docker manifest inspect "${{ env.IMAGE_NAME }}:${TAG}" -v | jq -r '.Descriptor.digest')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GHCR attestation
         uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3
-        if: github.event_name == 'release'
         with:
           subject-name: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.manifest-digest.outputs.digest }}
+          subject-digest: ${{ steps.ghcr-digest.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate Docker Hub attestation
+        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3
+        with:
+          subject-name: ${{ env.REGISTRY_DOCKER }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.dockerhub-digest.outputs.digest }}
           push-to-registry: true
