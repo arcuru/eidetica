@@ -113,7 +113,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     use eidetica::store::DocStore;
 
     // Server with a sync-enabled database (wildcard permissions for testing)
-    let (server_instance, _server_database, server_sync, tree_id) =
+    let (server_instance, _user, _key_id, _server_database, server_sync, tree_id) =
         super::helpers::setup_global_wildcard_server().await;
 
     // Enable both HTTP and Iroh transports on server

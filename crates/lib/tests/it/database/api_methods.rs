@@ -3,9 +3,7 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
-use eidetica::{auth::types::SigKey, crdt::Doc, instance::LegacyInstanceOps, store::DocStore};
+use eidetica::{auth::types::SigKey, crdt::Doc, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -13,7 +11,7 @@ use crate::helpers::*;
 /// Test basic entry retrieval functionality
 #[tokio::test]
 async fn test_get_entry_basic() {
-    let (_instance, tree) = setup_tree_with_key("test_key").await;
+    let (_instance, tree, key_id) = setup_tree_with_user_key().await;
 
     // Create an entry using helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("test_key", "test_value")]).await;
@@ -24,14 +22,14 @@ async fn test_get_entry_basic() {
         .await
         .expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.sig.key, SigKey::Direct("test_key".to_string()));
+    assert_eq!(entry.sig.key, SigKey::Direct(key_id));
     assert!(entry.sig.sig.is_some());
 }
 
 /// Test get_entries with multiple entries
 #[tokio::test]
 async fn test_get_entries_multiple() {
-    let (_instance, tree) = setup_db_and_tree_with_key("test_key").await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Create multiple entries using helper
     let entry_ids = create_linear_chain(&tree, "data", 3).await;
@@ -51,7 +49,7 @@ async fn test_get_entries_multiple() {
 /// Test comprehensive error handling for entry retrieval
 #[tokio::test]
 async fn test_entry_retrieval_error_handling() {
-    let (_instance, tree) = setup_db_and_tree_with_key("test_key").await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Create one valid entry using helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]).await;
@@ -79,20 +77,21 @@ async fn test_entry_retrieval_error_handling() {
 /// Test tree validation - entries from different trees should be rejected
 #[tokio::test]
 async fn test_tree_validation_rejects_foreign_entries() {
-    let db = setup_db_with_key("test_key").await;
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
     settings1.set("name", "tree1".to_string());
-    let tree1 = db
-        .new_database(settings1, "test_key")
+    let tree1 = user
+        .create_database(settings1, &key_id)
         .await
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
     settings2.set("name", "tree2".to_string());
-    let tree2 = db
-        .new_database(settings2, "test_key")
+    let tree2 = user
+        .create_database(settings2, &key_id)
         .await
         .expect("Failed to create tree2");
 
@@ -154,20 +153,21 @@ async fn test_tree_validation_rejects_foreign_entries() {
 /// Test tree validation with get_entries
 #[tokio::test]
 async fn test_tree_validation_get_entries() {
-    let db = setup_db_with_key("test_key").await;
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
     settings1.set("name", "tree1".to_string());
-    let tree1 = db
-        .new_database(settings1, "test_key")
+    let tree1 = user
+        .create_database(settings1, &key_id)
         .await
         .expect("Failed to create tree1");
 
     let mut settings2 = Doc::new();
     settings2.set("name", "tree2".to_string());
-    let tree2 = db
-        .new_database(settings2, "test_key")
+    let tree2 = user
+        .create_database(settings2, &key_id)
         .await
         .expect("Failed to create tree2");
 
@@ -229,13 +229,13 @@ async fn test_tree_validation_get_entries() {
 /// Test authentication helpers with signed entries
 #[tokio::test]
 async fn test_auth_helpers_signed_entries() {
-    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY").await;
+    let (_instance, tree, key_id) = setup_tree_with_user_auth().await;
 
     // Create signed entry using helper
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, "TEST_KEY").await;
+    assert_entry_authentication(&tree, &entry_id, &key_id).await;
 
     // Test entry belongs to tree
     assert_entry_belongs_to_tree(&tree, &entry_id).await;
@@ -246,20 +246,20 @@ async fn test_auth_helpers_signed_entries() {
         .await
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert!(sig_info.is_signed_by("TEST_KEY"));
+    assert!(sig_info.is_signed_by(&key_id));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test authentication helpers with default authenticated entries
 #[tokio::test]
 async fn test_auth_helpers_default_authenticated_entries() {
-    let (_instance, tree) = setup_db_and_tree_with_key("test_key").await;
+    let (_instance, tree, key_id) = setup_tree_with_user_key().await;
 
     // Create entry using default authentication helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, "test_key").await;
+    assert_entry_authentication(&tree, &entry_id, &key_id).await;
 
     // Test manual auth checks
     let entry = tree
@@ -267,20 +267,20 @@ async fn test_auth_helpers_default_authenticated_entries() {
         .await
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert!(sig_info.is_signed_by("test_key"));
+    assert!(sig_info.is_signed_by(&key_id));
     assert!(!sig_info.is_signed_by("OTHER_KEY"));
 }
 
 /// Test verify_entry_signature with different authentication scenarios
 #[tokio::test]
 async fn test_verify_entry_signature_auth_scenarios() {
-    let (_instance, tree) = setup_tree_with_auth_config("TEST_KEY").await;
+    let (_instance, tree, key_id) = setup_tree_with_user_auth().await;
 
     // Test 1: Create entry signed with valid key using helper
     let signed_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
     // Should verify successfully using helper
-    assert_entry_authentication(&tree, &signed_entry_id, "TEST_KEY").await;
+    assert_entry_authentication(&tree, &signed_entry_id, &key_id).await;
 
     // Test 2: Create unsigned entry using helper
     let unsigned_entry_id = add_data_to_subtree(&tree, "data", &[("key", "value2")]).await;
@@ -296,32 +296,41 @@ async fn test_verify_entry_signature_auth_scenarios() {
 /// Test verify_entry_signature with unauthorized key
 #[tokio::test]
 async fn test_verify_entry_signature_unauthorized_key() {
-    let (instance, tree) = setup_tree_with_auth_config("AUTHORIZED_KEY").await;
+    // Create user with first key (will be authorized)
+    let (instance, mut user, authorized_key_id) =
+        test_instance_with_user_and_key("test_user", Some("AUTHORIZED_KEY")).await;
 
-    // Add unauthorized key to backend (but not to tree's auth settings)
-    let _unauthorized_public_key = instance
-        .add_private_key("UNAUTHORIZED_KEY")
+    // Add second key (will NOT be authorized in the database)
+    let unauthorized_key_id = user
+        .add_private_key(Some("UNAUTHORIZED_KEY"))
         .await
         .expect("Failed to add unauthorized key");
+
+    // Create database with ONLY the authorized key
+    let mut settings = Doc::new();
+    settings.set("name", "AuthenticatedTree");
+    let tree = user
+        .create_database(settings, &authorized_key_id)
+        .await
+        .expect("Failed to create tree");
 
     // Test with authorized key (should succeed) using helper
     let authorized_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
-    assert_entry_authentication(&tree, &authorized_entry_id, "AUTHORIZED_KEY").await;
+    assert_entry_authentication(&tree, &authorized_entry_id, &authorized_key_id).await;
 
     // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
-    let unauthorized_signing_key = instance
-        .backend()
-        .get_private_key("UNAUTHORIZED_KEY")
-        .await
-        .expect("Failed to get unauthorized signing key")
-        .expect("Unauthorized key should exist in backend");
+    let unauthorized_signing_key = user
+        .get_signing_key(&unauthorized_key_id)
+        .expect("Failed to get unauthorized signing key");
 
+    // TODO: Any key may open a locally present Database if they have the hash.
+    // Document this explicitly
     let tree_with_unauthorized_key = eidetica::Database::open(
         instance.clone(),
         tree.root_id(),
         unauthorized_signing_key,
-        "UNAUTHORIZED_KEY".to_string(),
+        unauthorized_key_id.clone(),
     )
     .expect("Failed to load tree with unauthorized key");
 
@@ -352,13 +361,13 @@ async fn test_verify_entry_signature_unauthorized_key() {
 /// Test that verify_entry_signature validates against tree auth configuration
 #[tokio::test]
 async fn test_verify_entry_signature_validates_tree_auth() {
-    let (_instance, tree) = setup_tree_with_auth_config("VALID_KEY").await;
+    let (_instance, tree, key_id) = setup_tree_with_user_auth().await;
 
     // Create a signed entry using helper
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Verify the entry using helper - should validate against tree's auth settings
-    assert_entry_authentication(&tree, &entry_id, "VALID_KEY").await;
+    assert_entry_authentication(&tree, &entry_id, &key_id).await;
 
     // Note: In the future, this test should also verify that:
     // 1. Entries remain valid even if the key is later revoked (historical validation)
@@ -369,7 +378,7 @@ async fn test_verify_entry_signature_validates_tree_auth() {
 /// Test tree queries functionality
 #[tokio::test]
 async fn test_tree_queries() {
-    let (_instance, tree) = setup_db_and_tree_with_key("test_key").await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Get initial entries
     let initial_entries = tree
@@ -415,7 +424,7 @@ async fn test_tree_queries() {
 /// Test performance: batch get_entries vs individual get_entry calls
 #[tokio::test]
 async fn test_batch_vs_individual_retrieval() {
-    let (_instance, tree) = setup_db_and_tree_with_key("test_key").await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Create multiple entries
     let mut entry_ids = Vec::new();

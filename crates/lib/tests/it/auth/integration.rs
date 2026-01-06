@@ -1,7 +1,5 @@
 //! Integration tests for the authentication system.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     auth::{AuthKey, Permission, format_public_key},
     crdt::Doc,

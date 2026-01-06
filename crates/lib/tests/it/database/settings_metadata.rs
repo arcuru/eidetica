@@ -3,29 +3,21 @@
 //! This module contains tests for settings metadata management including
 //! settings tips tracking, metadata propagation, and historical validation.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
+use eidetica::crdt::{Doc, doc::Value};
 
-use eidetica::{
-    crdt::{Doc, doc::Value},
-    instance::LegacyInstanceOps,
-};
-
-use crate::helpers::test_instance;
+use crate::helpers::test_instance_with_user_and_key;
 
 #[tokio::test]
 async fn test_settings_tips_in_metadata() {
-    let db = test_instance().await;
-
-    // Add a test key
-    let key_id = "test_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create initial settings
     let mut settings = Doc::new();
     settings.set("name", "test_tree".to_string());
 
     // Create a tree with authentication
-    let tree = db.new_database(settings, key_id).await.unwrap();
+    let tree = user.create_database(settings, &key_id).await.unwrap();
 
     // Create an operation to add some data
     let op1 = tree.new_transaction().await.unwrap();
@@ -108,11 +100,8 @@ async fn test_settings_tips_in_metadata() {
 
 #[tokio::test]
 async fn test_entry_get_settings_from_subtree() {
-    let db = test_instance().await;
-
-    // Add a test key
-    let key_id = "test_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create initial settings with some data
     let mut settings = Doc::new();
@@ -120,7 +109,10 @@ async fn test_entry_get_settings_from_subtree() {
     settings.set("version", "1.0".to_string());
 
     // Create a tree
-    let tree = db.new_database(settings.clone(), key_id).await.unwrap();
+    let tree = user
+        .create_database(settings.clone(), &key_id)
+        .await
+        .unwrap();
 
     // Get the root entry and verify it has _settings subtree
     let root_entry = tree.get_root().await.unwrap();
@@ -149,15 +141,12 @@ async fn test_entry_get_settings_from_subtree() {
 
 #[tokio::test]
 async fn test_settings_tips_propagation() {
-    let db = test_instance().await;
-
-    // Add a test key
-    let key_id = "test_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create a tree
     let settings = Doc::new();
-    let tree = db.new_database(settings, key_id).await.unwrap();
+    let tree = user.create_database(settings, &key_id).await.unwrap();
 
     // Create a chain of entries
     let op1 = tree.new_transaction().await.unwrap();
@@ -233,15 +222,17 @@ async fn test_settings_tips_propagation() {
 #[tokio::test]
 async fn test_settings_metadata_with_complex_operations() {
     // Test settings metadata handling with complex operations
-    let db = test_instance().await;
-    let key_id = "complex_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("complex_key")).await;
 
     // Create tree with initial settings
     let mut initial_settings = Doc::new();
     initial_settings.set("name", "ComplexTree".to_string());
     initial_settings.set("version", "1.0".to_string());
-    let tree = db.new_database(initial_settings, key_id).await.unwrap();
+    let tree = user
+        .create_database(initial_settings, &key_id)
+        .await
+        .unwrap();
 
     // Create several data operations
     let mut data_entry_ids = Vec::new();
@@ -341,11 +332,10 @@ async fn test_settings_metadata_with_complex_operations() {
 #[tokio::test]
 async fn test_settings_metadata_with_branching() {
     // Test settings metadata with branching scenarios
-    let db = test_instance().await;
-    let key_id = "branch_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("branch_key")).await;
 
-    let tree = db.new_database(Doc::new(), key_id).await.unwrap();
+    let tree = user.create_database(Doc::new(), &key_id).await.unwrap();
 
     // Create base entry
     let base_op = tree.new_transaction().await.unwrap();
@@ -430,13 +420,12 @@ async fn test_settings_metadata_with_branching() {
 #[tokio::test]
 async fn test_metadata_consistency_across_operations() {
     // Test that metadata is consistently tracked across different operation types
-    let db = test_instance().await;
-    let key_id = "consistency_key";
-    db.add_private_key(key_id).await.unwrap();
+    let (_instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("consistency_key")).await;
 
     let mut settings = Doc::new();
     settings.set("initial", "true".to_string());
-    let tree = db.new_database(settings, key_id).await.unwrap();
+    let tree = user.create_database(settings, &key_id).await.unwrap();
 
     // Create authenticated operation (tree already configured with key_id)
     let auth_op = tree.new_transaction().await.unwrap();

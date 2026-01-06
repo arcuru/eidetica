@@ -11,7 +11,8 @@ use eidetica::{Entry, auth::Permission};
 #[tokio::test]
 async fn test_bootstrap_with_provided_key() {
     // Setup server with a database
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     // Add some content to the server database
     let root_entry = Entry::root_builder()
@@ -88,7 +89,8 @@ async fn test_bootstrap_with_provided_key() {
 #[tokio::test]
 async fn test_bootstrap_key_not_stored_in_backend() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     server_sync
         .backend()
@@ -164,7 +166,7 @@ async fn test_bootstrap_key_not_stored_in_backend() {
 #[tokio::test]
 async fn test_bootstrap_with_invalid_key_fails() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, _tree_id) =
+    let (_server_instance, _user, _key_id, _server_db, server_sync, _tree_id) =
         setup_global_wildcard_server().await;
 
     server_sync
@@ -211,7 +213,8 @@ async fn test_bootstrap_with_invalid_key_fails() {
 #[tokio::test]
 async fn test_multiple_clients_with_different_keys() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     let root_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"value": "shared data"}"#)
@@ -295,7 +298,8 @@ async fn test_multiple_clients_with_different_keys() {
 #[tokio::test]
 async fn test_bootstrap_with_different_permissions() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     server_sync
         .backend()
@@ -355,104 +359,12 @@ async fn test_bootstrap_with_different_permissions() {
     server_sync.stop_server().await.unwrap();
 }
 
-/// Test that bootstrap with provided key works identically to backend-stored key
-#[tokio::test]
-async fn test_with_key_equivalent_to_backend_key() {
-    // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
-
-    let entry = Entry::root_builder()
-        .set_subtree_data("data", r#"{"test": "data"}"#)
-        .build()
-        .unwrap();
-
-    server_sync
-        .backend()
-        .expect("Failed to get backend")
-        .put_verified(entry)
-        .await
-        .unwrap();
-
-    let server_addr = start_sync_server(&server_sync).await;
-
-    // Client 1: Use sync_with_peer_for_bootstrap (backend key)
-    let (client1_instance, client1_sync) = setup_bootstrap_client("client1_key").await;
-    client1_sync.enable_http_transport().await.unwrap();
-
-    client1_sync
-        .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client1_key", Permission::Write(5))
-        .await
-        .expect("Client 1 bootstrap should succeed");
-
-    // Flush any pending sync work
-    client1_sync.flush().await.ok();
-
-    // Client 2: Use sync_with_peer_for_bootstrap_with_key (provided key)
-    let (_client2_signing_key, client2_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client2_key_id = eidetica::auth::crypto::format_public_key(&client2_verifying_key);
-
-    let (_client2_instance, client2_sync) = setup().await;
-    client2_sync.enable_http_transport().await.unwrap();
-
-    client2_sync
-        .sync_with_peer_for_bootstrap_with_key(
-            &server_addr,
-            &tree_id,
-            &client2_key_id,
-            &client2_key_id,
-            Permission::Write(5),
-        )
-        .await
-        .expect("Client 2 bootstrap should succeed");
-
-    // Flush any pending sync work
-    client2_sync.flush().await.ok();
-
-    // Both clients should have successfully synced the tree
-    assert!(
-        client1_instance.load_database(&tree_id).await.is_ok(),
-        "Client 1 should have the database"
-    );
-    assert!(
-        client2_sync
-            .backend()
-            .expect("Failed to get backend")
-            .get(&tree_id)
-            .await
-            .is_ok(),
-        "Client 2 should have the tree"
-    );
-
-    // Verify both have the same tree data
-    let client1_entry = client1_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get(&tree_id)
-        .await
-        .unwrap();
-    let client2_entry = client2_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get(&tree_id)
-        .await
-        .unwrap();
-    assert_eq!(
-        client1_entry.id(),
-        client2_entry.id(),
-        "Both clients should have the same tree"
-    );
-
-    println!("✅ TEST: Both methods produce equivalent results");
-
-    // Cleanup
-    server_sync.stop_server().await.unwrap();
-}
-
 /// Test bootstrap with invalid keys should fail with proper validation errors
 #[tokio::test]
 async fn test_bootstrap_with_invalid_keys() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     server_sync
         .backend()
@@ -560,7 +472,7 @@ async fn test_bootstrap_with_invalid_keys() {
 #[tokio::test]
 async fn test_full_e2e_bootstrap_with_database_instances() {
     // Setup server with a proper Database instance
-    let (_server_instance, server_database, server_sync, _tree_id) =
+    let (_server_instance, _user, _key_id, server_database, server_sync, _tree_id) =
         setup_global_wildcard_server().await;
 
     let tree_id = server_database.root_id().clone();
@@ -688,7 +600,8 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 #[tokio::test]
 async fn test_incremental_sync_after_bootstrap_with_key() {
     // Setup server
-    let (_server_instance, _server_db, server_sync, tree_id) = setup_global_wildcard_server().await;
+    let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
+        setup_global_wildcard_server().await;
 
     let root_entry = create_test_tree_entry();
     server_sync

@@ -22,7 +22,8 @@ use eidetica::{
 async fn test_bootstrap_pending_error_structure() {
     println!("\n🧪 TEST: BootstrapPending error contains expected fields");
 
-    let (_instance, _database, sync, tree_id) = setup_manual_approval_server().await;
+    let (_instance, _user, _key_id, _database, sync, tree_id) =
+        setup_manual_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Generate a test public key
@@ -261,7 +262,8 @@ async fn test_iroh_transport_concurrent_access() {
 async fn test_http_address_with_http_transport() {
     println!("\n🧪 TEST: HTTP address auto-detection with HTTP transport");
 
-    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server().await;
+    let (instance, _user, _key_id, database, _sync, _tree_id) =
+        setup_global_wildcard_server().await;
     let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable HTTP transport on client
@@ -303,7 +305,8 @@ async fn test_http_address_with_http_transport() {
 async fn test_iroh_address_detection() {
     println!("\n🧪 TEST: Iroh JSON address detection");
 
-    let (instance, database, _sync, _tree_id) = setup_global_wildcard_server().await;
+    let (instance, _user, _key_id, database, _sync, _tree_id) =
+        setup_global_wildcard_server().await;
     let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable Iroh transport on client

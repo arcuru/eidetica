@@ -1,7 +1,5 @@
 //! Tests for authentication validation.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     auth::{
         AuthSettings,
@@ -9,15 +7,15 @@ use eidetica::{
         types::{AuthKey, KeyStatus, Permission},
     },
     crdt::{Doc, doc::Value},
-    instance::LegacyInstanceOps,
     store::DocStore,
 };
 
 use super::helpers::{
-    assert_operation_permissions, setup_authenticated_tree, setup_db as auth_setup_db,
-    setup_test_db_with_keys, test_operation_fails, test_operation_succeeds,
+    assert_operation_permissions, setup_authenticated_tree, setup_test_db_with_keys,
+    test_operation_fails, test_operation_succeeds,
 };
 use crate::create_auth_keys;
+use crate::helpers::setup_db;
 
 #[tokio::test]
 async fn test_authentication_validation_revoked_key() {
@@ -25,18 +23,22 @@ async fn test_authentication_validation_revoked_key() {
         ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("REVOKED_KEY", Permission::Write(10), KeyStatus::Revoked)
     ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
+    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
 
-    let revoked_signing_key = db
-        .backend()
-        .get_private_key("REVOKED_KEY")
+    // Get the revoked signing key from the user's key manager
+    let (_db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let revoked_key_id = user
+        .add_private_key(Some("REVOKED_KEY"))
         .await
+        .expect("Failed to add revoked key");
+    let revoked_signing_key = user
+        .get_signing_key(&revoked_key_id)
         .expect("Failed to get revoked key")
-        .expect("Revoked key should exist in backend");
+        .clone();
 
     let tree_with_revoked_key = eidetica::Database::open(
-        db.clone(),
+        instance.clone(),
         tree.root_id(),
         revoked_signing_key,
         "REVOKED_KEY".to_string(),
@@ -71,18 +73,19 @@ async fn test_permission_checking_admin_operations() {
             KeyStatus::Active
         )
     ];
-    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
+    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
 
-    // Test with WRITE_KEY - should be able to write data
-    let write_signing_key = db
+    // Get signing keys from the same instance that added them
+    let write_signing_key = instance
         .backend()
         .get_private_key("WRITE_KEY")
         .await
         .expect("Failed to get write key")
-        .expect("Write key should exist in backend");
+        .expect("Write key should exist");
+
     let tree_with_write_key = eidetica::Database::open(
-        db.clone(),
+        instance.clone(),
         tree.root_id(),
         write_signing_key,
         "WRITE_KEY".to_string(),
@@ -96,15 +99,16 @@ async fn test_permission_checking_admin_operations() {
     )
     .await;
 
-    // Test with SECONDARY_ADMIN_KEY - should be able to write data and modify settings
-    let secondary_admin_signing_key = db
+    // Test with SECONDARY_ADMIN_KEY
+    let secondary_admin_signing_key = instance
         .backend()
         .get_private_key("SECONDARY_ADMIN_KEY")
         .await
         .expect("Failed to get secondary admin key")
-        .expect("Secondary admin key should exist in backend");
+        .expect("Secondary admin key should exist");
+
     let tree_with_secondary_admin_key = eidetica::Database::open(
-        db.clone(),
+        instance.clone(),
         tree.root_id(),
         secondary_admin_signing_key,
         "SECONDARY_ADMIN_KEY".to_string(),
@@ -135,13 +139,15 @@ async fn test_permission_checking_admin_operations() {
 
 #[tokio::test]
 async fn test_multiple_authenticated_entries() {
-    let db = auth_setup_db().await;
+    let (_instance, mut user) = setup_db().await;
 
     // Generate a key for testing
-    let public_key = db
-        .add_private_key("TEST_KEY")
+    let key_id = user
+        .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
+    let public_key =
+        eidetica::auth::crypto::parse_public_key(&key_id).expect("Failed to parse key");
 
     // Create a tree with authentication enabled
     let mut settings = Doc::new();
@@ -152,11 +158,11 @@ async fn test_multiple_authenticated_entries() {
         Permission::Admin(0), // Admin needed to create tree with auth
     )
     .unwrap();
-    auth_settings.set_json("TEST_KEY", auth_key).unwrap();
+    auth_settings.set_json(&key_id, auth_key).unwrap();
     settings.set("auth", auth_settings);
 
-    let tree = db
-        .new_database(settings, "TEST_KEY")
+    let tree = user
+        .create_database(settings, &key_id)
         .await
         .expect("Failed to create tree");
 
@@ -194,7 +200,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id1)
         .await
         .expect("Failed to get entry1");
-    assert!(entry1.sig.is_signed_by("TEST_KEY"));
+    assert!(entry1.sig.is_signed_by(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id1)
             .await
@@ -205,7 +211,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert!(entry2.sig.is_signed_by("TEST_KEY"));
+    assert!(entry2.sig.is_signed_by(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await
@@ -273,18 +279,19 @@ async fn test_entry_validation_with_mixed_key_states() {
         ("REVOKED_KEY", Permission::Write(20), KeyStatus::Revoked),
     ];
 
-    let (db, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&db, &keys, &public_keys).await;
+    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
+    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
 
-    // Test active key should work
-    let active_signing_key = db
+    // Get signing keys from the same instance that added them
+    let active_signing_key = instance
         .backend()
         .get_private_key("ACTIVE_KEY")
         .await
         .expect("Failed to get active key")
-        .expect("Active key should exist in backend");
+        .expect("Active key should exist");
+
     let tree_with_active_key = eidetica::Database::open(
-        db.clone(),
+        instance.clone(),
         tree.root_id(),
         active_signing_key,
         "ACTIVE_KEY".to_string(),
@@ -300,14 +307,15 @@ async fn test_entry_validation_with_mixed_key_states() {
     .await;
 
     // Test revoked key should fail
-    let revoked_signing_key = db
+    let revoked_signing_key = instance
         .backend()
         .get_private_key("REVOKED_KEY")
         .await
         .expect("Failed to get revoked key")
-        .expect("Revoked key should exist in backend");
+        .expect("Revoked key should exist");
+
     let tree_with_revoked_key = eidetica::Database::open(
-        db.clone(),
+        instance.clone(),
         tree.root_id(),
         revoked_signing_key,
         "REVOKED_KEY".to_string(),

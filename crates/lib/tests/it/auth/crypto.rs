@@ -1,50 +1,49 @@
 //! Tests for cryptographic operations in the authentication system.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     auth::{
         crypto::format_public_key,
         types::{Permission, SigKey},
     },
     crdt::Doc,
-    instance::LegacyInstanceOps,
 };
 
 use crate::helpers::*;
 
 #[tokio::test]
 async fn test_key_management() {
-    let db = setup_empty_db().await;
+    let (_instance, mut user) = test_instance_with_user("test_user").await;
 
-    // Initially should have _device_key only (created during Instance init)
-    let keys = db.list_private_keys().await.expect("Failed to list keys");
+    // Initially should have default_key only (created during User creation)
+    let keys = user.list_keys().expect("Failed to list keys");
     assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0], "_device_key");
 
     // Add a key
-    let key_id = "TEST_KEY";
-    let public_key = db.add_private_key(key_id).await.expect("Failed to add key");
-
-    // List keys should now show two keys (_device_key + TEST_KEY)
-    let keys = db.list_private_keys().await.expect("Failed to list keys");
-    assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&"_device_key".to_string()));
-    assert!(keys.contains(&key_id.to_string()));
-
-    // Add another key
-    let key_id2 = "TEST_KEY_2";
-    let public_key2 = db
-        .add_private_key(key_id2)
+    let key_id = user
+        .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
+    let public_key =
+        eidetica::auth::crypto::parse_public_key(&key_id).expect("Failed to parse key");
 
-    // List keys should now show three keys (_device_key + TEST_KEY + TEST_KEY_2)
-    let keys = db.list_private_keys().await.expect("Failed to list keys");
+    // List keys should now show two keys (default_key + TEST_KEY)
+    let keys = user.list_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&key_id));
+
+    // Add another key
+    let key_id2 = user
+        .add_private_key(Some("TEST_KEY_2"))
+        .await
+        .expect("Failed to add second key");
+    let public_key2 =
+        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
+
+    // List keys should now show three keys (default_key + TEST_KEY + TEST_KEY_2)
+    let keys = user.list_keys().expect("Failed to list keys");
     assert_eq!(keys.len(), 3);
-    assert!(keys.contains(&"_device_key".to_string()));
-    assert!(keys.contains(&key_id.to_string()));
-    assert!(keys.contains(&key_id2.to_string()));
+    assert!(keys.contains(&key_id));
+    assert!(keys.contains(&key_id2));
 
     // Keys should be different
     assert_ne!(
@@ -53,8 +52,8 @@ async fn test_key_management() {
     );
 
     // Test signing and verification
-    let tree = db
-        .new_database(Doc::new(), key_id)
+    let tree = user
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
     let op = tree
@@ -86,34 +85,28 @@ async fn test_key_management() {
             .await
             .expect("Failed to verify")
     );
-    // Note: Cannot verify with wrong key using new API - removed separate key verification
 }
 
 #[tokio::test]
-async fn test_import_private_key() {
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+async fn test_generated_key_can_sign() {
+    // Validates that keys generated via User API can be used for signing
 
-    let db = setup_empty_db().await;
+    let (_instance, mut user) = test_instance_with_user("test_user").await;
 
-    // Generate a key externally
-    let signing_key = SigningKey::generate(&mut OsRng);
-
-    // Import the key
-    let key_id = "IMPORTED_KEY";
-    db.import_private_key(key_id, signing_key.clone())
+    // Add a key (will be generated internally)
+    let key_id = user
+        .add_private_key(Some("TEST_KEY"))
         .await
-        .expect("Failed to import key");
+        .expect("Failed to add key");
 
-    // The key should be in the list (plus _device_key)
-    let keys = db.list_private_keys().await.expect("Failed to list keys");
+    // The key should be in the list (plus default_key)
+    let keys = user.list_keys().expect("Failed to list keys");
     assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&"_device_key".to_string()));
-    assert!(keys.contains(&key_id.to_string()));
+    assert!(keys.contains(&key_id));
 
-    // Test that we can sign with the imported key
-    let tree = db
-        .new_database(Doc::new(), key_id)
+    // Test that we can sign with the key
+    let tree = user
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
     let op = tree
@@ -145,7 +138,7 @@ async fn test_import_private_key() {
 }
 
 #[tokio::test]
-async fn test_backend_serialization() {
+async fn test_multi_key_authentication() {
     use eidetica::auth::crypto::format_public_key;
     use eidetica::auth::types::AuthKey;
 
@@ -219,7 +212,7 @@ async fn test_backend_serialization() {
             .expect("Failed to verify")
     );
 
-    // Create another entry with the imported key - need to reload database with that key
+    // Create another entry with the second key - need to reload database with that key
     let signing_key2_for_load = user
         .get_signing_key(&key_id2)
         .expect("Failed to get signing key")
@@ -261,36 +254,40 @@ async fn test_backend_serialization() {
 }
 
 #[tokio::test]
-async fn test_overwrite_existing_key() {
-    use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+async fn test_keys_have_unique_identity() {
+    // Validates that each key added via User API has a unique identity
 
-    let db = setup_empty_db().await;
+    let (_instance, mut user) = test_instance_with_user("test_user").await;
 
     // Add initial key
-    let key_id = "TEST_KEY";
-    let public_key1 = db.add_private_key(key_id).await.expect("Failed to add key");
-
-    // Overwrite with a new key
-    // TODO: This behavior should be changed so that keys are unique to the tree, not the db.
-    let signing_key2 = SigningKey::generate(&mut OsRng);
-    db.import_private_key(key_id, signing_key2.clone())
+    let key_id1 = user
+        .add_private_key(Some("TEST_KEY"))
         .await
-        .expect("Failed to import key");
-    let public_key2 = signing_key2.verifying_key();
+        .expect("Failed to add key");
+    let public_key1 =
+        eidetica::auth::crypto::parse_public_key(&key_id1).expect("Failed to parse key");
+
+    // Add another key with different name
+    let key_id2 = user
+        .add_private_key(Some("TEST_KEY_2"))
+        .await
+        .expect("Failed to add another key");
+    let public_key2 =
+        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
 
     // Should be different keys
     assert_ne!(public_key1, public_key2);
+    assert_ne!(key_id1, key_id2);
 
-    // Should still only have two key IDs (_device_key + TEST_KEY)
-    let keys = db.list_private_keys().await.expect("Failed to list keys");
-    assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&"_device_key".to_string()));
-    assert!(keys.contains(&key_id.to_string()));
+    // Should now have three keys (default_key + TEST_KEY + TEST_KEY_2)
+    let keys = user.list_keys().expect("Failed to list keys");
+    assert_eq!(keys.len(), 3);
+    assert!(keys.contains(&key_id1));
+    assert!(keys.contains(&key_id2));
 
-    // New key should work for signing
-    let tree = db
-        .new_database(Doc::new(), key_id)
+    // Both keys should work for signing
+    let tree = user
+        .create_database(Doc::new(), &key_id1)
         .await
         .expect("Failed to create tree");
     let op = tree
@@ -314,6 +311,4 @@ async fn test_overwrite_existing_key() {
             .await
             .expect("Failed to verify")
     );
-
-    // Note: Cannot verify with specific keys using new API - removed key-specific verification
 }

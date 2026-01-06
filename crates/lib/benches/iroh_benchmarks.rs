@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Uses LegacyInstanceOps
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     entry::{Entry, ID},

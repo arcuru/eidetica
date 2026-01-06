@@ -81,9 +81,10 @@ async fn test_track_database_no_sigkey_error() -> eidetica::Result<()> {
     // Create a database without global permissions (user has no access)
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let alice_key_id = format!("alice_key_{}", uuid::Uuid::new_v4());
     instance
         .backend()
-        .store_private_key("alice_key", alice_key.clone())
+        .store_private_key(&alice_key_id, alice_key.clone())
         .await?;
 
     let mut db_settings = Doc::new();
@@ -382,9 +383,10 @@ async fn test_update_tracked_valid_key_change() -> eidetica::Result<()> {
     // Create database with global permission
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let alice_key_id = format!("alice_key_{}", uuid::Uuid::new_v4());
     instance
         .backend()
-        .store_private_key("alice_key", alice_key.clone())
+        .store_private_key(&alice_key_id, alice_key.clone())
         .await?;
 
     let mut db_settings = Doc::new();
@@ -444,9 +446,10 @@ async fn test_update_tracked_nonexistent_key_fails() -> eidetica::Result<()> {
     // Create database with global permission
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let alice_key_id = format!("alice_key_{}", uuid::Uuid::new_v4());
     instance
         .backend()
-        .store_private_key("alice_key", alice_key.clone())
+        .store_private_key(&alice_key_id, alice_key.clone())
         .await?;
 
     let mut db_settings = Doc::new();
@@ -501,9 +504,10 @@ async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
     // Create database WITHOUT global permission - only alice has access
     let (alice_key, alice_pubkey) = generate_keypair();
     let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let alice_key_id = format!("alice_key_{}", uuid::Uuid::new_v4());
     instance
         .backend()
-        .store_private_key("alice_key", alice_key.clone())
+        .store_private_key(&alice_key_id, alice_key.clone())
         .await?;
 
     let mut db_settings = Doc::new();

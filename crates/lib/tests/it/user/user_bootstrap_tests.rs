@@ -14,7 +14,6 @@ use eidetica::{
     },
     constants::SETTINGS,
     crdt::Doc,
-    instance::LegacyInstanceOps,
     store::DocStore,
     sync::{
         RequestStatus, Sync,
@@ -65,10 +64,13 @@ async fn setup_user_with_database() -> eidetica::Result<(
 
     // Add _device_key to the database's auth configuration so sync handler can modify the database
     let device_key_name = "_device_key";
-    let device_pubkey = instance
-        .get_formatted_public_key(device_key_name)
+    let device_signing_key = instance
+        .backend()
+        .get_private_key(device_key_name)
         .await
-        .expect("Failed to get device public key");
+        .expect("Failed to get device key")
+        .expect("Device key should exist");
+    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
 
     // Add _device_key as Admin to the database
     let tx = database
@@ -532,10 +534,13 @@ async fn test_multiple_users() {
 
     // Add _device_key to Alice's database for sync
     let device_key_name = "_device_key";
-    let device_pubkey = instance
-        .get_formatted_public_key(device_key_name)
+    let device_signing_key = instance
+        .backend()
+        .get_private_key(device_key_name)
         .await
-        .expect("Failed to get device public key");
+        .expect("Failed to get device key")
+        .expect("Device key should exist");
+    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
     let alice_tx = alice_db
         .new_transaction()
         .await
@@ -753,10 +758,13 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Add _device_key to Alice's database for sync
     let device_key_name = "_device_key";
-    let device_pubkey = instance
-        .get_formatted_public_key(device_key_name)
+    let device_signing_key = instance
+        .backend()
+        .get_private_key(device_key_name)
         .await
-        .expect("Failed to get device public key");
+        .expect("Failed to get device key")
+        .expect("Device key should exist");
+    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
     let alice_tx = alice_db
         .new_transaction()
         .await

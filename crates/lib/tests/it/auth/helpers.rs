@@ -40,11 +40,6 @@ use eidetica::{
 
 // ===== BASIC SETUP HELPERS =====
 
-/// Create a database with a single test key
-pub async fn setup_db() -> Instance {
-    crate::helpers::test_instance().await
-}
-
 /// Create an instance with user and tree with a test key using User API
 ///
 /// Returns (instance, user, tree, key_id) where key_id can be used for authenticated operations.

@@ -5,13 +5,8 @@
 
 use eidetica::{
     Database, Instance,
-    auth::{
-        format_public_key,
-        types::{AuthKey, Permission},
-    },
     crdt::{Doc, doc::Value},
     entry::ID,
-    instance::LegacyInstanceOps,
     store::DocStore,
 };
 
@@ -215,34 +210,6 @@ pub async fn create_linear_chain(
     }
 
     entry_ids
-}
-
-/// Create tree with authentication setup for testing (uses deprecated API for testing)
-#[allow(deprecated)]
-pub async fn setup_tree_with_auth_config(key_name: &str) -> (Instance, Database) {
-    let db = crate::helpers::test_instance().await;
-    let public_key = db
-        .add_private_key(key_name)
-        .await
-        .expect("Failed to add key");
-
-    // Create auth settings
-    let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
-    auth_settings
-        .set_json(
-            key_name,
-            AuthKey::active(format_public_key(&public_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-    settings.set("auth", auth_settings);
-    settings.set("name", "AuthenticatedTree");
-
-    let tree = db
-        .new_database(settings, key_name)
-        .await
-        .expect("Failed to create tree");
-    (db, tree)
 }
 
 /// Create tree with authentication using User API.

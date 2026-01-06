@@ -223,22 +223,6 @@ pub async fn setup_tree() -> (Instance, eidetica::Database) {
     (instance, tree)
 }
 
-/// Creates a tree with a specific key (DEPRECATED PATTERN)
-///
-/// **DEPRECATED**: New tests should use User API for key management.
-///
-/// Note: Returns the Instance along with the Database because Database holds a weak reference.
-/// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-#[allow(deprecated)]
-pub async fn setup_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
-    let db = setup_db_with_key(key_name).await;
-    let tree = db
-        .new_database_default(key_name)
-        .await
-        .expect("Failed to create tree for testing");
-    (db, tree)
-}
-
 /// Creates a tree and database with a specific key (DEPRECATED PATTERN)
 ///
 /// **DEPRECATED**: New tests should use User API for key management.

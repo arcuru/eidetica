@@ -10,6 +10,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use eidetica::{
     Instance, Result,
+    entry::ID,
     instance::LegacyInstanceOps,
     sync::{
         Sync,
@@ -205,15 +206,20 @@ use eidetica::{
 /// Create a server instance configured for manual bootstrap approval
 ///
 /// # Returns
-/// (Instance, Database, Sync, tree_id)
-pub async fn setup_manual_approval_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    let instance = crate::helpers::test_instance().await;
+/// (Instance, User, key_id, Database, Sync, tree_id)
+///
+/// # Implementation Note
+/// This function uses the _device_key for sync handler operations. The device key
+/// is accessed via Instance internals and will be migrated to InstanceMetadata shortly
+pub async fn setup_manual_approval_server() -> (Instance, User, String, Database, Sync, ID) {
+    let (instance, mut user, key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
-    // Add server admin key
+    // Initialize sync
     instance
-        .add_private_key("server_admin")
+        .enable_sync()
         .await
-        .expect("Failed to add server admin key");
+        .expect("Failed to initialize sync");
 
     // Create database with manual approval (no global wildcard permission)
     let mut settings = Doc::new();
@@ -221,24 +227,21 @@ pub async fn setup_manual_approval_server() -> (Instance, Database, Sync, eideti
 
     let mut auth_doc = Doc::new();
 
-    // Add server admin key to auth settings
-    let server_pubkey = instance
-        .get_formatted_public_key("server_admin")
-        .await
-        .expect("Failed to get server public key");
-
+    // Add user's key to auth settings by key_id (required for User::create_database)
+    // The key_id is the public key string (e.g., "ed25519:...")
     auth_doc
         .set_json(
-            "server_admin",
+            &key_id,
             serde_json::json!({
-                "pubkey": server_pubkey,
+                "pubkey": key_id,
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
         )
-        .expect("Failed to set server admin auth");
+        .expect("Failed to set user key auth");
 
     // Add device key to auth settings for sync handler operations
+    // NOTE: This accesses _device_key directly from instance - will be updated in Phase 2 (InstanceMetadata)
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
         .await
@@ -257,8 +260,8 @@ pub async fn setup_manual_approval_server() -> (Instance, Database, Sync, eideti
 
     settings.set("auth", auth_doc);
 
-    let database = instance
-        .new_database(settings, "server_admin")
+    let database = user
+        .create_database(settings, &key_id)
         .await
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
@@ -273,21 +276,33 @@ pub async fn setup_manual_approval_server() -> (Instance, Database, Sync, eideti
         .await
         .expect("Failed to enable sync for database");
 
-    (instance, database, sync, tree_id)
+    (instance, user, key_id, database, sync, tree_id)
 }
 
 /// Create a server with global wildcard permission for automatic bootstrap approval
 ///
 /// # Returns
-/// (Instance, Database, Sync, tree_id)
-pub async fn setup_global_wildcard_server() -> (Instance, Database, Sync, eidetica::entry::ID) {
-    let instance = crate::helpers::test_instance().await;
+/// (Instance, User, key_id, Database, Sync, tree_id)
+///
+/// # Implementation Note
+/// This function uses the _device_key for sync handler operations. The device key
+/// is accessed via Instance internals and will be migrated to InstanceMetadata in Phase 2.
+pub async fn setup_global_wildcard_server() -> (
+    Instance,
+    eidetica::user::User,
+    String,
+    Database,
+    Sync,
+    eidetica::entry::ID,
+) {
+    let (instance, mut user, key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
-    // Add server admin key
+    // Initialize sync
     instance
-        .add_private_key("server_admin")
+        .enable_sync()
         .await
-        .expect("Failed to add server admin key");
+        .expect("Failed to initialize sync");
 
     // Create database with global wildcard permission
     let mut settings = Doc::new();
@@ -295,24 +310,21 @@ pub async fn setup_global_wildcard_server() -> (Instance, Database, Sync, eideti
 
     let mut auth_doc = Doc::new();
 
-    // Add server admin key to auth settings
-    let server_pubkey = instance
-        .get_formatted_public_key("server_admin")
-        .await
-        .expect("Failed to get server public key");
-
+    // Add user's key to auth settings by key_id (required for User::create_database)
+    // The key_id is the public key string (e.g., "ed25519:...")
     auth_doc
         .set_json(
-            "server_admin",
+            &key_id,
             serde_json::json!({
-                "pubkey": server_pubkey,
+                "pubkey": key_id,
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
         )
-        .expect("Failed to set server admin auth");
+        .expect("Failed to set user key auth");
 
     // Add device key to auth settings for sync handler operations
+    // NOTE: This accesses _device_key directly from instance - will be updated in Phase 2 (InstanceMetadata)
     let device_pubkey = instance
         .get_formatted_public_key("_device_key")
         .await
@@ -343,8 +355,8 @@ pub async fn setup_global_wildcard_server() -> (Instance, Database, Sync, eideti
 
     settings.set("auth", auth_doc);
 
-    let database = instance
-        .new_database(settings, "server_admin")
+    let database = user
+        .create_database(settings, &key_id)
         .await
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
@@ -359,7 +371,7 @@ pub async fn setup_global_wildcard_server() -> (Instance, Database, Sync, eideti
         .await
         .expect("Failed to enable sync for database");
 
-    (instance, database, sync, tree_id)
+    (instance, user, key_id, database, sync, tree_id)
 }
 
 /// Create a server with auto approval (auto_approve = true)
@@ -391,37 +403,6 @@ pub async fn start_sync_server(sync: &Sync) -> String {
     sync.get_server_address()
         .await
         .expect("Failed to get server address")
-}
-
-/// Create a client instance for bootstrap testing
-///
-/// This creates a client with a directly-managed private key (not through User API)
-/// which is needed for bootstrap tests that reference keys by name.
-///
-/// # Arguments
-/// * `key_name` - Name for the client's private key
-///
-/// # Returns
-/// (Instance, Arc<Sync>)
-pub async fn setup_bootstrap_client(key_name: &str) -> (Instance, Arc<Sync>) {
-    let instance = crate::helpers::test_instance().await;
-
-    // Add the key directly to the instance (not through User API)
-    instance
-        .add_private_key(key_name)
-        .await
-        .expect("Failed to add client key");
-
-    // Initialize sync
-    instance.enable_sync().await.expect("Failed to enable sync");
-    let sync = instance.sync().expect("Sync should be initialized");
-
-    (instance, sync)
-}
-
-/// Create a simple client with default key name
-pub async fn setup_simple_client() -> (Instance, Arc<Sync>) {
-    setup_bootstrap_client("client_key").await
 }
 
 /// Create a SyncTreeRequest for bootstrap testing
@@ -516,6 +497,9 @@ use eidetica::user::User;
 /// Uses global wildcard permission for automatic bootstrap approval.
 ///
 /// Returns (Instance, User, key_id: String, Database, TreeId)
+///
+/// # Implementation Note
+/// This function uses the _device_key for sync handler operations.
 pub async fn setup_server_with_bootstrap_database(
     username: &str,
     key_name: &str,
@@ -539,7 +523,9 @@ pub async fn setup_server_with_bootstrap_database(
     set_global_wildcard_permission(&server_database)
         .await
         .unwrap();
+
     // Add _device_key to the database's auth configuration so sync handler can modify the database
+    // NOTE: This accesses _device_key directly from instance - will be updated in Phase 2 (InstanceMetadata)
     let device_key_name = "_device_key";
     let device_pubkey = server_instance
         .get_formatted_public_key(device_key_name)
@@ -730,6 +716,9 @@ use eidetica::user::types::{SyncSettings, TrackedDatabase};
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+///
+/// # Implementation Note
+/// This function uses the _device_key for sync handler operations.
 pub async fn setup_sync_enabled_server(
     username: &str,
     key_name: &str,
@@ -758,6 +747,7 @@ pub async fn setup_sync_enabled_server(
 
     // Add _device_key to the database's auth configuration so sync handler can modify the database
     // Get the device key from instance
+    // NOTE: This accesses _device_key directly from instance - will be updated in Phase 2 (InstanceMetadata)
     let device_key_name = "_device_key";
     let device_pubkey = server_instance
         .get_formatted_public_key(device_key_name)
@@ -860,7 +850,12 @@ pub async fn setup_sync_enabled_client(
 /// This directly updates the sync tree for databases created via instance.new_database()
 /// instead of user.create_database().
 ///
+/// # Implementation Note
+/// This function uses the _device_key for sync operations. The device key
+/// is accessed via Instance internals and will be migrated to InstanceMetadata in Phase 2.
+///
 /// TODO: This should go away eventually or be replaced by the User API
+#[allow(deprecated)] // Uses backend().get_private_key for _device_key - will be migrated in Phase 2
 pub async fn enable_sync_for_instance_database(
     sync: &Sync,
     database_id: &eidetica::entry::ID,
@@ -870,6 +865,8 @@ pub async fn enable_sync_for_instance_database(
 
     // Open the sync tree to set combined settings
     let instance = sync.instance()?;
+
+    // NOTE: This accesses _device_key directly from backend - will be updated in Phase 2 (InstanceMetadata)
     let signing_key = instance
         .backend()
         .get_private_key("_device_key")
@@ -924,6 +921,9 @@ pub async fn enable_sync_for_instance_database(
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, tree_id, Arc<Sync>)
+///
+/// # Implementation Note
+/// This function uses the _device_key for sync handler operations.
 pub async fn setup_public_sync_enabled_server(
     username: &str,
     key_name: &str,
@@ -947,6 +947,8 @@ pub async fn setup_public_sync_enabled_server(
 
     // Add auth config with wildcard permission for unauthenticated access
     let mut auth_settings = eidetica::auth::AuthSettings::new();
+
+    // NOTE: This accesses _device_key directly from instance - will be updated in Phase 2 (InstanceMetadata)
     let device_pubkey = server_instance
         .get_formatted_public_key("_device_key")
         .await
