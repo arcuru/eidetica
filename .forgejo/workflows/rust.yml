@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2
         env:
           POSTGRES_DB: eidetica_test
           POSTGRES_HOST_AUTH_METHOD: trust
@@ -86,7 +86,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
 
       - name: Install mdbook and nextest
-        uses: https://github.com/taiki-e/install-action@v2
+        uses: https://github.com/taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2
         with:
           tool: cargo-nextest@0.9.115,mdbook@0.4
 
