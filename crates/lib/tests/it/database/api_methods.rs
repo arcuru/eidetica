@@ -319,42 +319,27 @@ async fn test_verify_entry_signature_unauthorized_key() {
 
     assert_entry_authentication(&tree, &authorized_entry_id, &authorized_key_id).await;
 
-    // Test with unauthorized key (should fail during commit because key is not in tree's auth settings)
+    // Test with unauthorized key (should fail at open because key is not in tree's auth settings)
     let unauthorized_signing_key = user
         .get_signing_key(&unauthorized_key_id)
         .expect("Failed to get unauthorized signing key");
 
-    // TODO: Any key may open a locally present Database if they have the hash.
-    // Document this explicitly
-    let tree_with_unauthorized_key = eidetica::Database::open(
+    // Database::open should fail because the unauthorized key is not in the tree's auth settings
+    // and no global permission exists
+    let open_result = eidetica::Database::open(
         instance.clone(),
         tree.root_id(),
         unauthorized_signing_key,
         unauthorized_key_id.clone(),
     )
-    .expect("Failed to load tree with unauthorized key");
+    .await;
 
-    let op2 = tree_with_unauthorized_key
-        .new_transaction()
-        .await
-        .expect("Failed to create operation");
-    let store2 = op2
-        .get_store::<DocStore>("data")
-        .await
-        .expect("Failed to get subtree");
-    store2
-        .set("key", "value2")
-        .await
-        .expect("Failed to set value");
-    let commit_result = op2.commit().await;
-
-    // The commit should fail because the unauthorized key is not in the tree's auth settings
-    assert!(commit_result.is_err());
-    let error_msg = commit_result.unwrap_err().to_string();
+    assert!(open_result.is_err());
+    let error_msg = open_result.unwrap_err().to_string();
     assert!(
-        error_msg.contains("authentication validation failed")
-            || error_msg.contains("not found")
-            || error_msg.contains("No active key found")
+        error_msg.contains("not found in auth settings")
+            || error_msg.contains("no global permission"),
+        "Expected error about key not found, got: {error_msg}"
     );
 }
 

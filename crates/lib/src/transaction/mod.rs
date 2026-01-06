@@ -1133,10 +1133,10 @@ impl Transaction {
                 // Use provided signing key directly (already decrypted from UserKeyManager or device key)
                 let key_clone = provided_key.clone();
 
-                // Build SigInfo using the provided sigkey identifier
+                // Build SigInfo - sigkey already validated at Database::open time
                 let mut sig_builder = SigInfo::builder().key(SigKey::Direct(sigkey.clone()));
 
-                // For global permissions '*', include the public key directly
+                // Include pubkey only for global "*" permission
                 if sigkey == "*" {
                     let public_key = provided_key.verifying_key();
                     let pubkey_string = format_public_key(&public_key);

@@ -141,9 +141,13 @@ impl AuthKey {
 }
 
 /// Step in a delegation path
+///
+/// The `key` field is never `"*"`: intermediate steps reference tree IDs (which
+/// are content hashes), and the final step must be a named key with an actual
+/// Ed25519 public key for signature verification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DelegationStep {
-    /// Delegated tree ID or final key name
+    /// Delegated tree ID (intermediate steps) or key name (final step) - never `"*"`
     pub key: String,
     /// Tips of the delegated tree at time of signing (None for final step)
     pub tips: Option<Vec<ID>>,

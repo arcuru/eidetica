@@ -653,7 +653,12 @@ async fn test_sync_protocol_implementation() {
     );
 
     // Reload the tree to get the latest state
-    let tree2 = base_db2.load_database(&tree_root_id).await.unwrap();
+    // Use global "*" permission (public database with Permission::Read)
+    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let tree2 =
+        eidetica::Database::open(base_db2.clone(), &tree_root_id, reader_key, "*".to_string())
+            .await
+            .unwrap();
 
     // Verify ALL synced data is correct
     {

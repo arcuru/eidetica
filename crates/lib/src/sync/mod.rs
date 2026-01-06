@@ -315,7 +315,8 @@ impl Sync {
             sync_tree_root_id,
             device_key,
             DEVICE_KEY_NAME.to_string(),
-        )?;
+        )
+        .await?;
 
         let sync = Self {
             background_tx: OnceLock::new(),
@@ -985,7 +986,7 @@ impl Sync {
 
         // Open user's preferences database (read-only)
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        let prefs_db = crate::Database::open_readonly(preferences_db_id.clone(), &instance)?;
+        let prefs_db = Database::open_unauthenticated(preferences_db_id.clone(), &instance)?;
         let current_tips = prefs_db.get_tips().await?;
 
         // Check if preferences have changed via tip comparison
@@ -1053,7 +1054,7 @@ impl Sync {
             for uuid in &users {
                 // Read preferences from each user's database
                 if let Some((user_prefs_db_id, _)) = user_mgr.get_tracked_user_state(uuid).await? {
-                    let user_db = crate::Database::open_readonly(user_prefs_db_id, &instance)?;
+                    let user_db = Database::open_unauthenticated(user_prefs_db_id, &instance)?;
                     let user_table = user_db
                         .get_store_viewer::<Table<TrackedDatabase>>("databases")
                         .await?;
@@ -2364,7 +2365,8 @@ impl Sync {
             &request.tree_id,
             approving_signing_key,
             approving_key_name.to_string(),
-        )?;
+        )
+        .await?;
         let tx = database.new_transaction().await?;
 
         // Get settings store and update auth configuration using SettingsStore API
@@ -2461,7 +2463,8 @@ impl Sync {
             &request.tree_id,
             approving_signing_key.clone(),
             approving_sigkey.to_string(),
-        )?;
+        )
+        .await?;
 
         // Explicitly check that the approving user has Admin permission
         // This provides clear error messages and fails fast before modifying the database
@@ -2637,7 +2640,8 @@ impl Sync {
             &request.tree_id,
             rejecting_signing_key.clone(),
             rejecting_sigkey.to_string(),
-        )?;
+        )
+        .await?;
 
         // Check that the rejecting user has Admin permission
         let permission = database.get_sigkey_permission(rejecting_sigkey).await?;

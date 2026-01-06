@@ -48,6 +48,7 @@ impl DelegationResolver {
         let mut cumulative_bounds = None;
 
         // Process all steps except the last one (which should be the final key)
+        // Note: Wildcard "*" validation is done in KeyResolver before reaching here
         for (i, step) in steps.iter().enumerate() {
             let is_final_step = i == steps.len() - 1;
 
@@ -85,12 +86,10 @@ impl DelegationResolver {
                 let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.key)?;
 
                 let root_id = delegated_tree_ref.tree.root.clone();
-                let delegated_tree =
-                    Database::open_readonly(root_id.clone(), instance).map_err(|e| {
-                        AuthError::DelegatedTreeLoadFailed {
-                            tree_id: root_id.to_string(),
-                            source: Box::new(e),
-                        }
+                let delegated_tree = Database::open_unauthenticated(root_id.clone(), instance)
+                    .map_err(|e| AuthError::DelegatedTreeLoadFailed {
+                        tree_id: root_id.to_string(),
+                        source: Box::new(e),
                     })?;
 
                 // Validate tips
@@ -225,7 +224,11 @@ impl DelegationResolver {
         Ok(true)
     }
 
-    /// Resolve a direct key reference from the main tree's auth settings
+    /// Resolve a direct key reference from the delegated tree's auth settings
+    ///
+    /// This method does not support wildcard `"*"` keys - the key must exist in
+    /// auth_settings with a valid Ed25519 public key. This is intentional: delegation
+    /// paths must terminate at a named key for accountability and signature verification.
     fn resolve_direct_key(
         &self,
         key_name: &str,

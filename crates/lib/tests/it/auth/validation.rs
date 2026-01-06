@@ -43,6 +43,7 @@ async fn test_authentication_validation_revoked_key() {
         revoked_signing_key,
         "REVOKED_KEY".to_string(),
     )
+    .await
     .expect("Failed to load tree with revoked key");
 
     let op = tree_with_revoked_key
@@ -90,6 +91,7 @@ async fn test_permission_checking_admin_operations() {
         write_signing_key,
         "WRITE_KEY".to_string(),
     )
+    .await
     .expect("Failed to load tree with write key");
 
     test_operation_succeeds(
@@ -113,6 +115,7 @@ async fn test_permission_checking_admin_operations() {
         secondary_admin_signing_key,
         "SECONDARY_ADMIN_KEY".to_string(),
     )
+    .await
     .expect("Failed to load tree with secondary admin key");
 
     test_operation_succeeds(
@@ -296,6 +299,7 @@ async fn test_entry_validation_with_mixed_key_states() {
         active_signing_key,
         "ACTIVE_KEY".to_string(),
     )
+    .await
     .expect("Failed to load tree with active key");
 
     assert_operation_permissions(
@@ -320,6 +324,7 @@ async fn test_entry_validation_with_mixed_key_states() {
         revoked_signing_key,
         "REVOKED_KEY".to_string(),
     )
+    .await
     .expect("Failed to load tree with revoked key");
 
     assert_operation_permissions(

@@ -561,9 +561,16 @@ async fn test_index_survives_database_reload() {
     // Drop database
     drop(database);
 
-    // Reload database from same instance using open (which takes Instance by value, so clone it)
-    // Since we need the instance for later use, we'll use open_readonly instead to test persistence
-    let database = Database::open_readonly(root_id, &instance).unwrap();
+    // Reload database from same instance to test persistence
+    // Reopen with the same key that was used to create
+    let database = Database::open(
+        instance.clone(),
+        &root_id,
+        private_key,
+        "test_key".to_string(),
+    )
+    .await
+    .unwrap();
 
     // Verify index is intact using viewer (read-only)
     let viewer = database

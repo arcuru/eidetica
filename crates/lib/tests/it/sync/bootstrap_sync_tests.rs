@@ -49,7 +49,7 @@ async fn test_bootstrap_sync_from_zero_state() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&test_tree_id).await.is_err(),
+        client_instance.backend().get(&test_tree_id).await.is_err(),
         "Client should not have the database initially"
     );
 

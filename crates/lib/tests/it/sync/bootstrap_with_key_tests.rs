@@ -42,7 +42,7 @@ async fn test_bootstrap_with_provided_key() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&tree_id).await.is_err(),
+        client_instance.backend().get(&tree_id).await.is_err(),
         "Client should not have the database initially (tree_id: {tree_id})"
     );
 
@@ -246,7 +246,7 @@ async fn test_multiple_clients_with_different_keys() {
 
         // Verify client doesn't have database initially
         assert!(
-            instance.load_database(&tree_id).await.is_err(),
+            instance.backend().get(&tree_id).await.is_err(),
             "Client {i} should not have database initially (tree_id: {tree_id})"
         );
 
@@ -505,7 +505,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&tree_id).await.is_err(),
+        client_instance.backend().get(&tree_id).await.is_err(),
         "Client should not have database initially (tree_id: {tree_id})"
     );
 
@@ -527,10 +527,16 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     client_sync.flush().await.ok();
 
     // Verify client successfully bootstrapped and can load the database
-    let client_database = client_instance
-        .load_database(&tree_id)
-        .await
-        .expect("Client should be able to load the database after bootstrap");
+    // Use global "*" permission (server has wildcard permission)
+    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let client_database = eidetica::Database::open(
+        client_instance.clone(),
+        &tree_id,
+        reader_key,
+        "*".to_string(),
+    )
+    .await
+    .expect("Client should be able to load the database after bootstrap");
 
     println!("✅ Client: Successfully loaded database after bootstrap");
 

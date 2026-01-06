@@ -246,6 +246,7 @@ classDiagram
 - Are commonly used for world-readable databases (with "read" permissions) but can grant broader access
 - Can be revoked like any other key
 - Can be included in delegated databases (if you delegate to a database with a wildcard, that's valid)
+- **Cannot be used in delegation paths** - intermediate steps reference tree IDs (content hashes), and the final step must resolve to a named key with an actual Ed25519 public key
 
 ### Entry Signing Format
 

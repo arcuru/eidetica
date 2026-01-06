@@ -273,7 +273,7 @@ impl Instance {
                     global_write_callbacks: Mutex::new(HashMap::new()),
                 }),
             };
-            let temp_db = Database::open_readonly(root_id.clone(), &temp_instance)?;
+            let temp_db = Database::open_unauthenticated(root_id.clone(), &temp_instance)?;
             if let Ok(name) = temp_db.get_name().await {
                 match name.as_str() {
                     USERS => {
@@ -498,6 +498,7 @@ impl Instance {
             device_key,
             "_device_key".to_string(),
         )
+        .await
     }
 
     // === User Management ===
@@ -584,20 +585,26 @@ impl Instance {
         Ok(format_public_key(&device_key))
     }
 
-    /// Load an existing database from the backend by its root ID.
+    /// Load an existing database from the backend by its root ID (read-only).
+    ///
+    /// # Internal Use Only
+    ///
+    /// This method bypasses authentication validation. See `Database::open_readonly`
+    /// for details. These operations should only be performed by the server/instance
+    /// administrator, but we don't verify that yet.
     ///
     /// # Arguments
     /// * `root_id` - The content-addressable ID of the root `Entry` of the database to load.
     ///
     /// # Returns
     /// A `Result` containing the loaded `Database` or an error if the root ID is not found.
-    pub async fn load_database(&self, root_id: &ID) -> Result<Database> {
+    pub(crate) async fn load_database(&self, root_id: &ID) -> Result<Database> {
         // First validate the root_id exists in the backend
         // Make sure the entry exists
         self.inner.backend.get(root_id).await?;
 
         // Create a database object with the given root_id
-        let database = Database::open_readonly(root_id.clone(), self)?;
+        let database = Database::open_unauthenticated(root_id.clone(), self)?;
         Ok(database)
     }
 
@@ -614,7 +621,7 @@ impl Instance {
         let mut databases = Vec::new();
 
         for root_id in root_ids {
-            let database = Database::open_readonly(root_id.clone(), self)?;
+            let database = Database::open_unauthenticated(root_id.clone(), self)?;
             databases.push(database);
         }
 
@@ -860,7 +867,7 @@ impl Instance {
         if has_callbacks {
             // Create a Database handle for the callbacks
             // Use open_readonly since we only need it for callback context
-            let database = Database::open_readonly(tree_id.clone(), self)?;
+            let database = Database::open_unauthenticated(tree_id.clone(), self)?;
 
             // Execute per-database callbacks
             if let Some(callbacks) = per_db_callbacks {

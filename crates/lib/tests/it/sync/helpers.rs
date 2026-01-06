@@ -882,7 +882,8 @@ pub async fn enable_sync_for_instance_database(
         sync.sync_tree_root_id(),
         signing_key,
         "_device_key".to_string(),
-    )?;
+    )
+    .await?;
 
     let tx = sync_database.new_transaction().await?;
     let database_users = tx.get_store::<DocStore>("database_users").await?;

@@ -98,6 +98,7 @@ impl SyncHandlerImpl {
             signing_key,
             DEVICE_KEY_NAME.to_string(),
         )
+        .await
     }
 
     /// Store a bootstrap request in the sync database for manual approval.
@@ -219,7 +220,7 @@ impl SyncHandlerImpl {
         tree_id: &ID,
         requesting_pubkey: &str,
     ) -> Result<Option<Permission>> {
-        let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
+        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
         let auth_settings = settings_store.get_auth_settings().await?;
@@ -253,25 +254,9 @@ impl SyncHandlerImpl {
         requesting_pubkey: &str,
         requested_permission: &Permission,
     ) -> Result<bool> {
-        // FIXME: This should not be using the device key for auth checks
-        // Load database with device key for accessing settings
-        let instance = self.instance()?;
-        let signing_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
-
-        let database = Database::open(
-            self.instance()?,
-            tree_id,
-            signing_key,
-            DEVICE_KEY_NAME.to_string(),
-        )?;
-        let transaction = database.new_transaction().await?;
-        let settings_store = SettingsStore::new(&transaction)?;
+        // Use open_unauthenticated since we only need to read auth settings
+        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
+        let settings_store = database.get_settings().await?;
 
         let auth_settings = settings_store.get_auth_settings().await?;
 
@@ -304,7 +289,7 @@ impl SyncHandlerImpl {
     /// - `Ok(false)` if database allows unauthenticated access (no auth or has global permission)
     /// - `Err` if the check fails
     async fn check_if_database_has_auth(&self, tree_id: &ID) -> Result<bool> {
-        let database = Database::open_readonly(tree_id.clone(), &self.instance()?)?;
+        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
 
@@ -373,7 +358,9 @@ impl SyncHandlerImpl {
             &self.sync_tree_id,
             signing_key,
             DEVICE_KEY_NAME.to_string(),
-        ) {
+        )
+        .await
+        {
             Ok(db) => db,
             Err(_) => return false, // Fail closed
         };

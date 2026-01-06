@@ -58,7 +58,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 
             // Verify client doesn't have the database initially
             assert!(
-                client_instance.load_database(&tree_id).await.is_err(),
+                client_instance.backend().get(&tree_id).await.is_err(),
                 "Client {i} should not have the database initially"
             );
 
@@ -75,8 +75,11 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
-            // Verify client can now load the database
-            let _client_db = client_instance.load_database(&tree_id).await.unwrap();
+            // Verify client now has the database
+            assert!(
+                client_instance.backend().get(&tree_id).await.is_ok(),
+                "Client {i} should have the database after bootstrap"
+            );
 
             info!("Client {} successfully bootstrapped", i);
             Ok::<_, eidetica::Error>((i, client_instance))

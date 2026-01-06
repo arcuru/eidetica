@@ -156,7 +156,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.load_database(&room_id).await.is_err(),
+        client_instance.backend().get(&room_id).await.is_err(),
         "Client should not have the database initially"
     );
 
@@ -268,7 +268,9 @@ async fn test_chat_app_authenticated_bootstrap() {
         &room_id,
         signing_key,
         CLIENT_KEY_NAME.to_string(),
-    ) {
+    )
+    .await
+    {
         Ok(db) => {
             println!("✅ Client successfully loaded database");
             db
@@ -530,10 +532,9 @@ async fn test_chat_app_authenticated_bootstrap() {
 /// FIXME: This test fails because global "*" permission requires the public key
 /// to be included in SigInfo for signature verification. When a client uses their
 /// own signing key (ed25519:...) that isn't registered in auth settings, the auth
-/// system can't verify the signature even though "*" permission exists. This is a
-/// design limitation in how global permissions interact with signature verification.
+/// system can fall back to global "*" permission and use the pubkey from SigInfo
+/// to verify the signature.
 #[tokio::test]
-#[ignore = "Global '*' permission requires pubkey in SigInfo for signature verification"]
 async fn test_global_key_bootstrap() {
     println!("\n🧪 TEST: Starting global key bootstrap test");
 
@@ -642,6 +643,7 @@ async fn test_global_key_bootstrap() {
         signing_key,
         client_key_id.clone(),
     )
+    .await
     .expect("Client should be able to load database");
 
     // Client should be able to write using global permission
@@ -805,11 +807,17 @@ async fn test_multiple_databases_sync() {
     } // Drop guard here
 
     // Now verify all databases were loaded
+    // Use global "*" permission (rooms have wildcard permission)
     for (i, room_id) in room_ids.iter().enumerate() {
-        let database = client_instance
-            .load_database(room_id)
-            .await
-            .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
+        let (reader_key, _) = eidetica::auth::generate_keypair();
+        let database = eidetica::Database::open(
+            client_instance.clone(),
+            room_id,
+            reader_key,
+            "*".to_string(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
 
         // Verify room name
         let settings = database

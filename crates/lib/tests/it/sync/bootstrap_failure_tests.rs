@@ -128,7 +128,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     // EXPECTED SECURE BEHAVIOR: Client should not receive the database
     assert!(
         client_instance
-            .load_database(&restricted_tree_id)
+            .backend()
+            .get(&restricted_tree_id)
             .await
             .is_err(),
         "Client should be DENIED access to restricted database - test fails because security is not implemented"
@@ -249,7 +250,8 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     // EXPECTED SECURE BEHAVIOR: Client should not receive database without proper authorization
     assert!(
         client_instance
-            .load_database(&unprotected_tree_id)
+            .backend()
+            .get(&unprotected_tree_id)
             .await
             .is_err(),
         "Client should not receive database without proper authorization framework - test fails because security is not implemented"

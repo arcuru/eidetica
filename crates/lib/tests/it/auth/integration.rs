@@ -44,79 +44,6 @@ async fn test_authenticated_operations() {
 }
 
 #[tokio::test]
-async fn test_tree_default_authentication() {
-    let (instance, mut user, tree, default_key) =
-        setup_user_and_tree_with_key("test_user", "DEFAULT_KEY").await;
-
-    // Tree should have the provided key as default
-    assert_eq!(tree.default_auth_key(), Some(default_key.as_str()));
-
-    // Operations should inherit the default key
-    let op = tree
-        .new_transaction()
-        .await
-        .expect("Failed to create operation");
-    assert_eq!(op.auth_key_name(), Some(default_key.as_str()));
-
-    // Add another key and reload database with it
-    let other_key = user
-        .add_private_key(Some("OTHER_KEY"))
-        .await
-        .expect("Failed to add other key");
-
-    // Get the signing key from UserKeyManager to reload the database
-    let other_signing_key = user
-        .get_signing_key(&other_key)
-        .expect("Failed to get signing key")
-        .clone();
-
-    // Reload the database with the other key - User API requires new Database instance per key
-    let tree_with_other_key = eidetica::Database::open(
-        instance.clone(),
-        tree.root_id(),
-        other_signing_key,
-        other_key.clone(),
-    )
-    .expect("Failed to reload database with other key");
-
-    assert_eq!(
-        tree_with_other_key.default_auth_key(),
-        Some(other_key.as_str())
-    );
-
-    let op2 = tree_with_other_key
-        .new_transaction()
-        .await
-        .expect("Failed to create operation");
-    assert_eq!(op2.auth_key_name(), Some(other_key.as_str()));
-
-    // Test database without key (using open_readonly) - operations should have no key
-    let tree_no_key = eidetica::Database::open_readonly(tree.root_id().clone(), &instance)
-        .expect("Failed to create database without key");
-
-    assert_eq!(tree_no_key.default_auth_key(), None);
-
-    // New transactions should not have a key and should fail at commit
-    let op3 = tree_no_key
-        .new_transaction()
-        .await
-        .expect("Failed to create operation");
-    assert_eq!(op3.auth_key_name(), None);
-
-    // Try to use the transaction - should fail at commit
-    let store = op3
-        .get_store::<DocStore>("data")
-        .await
-        .expect("Failed to get subtree");
-    store
-        .set("test", "value")
-        .await
-        .expect("Failed to set value");
-    let result = op3.commit().await;
-    assert!(result.is_err(), "Should fail without authentication");
-}
-
-#[tokio::test]
 async fn test_mandatory_authentication() {
     let (_instance, _user, tree, test_key) =
         setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
@@ -211,6 +138,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         key2_signing_key,
         key2_id.clone(),
     )
+    .await
     .expect("Failed to reload database with KEY2");
 
     // Create operation with KEY2 (should work after settings change)

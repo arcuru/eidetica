@@ -222,6 +222,7 @@ impl BackgroundSync {
             signing_key,
             DEVICE_KEY_NAME.to_string(),
         )
+        .await
     }
 
     /// Get the minimum sync interval from all tracked databases

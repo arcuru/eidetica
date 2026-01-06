@@ -1237,6 +1237,7 @@ async fn test_global_permission_enables_transactions() {
         client_signing_key,
         sigkey_str,
     )
+    .await
     .expect("Client should be able to load database");
 
     // Create a transaction and commit data
@@ -1381,15 +1382,14 @@ async fn test_client_retry_after_approval() {
     // Flush client sync
     client_sync.flush().await.ok();
 
-    // Verify client can load the database
-    let load_result = client_instance.load_database(&tree_id).await;
+    // Verify client has the database
+    let has_db = client_instance.backend().get(&tree_id).await.is_ok();
     assert!(
-        load_result.is_ok(),
-        "Client should be able to load database after successful bootstrap: {:?}",
-        load_result.err()
+        has_db,
+        "Client should have database after successful bootstrap"
     );
 
-    println!("✅ Client successfully loaded database after approval");
+    println!("✅ Client successfully received database after approval");
 
     // Cleanup
     server_sync.stop_server().await.unwrap();
@@ -1475,13 +1475,10 @@ async fn test_client_denied_after_rejection() {
     assert!(retry_result.is_err(), "Retry should fail after rejection");
     println!("✅ Retry correctly failed after rejection");
 
-    // Client should not be able to access the database
-    let load_result = client_instance.load_database(&tree_id).await;
-    assert!(
-        load_result.is_err(),
-        "Client should NOT have access to database after rejection"
-    );
-    println!("✅ Client correctly denied database access");
+    // Client should not have the database
+    let has_db = client_instance.backend().get(&tree_id).await.is_ok();
+    assert!(!has_db, "Client should NOT have database after rejection");
+    println!("✅ Client correctly doesn't have database");
 
     // Cleanup
     server_sync.stop_server().await.unwrap();
@@ -1591,14 +1588,14 @@ async fn test_bootstrap_api_equivalence() {
         .is_ok();
     assert!(client2_has_root, "Client 2 should have root entry");
 
-    // Both clients should be able to load the database
+    // Both clients should have the database
     assert!(
-        client1_instance.load_database(&tree_id).await.is_ok(),
-        "Client 1 should load database"
+        client1_instance.backend().get(&tree_id).await.is_ok(),
+        "Client 1 should have database"
     );
     assert!(
-        client2_instance.load_database(&tree_id).await.is_ok(),
-        "Client 2 should load database"
+        client2_instance.backend().get(&tree_id).await.is_ok(),
+        "Client 2 should have database"
     );
 
     println!("✅ Both APIs produced equivalent results");

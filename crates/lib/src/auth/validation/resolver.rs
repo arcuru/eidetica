@@ -118,6 +118,13 @@ impl KeyResolver {
                 self.resolve_direct_key_with_pubkey(key_name, auth_settings, pubkey_override)
             }
             SigKey::DelegationPath(steps) => {
+                // Validate no wildcards in delegation path (before checking instance)
+                if steps.iter().any(|s| s.key == "*") {
+                    return Err(AuthError::InvalidDelegationStep {
+                        reason: "Delegation steps cannot use wildcard '*' key".to_string(),
+                    }
+                    .into());
+                }
                 let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),
                 })?;
@@ -138,54 +145,45 @@ impl KeyResolver {
     }
 
     /// Resolve a direct key reference with optional pubkey override for global permissions
+    ///
+    /// Two modes are supported:
+    /// - `key_name == "*"`: Explicit global permission - requires pubkey_override
+    /// - Otherwise: Key must exist in auth_settings
     pub fn resolve_direct_key_with_pubkey(
         &mut self,
         key_name: &str,
         auth_settings: &AuthSettings,
         pubkey_override: Option<&str>,
     ) -> Result<ResolvedAuth> {
-        // Get the auth key using AuthSettings - try specific key first, fallback to global
-        let auth_key = match auth_settings.get_key(key_name) {
-            Ok(key) => key,
-            Err(_) => {
-                // Key not found - check global "*" fallback using helper
-                if let Some(global_perm) = auth_settings.get_global_permission() {
-                    let pubkey_str =
-                        pubkey_override.ok_or_else(|| AuthError::InvalidAuthConfiguration {
-                            reason: format!(
-                                "Key '{key_name}' not found and global '*' requires pubkey in SigInfo"
-                            ),
-                        })?;
-
-                    return Ok(ResolvedAuth {
-                        public_key: parse_public_key(pubkey_str)?,
-                        effective_permission: global_perm,
-                        key_status: crate::auth::types::KeyStatus::Active,
-                    });
-                } else {
-                    return Err(AuthError::InvalidAuthConfiguration {
-                        reason: format!(
-                            "Key '{key_name}' not found and no global permission available"
-                        ),
-                    }
-                    .into());
+        // Handle explicit global "*" permission
+        if key_name == "*" {
+            let global_perm = auth_settings.get_global_permission().ok_or_else(|| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: "Global '*' sigkey used but no global permission configured"
+                        .to_string(),
                 }
-            }
-        };
-
-        // Handle global "*" permission case
-        let public_key = if key_name == "*" && auth_key.pubkey() == "*" {
-            // For global "*" permission, we must use the pubkey from the SigInfo
+            })?;
             let pubkey_str =
                 pubkey_override.ok_or_else(|| AuthError::InvalidAuthConfiguration {
-                    reason: "Global '*' permission requires pubkey field in SigInfo".to_string(),
+                    reason: "Global '*' permission requires pubkey in SigInfo".to_string(),
                 })?;
-            parse_public_key(pubkey_str)?
-        } else {
-            // For regular keys, use the pubkey from the auth configuration
-            parse_public_key(auth_key.pubkey())?
-        };
+            return Ok(ResolvedAuth {
+                public_key: parse_public_key(pubkey_str)?,
+                effective_permission: global_perm,
+                key_status: crate::auth::types::KeyStatus::Active,
+            });
+        }
 
+        // Non-"*" key - must exist in auth settings
+        let auth_key =
+            auth_settings
+                .get_key(key_name)
+                .map_err(|_| AuthError::InvalidAuthConfiguration {
+                    reason: format!("Key '{}' not found in auth settings", key_name),
+                })?;
+
+        // Use pubkey from auth settings
+        let public_key = parse_public_key(auth_key.pubkey())?;
         Ok(ResolvedAuth {
             public_key,
             effective_permission: auth_key.permissions().clone(),

@@ -195,7 +195,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
             .await?
             .expect("Should have device key"),
         "*".to_string(), // Use wildcard permission
-    )?;
+    )
+    .await?;
 
     let entry_id = {
         let tx = http_client_db.new_transaction().await?;

@@ -199,7 +199,16 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     );
 
     // Load the database on client to get tips for incremental sync
-    let client_db = Database::open_readonly(tree_id.clone(), &client_instance).unwrap();
+    // Use global "*" permission (configured above with Permission::Read)
+    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let client_db = Database::open(
+        client_instance.clone(),
+        &tree_id,
+        reader_key,
+        "*".to_string(),
+    )
+    .await
+    .unwrap();
     let client_tips = client_instance
         .backend()
         .get_tips(client_db.root_id())
@@ -366,7 +375,16 @@ async fn test_sync_succeeds_when_enabled() {
     assert!(result.is_ok(), "Sync should succeed when enabled");
 
     // Verify data was synced
-    let client_db = Database::open_readonly(tree_id.clone(), &client_instance).unwrap();
+    // Use global "*" permission (configured with Permission::Read)
+    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let client_db = Database::open(
+        client_instance.clone(),
+        &tree_id,
+        reader_key,
+        "*".to_string(),
+    )
+    .await
+    .unwrap();
     let doc_store = client_db
         .get_store_viewer::<DocStore>("data")
         .await

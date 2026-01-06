@@ -13,6 +13,7 @@ use crate::{
     Error, Instance, Result, Transaction, WeakInstance,
     auth::{
         crypto::format_public_key,
+        errors::AuthError,
         settings::AuthSettings,
         types::{AuthKey, Permission, SigKey},
     },
@@ -195,15 +196,22 @@ impl Database {
         })
     }
 
-    /// Creates a new `Database` instance from an existing ID without authentication.
+    /// Opens a database for read-only access, bypassing authentication validation.
     ///
-    /// This constructor takes an existing `ID` and an Instance handle
-    /// and constructs a `Database` instance with the specified root ID.
-    /// The resulting database has no key source set, so operations will fail
-    /// at commit time without authentication.
+    /// # Internal Use Only
     ///
-    /// This is useful for read-only access or testing scenarios.
-    /// For normal use with the User API, use `Database::open()` instead.
+    /// This method bypasses authentication validation and is intended for internal
+    /// operations that require reading database state (loading settings, checking
+    /// permissions, resolving delegations, etc.).
+    ///
+    /// These operations should only be performed by the server/instance administrator,
+    /// but we don't verify that yet. Future versions may add admin permission checks.
+    ///
+    /// # Behavior
+    ///
+    /// - No authentication validation is performed
+    /// - The resulting database has no key source, so commits will fail
+    /// - Used internally for system operations that need read access
     ///
     /// # Arguments
     /// * `id` - The `ID` of the root entry.
@@ -211,7 +219,7 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
-    pub fn open_readonly(id: ID, instance: &crate::Instance) -> Result<Self> {
+    pub(crate) fn open_unauthenticated(id: ID, instance: &crate::Instance) -> Result<Self> {
         Ok(Self {
             root: id,
             instance: instance.downgrade(),
@@ -269,7 +277,7 @@ impl Database {
     ///     };
     ///
     ///     // Open database with the resolved SigKey
-    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str)?;
+    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
     ///
     ///     // All transactions automatically use the provided key
     ///     let tx = database.new_transaction().await?;
@@ -277,18 +285,48 @@ impl Database {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn open(
+    pub async fn open(
         instance: Instance,
         root_id: &ID,
         signing_key: SigningKey,
         sigkey: String,
     ) -> Result<Self> {
+        // Load auth settings to validate/resolve sigkey
+        let temp_db = Self::open_unauthenticated(root_id.clone(), &instance)?;
+        let settings_store = temp_db.get_settings().await?;
+        let auth_settings = settings_store.get_auth_settings().await?;
+
+        // Determine effective sigkey
+        let effective_sigkey = if sigkey == "*" {
+            // Explicit global - verify it exists
+            if auth_settings.get_global_permission().is_none() {
+                return Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+                    reason: "Global '*' permission not configured".to_string(),
+                }));
+            }
+            "*".to_string()
+        } else if auth_settings.get_key(&sigkey).is_ok() {
+            // Key found in settings - use it
+            sigkey
+        } else if auth_settings.get_global_permission().is_some() {
+            // Key not found but global exists - switch to "*"
+            "*".to_string()
+        } else {
+            // Key not found and no global - error
+            return Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+                reason: format!(
+                    "Key '{}' not found in auth settings and no global permission",
+                    sigkey
+                ),
+            }));
+        };
+
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
             key_source: Some(KeySource::Provided {
                 signing_key: Box::new(signing_key),
-                sigkey,
+                sigkey: effective_sigkey,
             }),
         })
     }
@@ -344,7 +382,7 @@ impl Database {
     ///         SigKey::Direct(name) => name.clone(),
     ///         _ => panic!("Delegation paths not yet supported"),
     ///     };
-    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str)?;
+    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
     /// }
     /// # Ok(())
     /// # }
@@ -355,7 +393,7 @@ impl Database {
         pubkey: &str,
     ) -> Result<Vec<(SigKey, Permission)>> {
         // Create temporary database to load settings (no key source needed for reading)
-        let temp_db = Self::open_readonly(root_id.clone(), instance)?;
+        let temp_db = Self::open_unauthenticated(root_id.clone(), instance)?;
 
         // Load auth settings
         let settings_store = temp_db.get_settings().await?;

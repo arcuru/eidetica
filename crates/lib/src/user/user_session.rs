@@ -297,7 +297,7 @@ impl User {
         })?;
 
         // Create Database with user-provided key
-        Database::open(self.instance.handle(), root_id, signing_key.clone(), sigkey)
+        Database::open(self.instance.handle(), root_id, signing_key.clone(), sigkey).await
     }
 
     /// Find databases by name among the user's tracked databases.

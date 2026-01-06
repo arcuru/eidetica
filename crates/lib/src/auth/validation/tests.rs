@@ -190,6 +190,50 @@ async fn test_delegated_tree_requires_backend() {
 }
 
 #[tokio::test]
+async fn test_delegation_path_rejects_wildcard_in_final_step() {
+    let mut validator = AuthValidator::new();
+    let auth_settings = AuthSettings::new();
+
+    let sig_key = SigKey::DelegationPath(vec![
+        DelegationStep {
+            key: "user_tree".to_string(),
+            tips: Some(vec![crate::entry::ID::new("tip1")]),
+        },
+        DelegationStep {
+            key: "*".to_string(), // Wildcard not allowed
+            tips: None,
+        },
+    ]);
+
+    let result = validator
+        .resolve_sig_key(&sig_key, &auth_settings, None)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_delegation_path_rejects_wildcard_in_intermediate_step() {
+    let mut validator = AuthValidator::new();
+    let auth_settings = AuthSettings::new();
+
+    let sig_key = SigKey::DelegationPath(vec![
+        DelegationStep {
+            key: "*".to_string(), // Wildcard not allowed
+            tips: Some(vec![crate::entry::ID::new("tip1")]),
+        },
+        DelegationStep {
+            key: "final_key".to_string(),
+            tips: None,
+        },
+    ]);
+
+    let result = validator
+        .resolve_sig_key(&sig_key, &auth_settings, None)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
 async fn test_validate_entry_with_auth_info_against_empty_settings() {
     let mut validator = AuthValidator::new();
     let (signing_key, _verifying_key) = generate_keypair();
@@ -734,7 +778,7 @@ async fn test_delegation_depth_limit() {
     assert!(
         error
             .to_string()
-            .contains("Key 'base_key' not found and no global permission available")
+            .contains("Key 'base_key' not found in auth settings")
     );
 
     // This should fail due to depth limit (at the limit)
