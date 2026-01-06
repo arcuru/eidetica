@@ -1,0 +1,182 @@
+name: Container
+
+on:
+  push:
+    branches: ["main"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  REGISTRY_GHCR: ghcr.io
+  REGISTRY_DOCKER: docker.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    if: github.repository_owner == 'arcuru'
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64-linux
+            runner: ubuntu-latest
+            platform: amd64
+          - arch: aarch64-linux
+            runner: ubuntu-24.04-arm
+            platform: arm64
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Build container image
+        run: nix build .#eidetica-image
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine tags
+        id: tags
+        run: |
+          TAGS=""
+          # Dev tag for main branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS="dev-${{ matrix.platform }}"
+          fi
+          # Release tags
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"  # Remove 'v' prefix
+            TAGS="${VERSION}-${{ matrix.platform }}"
+            # Add major.minor tag
+            MINOR="${VERSION%.*}"
+            TAGS="${TAGS} ${MINOR}-${{ matrix.platform }}"
+            # Add major tag (skip for v0.x)
+            MAJOR="${MINOR%.*}"
+            if [[ "$MAJOR" != "0" ]]; then
+              TAGS="${TAGS} ${MAJOR}-${{ matrix.platform }}"
+            fi
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Push to registries
+        id: push
+        run: |
+          # Load image into Docker
+          docker load < ./result
+
+          # Get the image ID
+          IMAGE_ID=$(docker images --format "{{.ID}}" | head -1)
+
+          for TAG in ${{ steps.tags.outputs.tags }}; do
+            # Tag and push to GHCR
+            docker tag "$IMAGE_ID" "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
+            docker push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
+
+            # Tag and push to Docker Hub
+            docker tag "$IMAGE_ID" "${{ env.IMAGE_NAME }}:${TAG}"
+            docker push "${{ env.IMAGE_NAME }}:${TAG}"
+          done
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine manifest tags
+        id: tags
+        run: |
+          TAGS=""
+          # Dev tag for main branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS="dev"
+          fi
+          # Release tags
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            TAGS="${VERSION}"
+            MINOR="${VERSION%.*}"
+            TAGS="${TAGS} ${MINOR}"
+            MAJOR="${MINOR%.*}"
+            if [[ "$MAJOR" != "0" ]]; then
+              TAGS="${TAGS} ${MAJOR}"
+            fi
+            # Latest tag for non-prerelease
+            if [[ "${{ github.event.release.prerelease }}" != "true" ]]; then
+              TAGS="${TAGS} latest"
+            fi
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push manifests
+        run: |
+          for TAG in ${{ steps.tags.outputs.tags }}; do
+            # Create manifest for GHCR
+            docker manifest create "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
+              "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-amd64" \
+              "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-arm64"
+            docker manifest push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
+
+            # Create manifest for Docker Hub
+            docker manifest create "${{ env.IMAGE_NAME }}:${TAG}" \
+              "${{ env.IMAGE_NAME }}:${TAG}-amd64" \
+              "${{ env.IMAGE_NAME }}:${TAG}-arm64"
+            docker manifest push "${{ env.IMAGE_NAME }}:${TAG}"
+          done
+
+      - name: Get manifest digest
+        id: manifest-digest
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          DIGEST=$(docker manifest inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${VERSION}" -v | jq -r '.Descriptor.digest')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate attestation
+        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3
+        if: github.event_name == 'release'
+        with:
+          subject-name: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.manifest-digest.outputs.digest }}
+          push-to-registry: true
