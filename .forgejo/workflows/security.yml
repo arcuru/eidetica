@@ -17,8 +17,8 @@ env:
   RUST_VERSION: "1.92.0"
 
 jobs:
-  security-audit:
-    name: Security Audit
+  cargo-deny:
+    name: Cargo Deny (License & Dependency Compliance)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -43,10 +43,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: Install cargo-audit
+      - name: Install cargo-deny
         uses: https://github.com/taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2
         with:
-          tool: cargo-audit
+          tool: cargo-deny
 
-      - name: Run cargo-audit
-        run: cargo audit
+      - name: Run cargo-deny
+        run: cargo deny check
