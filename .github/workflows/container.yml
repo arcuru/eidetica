@@ -1,11 +1,14 @@
 name: Container
 
 on:
-  push:
+  # Trigger after Nix workflow completes on main branch
+  workflow_run:
+    workflows: ["Nix"]
+    types: [completed]
     branches: ["main"]
+  # Also trigger on releases
   release:
     types: [published]
-  workflow_dispatch:
 
 env:
   REGISTRY_GHCR: ghcr.io
@@ -15,15 +18,16 @@ env:
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
-    if: github.repository_owner == 'arcuru'
+    # Only run if Nix workflow succeeded (or if triggered by release/dispatch)
+    if: |
+      github.repository_owner == 'arcuru' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     strategy:
       matrix:
         include:
-          - arch: x86_64-linux
-            runner: ubuntu-latest
+          - runner: ubuntu-latest
             platform: amd64
-          - arch: aarch64-linux
-            runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04-arm
             platform: arm64
     permissions:
       contents: read
@@ -60,7 +64,7 @@ jobs:
         run: |
           TAGS=""
           # Dev tag for main branch
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             TAGS="dev-${{ matrix.platform }}"
           fi
           # Release tags
@@ -80,7 +84,6 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Push to registries
-        id: push
         run: |
           # Load image into Docker
           docker load < ./result
@@ -126,8 +129,8 @@ jobs:
         id: tags
         run: |
           TAGS=""
-          # Dev tag for main branch
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          # Dev tag for workflow_run (after Nix completes on main)
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             TAGS="dev"
           fi
           # Release tags
