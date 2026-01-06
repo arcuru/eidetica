@@ -25,7 +25,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           # Add Attic as high-priority substituter if available
           if [ -n "$ATTIC_SERVER_URL" ]; then
@@ -75,7 +75,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
@@ -122,7 +122,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
@@ -169,7 +169,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
@@ -219,7 +219,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
@@ -285,7 +285,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
@@ -334,7 +334,7 @@ jobs:
           mkdir -p ~/.config/nix
 
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
-          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
           if [ -n "$ATTIC_SERVER_URL" ]; then
             SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
