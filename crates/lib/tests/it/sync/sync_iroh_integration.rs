@@ -15,10 +15,10 @@ async fn test_sync_iroh_transport_integration() {
     // Now server operations should work
     sync.start_server("ignored").await.unwrap();
 
-    // Get the server address (should be JSON with node info)
+    // Get the server address (should be JSON with endpoint info)
     let server_addr = sync.get_server_address().await.unwrap();
     assert!(!server_addr.is_empty());
-    assert!(server_addr.contains("node_id"));
+    assert!(server_addr.contains("endpoint_id"));
     assert!(server_addr.contains("direct_addresses"));
 
     // Stop the server

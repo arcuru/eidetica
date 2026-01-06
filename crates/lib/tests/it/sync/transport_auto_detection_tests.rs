@@ -131,7 +131,7 @@ async fn test_bootstrap_pending_error_propagation() {
 ///
 /// This test verifies the library change in sync/mod.rs that auto-detects transport type
 /// from address format:
-/// - JSON format with '{' or containing "node_id" → Iroh transport
+/// - JSON format with '{' or containing "endpoint_id" → Iroh transport
 /// - Traditional host:port format → HTTP transport
 #[test]
 fn test_transport_auto_detection_logic() {
@@ -144,13 +144,13 @@ fn test_transport_auto_detection_logic() {
         ("localhost:3000", "http"),
         ("192.168.1.1:9000", "http"),
         ("example.com:8000", "http"),
-        // Iroh addresses (JSON format with node_id)
+        // Iroh addresses (JSON format with endpoint_id)
         (
-            r#"{"node_id":"abc123","relay_url":"https://relay.example.com"}"#,
+            r#"{"endpoint_id":"abc123","relay_url":"https://relay.example.com"}"#,
             "iroh",
         ),
-        (r#"{"node_id":"xyz789"}"#, "iroh"),
-        (r#"{"node_id":"def456","direct_addresses":[]}"#, "iroh"),
+        (r#"{"endpoint_id":"xyz789"}"#, "iroh"),
+        (r#"{"endpoint_id":"def456","direct_addresses":[]}"#, "iroh"),
         // Edge cases
         ("{}", "iroh"),         // JSON prefix triggers Iroh detection
         ("plain-text", "http"), // No JSON prefix defaults to HTTP
@@ -158,7 +158,7 @@ fn test_transport_auto_detection_logic() {
 
     for (addr, expected_type) in test_cases {
         // Simulate the auto-detection logic from sync/mod.rs
-        let detected_type = if addr.starts_with('{') || addr.contains("\"node_id\"") {
+        let detected_type = if addr.starts_with('{') || addr.contains("\"endpoint_id\"") {
             "iroh"
         } else {
             "http"
@@ -295,7 +295,7 @@ async fn test_http_address_with_http_transport() {
 
 /// Integration test: Verify that JSON addresses are detected as Iroh format.
 ///
-/// This test demonstrates that addresses starting with '{' or containing "node_id"
+/// This test demonstrates that addresses starting with '{' or containing "endpoint_id"
 /// are correctly identified as Iroh addresses.
 #[tokio::test]
 async fn test_iroh_address_detection() {
@@ -308,7 +308,7 @@ async fn test_iroh_address_detection() {
     client_sync.enable_iroh_transport().await.unwrap();
 
     // Use an Iroh JSON address format
-    let iroh_addr = r#"{"node_id":"test_node_id_123"}"#;
+    let iroh_addr = r#"{"endpoint_id":"test_endpoint_id_123"}"#;
 
     // Attempt to sync - should detect as Iroh and attempt Iroh connection
     let result = client_sync

@@ -49,8 +49,8 @@ async fn test_transport_interface_consistency() {
     assert!(http_addr.contains(":"));
     assert!(http_addr.starts_with("127.0.0.1:"));
 
-    // Iroh address should be JSON format with node_id and direct_addresses
-    assert!(iroh_addr.contains("node_id"));
+    // Iroh address should be JSON format with endpoint_id and direct_addresses
+    assert!(iroh_addr.contains("endpoint_id"));
     assert!(iroh_addr.contains("direct_addresses"));
 
     // Both should fail to start again
@@ -139,9 +139,9 @@ async fn test_transport_isolation() {
     // HTTP and Iroh addresses should be in different formats
     assert!(addr1.contains(":")); // HTTP format has port
     assert!(addr2.contains(":")); // HTTP format has port
-    // Iroh addresses now contain JSON with node_id and direct_addresses
-    assert!(addr3.contains("node_id")); // Iroh JSON format
-    assert!(addr4.contains("node_id")); // Iroh JSON format
+    // Iroh addresses now contain JSON with endpoint_id and direct_addresses
+    assert!(addr3.contains("endpoint_id")); // Iroh JSON format
+    assert!(addr4.contains("endpoint_id")); // Iroh JSON format
 
     // Clean up all
     http1.stop_server().await.unwrap();

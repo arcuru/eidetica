@@ -53,7 +53,9 @@ pub fn parse_public_key(key_str: impl AsRef<str>) -> Result<VerifyingKey, AuthEr
                 reason: "Invalid key length after base64 decoding".to_string(),
             })?;
 
-    VerifyingKey::from_bytes(&key_array).map_err(|e| AuthError::KeyParsingFailed { source: e })
+    VerifyingKey::from_bytes(&key_array).map_err(|e| AuthError::KeyParsingFailed {
+        reason: e.to_string(),
+    })
 }
 
 /// Format a public key as string

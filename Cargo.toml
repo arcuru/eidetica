@@ -19,7 +19,7 @@ name = "eidetica"
 # Shared dependencies
 chrono = "0.4"
 base64ct = { version = "1.8", features = ["std"] }
-ed25519-dalek = { version = "2", default-features = false }
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core"] }
 rand = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
@@ -59,7 +59,7 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 async-trait = "0.1"
-iroh = { version = "0.91", default-features = false }
+iroh = { version = "0.95", default-features = false }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies
 clap = { version = "4.5", features = ["derive", "env"] }

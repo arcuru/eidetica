@@ -33,11 +33,10 @@ pub enum AuthError {
     },
 
     /// Key parsing failed due to cryptographic library error.
-    #[error("Key parsing failed")]
+    #[error("Key parsing failed: {reason}")]
     KeyParsingFailed {
-        /// The underlying cryptographic error
-        #[source]
-        source: ed25519_dalek::SignatureError,
+        /// Description of the parsing failure
+        reason: String,
     },
 
     /// No authentication configuration was found.
@@ -102,11 +101,10 @@ pub enum AuthError {
     InvalidSignature,
 
     /// Signature verification failed with specific error.
-    #[error("Signature verification failed")]
+    #[error("Signature verification failed: {reason}")]
     SignatureVerificationFailed {
-        /// The underlying cryptographic error
-        #[source]
-        source: ed25519_dalek::SignatureError,
+        /// Description of the verification failure
+        reason: String,
     },
 
     /// Database is required for the operation but not available.

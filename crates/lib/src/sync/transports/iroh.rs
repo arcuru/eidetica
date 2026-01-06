@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use iroh::{
-    Endpoint, NodeAddr, RelayMode, SecretKey, Watcher,
+    Endpoint, EndpointAddr, RelayMode, SecretKey, TransportAddr,
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde::{Deserialize, Serialize};
@@ -30,35 +30,41 @@ use crate::{
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
 
-/// Serializable representation of NodeAddr for storage
+/// Serializable representation of EndpointAddr for storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct NodeAddrInfo {
-    node_id: String,
+struct EndpointAddrInfo {
+    endpoint_id: String,
     direct_addresses: BTreeSet<SocketAddr>,
 }
 
-impl From<&NodeAddr> for NodeAddrInfo {
-    fn from(node_addr: &NodeAddr) -> Self {
+impl From<&EndpointAddr> for EndpointAddrInfo {
+    fn from(endpoint_addr: &EndpointAddr) -> Self {
         Self {
-            node_id: node_addr.node_id.to_string(),
-            direct_addresses: node_addr.direct_addresses.iter().cloned().collect(),
+            endpoint_id: endpoint_addr.id.to_string(),
+            direct_addresses: endpoint_addr.ip_addrs().cloned().collect(),
         }
     }
 }
 
-impl TryFrom<NodeAddrInfo> for NodeAddr {
+impl TryFrom<EndpointAddrInfo> for EndpointAddr {
     type Error = crate::Error;
 
-    fn try_from(info: NodeAddrInfo) -> Result<Self> {
-        let node_id = info.node_id.parse().map_err(|e| {
-            SyncError::SerializationError(format!("Invalid NodeId '{}': {}", info.node_id, e))
+    fn try_from(info: EndpointAddrInfo) -> Result<Self> {
+        let endpoint_id = info.endpoint_id.parse().map_err(|e| {
+            SyncError::SerializationError(format!(
+                "Invalid EndpointId '{}': {}",
+                info.endpoint_id, e
+            ))
         })?;
 
-        Ok(NodeAddr::from_parts(
-            node_id,
-            None, // Direct addresses are provided, relay will be used if needed
-            info.direct_addresses,
-        ))
+        // Convert SocketAddrs to TransportAddrs
+        let transport_addrs: Vec<TransportAddr> = info
+            .direct_addresses
+            .into_iter()
+            .map(TransportAddr::Ip)
+            .collect();
+
+        Ok(EndpointAddr::from_parts(endpoint_id, transport_addrs))
     }
 }
 
@@ -158,7 +164,11 @@ impl IrohTransportConfig {
             let bytes: [u8; 32] = bytes.try_into().expect("secret key should be 32 bytes");
             SecretKey::from_bytes(&bytes)
         } else {
-            let key = SecretKey::generate(rand::thread_rng());
+            // Generate 32 random bytes for the secret key using OsRng
+            use rand::RngCore;
+            let mut secret_bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
+            let key = SecretKey::from_bytes(&secret_bytes);
             self.secret_key_hex = Some(hex::encode(key.to_bytes()));
             key
         }
@@ -203,16 +213,13 @@ impl IrohTransportConfig {
 /// ## Enterprise deployment with custom relay
 /// ```no_run
 /// use eidetica::sync::transports::iroh::IrohTransport;
-/// use iroh::{RelayMode, RelayMap, RelayNode, RelayUrl};
+/// use iroh::{RelayConfig, RelayMode, RelayMap, RelayUrl};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let relay_url: RelayUrl = "https://relay.example.com".parse()?;
-/// let relay_node = RelayNode {
-///     url: relay_url,
-///     quic: Some(Default::default()),
-/// };
+/// let relay_config: RelayConfig = relay_url.into();
 /// let transport = IrohTransport::builder()
-///     .relay_mode(RelayMode::Custom(RelayMap::from_iter([relay_node])))
+///     .relay_mode(RelayMode::Custom(RelayMap::from_iter([relay_config])))
 ///     .build()?;
 /// # Ok(())
 /// # }
@@ -278,8 +285,11 @@ impl IrohTransportBuilder {
     /// use iroh::SecretKey;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// // Load secret key from storage
-    /// let secret_key = SecretKey::generate(rand::thread_rng());
+    /// // Generate or load secret key from storage
+    /// use rand::RngCore;
+    /// let mut secret_bytes = [0u8; 32];
+    /// rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
+    /// let secret_key = SecretKey::from_bytes(&secret_bytes);
     ///
     /// let transport = IrohTransport::builder()
     ///     .secret_key(secret_key)
@@ -492,16 +502,10 @@ impl IrohTransport {
     /// Handle an incoming connection.
     async fn handle_connection(conn: Connection, handler: Arc<dyn SyncHandler>) {
         // Get the remote peer node ID for context
-        let remote_node_id = match conn.remote_node_id() {
-            Ok(node_id) => node_id,
-            Err(e) => {
-                tracing::error!("Failed to get remote node ID: {e}");
-                return;
-            }
-        };
+        let remote_endpoint_id = conn.remote_id();
         let remote_address = Address {
             transport_type: Self::TRANSPORT_TYPE.to_string(),
-            address: remote_node_id.to_string(),
+            address: remote_endpoint_id.to_string(),
         };
 
         // Accept incoming streams and process sequentially
@@ -598,17 +602,20 @@ impl SyncTransport for IrohTransport {
         // Store the handler
         self.handler = Some(handler);
 
-        // Ensure we have an endpoint and get NodeAddr with direct addresses
+        // Ensure we have an endpoint and get EndpointAddr with direct addresses
         let endpoint = self.ensure_endpoint().await?;
         let endpoint_clone = endpoint.clone();
 
-        // Get the full NodeAddr with direct addresses initialized
-        let node_addr = endpoint.node_addr().initialized().await;
+        // Get the EndpointAddr with direct addresses
+        // Note: We don't wait for online() - direct addresses are available immediately
+        // after bind(), and relay connections happen asynchronously in the background.
+        let endpoint_addr = endpoint.addr();
 
-        // Serialize NodeAddr to string for storage
-        let node_addr_info = NodeAddrInfo::from(&node_addr);
-        let node_addr_str = serde_json::to_string(&node_addr_info)
-            .map_err(|e| SyncError::TransportInit(format!("Failed to serialize NodeAddr: {e}")))?;
+        // Serialize EndpointAddr to string for storage
+        let endpoint_addr_info = EndpointAddrInfo::from(&endpoint_addr);
+        let endpoint_addr_str = serde_json::to_string(&endpoint_addr_info).map_err(|e| {
+            SyncError::TransportInit(format!("Failed to serialize EndpointAddr: {e}"))
+        })?;
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -626,8 +633,9 @@ impl SyncTransport for IrohTransport {
         // Wait for server to be ready using shared utility
         wait_for_ready(ready_rx, "iroh-endpoint").await?;
 
-        // Start server state with NodeAddr string and shutdown sender
-        self.server_state.server_started(node_addr_str, shutdown_tx);
+        // Start server state with EndpointAddr string and shutdown sender
+        self.server_state
+            .server_started(endpoint_addr_str, shutdown_tx);
 
         Ok(())
     }
@@ -654,22 +662,24 @@ impl SyncTransport for IrohTransport {
         // Ensure we have an endpoint (lazy initialization)
         let endpoint = self.ensure_endpoint().await?;
 
-        // Parse the target node address from serialized NodeAddrInfo
-        let node_addr_info: NodeAddrInfo = serde_json::from_str(&address.address).map_err(|e| {
-            SyncError::SerializationError(format!(
-                "Failed to parse NodeAddrInfo from '{}': {}",
-                address.address, e
-            ))
-        })?;
-        let node_addr = NodeAddr::try_from(node_addr_info)?;
+        // Parse the target endpoint address from serialized EndpointAddrInfo
+        let endpoint_addr_info: EndpointAddrInfo =
+            serde_json::from_str(&address.address).map_err(|e| {
+                SyncError::SerializationError(format!(
+                    "Failed to parse EndpointAddrInfo from '{}': {}",
+                    address.address, e
+                ))
+            })?;
+        let endpoint_addr = EndpointAddr::try_from(endpoint_addr_info)?;
 
         // Connect to the peer
-        let conn = endpoint.connect(node_addr, SYNC_ALPN).await.map_err(|e| {
-            SyncError::ConnectionFailed {
+        let conn = endpoint
+            .connect(endpoint_addr, SYNC_ALPN)
+            .await
+            .map_err(|e| SyncError::ConnectionFailed {
                 address: address.address.clone(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         // Open a bidirectional stream
         let (mut send_stream, mut recv_stream) = conn

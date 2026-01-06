@@ -881,18 +881,16 @@ async fn test_iroh_transport_custom_relay_config() {
     // (e.g., for local testing with iroh-relay --dev)
 
     use eidetica::sync::transports::iroh::IrohTransport;
-    use iroh::{RelayMap, RelayMode, RelayNode, RelayUrl};
+    use iroh::{RelayConfig, RelayMap, RelayMode, RelayUrl};
 
     let (_base_db, sync) = helpers::setup().await;
 
     // Create a custom relay map pointing to a local relay server
     // (In real usage, you'd run: iroh-relay --dev)
     let relay_url: RelayUrl = "http://localhost:3340".parse().unwrap();
-    let relay_node = RelayNode {
-        url: relay_url,
-        quic: None, // No QUIC for local HTTP-only relay
-    };
-    let relay_map = RelayMap::from_iter([relay_node]);
+    // Convert RelayUrl to RelayConfig (sets quic to None by default)
+    let relay_config: RelayConfig = relay_url.into();
+    let relay_map = RelayMap::from_iter([relay_config]);
 
     let transport = IrohTransport::builder()
         .relay_mode(RelayMode::Custom(relay_map))
