@@ -182,14 +182,16 @@ jobs:
         id: ghcr-digest
         run: |
           TAG="${{ steps.attest-tag.outputs.tag }}"
-          DIGEST=$(docker manifest inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" -v | jq -r '.Descriptor.digest')
+          # Use buildx imagetools which properly handles multi-arch manifest lists
+          DIGEST=$(docker buildx imagetools inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" --format '{{.Manifest.Digest}}')
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Get Docker Hub manifest digest
         id: dockerhub-digest
         run: |
           TAG="${{ steps.attest-tag.outputs.tag }}"
-          DIGEST=$(docker manifest inspect "${{ env.IMAGE_NAME }}:${TAG}" -v | jq -r '.Descriptor.digest')
+          # Use buildx imagetools which properly handles multi-arch manifest lists
+          DIGEST=$(docker buildx imagetools inspect "${{ env.IMAGE_NAME }}:${TAG}" --format '{{.Manifest.Digest}}')
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Generate GHCR attestation
