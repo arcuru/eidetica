@@ -9,10 +9,16 @@
 
 #![allow(deprecated)] // Uses LegacyInstanceOps
 
-use eidetica::{Result, auth::Permission, crdt::Doc, instance::LegacyInstanceOps, store::Table};
+use eidetica::{
+    Result,
+    auth::{AuthSettings, Permission, types::AuthKey},
+    crdt::Doc,
+    instance::LegacyInstanceOps,
+    store::Table,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::test_instance;
+use crate::helpers::test_instance_with_user_and_key;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
@@ -48,57 +54,60 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
 
-    let device1_instance = test_instance().await;
+    let (device1_instance, mut device1_user, device1_key_id) =
+        test_instance_with_user_and_key("device1_user", Some(CHAT_APP_KEY)).await;
+
     device1_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on device1");
 
-    device1_instance
-        .add_private_key(CHAT_APP_KEY)
-        .await
-        .expect("Failed to add device1 key");
-
-    let _device1_pubkey = device1_instance
-        .get_formatted_public_key(CHAT_APP_KEY)
-        .await
-        .expect("Failed to get device1 public key");
-
     // Create database with simple settings like the chat app
     let mut settings = Doc::new();
     settings.set("name", "Bidirectional Test Room");
-    // Enable automatic bootstrap approval via global wildcard permission
-    let mut auth_doc = Doc::new();
-    // Include device1 admin key for initial database creation
-    let device1_admin_pubkey = device1_instance
-        .get_formatted_public_key(CHAT_APP_KEY)
-        .await
-        .expect("Failed to get device1 public key");
-    auth_doc
-        .set_json(
-            CHAT_APP_KEY,
-            serde_json::json!({
-                "pubkey": device1_admin_pubkey,
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set admin auth");
-    // Add global wildcard permission for automatic bootstrap approval
-    auth_doc
-        .set_json(
-            "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set global wildcard permission");
-    settings.set("auth", auth_doc);
 
-    let device1_database = device1_instance
-        .new_database(settings, CHAT_APP_KEY)
+    // Enable automatic bootstrap approval via global wildcard permission
+    let device1_pubkey = device1_user
+        .get_public_key(&device1_key_id)
+        .expect("Failed to get device1 public key");
+
+    let mut auth_settings = AuthSettings::new();
+
+    // Include device1 admin key for initial database creation
+    auth_settings
+        .add_key(
+            &device1_key_id,
+            AuthKey::active(&device1_pubkey, Permission::Admin(10))
+                .expect("Failed to create admin key"),
+        )
+        .expect("Failed to add admin auth");
+
+    // Add device key to auth settings for sync handler operations
+    let device1_device_pubkey = device1_instance
+        .get_formatted_public_key("_device_key")
+        .await
+        .expect("Failed to get device1 device public key");
+
+    auth_settings
+        .add_key(
+            "_device_key",
+            AuthKey::active(&device1_device_pubkey, Permission::Admin(10))
+                .expect("Failed to create device key"),
+        )
+        .expect("Failed to add device key auth");
+
+    // Add global wildcard permission for automatic bootstrap approval
+    auth_settings
+        .add_key(
+            "*",
+            AuthKey::active("*", Permission::Admin(10)).expect("Failed to create wildcard key"),
+        )
+        .expect("Failed to add global wildcard permission");
+
+    settings.set("auth", auth_settings.as_doc().clone());
+
+    let device1_database = device1_user
+        .create_database(settings, &device1_key_id)
         .await
         .expect("Failed to create database on device1");
 
@@ -137,16 +146,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let device2_instance = test_instance().await;
+    let (device2_instance, device2_user, _device2_key_id) =
+        test_instance_with_user_and_key("device2_user", Some(CHAT_APP_KEY)).await;
+
     device2_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on device2");
-
-    device2_instance
-        .add_private_key(CHAT_APP_KEY)
-        .await
-        .expect("Failed to add device2 key");
 
     // Bootstrap sync from device 1 to device 2
     let bootstrap_result = {
@@ -178,21 +184,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .ok();
 
     // Verify device 2 has the database and message A
-    // Load database with the key for device2
-    let signing_key = device2_instance
-        .backend()
-        .get_private_key(CHAT_APP_KEY)
+    // Open database using User API
+    let device2_database = device2_user
+        .open_database(&room_id)
         .await
-        .expect("Failed to get device2 signing key")
-        .expect("Device2 key should exist in backend");
-
-    let device2_database = eidetica::Database::open(
-        device2_instance.clone(),
-        &room_id,
-        signing_key,
-        CHAT_APP_KEY.to_string(),
-    )
-    .expect("Failed to load database with key on device2");
+        .expect("Failed to open database on device2");
 
     // Check device 2 has message A
     {

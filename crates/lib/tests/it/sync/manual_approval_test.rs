@@ -15,11 +15,11 @@ fn generate_public_key() -> String {
 
 use eidetica::{
     auth::{
-        Permission as AuthPermission,
+        AuthSettings, Permission as AuthPermission,
         crypto::{format_public_key, generate_keypair},
+        types::AuthKey,
     },
     crdt::Doc,
-    instance::LegacyInstanceOps,
     sync::{
         RequestStatus,
         handler::{SyncHandler, SyncHandlerImpl},
@@ -501,49 +501,40 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     println!("\n🧪 TEST: Bootstrap with global permission auto-approval");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     // Create database with global '*' permission for Write(10) and admin key
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission DB");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
-    auth_doc
-        .set_json(
+    auth_settings
+        .add_key(
             "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Write": 10},
-                "status": "Active"
-            }),
+            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
         )
         .unwrap();
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let database = server_instance
-        .new_database(settings, server_key)
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -652,43 +643,34 @@ async fn test_global_permission_overrides_manual_policy() {
     println!("\n🧪 TEST: Global permission overrides manual approval policy");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     // Create database with manual approval policy (bootstrap_auto_approve: false)
     // but also global '*' permission
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Manual Policy with Global Permission");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
-    auth_doc
-        .set_json(
+    auth_settings
+        .add_key(
             "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Write": 10},
-                "status": "Active"
-            }),
+            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
         )
         .unwrap();
 
@@ -697,12 +679,12 @@ async fn test_global_permission_overrides_manual_policy() {
     policy_doc
         .set_json("bootstrap_auto_approve", false)
         .unwrap();
-    auth_doc.set("policy", policy_doc);
+    auth_settings.as_doc_mut().set("policy", policy_doc);
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let database = server_instance
-        .new_database(settings, server_key)
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -791,14 +773,9 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     println!("\n🧪 TEST: Bootstrap with existing specific key permission");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     let test_key = generate_public_key();
 
@@ -806,36 +783,32 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Existing Key DB");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 1},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
         )
         .unwrap();
 
     // Add the test key with Write(5) permission
-    auth_doc
-        .set_json(
+    auth_settings
+        .add_key(
             "existing_laptop",
-            serde_json::json!({
-                "pubkey": test_key,
-                "permissions": {"Write": 5},
-                "status": "Active"
-            }),
+            AuthKey::active(&test_key, AuthPermission::Write(5)).unwrap(),
         )
         .unwrap();
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let database = server_instance
-        .new_database(settings, server_key)
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -902,14 +875,9 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     println!("\n🧪 TEST: Bootstrap with existing global permission - no duplicate key");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     let test_key = generate_public_key();
 
@@ -917,36 +885,29 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Global Permission No Duplicate DB");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 1},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
         )
         .unwrap();
 
     // Add global '*' permission with Write(5)
-    auth_doc
-        .set_json(
-            "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Write": 5},
-                "status": "Active"
-            }),
-        )
+    auth_settings
+        .add_key("*", AuthKey::active("*", AuthPermission::Write(5)).unwrap())
         .unwrap();
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let database = server_instance
-        .new_database(settings, server_key)
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -1033,61 +994,44 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     println!("\n🧪 TEST: Global permission bootstrap client entry creation bug");
 
     // Setup server instance with global permission
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     // Create database with global '*' permission allowing Write(5)
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Global Permission Bug Test DB");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 1},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
         )
         .unwrap();
 
     // Add global '*' permission
-    auth_doc
-        .set_json(
-            "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Write": 5},
-                "status": "Active"
-            }),
-        )
+    auth_settings
+        .add_key("*", AuthKey::active("*", AuthPermission::Write(5)).unwrap())
         .unwrap();
 
-    settings.set("auth", auth_doc);
-    let database = server_instance
-        .new_database(settings, server_key)
+    settings.set("auth", auth_settings.as_doc().clone());
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup client instance
-    let client_instance = setup_instance_with_initialized().await;
-    let client_key = "client_key";
-    client_instance.add_private_key(client_key).await.unwrap();
-
-    let client_pubkey = client_instance
-        .get_formatted_public_key(client_key)
-        .await
-        .unwrap();
+    let (client_instance, mut _client_user, client_key_id) =
+        crate::helpers::test_instance_with_user_and_key("client_user", Some("client_key")).await;
+    client_instance.enable_sync().await.unwrap();
 
     // Set up sync system and handler
     let sync = eidetica::sync::Sync::new(server_instance.clone())
@@ -1098,8 +1042,8 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     // Client bootstraps via global permission - this should succeed
     let sync_request = create_bootstrap_request(
         &tree_id,
-        &client_pubkey,
-        client_key,
+        &client_key_id,
+        "client_key",
         AuthPermission::Write(10),
     );
     let context = eidetica::sync::protocol::RequestContext::default();
@@ -1155,49 +1099,40 @@ async fn test_global_permission_enables_transactions() {
     println!("\n🧪 TEST: Global permission enables transaction commits");
 
     // Setup server instance
-    let server_instance = setup_instance_with_initialized().await;
-    let server_key = "server_admin";
-    server_instance.add_private_key(server_key).await.unwrap();
-
-    let server_pubkey = server_instance
-        .get_formatted_public_key(server_key)
-        .await
-        .unwrap();
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+    server_instance.enable_sync().await.unwrap();
 
     // Create database with global Write(10) permission
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Global Permission Transactions");
 
-    let mut auth_doc = eidetica::crdt::Doc::new();
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
+    let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
-    auth_doc
-        .set_json(
-            server_key,
-            serde_json::json!({
-                "pubkey": server_pubkey,
-                "permissions": {"Admin": 10},
-                "status": "Active"
-            }),
+    auth_settings
+        .add_key(
+            &server_key_id,
+            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
-    auth_doc
-        .set_json(
+    auth_settings
+        .add_key(
             "*",
-            serde_json::json!({
-                "pubkey": "*",
-                "permissions": {"Write": 10},
-                "status": "Active"
-            }),
+            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
         )
         .unwrap();
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let database = server_instance
-        .new_database(settings, server_key)
+    let database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = database.root_id().clone();
@@ -1215,25 +1150,17 @@ async fn test_global_permission_enables_transactions() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Setup client instance
-    let client_instance = setup_instance_with_initialized().await;
-    let client_key_name = "client_device";
-    client_instance
-        .add_private_key(client_key_name)
-        .await
-        .unwrap();
-
-    let client_pubkey = client_instance
-        .get_formatted_public_key(client_key_name)
-        .await
-        .unwrap();
+    let (client_instance, client_user, client_key_id) =
+        crate::helpers::test_instance_with_user_and_key("client_user", Some("client_device")).await;
+    client_instance.enable_sync().await.unwrap();
 
     println!("🔍 Testing bootstrap with global permission");
 
     // Test 1: Bootstrap with global permission
     let sync_request = create_bootstrap_request(
         &tree_id,
-        &client_pubkey,
-        client_key_name,
+        &client_key_id,
+        "client_device",
         eidetica::auth::Permission::Write(15),
     );
 
@@ -1262,7 +1189,7 @@ async fn test_global_permission_enables_transactions() {
         Ok(eidetica::crdt::doc::Value::Doc(auth_node)) => {
             // Client key should NOT be present
             assert!(
-                auth_node.get(client_key_name).is_none(),
+                auth_node.get("client_device").is_none(),
                 "Client key should not be added when global permission grants access"
             );
             println!("✅ Client key correctly NOT added to auth settings");
@@ -1282,20 +1209,14 @@ async fn test_global_permission_enables_transactions() {
         .unwrap();
 
     // Load the database on client side with the client's signing key
-    let client_signing_key = client_instance
-        .backend()
-        .get_private_key(client_key_name)
-        .await
-        .expect("Failed to get client signing key")
-        .expect("Client key should exist in backend");
+    // When using User API, keys are stored in the User's key manager, not the Instance backend
+    let client_signing_key = client_user
+        .get_signing_key(&client_key_id)
+        .expect("Failed to get client signing key");
 
     // Discover which SigKeys this public key can use
     // This will return global "*" since the client is using global permissions
-    let client_pubkey = client_instance
-        .get_formatted_public_key(client_key_name)
-        .await
-        .unwrap();
-    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_pubkey)
+    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 

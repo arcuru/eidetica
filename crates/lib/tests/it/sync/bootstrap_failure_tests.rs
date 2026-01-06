@@ -7,9 +7,12 @@
 #![allow(deprecated)] // Uses LegacyInstanceOps
 
 use super::helpers::*;
-use crate::helpers::test_instance;
+use crate::helpers::test_instance_with_user_and_key;
 use eidetica::{
-    auth::Permission,
+    auth::{
+        AuthSettings, Permission,
+        types::{AuthKey, KeyStatus},
+    },
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,
 };
@@ -20,49 +23,55 @@ use eidetica::{
 /// and unauthorized clients should not receive database content or be added
 /// to the auth configuration.
 #[tokio::test]
+#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
     // Setup server with restricted auth policy - only specific admin keys allowed
-    let server_instance = test_instance().await;
+    let (server_instance, mut server_user, server_admin_key_id) =
+        test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on server");
 
-    // Add server admin key
-    server_instance
-        .add_private_key("server_admin")
-        .await
-        .expect("Failed to add server admin key");
-
     // Create database with only server_admin having access
     let mut settings = Doc::new();
     settings.set("name", "Restricted Database");
 
-    let server_admin_pubkey = server_instance
-        .get_formatted_public_key("server_admin")
-        .await
+    // Set strict auth policy - only server_admin has permission to manage auth
+    let server_admin_pubkey = server_user
+        .get_public_key(&server_admin_key_id)
         .expect("Failed to get server admin public key");
 
-    // Set strict auth policy - only server_admin has permission to manage auth
-    let mut auth_doc = Doc::new();
-    auth_doc
-        .set_json(
-            "server_admin",
-            serde_json::json!({
-                "pubkey": server_admin_pubkey,
-                "permissions": {"Admin": 0},  // Highest admin priority
-                "status": "Active"
-            }),
+    let mut auth_settings = AuthSettings::new();
+    auth_settings
+        .add_key(
+            &server_admin_key_id,
+            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
+                .expect("Failed to create admin key"),
         )
-        .expect("Failed to set server admin auth");
+        .expect("Failed to add server admin auth");
 
-    settings.set("auth", auth_doc);
+    // Add device key to auth settings for sync handler operations
+    let device_pubkey = server_instance
+        .get_formatted_public_key("_device_key")
+        .await
+        .expect("Failed to get device public key");
+
+    auth_settings
+        .add_key(
+            "_device_key",
+            AuthKey::active(&device_pubkey, Permission::Admin(0))
+                .expect("Failed to create device key"),
+        )
+        .expect("Failed to add device key auth");
+
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create the database
-    let server_database = server_instance
-        .new_database(settings, "server_admin")
+    let server_database = server_user
+        .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create restricted database");
 
@@ -76,23 +85,14 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     };
 
     // Setup client with its own key
-    let client_instance = test_instance().await;
+    let (client_instance, _client_user, client_key_id) =
+        test_instance_with_user_and_key("client_user", Some("unauthorized_client")).await;
     client_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on client");
 
-    client_instance
-        .add_private_key("unauthorized_client")
-        .await
-        .expect("Failed to add client key");
-
-    let client_pubkey = client_instance
-        .get_formatted_public_key("unauthorized_client")
-        .await
-        .expect("Failed to get client public key");
-
-    println!("👤 Client attempting bootstrap with unauthorized key: {client_pubkey}");
+    println!("👤 Client attempting bootstrap with unauthorized key: {client_key_id}");
 
     // Enable client sync
     let bootstrap_result = {
@@ -149,7 +149,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     {
         // EXPECTED SECURE BEHAVIOR: Should NOT contain the unauthorized client key
         assert!(
-            !auth_doc.contains_key("unauthorized_client"),
+            !auth_doc.contains_key(&client_key_id),
             "Unauthorized client key should NOT be added to server auth config - test fails because security is not implemented"
         );
         println!(
@@ -174,30 +174,27 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 /// framework to approve keys against, or succeed only if the database explicitly
 /// allows unauthenticated access with proper validation.
 #[tokio::test]
+#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_permission_denied_no_auth_config() {
     println!(
         "\n🧪 TEST: Bootstrap key approval with no auth config (should have defined behavior)"
     );
 
     // Setup server with a database that has NO authentication configuration
-    let server_instance = test_instance().await;
+    let (server_instance, mut server_user, server_key_id) =
+        test_instance_with_user_and_key("server_user", Some("server_key")).await;
     server_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on server");
-
-    server_instance
-        .add_private_key("server_key")
-        .await
-        .expect("Failed to add server key");
 
     // Create database with NO auth configuration
     let mut settings = Doc::new();
     settings.set("name", "Unprotected Database");
     // Explicitly NOT setting any "auth" configuration
 
-    let server_database = server_instance
-        .new_database(settings, "server_key")
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .expect("Failed to create unprotected database");
 
@@ -211,21 +208,12 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     };
 
     // Setup client
-    let client_instance = test_instance().await;
+    let (client_instance, _client_user, client_key_id) =
+        test_instance_with_user_and_key("client_user", Some("client_key")).await;
     client_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on client");
-
-    client_instance
-        .add_private_key("client_key")
-        .await
-        .expect("Failed to add client key");
-
-    let _client_pubkey = client_instance
-        .get_formatted_public_key("client_key")
-        .await
-        .expect("Failed to get client public key");
 
     let bootstrap_result = {
         let client_sync = client_instance.sync().expect("Client should have sync");
@@ -239,7 +227,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
             .sync_with_peer_for_bootstrap(
                 &server_addr,
                 &unprotected_tree_id,
-                "client_key",
+                &client_key_id,
                 Permission::Write(10),
             )
             .await;
@@ -282,7 +270,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     {
         // EXPECTED SECURE BEHAVIOR: Auth config should NOT be created by unauthorized bootstrap
         assert!(
-            !auth_doc.contains_key("client_key"),
+            !auth_doc.contains_key(&client_key_id),
             "Auth config should NOT be created by unauthorized bootstrap - test fails because security is not implemented"
         );
         println!(
@@ -310,23 +298,19 @@ async fn test_bootstrap_invalid_public_key_format() {
     println!("\n🧪 TEST: Bootstrap with malformed public key format");
 
     // Setup server
-    let server_instance = test_instance().await;
+    let (server_instance, mut server_user, server_key_id) =
+        test_instance_with_user_and_key("server_user", Some("server_key")).await;
     server_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on server");
 
-    server_instance
-        .add_private_key("server_key")
-        .await
-        .expect("Failed to add server key");
-
     // Create database
     let mut settings = Doc::new();
     settings.set("name", "Test Database");
 
-    let server_database = server_instance
-        .new_database(settings, "server_key")
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
         .await
         .expect("Failed to create database");
 
@@ -339,7 +323,9 @@ async fn test_bootstrap_invalid_public_key_format() {
     };
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let client_instance = test_instance().await;
+    let (client_instance, _client_user, client_key_id) =
+        test_instance_with_user_and_key("client_user", Some("client_with_spaces_and_symbols!@#"))
+            .await;
     client_instance
         .enable_sync()
         .await
@@ -348,10 +334,6 @@ async fn test_bootstrap_invalid_public_key_format() {
     // Note: We can't directly test malformed keys in the current API since
     // add_private_key() creates valid keys. This test documents the need for
     // key format validation during the bootstrap process itself.
-    client_instance
-        .add_private_key("client_with_spaces_and_symbols!@#")
-        .await
-        .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
@@ -364,7 +346,7 @@ async fn test_bootstrap_invalid_public_key_format() {
         .sync_with_peer_for_bootstrap(
             &server_addr,
             &tree_id,
-            "client_with_spaces_and_symbols!@#",
+            &client_key_id,
             Permission::Write(10),
         )
         .await;
@@ -392,67 +374,74 @@ async fn test_bootstrap_invalid_public_key_format() {
 /// This test expects SECURE behavior: Bootstrap should fail for revoked or
 /// inactive keys with proper status validation.
 #[tokio::test]
+#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
     // Setup server with auth configuration including a revoked key
-    let server_instance = test_instance().await;
+    let (server_instance, mut server_user, server_admin_key_id) =
+        test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on server");
 
-    server_instance
-        .add_private_key("server_admin")
-        .await
-        .expect("Failed to add server admin key");
-
-    server_instance
-        .add_private_key("revoked_client")
+    // Create a second key on the same user to represent a revoked client
+    let revoked_client_key_id = server_user
+        .add_private_key(Some("revoked_client"))
         .await
         .expect("Failed to add revoked client key");
-
-    let server_admin_pubkey = server_instance
-        .get_formatted_public_key("server_admin")
-        .await
-        .expect("Failed to get server admin public key");
-
-    let revoked_client_pubkey = server_instance
-        .get_formatted_public_key("revoked_client")
-        .await
-        .expect("Failed to get revoked client public key");
 
     // Create database with auth configuration including the revoked key
     let mut settings = Doc::new();
     settings.set("name", "Database With Revoked Key");
 
-    let mut auth_doc = Doc::new();
-    auth_doc
-        .set_json(
-            "server_admin",
-            serde_json::json!({
-                "pubkey": server_admin_pubkey,
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
+    let server_admin_pubkey = server_user
+        .get_public_key(&server_admin_key_id)
+        .expect("Failed to get server admin public key");
+    let revoked_client_pubkey = server_user
+        .get_public_key(&revoked_client_key_id)
+        .expect("Failed to get revoked client public key");
+
+    let mut auth_settings = AuthSettings::new();
+    auth_settings
+        .add_key(
+            &server_admin_key_id,
+            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
+                .expect("Failed to create admin key"),
         )
-        .expect("Failed to set server admin auth");
+        .expect("Failed to add server admin auth");
 
-    auth_doc
-        .set_json(
-            "revoked_client",
-            serde_json::json!({
-                "pubkey": revoked_client_pubkey,
-                "permissions": {"Write": 10},
-                "status": "Revoked"  // Key is explicitly revoked
-            }),
+    auth_settings
+        .add_key(
+            &revoked_client_key_id,
+            AuthKey::new(
+                &revoked_client_pubkey,
+                Permission::Write(10),
+                KeyStatus::Revoked,
+            )
+            .expect("Failed to create revoked client key"),
         )
-        .expect("Failed to set revoked client auth");
+        .expect("Failed to add revoked client auth");
 
-    settings.set("auth", auth_doc);
+    // Add device key to auth settings for sync handler operations
+    let device_pubkey = server_instance
+        .get_formatted_public_key("_device_key")
+        .await
+        .expect("Failed to get device public key");
 
-    let server_database = server_instance
-        .new_database(settings, "server_admin")
+    auth_settings
+        .add_key(
+            "_device_key",
+            AuthKey::active(&device_pubkey, Permission::Admin(0))
+                .expect("Failed to create device key"),
+        )
+        .expect("Failed to add device key auth");
+
+    settings.set("auth", auth_settings.as_doc().clone());
+
+    let server_database = server_user
+        .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create database");
 
@@ -465,7 +454,8 @@ async fn test_bootstrap_with_revoked_key() {
     };
 
     // Setup different client instance (to simulate external client using revoked key)
-    let client_instance = test_instance().await;
+    let (client_instance, _client_user, client_key_id) =
+        test_instance_with_user_and_key("client_user", Some("attempting_revoked_access")).await;
     client_instance
         .enable_sync()
         .await
@@ -473,10 +463,6 @@ async fn test_bootstrap_with_revoked_key() {
 
     // Note: In a real scenario, the client would have the private key corresponding
     // to the revoked public key. For testing, we create a key with the same name.
-    client_instance
-        .add_private_key("attempting_revoked_access")
-        .await
-        .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
@@ -489,7 +475,7 @@ async fn test_bootstrap_with_revoked_key() {
         .sync_with_peer_for_bootstrap(
             &server_addr,
             &tree_id,
-            "attempting_revoked_access",
+            &client_key_id,
             Permission::Write(10),
         )
         .await;
@@ -521,47 +507,54 @@ async fn test_bootstrap_with_revoked_key() {
 /// This test expects SECURE behavior: Bootstrap should either reject excessive
 /// permission requests or grant only appropriate permission levels based on policy.
 #[tokio::test]
+#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
     // Setup server with policy allowing only Read permissions for new clients
-    let server_instance = test_instance().await;
+    let (server_instance, mut server_user, server_admin_key_id) =
+        test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on server");
 
-    server_instance
-        .add_private_key("server_admin")
-        .await
-        .expect("Failed to add server admin key");
-
-    let server_admin_pubkey = server_instance
-        .get_formatted_public_key("server_admin")
-        .await
-        .expect("Failed to get server admin public key");
-
     // Create database with restrictive auth policy
     let mut settings = Doc::new();
     settings.set("name", "Restrictive Permission Database");
 
-    let mut auth_doc = Doc::new();
-    auth_doc
-        .set_json(
-            "server_admin",
-            serde_json::json!({
-                "pubkey": server_admin_pubkey,
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
+    let server_admin_pubkey = server_user
+        .get_public_key(&server_admin_key_id)
+        .expect("Failed to get server admin public key");
+
+    let mut auth_settings = AuthSettings::new();
+    auth_settings
+        .add_key(
+            &server_admin_key_id,
+            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
+                .expect("Failed to create admin key"),
         )
-        .expect("Failed to set server admin auth");
+        .expect("Failed to add server admin auth");
+
+    // Add device key to auth settings for sync handler operations
+    let device_pubkey = server_instance
+        .get_formatted_public_key("_device_key")
+        .await
+        .expect("Failed to get device public key");
+
+    auth_settings
+        .add_key(
+            "_device_key",
+            AuthKey::active(&device_pubkey, Permission::Admin(0))
+                .expect("Failed to create device key"),
+        )
+        .expect("Failed to add device key auth");
 
     // TODO: Add policy configuration that limits new client permissions to Read only
-    settings.set("auth", auth_doc);
+    settings.set("auth", auth_settings.as_doc().clone());
 
-    let server_database = server_instance
-        .new_database(settings, "server_admin")
+    let server_database = server_user
+        .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create database");
 
@@ -574,16 +567,12 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     };
 
     // Setup client requesting Admin permissions (should be excessive)
-    let client_instance = test_instance().await;
+    let (client_instance, _client_user, client_key_id) =
+        test_instance_with_user_and_key("client_user", Some("greedy_client")).await;
     client_instance
         .enable_sync()
         .await
         .expect("Failed to initialize sync on client");
-
-    client_instance
-        .add_private_key("greedy_client")
-        .await
-        .expect("Failed to add client key");
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
@@ -596,7 +585,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .sync_with_peer_for_bootstrap(
             &server_addr,
             &tree_id,
-            "greedy_client",
+            &client_key_id,
             Permission::Admin(0), // Requesting highest admin level
         )
         .await;
@@ -626,7 +615,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     {
         // EXPECTED SECURE BEHAVIOR: Greedy client should NOT be in auth config
         assert!(
-            !auth_doc.contains_key("greedy_client"),
+            !auth_doc.contains_key(&client_key_id),
             "Greedy client should NOT be granted any permissions for excessive request - test fails because permission validation is not implemented"
         );
     }

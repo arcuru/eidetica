@@ -8,9 +8,8 @@
 
 use eidetica::{
     Database,
-    auth::{AuthKey, AuthSettings, Permission},
+    auth::{AuthSettings, Permission, types::AuthKey},
     crdt::Doc,
-    instance::LegacyInstanceOps,
     store::DocStore,
     sync::handler::SyncHandler,
     user::types::{SyncSettings, TrackedDatabase},
@@ -127,24 +126,18 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Create database with wildcard "*" permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
-    let device_key = server_instance
-        .backend()
-        .get_private_key("_device_key")
-        .await
-        .unwrap()
-        .unwrap();
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
     let mut auth_settings = AuthSettings::new();
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .unwrap();
     auth_settings
         .add_key(
-            "_device_key",
-            AuthKey::active(&device_pubkey, Permission::Admin(0)).unwrap(),
+            &server_key_id,
+            AuthKey::active(&server_pubkey, Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     auth_settings
@@ -152,14 +145,10 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
     settings.set("auth", auth_settings.as_doc().clone());
 
-    let server_database = Database::create(
-        settings,
-        &server_instance,
-        device_key,
-        "_device_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
+        .await
+        .unwrap();
     let tree_id = server_database.root_id().clone();
 
     // Add database with sync ENABLED initially
@@ -303,24 +292,18 @@ async fn test_sync_succeeds_when_enabled() {
 
     // Create database with wildcard "*" permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
-    let device_key = server_instance
-        .backend()
-        .get_private_key("_device_key")
-        .await
-        .unwrap()
-        .unwrap();
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
+    let server_pubkey = server_user
+        .get_public_key(&server_key_id)
+        .expect("Failed to get server public key");
+
     let mut auth_settings = AuthSettings::new();
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .unwrap();
     auth_settings
         .add_key(
-            "_device_key",
-            AuthKey::active(&device_pubkey, Permission::Admin(0)).unwrap(),
+            &server_key_id,
+            AuthKey::active(&server_pubkey, Permission::Admin(0)).unwrap(),
         )
         .unwrap();
     auth_settings
@@ -328,14 +311,10 @@ async fn test_sync_succeeds_when_enabled() {
         .unwrap();
     settings.set("auth", auth_settings.as_doc().clone());
 
-    let server_database = Database::create(
-        settings,
-        &server_instance,
-        device_key,
-        "_device_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let server_database = server_user
+        .create_database(settings, &server_key_id)
+        .await
+        .unwrap();
     let tree_id = server_database.root_id().clone();
 
     // Add test data

@@ -9,16 +9,14 @@ use eidetica::{
     Result,
     auth::{
         AuthSettings,
-        crypto::format_public_key,
         types::{AuthKey, DelegationStep, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
     crdt::Doc,
     entry::ID,
-    instance::LegacyInstanceOps,
 };
 
-use crate::helpers::test_instance;
+use crate::helpers::{test_instance, test_instance_with_user_and_key};
 
 /// Test SigKey with empty delegation path
 #[tokio::test]
@@ -41,24 +39,26 @@ async fn test_empty_delegation_path() -> Result<()> {
 /// Test SigKey::Direct with empty key ID
 #[tokio::test]
 async fn test_direct_key_empty_id() -> Result<()> {
-    let db = test_instance().await;
+    let (instance, mut user, key_id) = test_instance_with_user_and_key("test_user", Some("")).await;
 
-    // Add private key with empty ID to storage
-    let admin_key = db.add_private_key("").await?;
-
-    // Create tree with empty key ID
-    let mut auth = Doc::new();
-    auth.set_json(
-        "", // Empty key ID
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
+    // Create tree with the key_id as auth entry (required for User API)
+    // Also add empty key ID entry for testing empty key resolution
+    let pubkey = user.get_public_key(&key_id)?;
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(
+        &key_id, // Key ID as entry name (required for database creation)
+        AuthKey::active(&pubkey, Permission::Admin(0))?,
+    )?;
+    auth_settings.add_key(
+        "", // Empty key ID for testing
+        AuthKey::active(&pubkey, Permission::Admin(0))?,
+    )?;
 
     let mut settings = Doc::new();
-    settings.set("auth", auth);
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // This should work - empty key is technically valid
-    let tree = db.new_database(settings, "").await?;
+    let tree = user.create_database(settings, &key_id).await?;
 
     // Test resolving empty key ID
     let empty_key = SigKey::Direct("".to_string());
@@ -66,7 +66,7 @@ async fn test_direct_key_empty_id() -> Result<()> {
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
     let result = validator
-        .resolve_sig_key(&empty_key, &auth_settings, Some(&db))
+        .resolve_sig_key(&empty_key, &auth_settings, Some(&instance))
         .await;
     assert!(
         result.is_ok(),
@@ -265,22 +265,17 @@ async fn test_delegation_path_invalid_json() {
 /// Test circular delegation detection (simplified version)
 #[tokio::test]
 async fn test_circular_delegation_simple() -> Result<()> {
-    let db = test_instance().await;
-
-    // Add private key to storage
-    let admin_key = db.add_private_key("admin").await?;
+    let (instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("admin")).await;
 
     // Create a tree that delegates to itself
-    let mut auth = Doc::new();
-    auth.set_json(
-        "admin",
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
+    let pubkey = user.get_public_key(&key_id)?;
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(&key_id, AuthKey::active(&pubkey, Permission::Admin(0))?)?;
 
     let mut settings = Doc::new();
-    settings.set("auth", auth);
-    let tree = db.new_database(settings, "admin").await?;
+    settings.set("auth", auth_settings.as_doc().clone());
+    let tree = user.create_database(settings, &key_id).await?;
     let tree_tips = tree.get_tips().await?;
 
     // Create delegation path that references the same tree
@@ -290,13 +285,13 @@ async fn test_circular_delegation_simple() -> Result<()> {
             tips: Some(tree_tips),
         },
         DelegationStep {
-            key: "admin".to_string(),
+            key: key_id.clone(),
             tips: None,
         },
     ]);
 
     // Add self-referencing delegation to the tree
-    let op = tree.new_transaction().await?.with_auth("admin");
+    let op = tree.new_transaction().await?.with_auth(&key_id);
     let _dict = op
         .get_store::<eidetica::store::DocStore>("_settings")
         .await?;
@@ -306,7 +301,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
     let mut validator = AuthValidator::new();
     let result = validator
-        .resolve_sig_key(&circular_delegation, &auth_settings, Some(&db))
+        .resolve_sig_key(&circular_delegation, &auth_settings, Some(&instance))
         .await;
 
     // Should either work or fail gracefully (not crash)

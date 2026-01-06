@@ -7,25 +7,17 @@
 
 use std::time::Duration;
 
-use eidetica::{Instance, Result, instance::LegacyInstanceOps, sync::PeerId};
+use eidetica::{Instance, Result, sync::PeerId, user::User};
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
-use crate::helpers::test_instance;
+use crate::helpers::test_instance_with_user_and_key;
 
-/// Set up two Instance instances with private keys
-async fn setup_databases() -> Result<(Instance, Instance)> {
-    let db1 = {
-        let db = test_instance().await;
-        db.add_private_key("device_key").await?;
-        db
-    };
-    let db2 = {
-        let db = test_instance().await;
-        db.add_private_key("device_key").await?;
-        db
-    };
-    Ok((db1, db2))
+/// Set up two Instance instances with users and private keys
+async fn setup_databases() -> Result<(Instance, User, String, Instance, User, String)> {
+    let (db1, user1, key_id1) = test_instance_with_user_and_key("user1", Some("device_key")).await;
+    let (db2, user2, key_id2) = test_instance_with_user_and_key("user2", Some("device_key")).await;
+    Ok((db1, user1, key_id1, db2, user2, key_id2))
 }
 
 /// Set up sync instances with servers and peer connections
@@ -83,16 +75,24 @@ where
 }
 
 /// Set up trees with bidirectional sync hooks
+#[allow(clippy::too_many_arguments)]
 async fn setup_sync_hooks(
-    db1: &Instance,
-    db2: &Instance,
+    user1: &mut User,
+    user2: &mut User,
+    key_id1: &str,
+    key_id2: &str,
     sync1: &eidetica::sync::Sync,
     sync2: &eidetica::sync::Sync,
     peer1_pubkey: &str,
     peer2_pubkey: &str,
 ) -> Result<(eidetica::Database, eidetica::Database)> {
-    let tree1 = db1.new_database_default("device_key").await?;
-    let tree2 = db2.new_database_default("device_key").await?;
+    let mut settings1 = eidetica::crdt::Doc::new();
+    settings1.set("name", "test_tree_1");
+    let tree1 = user1.create_database(settings1, key_id1).await?;
+
+    let mut settings2 = eidetica::crdt::Doc::new();
+    settings2.set("name", "test_tree_2");
+    let tree2 = user2.create_database(settings2, key_id2).await?;
 
     // Set up sync callbacks using WriteCallback directly
     // Clone sync instances and peer pubkeys for use in callbacks
@@ -140,11 +140,20 @@ where
     println!("Testing {} transport conformance", factory.transport_name());
 
     // Set up databases and sync instances
-    let (db1, db2) = setup_databases().await?;
+    let (db1, mut user1, key_id1, db2, mut user2, key_id2) = setup_databases().await?;
     let (sync1, sync2, peer1_pubkey, peer2_pubkey) =
         setup_sync_with_peers(&factory, &db1, &db2).await?;
-    let (tree1, _tree2) =
-        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey).await?;
+    let (tree1, _tree2) = setup_sync_hooks(
+        &mut user1,
+        &mut user2,
+        &key_id1,
+        &key_id2,
+        &sync1,
+        &sync2,
+        &peer1_pubkey,
+        &peer2_pubkey,
+    )
+    .await?;
 
     // Create entries in DB1 - these should automatically sync via hooks
     let op1 = tree1.new_transaction().await?;
@@ -215,11 +224,20 @@ where
     println!("Testing {} bidirectional sync", factory.transport_name());
 
     // Set up databases and sync instances
-    let (db1, db2) = setup_databases().await?;
+    let (db1, mut user1, key_id1, db2, mut user2, key_id2) = setup_databases().await?;
     let (sync1, sync2, peer1_pubkey, peer2_pubkey) =
         setup_sync_with_peers(&factory, &db1, &db2).await?;
-    let (tree1, tree2) =
-        setup_sync_hooks(&db1, &db2, &sync1, &sync2, &peer1_pubkey, &peer2_pubkey).await?;
+    let (tree1, tree2) = setup_sync_hooks(
+        &mut user1,
+        &mut user2,
+        &key_id1,
+        &key_id2,
+        &sync1,
+        &sync2,
+        &peer1_pubkey,
+        &peer2_pubkey,
+    )
+    .await?;
 
     // Create entry in DB1
     let op1 = tree1.new_transaction().await?;

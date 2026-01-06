@@ -9,7 +9,6 @@ use eidetica::{
     Result,
     auth::{
         AuthSettings,
-        crypto::format_public_key,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
             SigKey, TreeReference,
@@ -18,11 +17,10 @@ use eidetica::{
     },
     crdt::{Doc, doc::Value},
     entry::ID,
-    instance::LegacyInstanceOps,
 };
 
 use super::helpers::*;
-use crate::helpers::test_instance;
+use crate::helpers::{test_instance, test_instance_with_user};
 
 /// Test delegation resolution with missing backend
 #[tokio::test]
@@ -106,28 +104,30 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 /// Test delegation with corrupted tree references
 #[tokio::test]
 async fn test_delegation_corrupted_tree_references() -> Result<()> {
-    let db = test_instance().await;
+    let (db, mut user) = test_instance_with_user("test_user").await;
 
     // Add private key to storage
-    let admin_key = db.add_private_key("admin").await?;
+    let admin_key_id = user.add_private_key(Some("admin")).await?;
 
     // Create tree with manually corrupted delegation reference
-    let mut auth = Doc::new();
-    auth.set_json(
-        "admin",
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
     // Add corrupted delegation (invalid tips)
     let mut corrupted_delegate = Doc::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
-    auth.set("corrupted_delegate", Value::Doc(corrupted_delegate));
+    auth_settings
+        .as_doc_mut()
+        .set("corrupted_delegate", Value::Doc(corrupted_delegate));
 
     let mut settings = Doc::new();
-    settings.set("auth", auth);
-    let tree = db.new_database(settings, "admin").await?;
+    settings.set("auth", auth_settings.as_doc().clone());
+    let tree = user.create_database(settings, &admin_key_id).await?;
 
     // Try to resolve corrupted delegation
     let delegation_path = SigKey::DelegationPath(vec![
@@ -156,61 +156,55 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
 /// Test privilege escalation attempt through delegation
 #[tokio::test]
 async fn test_privilege_escalation_through_delegation() -> Result<()> {
-    let db = test_instance().await;
+    let (db, mut user) = test_instance_with_user("test_user").await;
 
     // Add private keys to storage
-    let admin_key = db.add_private_key("admin_in_delegated_tree").await?;
-    let user_key = db.add_private_key("main_admin").await?;
+    let admin_key_id = user
+        .add_private_key(Some("admin_in_delegated_tree"))
+        .await?;
+    let user_key_id = user.add_private_key(Some("main_admin")).await?;
 
     // Create delegated tree with admin permissions
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "admin_in_delegated_tree",
-            AuthKey::active(
-                format_public_key(&admin_key),
-                Permission::Admin(0), // Admin in delegated tree
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut delegated_auth = AuthSettings::new();
+    delegated_auth.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db
-        .new_database(delegated_settings, "admin_in_delegated_tree")
+    delegated_settings.set("auth", delegated_auth.as_doc().clone());
+    let delegated_tree = user
+        .create_database(delegated_settings, &admin_key_id)
         .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Create main tree that delegates with restricted permissions
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
-            "main_admin",
-            AuthKey::active(format_public_key(&user_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+    let user_pubkey = user.get_public_key(&user_key_id)?;
+    let mut main_auth = AuthSettings::new();
+    main_auth.add_key(
+        &user_key_id,
+        AuthKey::active(&user_pubkey, Permission::Admin(0))?,
+    )?;
 
     // Add delegation with permission restriction (should clamp admin to write)
-    main_auth
-        .set_json(
-            "restricted_delegate",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    min: None,
-                    max: Permission::Write(10), // Restrict to Write only
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
+    main_auth.add_delegated_tree(
+        "restricted_delegate",
+        DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                min: None,
+                max: Permission::Write(10), // Restrict to Write only
             },
-        )
-        .unwrap();
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: delegated_tips.clone(),
+            },
+        },
+    )?;
 
     let mut main_settings = Doc::new();
-    main_settings.set("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "main_admin").await?;
+    main_settings.set("auth", main_auth.as_doc().clone());
+    let main_tree = user.create_database(main_settings, &user_key_id).await?;
 
     // Try to use admin key from delegated tree through restricted delegation
     let delegation_path = SigKey::DelegationPath(vec![
@@ -219,7 +213,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
             tips: Some(delegated_tips),
         },
         DelegationStep {
-            key: "admin_in_delegated_tree".to_string(),
+            key: admin_key_id.clone(),
             tips: None,
         },
     ]);
@@ -244,67 +238,58 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
 /// Test delegation with tampered tips
 #[tokio::test]
 async fn test_delegation_with_tampered_tips() -> Result<()> {
-    let db = test_instance().await;
+    let (db, mut user) = test_instance_with_user("test_user").await;
 
     // Add private keys to storage
-    let user_key = db.add_private_key("user").await?;
-    let admin_key = db.add_private_key("admin").await?;
-    let delegated_admin_key = db.add_private_key("delegated_admin").await?;
+    let user_key_id = user.add_private_key(Some("user")).await?;
+    let admin_key_id = user.add_private_key(Some("admin")).await?;
+    let delegated_admin_key_id = user.add_private_key(Some("delegated_admin")).await?;
 
     // Create delegated tree
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_admin",
-            AuthKey::active(
-                format_public_key(&delegated_admin_key),
-                Permission::Admin(0), // Need admin to create tree
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "user",
-            AuthKey::active(format_public_key(&user_key), Permission::Write(10)).unwrap(),
-        )
-        .unwrap();
+    let delegated_admin_pubkey = user.get_public_key(&delegated_admin_key_id)?;
+    let user_pubkey = user.get_public_key(&user_key_id)?;
+    let mut delegated_auth = AuthSettings::new();
+    delegated_auth.add_key(
+        &delegated_admin_key_id,
+        AuthKey::active(&delegated_admin_pubkey, Permission::Admin(0))?,
+    )?;
+    delegated_auth.add_key(
+        &user_key_id,
+        AuthKey::active(&user_pubkey, Permission::Write(10))?,
+    )?;
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db
-        .new_database(delegated_settings, "delegated_admin")
+    delegated_settings.set("auth", delegated_auth.as_doc().clone());
+    let delegated_tree = user
+        .create_database(delegated_settings, &delegated_admin_key_id)
         .await?;
     let real_tips = delegated_tree.get_tips().await?;
 
     // Create main tree with delegation
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut main_auth = AuthSettings::new();
+    main_auth.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
-    main_auth
-        .set_json(
-            "delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    min: None,
-                    max: Permission::Write(10),
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: real_tips.clone(),
-                },
+    main_auth.add_delegated_tree(
+        "delegate_to_user",
+        DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                min: None,
+                max: Permission::Write(10),
             },
-        )
-        .unwrap();
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: real_tips.clone(),
+            },
+        },
+    )?;
 
     let mut main_settings = Doc::new();
-    main_settings.set("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "admin").await?;
+    main_settings.set("auth", main_auth.as_doc().clone());
+    let main_tree = user.create_database(main_settings, &admin_key_id).await?;
 
     // Try to use delegation with fake/tampered tips
     let fake_tips = vec![ID::from("fake_tip_1"), ID::from("fake_tip_2")];
@@ -314,7 +299,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
             tips: Some(fake_tips), // Using fake tips instead of real ones
         },
         DelegationStep {
-            key: "user".to_string(),
+            key: user_key_id.clone(),
             tips: None,
         },
     ]);
@@ -334,79 +319,65 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
 /// Test delegation chain with mixed key statuses
 #[tokio::test]
 async fn test_delegation_mixed_key_statuses() -> Result<()> {
-    let db = test_instance().await;
+    let (db, mut user) = test_instance_with_user("test_user").await;
 
     // Add private keys to storage
-    let active_user_key = db.add_private_key("active_user").await?;
-    let revoked_key = db.add_private_key("revoked_user").await?;
-    let admin_key = db.add_private_key("admin").await?;
-    let delegated_admin_key = db.add_private_key("delegated_admin").await?;
+    let active_user_key_id = user.add_private_key(Some("active_user")).await?;
+    let revoked_key_id = user.add_private_key(Some("revoked_user")).await?;
+    let admin_key_id = user.add_private_key(Some("admin")).await?;
+    let delegated_admin_key_id = user.add_private_key(Some("delegated_admin")).await?;
 
     // Create delegated tree with mix of active and revoked keys
-    let mut delegated_auth = Doc::new();
-    delegated_auth
-        .set_json(
-            "delegated_admin",
-            AuthKey::active(
-                format_public_key(&delegated_admin_key),
-                Permission::Admin(0), // Need admin to create tree
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "active_user",
-            AuthKey::active(format_public_key(&active_user_key), Permission::Write(10)).unwrap(),
-        )
-        .unwrap();
-    delegated_auth
-        .set_json(
-            "revoked_user",
-            AuthKey::new(
-                format_public_key(&revoked_key),
-                Permission::Write(10),
-                KeyStatus::Revoked, // Revoked key
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    let delegated_admin_pubkey = user.get_public_key(&delegated_admin_key_id)?;
+    let active_user_pubkey = user.get_public_key(&active_user_key_id)?;
+    let revoked_pubkey = user.get_public_key(&revoked_key_id)?;
+
+    let mut delegated_auth = AuthSettings::new();
+    delegated_auth.add_key(
+        &delegated_admin_key_id,
+        AuthKey::active(&delegated_admin_pubkey, Permission::Admin(0))?,
+    )?;
+    delegated_auth.add_key(
+        &active_user_key_id,
+        AuthKey::active(&active_user_pubkey, Permission::Write(10))?,
+    )?;
+    delegated_auth.add_key(
+        &revoked_key_id,
+        AuthKey::new(&revoked_pubkey, Permission::Write(10), KeyStatus::Revoked)?,
+    )?;
 
     let mut delegated_settings = Doc::new();
-    delegated_settings.set("auth", delegated_auth);
-    let delegated_tree = db
-        .new_database(delegated_settings, "delegated_admin")
+    delegated_settings.set("auth", delegated_auth.as_doc().clone());
+    let delegated_tree = user
+        .create_database(delegated_settings, &delegated_admin_key_id)
         .await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Create main tree with delegation
-    let mut main_auth = Doc::new();
-    main_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut main_auth = AuthSettings::new();
+    main_auth.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
-    main_auth
-        .set_json(
-            "delegate_to_users",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    min: None,
-                    max: Permission::Write(10),
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
+    main_auth.add_delegated_tree(
+        "delegate_to_users",
+        DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                min: None,
+                max: Permission::Write(10),
             },
-        )
-        .unwrap();
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: delegated_tips.clone(),
+            },
+        },
+    )?;
 
     let mut main_settings = Doc::new();
-    main_settings.set("auth", main_auth);
-    let main_tree = db.new_database(main_settings, "admin").await?;
+    main_settings.set("auth", main_auth.as_doc().clone());
+    let main_tree = user.create_database(main_settings, &admin_key_id).await?;
 
     // Test accessing active key through delegation
     let active_delegation = SigKey::DelegationPath(vec![
@@ -415,7 +386,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
             tips: Some(delegated_tips.clone()),
         },
         DelegationStep {
-            key: "active_user".to_string(),
+            key: active_user_key_id.clone(),
             tips: None,
         },
     ]);
@@ -438,7 +409,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
             tips: Some(delegated_tips),
         },
         DelegationStep {
-            key: "revoked_user".to_string(),
+            key: revoked_key_id.clone(),
             tips: None,
         },
     ]);
@@ -458,28 +429,28 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
 /// Test validation cache behavior under error conditions
 #[tokio::test]
 async fn test_validation_cache_error_conditions() -> Result<()> {
-    let db = test_instance().await;
+    let (db, mut user) = test_instance_with_user("test_user").await;
 
     // Add private key to storage
-    let admin_key = db.add_private_key("admin").await?;
+    let admin_key_id = user.add_private_key(Some("admin")).await?;
 
     // Create simple tree
-    let mut auth = Doc::new();
-    auth.set_json(
-        "admin",
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
     let mut settings = Doc::new();
-    settings.set("auth", auth);
-    let tree = db.new_database(settings, "admin").await?;
+    settings.set("auth", auth_settings.as_doc().clone());
+    let tree = user.create_database(settings, &admin_key_id).await?;
 
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
     // First resolution should succeed and populate cache
-    let sig_key = SigKey::Direct("admin".to_string());
+    let sig_key = SigKey::Direct(admin_key_id.clone());
     let result1 = validator
         .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
         .await;
@@ -553,23 +524,25 @@ async fn test_error_message_consistency() {
 async fn test_concurrent_validation_basic() -> Result<()> {
     use std::sync::Arc;
 
-    let db = Arc::new(test_instance().await);
+    let (db, mut user) = test_instance_with_user("test_user").await;
+    let db = Arc::new(db);
 
     // Add private key to storage
-    let admin_key = db.add_private_key("admin").await?;
+    let admin_key_id = user.add_private_key(Some("admin")).await?;
 
     // Create tree
-    let mut auth = Doc::new();
-    auth.set_json(
-        "admin",
-        AuthKey::active(format_public_key(&admin_key), Permission::Admin(0)).unwrap(),
-    )
-    .unwrap();
+    let admin_pubkey = user.get_public_key(&admin_key_id)?;
+    let mut auth = AuthSettings::new();
+    auth.add_key(
+        &admin_key_id,
+        AuthKey::active(&admin_pubkey, Permission::Admin(0))?,
+    )?;
 
     let mut settings = Doc::new();
-    settings.set("auth", auth);
-    let tree = db.new_database(settings, "admin").await?;
+    settings.set("auth", auth.as_doc().clone());
+    let tree = user.create_database(settings, &admin_key_id).await?;
     let auth_settings = Arc::new(tree.get_settings().await?.get_auth_settings().await?);
+    let admin_key_id = Arc::new(admin_key_id);
 
     let local = tokio::task::LocalSet::new();
     let mut handles = Vec::new();
@@ -577,10 +550,11 @@ async fn test_concurrent_validation_basic() -> Result<()> {
     for _ in 0..4 {
         let db_clone = Arc::clone(&db);
         let settings_clone = Arc::clone(&auth_settings);
+        let admin_key_clone = Arc::clone(&admin_key_id);
 
         let handle = local.spawn_local(async move {
             let mut validator = AuthValidator::new();
-            let sig_key = SigKey::Direct("admin".to_string());
+            let sig_key = SigKey::Direct((*admin_key_clone).clone());
 
             // Each task should be able to validate independently
             for _ in 0..10 {
