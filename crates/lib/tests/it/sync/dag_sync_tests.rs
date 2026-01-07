@@ -500,8 +500,8 @@ async fn test_real_sync_transport_setup() {
         "Should be able to send entries via HTTP transport"
     );
 
-    // Give some time for async processing
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    sync1.flush().await.ok();
 
     // NOW VERIFY ACTUAL STORAGE: With the SyncHandler implementation,
     // entries should actually be stored in database 2's backend
@@ -582,8 +582,8 @@ async fn test_sync_protocol_implementation() {
     assert!(result.is_ok(), "Sync should succeed: {:?}", result.err());
     println!("🧪 DEBUG: Sync completed successfully");
 
-    // Wait a moment for async processing
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    sync2.flush().await.ok();
 
     // Debug: check what entries exist in both databases
     println!("🧪 DEBUG: Checking what entries exist:");
@@ -643,8 +643,8 @@ async fn test_sync_protocol_implementation() {
         result2.err()
     );
 
-    // Wait for processing
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    sync2.flush().await.ok();
 
     // Verify the second entry was synced
     assert!(
@@ -794,8 +794,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
         result.err()
     );
 
-    // Give time for async processing
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Flush any pending sync work
+    sync1.flush().await.ok();
 
     // Verify entries were actually stored in database 2
     for entry_id in &entry_ids {

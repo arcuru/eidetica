@@ -12,7 +12,6 @@ use eidetica::{
     store::{SettingsStore, Table},
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 // Simulate the chat app's key names (device-specific)
 const SERVER_KEY_NAME: &str = "CHAT_APP_SERVER";
@@ -206,8 +205,13 @@ async fn test_chat_app_authenticated_bootstrap() {
         }
     } // Drop guard here
 
-    // Wait for sync to propagate
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Flush any pending sync work
+    client_instance
+        .sync()
+        .expect("Client should have sync")
+        .flush()
+        .await
+        .ok();
 
     // Verify client can now load the database
     println!("\n🔍 Verifying client can load the database...");
@@ -478,9 +482,9 @@ async fn test_chat_app_authenticated_bootstrap() {
             .sync_with_peer(&server_addr, Some(&room_id))
             .await
             .expect("Client should be able to sync to server");
+        // Flush any pending sync work
+        client_sync.flush().await.ok();
     }
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify server sees client's message using the original database object
     // With bidirectional sync, the server should now have the client's entries
@@ -650,9 +654,9 @@ async fn test_global_key_bootstrap() {
             .sync_with_peer(&server_addr, Some(&room_id))
             .await
             .expect("Sync should succeed with global permission");
+        // Flush any pending sync work
+        client_sync.flush().await.ok();
     } // Drop guard here
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify client can load and use the database with global permission
     let signing_key = client_instance
@@ -833,7 +837,8 @@ async fn test_multiple_databases_sync() {
                 .await
                 .unwrap_or_else(|_| panic!("Failed to bootstrap room {}", i + 1));
 
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            // Flush any pending sync work
+            client_sync.flush().await.ok();
         }
     } // Drop guard here
 

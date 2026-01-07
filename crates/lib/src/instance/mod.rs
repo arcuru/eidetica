@@ -666,6 +666,24 @@ impl Instance {
         self.inner.sync.get().map(Arc::clone)
     }
 
+    /// Flush all pending sync operations.
+    ///
+    /// This is a convenience method that processes all queued entries and
+    /// retries any failed sends. If sync is not enabled, returns Ok(()).
+    ///
+    /// This is useful to force pending syncs to complete, e.g. on program shutdown.
+    ///
+    /// # Returns
+    /// `Ok(())` if sync is not enabled or all operations completed successfully,
+    /// or an error if sends failed.
+    pub async fn flush_sync(&self) -> Result<()> {
+        if let Some(sync) = self.sync() {
+            sync.flush().await
+        } else {
+            Ok(())
+        }
+    }
+
     // === Entry Write Coordination ===
     //
     // All entry writes go through Instance::put_entry() which handles backend storage

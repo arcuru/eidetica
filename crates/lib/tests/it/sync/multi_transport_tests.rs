@@ -213,8 +213,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .await
         .expect("HTTP client should sync changes to server");
 
-    // Allow processing time
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    http_client_sync.flush().await.ok();
 
     // Verify server received the entry
     assert!(
@@ -255,8 +255,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .await
         .expect("Should be able to sync from server via Iroh");
 
-    // Allow processing time
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    iroh_client_sync.flush().await.ok();
 
     // Verify Iroh client received the entry
     let synced_entry = iroh_client_instance

@@ -146,15 +146,6 @@ pub trait TransportFactory: Send + std::marker::Sync {
 
     /// Get a display name for this transport type
     fn transport_name(&self) -> &'static str;
-
-    /// Get appropriate wait time for this transport type during tests
-    fn sync_wait_time(&self) -> Duration {
-        if self.transport_name().contains("Iroh") {
-            Duration::from_millis(3000) // Iroh needs more time for P2P connections
-        } else {
-            Duration::from_millis(1000) // HTTP is faster
-        }
-    }
 }
 
 /// Factory for HTTP transport instances

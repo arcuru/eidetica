@@ -7,7 +7,6 @@
 use super::helpers::*;
 use eidetica::auth::Permission;
 use eidetica::sync::RequestStatus;
-use std::time::Duration;
 use tracing::info;
 
 /// Test that a client can poll for the status of its pending bootstrap request
@@ -86,8 +85,8 @@ async fn test_client_retry_after_pending() {
         .await
         .expect("Failed to approve request");
 
-    // Client retries - should now succeed
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work before client retries
+    server_sync.flush().await.ok();
     let retry_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;
@@ -205,8 +204,8 @@ async fn test_client_behavior_after_rejection() {
         .await
         .expect("Failed to reject request");
 
-    // Client attempts bootstrap again - should still fail
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work before client retries
+    server_sync.flush().await.ok();
     let retry_result = client_sync
         .sync_with_peer_for_bootstrap(&server_addr, &tree_id, "client_key", Permission::Write(5))
         .await;

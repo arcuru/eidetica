@@ -6,15 +6,6 @@
 
 use super::helpers::*;
 use eidetica::{Entry, auth::Permission};
-use std::time::Duration;
-
-/// Standard delay to allow async sync operations to complete in tests.
-/// This duration should be sufficient for most sync propagation scenarios.
-/// FIXME: Fix Sync propagation testing with something more robust
-const SYNC_PROPAGATION_DELAY: Duration = Duration::from_millis(100);
-
-/// Extended delay for complex multi-step sync operations that may take longer.
-const SYNC_PROPAGATION_DELAY_LONG: Duration = Duration::from_millis(200);
 
 /// Test basic bootstrap with user-provided signing key
 #[tokio::test]
@@ -67,8 +58,8 @@ async fn test_bootstrap_with_provided_key() {
         .await
         .expect("Bootstrap sync with provided key should succeed");
 
-    // Wait for sync to propagate
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client now has the root entry
     let root_client = client_sync
@@ -138,7 +129,8 @@ async fn test_bootstrap_key_not_stored_in_backend() {
         .await
         .expect("Bootstrap should succeed");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify the key is STILL not in the backend after sync
     assert!(
@@ -266,7 +258,8 @@ async fn test_multiple_clients_with_different_keys() {
         .await
         .unwrap_or_else(|e| panic!("Client {i} bootstrap should succeed: {e:?}"));
 
-        tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+        // Flush any pending sync work
+        sync.flush().await.ok();
 
         // Verify client has the tree
         assert!(
@@ -340,7 +333,8 @@ async fn test_bootstrap_with_different_permissions() {
         .await
         .unwrap_or_else(|e| panic!("Bootstrap with {perm_name} should succeed: {e:?}"));
 
-        tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+        // Flush any pending sync work
+        sync.flush().await.ok();
 
         // Verify sync succeeded
         assert!(
@@ -390,7 +384,8 @@ async fn test_with_key_equivalent_to_backend_key() {
         .await
         .expect("Client 1 bootstrap should succeed");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client1_sync.flush().await.ok();
 
     // Client 2: Use sync_with_peer_for_bootstrap_with_key (provided key)
     let (_client2_signing_key, client2_verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -410,7 +405,8 @@ async fn test_with_key_equivalent_to_backend_key() {
         .await
         .expect("Client 2 bootstrap should succeed");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client2_sync.flush().await.ok();
 
     // Both clients should have successfully synced the tree
     assert!(
@@ -615,7 +611,8 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .await
         .expect("Bootstrap should succeed with auto-approval");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY_LONG).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client successfully bootstrapped and can load the database
     let client_database = client_instance
@@ -722,7 +719,8 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         .await
         .expect("Initial bootstrap should succeed");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Add new content to server
     let entry2 = Entry::builder(tree_id.clone())
@@ -747,7 +745,8 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         .await
         .expect("Incremental sync should succeed");
 
-    tokio::time::sleep(SYNC_PROPAGATION_DELAY).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client received the new entry
     assert!(

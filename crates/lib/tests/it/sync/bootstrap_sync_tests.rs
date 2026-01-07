@@ -6,7 +6,6 @@
 use eidetica::store::DocStore;
 
 use super::helpers::*;
-use std::time::Duration;
 
 /// Test the new unified sync API for bootstrapping a database from scratch
 #[tokio::test]
@@ -63,8 +62,8 @@ async fn test_bootstrap_sync_from_zero_state() {
         .await
         .expect("Bootstrap sync should succeed");
 
-    // Wait a moment for the sync to propagate
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client now has the entries
     let root_client = client_instance
@@ -134,7 +133,8 @@ async fn test_incremental_sync_after_bootstrap() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client has bootstrapped tree
     assert!(
@@ -160,7 +160,8 @@ async fn test_incremental_sync_after_bootstrap() {
         .await
         .expect("Incremental sync should succeed");
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     // Verify client received the new entry
     let entry2_client_result = client_instance.backend().get(&entry2_id).await;

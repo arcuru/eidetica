@@ -159,8 +159,8 @@ where
 
     println!("Created entries in DB1 (with sync hooks): {entry_id1} and {entry_id2}");
 
-    // Wait for sync to propagate
-    sleep(factory.sync_wait_time()).await;
+    // Flush sync queue to send entries immediately
+    sync1.flush().await?;
 
     // Verify entries were synced to DB2 backend
     let entry1_in_db2 = db2.backend().get(&entry_id1).await;
@@ -231,8 +231,9 @@ where
     docstore2.set("origin", "db2").await?;
     let entry_from_db2 = op2.commit().await?;
 
-    // Wait for bidirectional sync
-    sleep(factory.sync_wait_time()).await;
+    // Flush both sync queues for bidirectional sync
+    sync1.flush().await?;
+    sync2.flush().await?;
 
     // Verify DB1 has entry from DB2
     let db2_entry_in_db1 = db1.backend().get(&entry_from_db2).await;

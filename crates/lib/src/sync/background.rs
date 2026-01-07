@@ -22,6 +22,7 @@ use super::{
     peer_manager::PeerManager,
     peer_types::{Address, PeerInfo},
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
+    queue::SyncQueue,
     transport_manager::TransportManager,
     transports::SyncTransport,
 };
@@ -35,12 +36,6 @@ use crate::{
 pub enum SyncCommand {
     /// Send entries to a specific peer
     SendEntries { peer: String, entries: Vec<Entry> },
-    /// Queue an entry for sending to a peer (from callback)
-    QueueEntry {
-        peer: String,
-        entry_id: ID,
-        tree_id: ID,
-    },
     /// Trigger immediate sync with a peer
     SyncWithPeer { peer: String },
     /// Shutdown the background engine
@@ -91,6 +86,11 @@ pub enum SyncCommand {
         request: SyncRequest,
         response: oneshot::Sender<Result<SyncResponse>>,
     },
+
+    /// Flush: process all queued entries and retry queue, then respond.
+    Flush {
+        response: oneshot::Sender<Result<()>>,
+    },
 }
 
 // Manual Debug impl required because:
@@ -105,16 +105,6 @@ impl std::fmt::Debug for SyncCommand {
                 .debug_struct("SendEntries")
                 .field("peer", peer)
                 .field("entries_count", &entries.len())
-                .finish(),
-            Self::QueueEntry {
-                peer,
-                entry_id,
-                tree_id,
-            } => f
-                .debug_struct("QueueEntry")
-                .field("peer", peer)
-                .field("entry_id", entry_id)
-                .field("tree_id", tree_id)
                 .finish(),
             Self::SyncWithPeer { peer } => {
                 f.debug_struct("SyncWithPeer").field("peer", peer).finish()
@@ -153,6 +143,7 @@ impl std::fmt::Debug for SyncCommand {
                 .field("address", address)
                 .field("request", request)
                 .finish(),
+            Self::Flush { .. } => write!(f, "Flush"),
         }
     }
 }
@@ -173,6 +164,9 @@ pub struct BackgroundSync {
     instance: crate::WeakInstance,
     sync_tree_id: ID,
 
+    // Queue for entries pending synchronization (shared with Sync frontend)
+    queue: Arc<SyncQueue>,
+
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
 
@@ -186,6 +180,7 @@ impl BackgroundSync {
         transport: Box<dyn SyncTransport>,
         instance: crate::Instance,
         sync_tree_id: ID,
+        queue: Arc<SyncQueue>,
     ) -> mpsc::Sender<SyncCommand> {
         let (tx, rx) = mpsc::channel(100);
 
@@ -193,6 +188,7 @@ impl BackgroundSync {
             transport_manager: TransportManager::with_transport(transport),
             instance: instance.downgrade(),
             sync_tree_id,
+            queue,
             retry_queue: Vec::new(),
             command_rx: rx,
         };
@@ -286,14 +282,15 @@ impl BackgroundSync {
             info!("Initial periodic sync interval: {} seconds", current_interval_secs);
 
             // Set up timers
-            // TODO: Make the background sync handle batching of requests to peers
             let mut periodic_sync = interval(Duration::from_secs(current_interval_secs));
+            let mut queue_check = interval(Duration::from_secs(5)); // 5 seconds - batches local writes
             let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
             let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
             let mut settings_check = interval(Duration::from_secs(60)); // Check for settings changes every minute
 
             // Skip initial tick to avoid immediate execution
             periodic_sync.tick().await;
+            queue_check.tick().await;
             retry_check.tick().await;
             connection_check.tick().await;
             settings_check.tick().await;
@@ -306,6 +303,11 @@ impl BackgroundSync {
                             // Log errors but continue running - background sync should be resilient
                             tracing::error!("Background sync command error: {e}");
                         }
+                    }
+
+                    // Drain sync queue (batched entries)
+                    _ = queue_check.tick() => {
+                        self.process_queue().await;
                     }
 
                     // Periodic sync with all peers
@@ -354,26 +356,6 @@ impl BackgroundSync {
             SyncCommand::SendEntries { peer, entries } => {
                 if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
                     self.add_to_retry_queue(peer, entries, e);
-                }
-            }
-
-            SyncCommand::QueueEntry {
-                peer,
-                entry_id,
-                tree_id: _,
-            } => {
-                // Fetch entry and send immediately
-                let instance = self.instance()?;
-                match instance.backend().get(&entry_id).await {
-                    Ok(entry) => {
-                        if let Err(e) = self.send_to_peer(&peer, vec![entry.clone()]).await {
-                            self.add_to_retry_queue(peer, vec![entry], e);
-                        }
-                    }
-                    Err(e) => {
-                        // Log error but continue with other entries
-                        tracing::warn!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
-                    }
                 }
             }
 
@@ -433,6 +415,23 @@ impl BackgroundSync {
                 response,
             } => {
                 let result = self.send_sync_request(&address, &request).await;
+                let _ = response.send(result);
+            }
+
+            SyncCommand::Flush { response } => {
+                // Process retry queue first (old failures), then main queue (new entries)
+                // This avoids double-trying entries that fail in process_queue
+                let retry_failures = self.flush_retry_queue().await;
+                let queue_failures = self.process_queue().await;
+
+                // Report error if any failures occurred
+                let result = match (retry_failures, queue_failures) {
+                    (0, 0) => Ok(()),
+                    (r, q) => Err(SyncError::Network(format!(
+                        "Flush had failures: {r} from retry queue, {q} from new entries"
+                    ))
+                    .into()),
+                };
                 let _ = response.send(result);
             }
 
@@ -510,6 +509,51 @@ impl BackgroundSync {
         });
     }
 
+    /// Process entries from the sync queue, batching by peer.
+    ///
+    /// Drains the queue and sends entries to each peer. Failed sends
+    /// are added to the retry queue with exponential backoff.
+    /// Returns the number of peers that failed to receive entries.
+    async fn process_queue(&mut self) -> usize {
+        let batches = self.queue.drain();
+        if batches.is_empty() {
+            return 0;
+        }
+
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!("Failed to get instance for queue processing: {e}");
+                return batches.len(); // All batches failed
+            }
+        };
+
+        let mut failures = 0;
+        for (peer, entry_ids) in batches {
+            // Fetch entries from backend
+            let mut entries = Vec::with_capacity(entry_ids.len());
+            for (entry_id, _tree_id) in &entry_ids {
+                match instance.backend().get(entry_id).await {
+                    Ok(entry) => entries.push(entry),
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch entry {entry_id} for peer {peer}: {e}");
+                    }
+                }
+            }
+
+            if entries.is_empty() {
+                continue;
+            }
+
+            // Send batched entries to peer
+            if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
+                self.add_to_retry_queue(peer, entries, e);
+                failures += 1;
+            }
+        }
+        failures
+    }
+
     /// Process retry queue with exponential backoff
     async fn process_retry_queue(&mut self) {
         let now = SystemTime::now();
@@ -545,6 +589,40 @@ impl BackgroundSync {
         }
 
         self.retry_queue = still_failed;
+    }
+
+    /// Flush retry queue immediately, ignoring backoff timers.
+    /// Returns the number of entries that still failed after retry.
+    async fn flush_retry_queue(&mut self) -> usize {
+        let mut still_failed = Vec::new();
+        let now = SystemTime::now();
+
+        // Take the retry queue to process
+        let retry_queue = std::mem::take(&mut self.retry_queue);
+
+        // Try sending each entry immediately (ignore backoff)
+        for mut retry_entry in retry_queue {
+            if let Err(_e) = self
+                .send_to_peer(&retry_entry.peer, retry_entry.entries.clone())
+                .await
+            {
+                retry_entry.attempts += 1;
+                retry_entry.last_attempt = now;
+
+                if retry_entry.attempts < 10 {
+                    still_failed.push(retry_entry);
+                } else {
+                    tracing::error!(
+                        "Giving up on sending to {} after 10 attempts",
+                        retry_entry.peer
+                    );
+                }
+            }
+        }
+
+        let failed_count = still_failed.len();
+        self.retry_queue = still_failed;
+        failed_count
     }
 
     /// Perform periodic sync with all active peers

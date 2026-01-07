@@ -104,9 +104,9 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     let entry_id = tx.commit().await?;
     println!("Committed entry {entry_id} to instance1");
 
-    // Wait for sync to propagate
-    println!("\n--- Waiting for sync to propagate ---");
-    sleep(Duration::from_millis(500)).await;
+    // Flush sync queue to send entries immediately
+    println!("\n--- Flushing sync queue ---");
+    sync1.flush().await?;
 
     // Verify entry was automatically synced to instance2's backend
     println!("\n--- Checking instance2 backend ---");
@@ -240,8 +240,6 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let entry1_id = tx1.commit().await?;
     println!("Alice committed entry: {entry1_id}");
 
-    sleep(Duration::from_millis(400)).await;
-
     println!("\n--- Bob writes on instance2 ---");
     let tx2 = db2.new_transaction().await?;
     let store2 = tx2
@@ -254,7 +252,9 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
     let entry2_id = tx2.commit().await?;
     println!("Bob committed entry: {entry2_id}");
 
-    sleep(Duration::from_millis(400)).await;
+    // Flush both sync queues for bidirectional sync
+    sync1.flush().await?;
+    sync2.flush().await?;
 
     println!("\n--- Verifying bidirectional sync ---");
 
@@ -362,7 +362,8 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
 
     println!("Committed entry {entry_id} after enabling sync");
 
-    sleep(Duration::from_millis(300)).await;
+    // Flush sync queue
+    sync1.flush().await?;
 
     // Verify sync worked
     let synced_entry = instance2.backend().get(&entry_id).await;
@@ -448,7 +449,8 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     store.set("note1", note).await?;
     let entry1_id = tx.commit().await?;
 
-    sleep(Duration::from_millis(300)).await;
+    // Flush sync queue
+    sync1.flush().await?;
 
     // Verify initial sync worked
     assert!(
@@ -482,7 +484,8 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
 
     println!("Committed entry {entry2_id} after restart");
 
-    sleep(Duration::from_millis(300)).await;
+    // Flush sync queue
+    sync1.flush().await?;
 
     // Verify sync still works after restart
     let synced_entry = instance2.backend().get(&entry2_id).await;

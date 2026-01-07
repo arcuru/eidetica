@@ -9,7 +9,6 @@
 
 use eidetica::{Result, auth::Permission, crdt::Doc, instance::LegacyInstanceOps, store::Table};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use crate::helpers::test_instance;
 
@@ -168,8 +167,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("🔄 Bootstrap result: {bootstrap_result:?}");
     assert!(bootstrap_result.is_ok(), "Bootstrap should succeed");
 
-    // Wait for sync to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Flush any pending sync work
+    device2_instance
+        .sync()
+        .expect("Device2 should have sync")
+        .flush()
+        .await
+        .ok();
 
     // Verify device 2 has the database and message A
     // Load database with the key for device2
@@ -237,8 +241,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("🔄 Sync back result: {sync_back_result:?}");
     assert!(sync_back_result.is_ok(), "Sync back should succeed");
 
-    // Wait for sync to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Flush any pending sync work
+    device2_instance
+        .sync()
+        .expect("Device2 should have sync")
+        .flush()
+        .await
+        .ok();
 
     // Verify device 1 now has both messages
     {

@@ -11,7 +11,6 @@ use eidetica::{
     crdt::{Doc, doc::Value},
     instance::LegacyInstanceOps,
 };
-use std::time::Duration;
 
 /// Test bootstrap behavior when the requesting key lacks sufficient admin permissions.
 ///
@@ -111,8 +110,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
             )
             .await;
 
-        // Wait for any async processing
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Flush any pending sync work
+        client_sync.flush().await.ok();
         result
     };
 
@@ -243,7 +242,8 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
             )
             .await;
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Flush any pending sync work
+        client_sync.flush().await.ok();
         result
     };
 
@@ -367,7 +367,8 @@ async fn test_bootstrap_invalid_public_key_format() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     println!("🔍 Bootstrap result with unusual key name: {bootstrap_result:?}");
 
@@ -491,7 +492,8 @@ async fn test_bootstrap_with_revoked_key() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     println!(
         "🔍 Bootstrap result with new key on database containing revoked keys: {bootstrap_result:?}"
@@ -597,7 +599,8 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         )
         .await;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Flush any pending sync work
+    client_sync.flush().await.ok();
 
     println!("🔍 Bootstrap result requesting excessive Admin permissions: {bootstrap_result:?}");
 

@@ -54,7 +54,7 @@
 //! - **Retry queue**: Failed sends retried with exponential backoff
 
 use handle_trait::Handle;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tracing::{debug, info};
 
 use crate::{
@@ -73,6 +73,7 @@ pub mod handler;
 pub mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
+mod queue;
 pub mod state;
 mod transport_manager;
 pub mod transports;
@@ -86,6 +87,7 @@ pub use error::SyncError;
 use peer_manager::PeerManager;
 pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
 use protocol::{SyncRequest, SyncResponse, SyncTreeRequest};
+use queue::SyncQueue;
 use std::time::SystemTime;
 use tokio::sync::{mpsc, oneshot};
 use transports::{
@@ -224,6 +226,8 @@ pub struct Sync {
     instance: WeakInstance,
     /// The tree containing synchronization settings
     sync_tree: Database,
+    /// Queue for entries pending synchronization
+    queue: Arc<SyncQueue>,
 }
 
 impl Clone for Sync {
@@ -236,6 +240,7 @@ impl Clone for Sync {
             background_tx,
             instance: self.instance.clone(),
             sync_tree: self.sync_tree.clone(),
+            queue: Arc::clone(&self.queue),
         }
     }
 }
@@ -279,6 +284,7 @@ impl Sync {
             background_tx: OnceLock::new(),
             instance: instance.downgrade(),
             sync_tree,
+            queue: Arc::new(SyncQueue::new()),
         };
 
         // Initialize combined settings for all tracked users
@@ -315,6 +321,7 @@ impl Sync {
             background_tx: OnceLock::new(),
             instance: instance.downgrade(),
             sync_tree,
+            queue: Arc::new(SyncQueue::new()),
         };
 
         // Initialize combined settings for all tracked users
@@ -1263,7 +1270,8 @@ impl Sync {
         let instance = self.instance()?;
 
         // Create the background sync and get command sender
-        let background_tx = BackgroundSync::start(transport, instance, sync_tree_id);
+        let background_tx =
+            BackgroundSync::start(transport, instance, sync_tree_id, Arc::clone(&self.queue));
 
         // Initialize the command channel (can only be done once)
         self.background_tx
@@ -1666,7 +1674,7 @@ impl Sync {
     /// * `tree_id` - The tree ID where the entry belongs
     ///
     /// # Returns
-    /// Ok(()) if the entry was successfully queued or the queue was full.
+    /// Ok(()) if the entry was successfully queued.
     /// Only returns Err if transport is not enabled.
     pub fn queue_entry_for_sync(
         &self,
@@ -1674,27 +1682,14 @@ impl Sync {
         entry_id: &ID,
         tree_id: &ID,
     ) -> Result<()> {
-        let background_tx = self
-            .background_tx
-            .get()
-            .ok_or(SyncError::NoTransportEnabled)?;
-
-        let command = SyncCommand::QueueEntry {
-            peer: peer_pubkey.to_string(),
-            entry_id: entry_id.clone(),
-            tree_id: tree_id.clone(),
-        };
-
-        // Use try_send for non-blocking operation
-        // Log errors but don't fail since this is called during commit
-        if let Err(e) = background_tx.try_send(command) {
-            tracing::error!(
-                "Failed to queue entry {:?} for sync with peer {}: {}",
-                entry_id,
-                peer_pubkey,
-                e
-            );
+        // Ensure background sync is running
+        if self.background_tx.get().is_none() {
+            return Err(SyncError::NoTransportEnabled.into());
         }
+
+        // Add to queue - BackgroundSync will process and send
+        self.queue
+            .enqueue(peer_pubkey, entry_id.clone(), tree_id.clone());
 
         Ok(())
     }
@@ -2661,6 +2656,34 @@ impl Sync {
         );
 
         Ok(())
+    }
+
+    // === Flush Operations ===
+
+    /// Process all queued entries and retry any failed sends.
+    ///
+    /// This method:
+    /// 1. Retries all entries in the retry queue (ignoring backoff timers)
+    /// 2. Processes all entries in the sync queue (batched by peer)
+    ///
+    /// When this method returns, all pending sync work has been attempted.
+    /// This is useful to eensuree that all pending pushes have completed.
+    ///
+    /// # Returns
+    /// `Ok(())` if all operations completed successfully, or an error
+    /// if the background sync engine is not running or sends failed.
+    pub async fn flush(&self) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(SyncCommand::Flush { response: tx })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 }
 
