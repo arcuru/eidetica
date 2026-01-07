@@ -131,6 +131,9 @@ jobs:
       packages: write
 
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3
+
       - name: Log in to GHCR
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
@@ -173,17 +176,17 @@ jobs:
       - name: Create and push manifests
         run: |
           for TAG in ${{ steps.tags.outputs.tags }}; do
-            # Create and push manifest for GHCR
-            docker manifest create "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
+            # Create multi-arch manifest for GHCR using imagetools (handles manifest lists with attestations)
+            docker buildx imagetools create \
+              --tag "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
               "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-amd64" \
               "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-arm64"
-            docker manifest push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
 
-            # Create and push manifest for Docker Hub
-            docker manifest create "${{ env.IMAGE_NAME }}:${TAG}" \
+            # Create multi-arch manifest for Docker Hub
+            docker buildx imagetools create \
+              --tag "${{ env.IMAGE_NAME }}:${TAG}" \
               "${{ env.IMAGE_NAME }}:${TAG}-amd64" \
               "${{ env.IMAGE_NAME }}:${TAG}-arm64"
-            docker manifest push "${{ env.IMAGE_NAME }}:${TAG}"
           done
 
       - name: Cleanup intermediate images
