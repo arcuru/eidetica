@@ -43,7 +43,7 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
-      - name: Build container image
+      - name: Build container image with Nix
         run: nix build .#eidetica-image
 
       - name: Log in to GHCR
@@ -58,6 +58,24 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Load and push Nix base image
+        id: nix-image
+        run: |
+          # Load image and capture the name
+          LOADED=$(docker load < ./result)
+          # Extract image name from "Loaded image: name:tag"
+          NIX_IMAGE=$(echo "$LOADED" | grep -oP 'Loaded image: \K.*')
+          echo "Loaded Nix image: ${NIX_IMAGE}"
+
+          # Push base image to GHCR (buildx needs it accessible from registry)
+          BASE_TAG="nix-base-${{ matrix.platform }}"
+          docker tag "${NIX_IMAGE}" "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}"
+          docker push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}"
+          echo "base_image=${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3
 
       - name: Determine tags
         id: tags
@@ -83,22 +101,25 @@ jobs:
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
-      - name: Push to registries
+      - name: Create attestation wrapper Dockerfile
         run: |
-          # Load image into Docker
-          docker load < ./result
+          # Create a minimal Dockerfile that uses the pushed Nix base image
+          # This allows buildx to add SBOM and provenance attestations
+          echo "FROM ${{ steps.nix-image.outputs.base_image }}" > Dockerfile.attestation
 
-          # Get the image ID
-          IMAGE_ID=$(docker images --format "{{.ID}}" | head -1)
-
+      - name: Build and push with attestations
+        run: |
           for TAG in ${{ steps.tags.outputs.tags }}; do
-            # Tag and push to GHCR
-            docker tag "$IMAGE_ID" "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
-            docker push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
-
-            # Tag and push to Docker Hub
-            docker tag "$IMAGE_ID" "${{ env.IMAGE_NAME }}:${TAG}"
-            docker push "${{ env.IMAGE_NAME }}:${TAG}"
+            # Build with buildx to add SBOM and provenance attestations
+            # Push to both registries with attestations embedded
+            docker buildx build \
+              --file Dockerfile.attestation \
+              --sbom=true \
+              --provenance=mode=max \
+              --tag "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
+              --tag "${{ env.IMAGE_NAME }}:${TAG}" \
+              --push \
+              .
           done
 
   manifest:
@@ -108,8 +129,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      attestations: write
-      id-token: write
 
     steps:
       - name: Log in to GHCR
@@ -154,56 +173,29 @@ jobs:
       - name: Create and push manifests
         run: |
           for TAG in ${{ steps.tags.outputs.tags }}; do
-            # Create manifest for GHCR
+            # Create and push manifest for GHCR
             docker manifest create "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
               "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-amd64" \
               "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-arm64"
             docker manifest push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}"
 
-            # Create manifest for Docker Hub
+            # Create and push manifest for Docker Hub
             docker manifest create "${{ env.IMAGE_NAME }}:${TAG}" \
               "${{ env.IMAGE_NAME }}:${TAG}-amd64" \
               "${{ env.IMAGE_NAME }}:${TAG}-arm64"
             docker manifest push "${{ env.IMAGE_NAME }}:${TAG}"
           done
 
-      - name: Determine attestation tag
-        id: attest-tag
+      - name: Cleanup intermediate images
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            VERSION="${{ github.event.release.tag_name }}"
-            VERSION="${VERSION#v}"
-            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=dev" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Get GHCR manifest digest
-        id: ghcr-digest
-        run: |
-          TAG="${{ steps.attest-tag.outputs.tag }}"
-          # Use buildx imagetools which properly handles multi-arch manifest lists
-          DIGEST=$(docker buildx imagetools inspect "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" --format '{{.Manifest.Digest}}')
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-
-      - name: Get Docker Hub manifest digest
-        id: dockerhub-digest
-        run: |
-          TAG="${{ steps.attest-tag.outputs.tag }}"
-          # Use buildx imagetools which properly handles multi-arch manifest lists
-          DIGEST=$(docker buildx imagetools inspect "${{ env.IMAGE_NAME }}:${TAG}" --format '{{.Manifest.Digest}}')
-          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate GHCR attestation
-        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3
-        with:
-          subject-name: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.ghcr-digest.outputs.digest }}
-          push-to-registry: true
-
-      - name: Generate Docker Hub attestation
-        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3
-        with:
-          subject-name: ${{ env.REGISTRY_DOCKER }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.dockerhub-digest.outputs.digest }}
-          push-to-registry: true
+          # Delete the nix-base-* intermediate images from GHCR
+          for PLATFORM in amd64 arm64; do
+            echo "Deleting nix-base-${PLATFORM}..."
+            gh api --method DELETE "/users/${{ github.repository_owner }}/packages/container/eidetica/versions/$(
+              gh api "/users/${{ github.repository_owner }}/packages/container/eidetica/versions" \
+                --jq ".[] | select(.metadata.container.tags[] == \"nix-base-${PLATFORM}\") | .id"
+            )" 2>/dev/null || echo "Could not delete nix-base-${PLATFORM} (may not exist or lack permissions)"
+          done
