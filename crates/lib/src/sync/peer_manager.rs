@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use super::{
     error::SyncError,
-    peer_types::{Address, ConnectionState, PeerInfo, PeerStatus},
+    peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus},
 };
 use crate::{Error, Result, Transaction, crdt::doc::path, store::DocStore};
 
@@ -56,7 +56,7 @@ impl<'a> PeerManager<'a> {
 
         // Store peer info using path-based structure
         peers
-            .set_path(path!(&pubkey as &str, "pubkey"), peer_info.pubkey.clone())
+            .set_path(path!(&pubkey as &str, "pubkey"), peer_info.id.to_string())
             .await?;
         if let Some(name) = &peer_info.display_name {
             peers
@@ -122,7 +122,7 @@ impl<'a> PeerManager<'a> {
 
         // Update all peer fields
         peers
-            .set_path(path!(pubkey.as_ref(), "pubkey"), peer_info.pubkey.clone())
+            .set_path(path!(pubkey.as_ref(), "pubkey"), peer_info.id.to_string())
             .await?;
 
         if let Some(name) = &peer_info.display_name {
@@ -336,7 +336,7 @@ impl<'a> PeerManager<'a> {
             .ok();
 
         let mut peer_info = PeerInfo {
-            pubkey: peer_pubkey,
+            id: PeerId::new(peer_pubkey),
             display_name,
             first_seen,
             last_seen,
@@ -561,14 +561,15 @@ impl<'a> PeerManager<'a> {
     pub(super) async fn get_tree_peers(
         &self,
         tree_root_id: impl AsRef<str>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<PeerId>> {
         let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
         let peer_list_result = trees.get_path_as::<String>(&peer_list_path).await;
-        Ok(peer_list_result
+        let string_vec: Vec<String> = peer_list_result
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_else(Vec::new))
+            .unwrap_or_else(Vec::new);
+        Ok(string_vec.into_iter().map(PeerId::new).collect())
     }
 
     /// Check if a tree is synced with a specific peer.

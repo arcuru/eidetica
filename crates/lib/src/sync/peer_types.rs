@@ -3,7 +3,65 @@
 //! This module defines the data structures used to track remote peers,
 //! their sync relationships, and simple address information for transports.
 
+use std::borrow::Borrow;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+
+/// A peer's unique identifier, derived from their public key.
+///
+/// The format is `ed25519:{base64_encoded_key}`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PeerId(String);
+
+impl PeerId {
+    /// Create a new PeerId from a string.
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Get the underlying string representation.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for PeerId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for PeerId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PeerId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for PeerId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<&String> for PeerId {
+    fn from(s: &String) -> Self {
+        Self(s.clone())
+    }
+}
 
 /// Connection state for a peer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -60,8 +118,8 @@ impl Address {
 /// Information about a remote peer in the sync network.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PeerInfo {
-    /// The peer's public key (formatted as ed25519:base64)
-    pub pubkey: String,
+    /// The peer's unique identifier
+    pub id: PeerId,
     /// Optional human-readable display name for the peer
     pub display_name: Option<String>,
     /// ISO timestamp when this peer was first seen
@@ -96,10 +154,10 @@ pub enum PeerStatus {
 
 impl PeerInfo {
     /// Create a new PeerInfo with current timestamp.
-    pub fn new(pubkey: impl Into<String>, display_name: Option<&str>) -> Self {
+    pub fn new(id: impl Into<PeerId>, display_name: Option<&str>) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         Self {
-            pubkey: pubkey.into(),
+            id: id.into(),
             display_name: display_name.map(|s| s.to_string()),
             first_seen: now.clone(),
             last_seen: now,

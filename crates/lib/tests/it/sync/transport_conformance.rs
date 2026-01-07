@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use eidetica::{Instance, Result, instance::LegacyInstanceOps};
+use eidetica::{Instance, Result, instance::LegacyInstanceOps, sync::PeerId};
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
@@ -98,7 +98,7 @@ async fn setup_sync_hooks(
     let peer2_pubkey_owned = peer2_pubkey.to_string();
     tree1.on_local_write(move |entry, db, _instance| {
         let sync = sync1_clone.clone();
-        let peer = peer2_pubkey_owned.clone();
+        let peer = PeerId::new(peer2_pubkey_owned.clone());
         let entry_id = entry.id();
         let tree_id = db.root_id().clone();
         async move {
@@ -111,7 +111,7 @@ async fn setup_sync_hooks(
     let peer1_pubkey_owned = peer1_pubkey.to_string();
     tree2.on_local_write(move |entry, db, _instance| {
         let sync = sync2_clone.clone();
-        let peer = peer1_pubkey_owned.clone();
+        let peer = PeerId::new(peer1_pubkey_owned.clone());
         let entry_id = entry.id();
         let tree_id = db.root_id().clone();
         async move {

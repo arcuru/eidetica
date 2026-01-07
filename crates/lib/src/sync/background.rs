@@ -20,7 +20,7 @@ use super::{
     error::SyncError,
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
-    peer_types::{Address, PeerInfo},
+    peer_types::{Address, PeerId, PeerInfo},
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
@@ -35,9 +35,9 @@ use crate::{
 /// Commands that can be sent to the background sync engine
 pub enum SyncCommand {
     /// Send entries to a specific peer
-    SendEntries { peer: String, entries: Vec<Entry> },
+    SendEntries { peer: PeerId, entries: Vec<Entry> },
     /// Trigger immediate sync with a peer
-    SyncWithPeer { peer: String },
+    SyncWithPeer { peer: PeerId },
     /// Shutdown the background engine
     Shutdown,
 
@@ -151,7 +151,7 @@ impl std::fmt::Debug for SyncCommand {
 /// Entry in the retry queue for failed sends
 #[derive(Debug, Clone)]
 struct RetryEntry {
-    peer: String,
+    peer: PeerId,
     entries: Vec<Entry>,
     attempts: u32,
     last_attempt: SystemTime,
@@ -459,13 +459,13 @@ impl BackgroundSync {
     /// # Error Handling
     ///
     /// Failed sends are automatically added to the retry queue with exponential backoff.
-    async fn send_to_peer(&self, peer: &str, entries: Vec<Entry>) -> Result<()> {
+    async fn send_to_peer(&self, peer: &PeerId, entries: Vec<Entry>) -> Result<()> {
         // Get peer address from sync tree (extract and drop operation before await)
         let address = {
             let sync_tree = self.get_sync_tree().await?;
             let op = sync_tree.new_transaction().await?;
             let peer_info = PeerManager::new(&op)
-                .get_peer_info(peer)
+                .get_peer_info(&peer)
                 .await?
                 .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
@@ -498,7 +498,7 @@ impl BackgroundSync {
     }
 
     /// Add failed send to retry queue
-    fn add_to_retry_queue(&mut self, peer: String, entries: Vec<Entry>, error: crate::Error) {
+    fn add_to_retry_queue(&mut self, peer: PeerId, entries: Vec<Entry>, error: crate::Error) {
         // Log send failure and add to retry queue
         tracing::warn!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
@@ -656,18 +656,18 @@ impl BackgroundSync {
         // Now sync with peers (operation is dropped, so no Send issues)
         for peer_info in peers {
             if peer_info.status == crate::sync::peer_types::PeerStatus::Active
-                && let Err(e) = self.sync_with_peer(&peer_info.pubkey).await
+                && let Err(e) = self.sync_with_peer(&peer_info.id).await
             {
                 // Log individual peer sync failure but continue with others
-                tracing::error!("Periodic sync failed with {}: {e}", peer_info.pubkey);
+                tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
             }
         }
     }
 
     /// Sync with a specific peer (bidirectional)
-    async fn sync_with_peer(&self, peer_pubkey: &str) -> Result<()> {
+    async fn sync_with_peer(&self, peer_id: &PeerId) -> Result<()> {
         async move {
-            info!(peer = %peer_pubkey, "Starting peer synchronization");
+            info!(peer = %peer_id, "Starting peer synchronization");
 
             // Get peer info and tree list from sync tree (extract and drop operation before await)
             let (address, sync_trees) = {
@@ -676,9 +676,9 @@ impl BackgroundSync {
                 let peer_manager = PeerManager::new(&op);
 
                 let peer_info = peer_manager
-                    .get_peer_info(peer_pubkey)
+                    .get_peer_info(peer_id)
                     .await?
-                    .ok_or_else(|| SyncError::PeerNotFound(peer_pubkey.to_string()))?;
+                    .ok_or_else(|| SyncError::PeerNotFound(peer_id.to_string()))?;
 
                 let address = peer_info
                     .addresses
@@ -687,34 +687,31 @@ impl BackgroundSync {
                     .clone();
 
                 // Find all trees that sync with this peer from sync tree
-                let sync_trees = peer_manager.get_peer_trees(peer_pubkey).await?;
+                let sync_trees = peer_manager.get_peer_trees(peer_id).await?;
 
                 (address, sync_trees)
             }; // Operation is dropped here
 
             if sync_trees.is_empty() {
-                debug!(peer = %peer_pubkey, "No trees configured for sync with peer");
+                debug!(peer = %peer_id, "No trees configured for sync with peer");
                 return Ok(()); // No trees to sync
             }
 
-            info!(peer = %peer_pubkey, tree_count = sync_trees.len(), "Synchronizing trees with peer");
+            info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
             for tree_id_str in sync_trees {
                 // Convert string ID to entry ID
                 let tree_id = ID::from(tree_id_str.as_str());
-                if let Err(e) = self
-                    .sync_tree_with_peer(peer_pubkey, &tree_id, &address)
-                    .await
-                {
+                if let Err(e) = self.sync_tree_with_peer(peer_id, &tree_id, &address).await {
                     // Log tree sync failure but continue with other trees
-                    tracing::error!("Failed to sync tree {tree_id} with peer {peer_pubkey}: {e}");
+                    tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
                 }
             }
 
-            info!(peer = %peer_pubkey, "Completed peer synchronization");
+            info!(peer = %peer_id, "Completed peer synchronization");
             Ok(())
         }
-        .instrument(info_span!("sync_with_peer", peer = %peer_pubkey))
+        .instrument(info_span!("sync_with_peer", peer = %peer_id))
         .await
     }
 
@@ -745,12 +742,12 @@ impl BackgroundSync {
     /// - **Stateless**: No persistent tracking of individual sends needed
     async fn sync_tree_with_peer(
         &self,
-        peer_pubkey: &str,
+        peer_id: &PeerId,
         tree_id: &ID,
         address: &Address,
     ) -> Result<()> {
         async move {
-            trace!(peer = %peer_pubkey, tree = %tree_id, "Starting unified tree synchronization");
+            trace!(peer = %peer_id, tree = %tree_id, "Starting unified tree synchronization");
 
             // Get our tips for this tree (empty if tree doesn't exist)
             let instance = self.instance()?;
@@ -768,7 +765,7 @@ impl BackgroundSync {
                 None
             };
 
-            debug!(peer = %peer_pubkey, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
+            debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 
             // Send unified sync request
             let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -784,11 +781,11 @@ impl BackgroundSync {
 
             match response {
                 SyncResponse::Bootstrap(bootstrap_response) => {
-                    info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
+                    info!(peer = %peer_id, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
                     self.handle_bootstrap_response(bootstrap_response).await?;
                 }
                 SyncResponse::Incremental(incremental_response) => {
-                    debug!(peer = %peer_pubkey, tree = %tree_id,
+                    debug!(peer = %peer_id, tree = %tree_id,
                            their_tips = incremental_response.their_tips.len(),
                            missing_count = incremental_response.missing_entries.len(),
                            "Received incremental sync response");
@@ -805,10 +802,10 @@ impl BackgroundSync {
                 }
             }
 
-            trace!(peer = %peer_pubkey, tree = %tree_id, "Completed unified tree synchronization");
+            trace!(peer = %peer_id, tree = %tree_id, "Completed unified tree synchronization");
             Ok(())
         }
-        .instrument(info_span!("sync_tree", peer = %peer_pubkey, tree = %tree_id))
+        .instrument(info_span!("sync_tree", peer = %peer_id, tree = %tree_id))
         .await
     }
 

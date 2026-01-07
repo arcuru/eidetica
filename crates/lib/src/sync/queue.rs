@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::entry::ID;
+use crate::sync::peer_types::PeerId;
 
 /// Thread-safe queue for entries pending synchronization.
 ///
@@ -19,7 +20,7 @@ use crate::entry::ID;
 #[derive(Debug)]
 pub struct SyncQueue {
     /// Per-peer queues of (entry_id, tree_id) pairs
-    queues: Mutex<HashMap<String, Vec<(ID, ID)>>>,
+    queues: Mutex<HashMap<PeerId, Vec<(ID, ID)>>>,
 }
 
 impl Default for SyncQueue {
@@ -37,10 +38,10 @@ impl SyncQueue {
     }
 
     /// Add an entry to the queue for a specific peer.
-    pub fn enqueue(&self, peer: &str, entry_id: ID, tree_id: ID) {
+    pub fn enqueue(&self, peer: &PeerId, entry_id: ID, tree_id: ID) {
         let mut queues = self.queues.lock().unwrap();
         queues
-            .entry(peer.to_string())
+            .entry(peer.clone())
             .or_default()
             .push((entry_id, tree_id));
     }
@@ -49,7 +50,7 @@ impl SyncQueue {
     ///
     /// Returns a map of peer ID to list of (entry_id, tree_id) pairs.
     /// The queue is emptied after this call.
-    pub fn drain(&self) -> HashMap<String, Vec<(ID, ID)>> {
+    pub fn drain(&self) -> HashMap<PeerId, Vec<(ID, ID)>> {
         let mut queues = self.queues.lock().unwrap();
         std::mem::take(&mut *queues)
     }
@@ -83,13 +84,15 @@ mod tests {
     fn test_enqueue_and_drain() {
         let queue = SyncQueue::new();
 
+        let peer1 = PeerId::new("peer1");
+        let peer2 = PeerId::new("peer2");
         let entry1 = ID::new("entry1");
         let entry2 = ID::new("entry2");
         let tree = ID::new("tree1");
 
-        queue.enqueue("peer1", entry1.clone(), tree.clone());
-        queue.enqueue("peer1", entry2.clone(), tree.clone());
-        queue.enqueue("peer2", entry1.clone(), tree.clone());
+        queue.enqueue(&peer1, entry1.clone(), tree.clone());
+        queue.enqueue(&peer1, entry2.clone(), tree.clone());
+        queue.enqueue(&peer2, entry1.clone(), tree.clone());
 
         assert_eq!(queue.len(), 3);
         assert_eq!(queue.peer_count(), 2);
@@ -98,8 +101,8 @@ mod tests {
         let batches = queue.drain();
 
         assert_eq!(batches.len(), 2);
-        assert_eq!(batches.get("peer1").unwrap().len(), 2);
-        assert_eq!(batches.get("peer2").unwrap().len(), 1);
+        assert_eq!(batches.get(&peer1).unwrap().len(), 2);
+        assert_eq!(batches.get(&peer2).unwrap().len(), 1);
 
         assert!(queue.is_empty());
         assert_eq!(queue.len(), 0);

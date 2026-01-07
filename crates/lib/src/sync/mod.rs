@@ -85,7 +85,7 @@ use bootstrap_request_manager::BootstrapRequestManager;
 pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
 pub use error::SyncError;
 use peer_manager::PeerManager;
-pub use peer_types::{Address, ConnectionState, PeerInfo, PeerStatus};
+pub use peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus};
 use protocol::{SyncRequest, SyncResponse, SyncTreeRequest};
 use queue::SyncQueue;
 use std::time::SystemTime;
@@ -770,8 +770,8 @@ impl Sync {
     /// * `tree_root_id` - The root ID of the tree
     ///
     /// # Returns
-    /// A vector of peer public keys that sync this tree.
-    pub async fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<String>> {
+    /// A vector of peer IDs that sync this tree.
+    pub async fn get_tree_peers(&self, tree_root_id: impl AsRef<str>) -> Result<Vec<PeerId>> {
         let op = self.sync_tree.new_transaction().await?;
         PeerManager::new(&op)
             .get_tree_peers(tree_root_id.as_ref())
@@ -1644,17 +1644,17 @@ impl Sync {
     /// of calling this method directly.
     ///
     /// # Arguments
-    /// * `peer_pubkey` - The public key of the peer to send to
+    /// * `peer_id` - The peer ID to send to
     /// * `entries` - The specific entries to send (no filtering applied)
     ///
     /// # Returns
     /// A Result indicating whether the command was successfully queued for background processing.
-    pub async fn send_entries_to_peer(&self, peer_pubkey: &str, entries: Vec<Entry>) -> Result<()> {
+    pub async fn send_entries_to_peer(&self, peer_id: &PeerId, entries: Vec<Entry>) -> Result<()> {
         self.background_tx
             .get()
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendEntries {
-                peer: peer_pubkey.to_string(),
+                peer: peer_id.clone(),
                 entries,
             })
             .await
@@ -1678,7 +1678,7 @@ impl Sync {
     /// Only returns Err if transport is not enabled.
     pub fn queue_entry_for_sync(
         &self,
-        peer_pubkey: &str,
+        peer_id: &PeerId,
         entry_id: &ID,
         tree_id: &ID,
     ) -> Result<()> {
@@ -1689,7 +1689,7 @@ impl Sync {
 
         // Add to queue - BackgroundSync will process and send
         self.queue
-            .enqueue(peer_pubkey, entry_id.clone(), tree_id.clone());
+            .enqueue(peer_id, entry_id.clone(), tree_id.clone());
 
         Ok(())
     }
@@ -1764,8 +1764,8 @@ impl Sync {
             "Queueing entry for automatic sync"
         );
 
-        for peer_pubkey in peers {
-            self.queue_entry_for_sync(&peer_pubkey, &entry_id, tree_id)?;
+        for peer_id in peers {
+            self.queue_entry_for_sync(&peer_id, &entry_id, tree_id)?;
         }
 
         Ok(())

@@ -2,7 +2,7 @@
 
 use eidetica::{
     auth::crypto::{format_public_key, generate_keypair},
-    sync::{Address, PeerStatus},
+    sync::{Address, PeerId, PeerStatus},
 };
 
 use super::helpers::*;
@@ -36,7 +36,7 @@ async fn test_peer_registration() {
     assert!(peer_info.is_some());
 
     let peer_info = peer_info.unwrap();
-    assert_eq!(peer_info.pubkey, *TEST_PEER_PUBKEY);
+    assert_eq!(peer_info.id.as_str(), &*TEST_PEER_PUBKEY);
     assert_eq!(peer_info.display_name, Some("Test Peer".to_string()));
     assert_eq!(peer_info.status, PeerStatus::Active);
 }
@@ -54,7 +54,7 @@ async fn test_peer_registration_without_display_name() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(peer_info.pubkey, *TEST_PEER_PUBKEY);
+    assert_eq!(peer_info.id.as_str(), &*TEST_PEER_PUBKEY);
     assert_eq!(peer_info.display_name, None);
     assert_eq!(peer_info.status, PeerStatus::Active);
 }
@@ -112,9 +112,9 @@ async fn test_list_peers() {
     let peers = sync.list_peers().await.unwrap();
     assert_eq!(peers.len(), 2);
 
-    let pubkeys: Vec<String> = peers.iter().map(|d| d.pubkey.clone()).collect();
-    assert!(pubkeys.contains(&*TEST_PEER_PUBKEY));
-    assert!(pubkeys.contains(&*TEST_PEER_PUBKEY_2));
+    let pubkeys: Vec<&str> = peers.iter().map(|d| d.id.as_str()).collect();
+    assert!(pubkeys.contains(&TEST_PEER_PUBKEY.as_str()));
+    assert!(pubkeys.contains(&TEST_PEER_PUBKEY_2.as_str()));
 }
 
 #[tokio::test]
@@ -268,13 +268,13 @@ async fn test_get_tree_peers() {
     // Verify peers for first tree
     let peers = sync.get_tree_peers(TEST_TREE_ROOT_ID).await.unwrap();
     assert_eq!(peers.len(), 2);
-    assert!(peers.contains(&*TEST_PEER_PUBKEY));
-    assert!(peers.contains(&*TEST_PEER_PUBKEY_2));
+    assert!(peers.contains(&PeerId::new(&*TEST_PEER_PUBKEY)));
+    assert!(peers.contains(&PeerId::new(&*TEST_PEER_PUBKEY_2)));
 
     // Verify peers for second tree
     let peers = sync.get_tree_peers(TEST_TREE_ROOT_ID_2).await.unwrap();
     assert_eq!(peers.len(), 1);
-    assert!(peers.contains(&*TEST_PEER_PUBKEY));
+    assert!(peers.contains(&PeerId::new(&*TEST_PEER_PUBKEY)));
 }
 
 #[tokio::test]

@@ -46,7 +46,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
     // Verify peer exists immediately
     let peers_after = sync.list_peers().await?;
     assert_eq!(peers_after.len(), 1, "Peer should be registered");
-    assert_eq!(peers_after[0].pubkey, peer_pubkey);
+    assert_eq!(peers_after[0].id.as_str(), peer_pubkey);
     assert_eq!(peers_after[0].display_name, Some("Test Peer".to_string()));
 
     // Verify the peer has the address

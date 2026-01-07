@@ -7,7 +7,7 @@ use eidetica::{
     auth::crypto::{format_public_key, generate_challenge, generate_keypair},
     crdt::Doc,
     sync::{
-        Address,
+        Address, PeerId,
         handler::{SyncHandler, SyncHandlerImpl},
         protocol::{
             HandshakeRequest, PROTOCOL_VERSION, RequestContext, SyncRequest, SyncResponse,
@@ -72,7 +72,7 @@ async fn test_handshake_automatically_registers_peer() {
     assert!(peer_info.is_some());
 
     let peer_info = peer_info.unwrap();
-    assert_eq!(peer_info.pubkey, peer_pubkey);
+    assert_eq!(peer_info.id.as_str(), peer_pubkey);
     assert_eq!(peer_info.display_name, Some("Test Peer".to_string()));
 
     // Verify addresses were added (both advertised and remote)
@@ -130,7 +130,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     // Peer should still exist and be registered only once
     let peers = sync.list_peers().await.unwrap();
     assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0].pubkey, peer_pubkey);
+    assert_eq!(peers[0].id.as_str(), peer_pubkey);
 }
 
 /// Test that handshake works without advertised addresses
@@ -168,7 +168,7 @@ async fn test_handshake_without_listen_addresses() {
 
     // Peer should still be registered with just the remote address
     let peer_info = sync.get_peer_info(&peer_pubkey).await.unwrap().unwrap();
-    assert_eq!(peer_info.pubkey, peer_pubkey);
+    assert_eq!(peer_info.id.as_str(), peer_pubkey);
 
     let addresses = sync.get_peer_addresses(&peer_pubkey, None).await.unwrap();
     assert_eq!(addresses.len(), 1);
@@ -248,7 +248,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Verify peer can be found in tree's peer list
     let tree_peers = sync.get_tree_peers(&tree_id).await.unwrap();
-    assert!(tree_peers.contains(&peer_pubkey));
+    assert!(tree_peers.contains(&PeerId::new(&peer_pubkey)));
 
     // Verify tree can be found in peer's tree list
     let peer_trees = sync.get_peer_trees(&peer_pubkey).await.unwrap();
