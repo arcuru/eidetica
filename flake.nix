@@ -431,12 +431,7 @@
           shellHook = ''
             echo "Eidetica Development Shell"
             echo ""
-            echo "Available commands:"
-            echo "  task --list       - Show all task commands"
-            echo "  cargo nextest run - Run tests with nextest"
-            echo "  nix flake check   - Run all CI checks"
-            echo ""
-            task --list
+            echo "Run 'just' to see available commands"
             echo ""
           '';
 
@@ -451,6 +446,7 @@
             # CI/CD tools
             act # Run GitHub Actions locally
             go-task # Task runner
+            just # Task runner
             nix-fast-build # Fast parallel Nix builds
 
             # Nix development tools
@@ -475,6 +471,9 @@
             mdbook # Book generation
             mdbook-mermaid # Mermaid diagrams
             lychee # Link validation
+
+            # Memory safety analysis
+            cargo-careful # Run with extra runtime checks
           ];
 
           # Environment variables
