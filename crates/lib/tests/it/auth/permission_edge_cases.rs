@@ -13,6 +13,7 @@ use eidetica::{
 
 /// Test permission clamping with invalid bounds (min > max)
 #[test]
+#[cfg_attr(miri, ignore)] // triggers tracing::warn! which uses SystemTime::now()
 fn test_permission_clamping_invalid_bounds() {
     let bounds = PermissionBounds {
         min: Some(Permission::Admin(5)), // Higher privilege
@@ -149,6 +150,7 @@ fn test_permission_bounds_edge_cases() {
 
 /// Test multi-level clamping simulation
 #[test]
+#[cfg_attr(miri, ignore)] // triggers tracing::warn! which uses SystemTime::now()
 fn test_multi_level_clamping_simulation() {
     // Simulate multi-level delegation where each level applies clamping
     let original_permission = Permission::Admin(0); // Highest privilege
@@ -282,8 +284,9 @@ fn test_permission_bounds_validation() {
     assert!(!validate_permission_bounds(&invalid_bounds2));
 }
 
-/// Test permission bounds with invalid constraints  
+/// Test permission bounds with invalid constraints
 #[test]
+#[cfg_attr(miri, ignore)] // triggers tracing::warn! which uses SystemTime::now()
 fn test_permission_bounds_invalid_constraints() {
     // Test valid bounds
     let bounds1 = PermissionBounds {

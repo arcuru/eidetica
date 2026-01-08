@@ -53,7 +53,7 @@ test *args:
 
     case "$first" in
         sqlite)
-            TEST_BACKEND=sqlite cargo nextest run --workspace --features sqlite --no-fail-fast --status-level fail $rest
+            TEST_BACKEND=sqlite cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
             ;;
         postgres)
             CONTAINER_NAME="eidetica-test-postgres"
@@ -82,7 +82,7 @@ test *args:
             echo "Running tests against PostgreSQL..."
             TEST_BACKEND=postgres \
             TEST_POSTGRES_URL="postgres://postgres@localhost:$DB_PORT/$DB_NAME" \
-            cargo nextest run --workspace --features postgres --no-fail-fast --status-level fail $rest
+            cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
             ;;
         all-backends)
             echo "=== Testing InMemory backend ==="
@@ -105,7 +105,7 @@ test *args:
             ;;
         minimal)
             cargo build -p eidetica --no-default-features
-            cargo test -p eidetica --no-default-features
+            cargo test -p eidetica --no-default-features --features testing
             ;;
         todo)
             cd examples/todo && ./test.sh

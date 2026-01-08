@@ -6,7 +6,7 @@ use handle_trait::Handle;
 
 use super::{
     User,
-    crypto::{current_timestamp, derive_encryption_key, encrypt_private_key, hash_password},
+    crypto::{derive_encryption_key, encrypt_private_key, hash_password},
     errors::UserError,
     key_manager::UserKeyManager,
     types::{KeyEncryption, UserInfo, UserKey, UserStatus},
@@ -264,7 +264,7 @@ pub async fn create_user(
                 private_key_bytes: encrypted_key,
                 encryption: KeyEncryption::Encrypted { nonce },
                 display_name: Some("Default Key".to_string()),
-                created_at: current_timestamp()?,
+                created_at: instance.clock().now_secs(),
                 last_used: None,
                 is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -277,7 +277,7 @@ pub async fn create_user(
                 private_key_bytes: user_private_key.to_bytes().to_vec(),
                 encryption: KeyEncryption::Unencrypted,
                 display_name: Some("Default Key".to_string()),
-                created_at: current_timestamp()?,
+                created_at: instance.clock().now_secs(),
                 last_used: None,
                 is_default: true, // First key is always default
                 database_sigkeys: std::collections::HashMap::new(),
@@ -296,7 +296,7 @@ pub async fn create_user(
         user_database_id,
         password_hash,
         password_salt,
-        created_at: current_timestamp()?,
+        created_at: instance.clock().now_secs(),
         status: UserStatus::Active,
     };
 
@@ -449,7 +449,7 @@ pub async fn login_user(
     let tx = users_db.new_transaction().await?;
     let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
     last_login_table
-        .set(&user_uuid, current_timestamp()?)
+        .set(&user_uuid, instance.clock().now_secs())
         .await?;
     tx.commit().await?;
 
@@ -496,7 +496,11 @@ mod tests {
     use std::sync::Arc;
 
     /// Test helper: Create Instance with device key initialized
+    ///
+    /// Uses FixedClock for controllable timestamps.
     async fn setup_instance() -> (Instance, ed25519_dalek::SigningKey, String) {
+        use crate::clock::FixedClock;
+
         let backend = Arc::new(InMemory::new());
         let (device_key, device_pubkey) = generate_keypair();
         let pubkey_str = format_public_key(&device_pubkey);
@@ -505,8 +509,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Create Instance with initialized device key
-        let instance = Instance::create_internal(backend).await.unwrap();
+        // Create Instance with FixedClock for controllable timestamps
+        let instance = Instance::create_internal(backend, Arc::new(FixedClock::default()))
+            .await
+            .unwrap();
 
         (instance, device_key, pubkey_str)
     }
@@ -600,6 +606,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
@@ -657,6 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_duplicate_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
@@ -674,6 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_user() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
@@ -732,6 +741,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_wrong_password() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
@@ -749,6 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_password_mismatch() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
@@ -787,6 +798,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_list_users() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)

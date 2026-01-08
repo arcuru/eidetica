@@ -3,15 +3,33 @@
 //! These tests verify that height calculation strategies work correctly
 //! when entries are created through the Transaction layer.
 
+use std::sync::Arc;
+
 use eidetica::{
-    HeightStrategy, Instance, Store, backend::database::InMemory, instance::LegacyInstanceOps,
-    store::DocStore,
+    Clock, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory,
+    instance::LegacyInstanceOps, store::DocStore,
 };
 
 /// Helper to create a test instance and database
+///
+/// Uses FixedClock for more deterministic testing. For tests needing explicit
+/// clock control, use `create_test_database_with_clock()` instead.
 async fn create_test_database() -> (Instance, eidetica::Database) {
+    let clock = Arc::new(FixedClock::default());
     let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend)
+    let instance = Instance::open_with_clock(backend, clock)
+        .await
+        .expect("Failed to create test instance");
+
+    let database = instance.new_database_default("_device_key").await.unwrap();
+
+    (instance, database)
+}
+
+/// Helper to create a test instance and database with a custom clock
+async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, eidetica::Database) {
+    let backend = Box::new(InMemory::new());
+    let instance = Instance::open_with_clock(backend, clock)
         .await
         .expect("Failed to create test instance");
 
@@ -57,7 +75,9 @@ async fn test_height_strategy_incremental_produces_sequential_heights() {
 
 #[tokio::test]
 async fn test_height_strategy_timestamp_produces_timestamp_heights() {
-    let (_instance, database) = create_test_database().await;
+    // Use a fixed clock with a known timestamp
+    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000)); // ~Nov 2023
+    let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
     // Set timestamp strategy
     {
@@ -70,32 +90,26 @@ async fn test_height_strategy_timestamp_produces_timestamp_heights() {
         tx.commit().await.unwrap();
     }
 
-    // Create an entry and verify height is a timestamp
-    let before_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // Set clock to known value (undoes any auto-advance from setup)
+    clock.set(1_700_000_000_100);
 
-    let tx = database.new_transaction().await.unwrap();
-    let store = tx.get_store::<DocStore>("test_data").await.unwrap();
-    store.set("value", "test").await.unwrap();
-    let entry_id = tx.commit().await.unwrap();
-
-    let after_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // Hold and create entry - clock stays at 1_700_000_000_100
+    let entry_id = {
+        let _hold = clock.hold();
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+        store.set("value", "test").await.unwrap();
+        tx.commit().await.unwrap()
+    };
 
     // Fetch the entry to check its height
     let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
 
-    // Height should be a timestamp within the expected range
-    assert!(
-        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
-        "Entry height {} should be a timestamp between {} and {}",
+    // Height should be the timestamp from our fixed clock
+    assert_eq!(
         entry.height(),
-        before_ms,
-        after_ms
+        1_700_000_000_100,
+        "Entry height should match the fixed clock timestamp"
     );
 }
 
@@ -137,7 +151,9 @@ async fn test_height_strategy_timestamp_ensures_monotonic() {
 
 #[tokio::test]
 async fn test_height_strategy_subtrees_inherit_database_strategy() {
-    let (_instance, database) = create_test_database().await;
+    // Use a fixed clock with a known timestamp
+    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000));
+    let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
     // Set timestamp strategy
     {
@@ -150,33 +166,26 @@ async fn test_height_strategy_subtrees_inherit_database_strategy() {
         tx.commit().await.unwrap();
     }
 
-    // Create an entry with subtree data
-    let before_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // Set clock to known value (undoes any auto-advance from setup)
+    clock.set(1_700_000_000_100);
 
-    let tx = database.new_transaction().await.unwrap();
-    let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
-    store.set("value", "test").await.unwrap();
-    let entry_id = tx.commit().await.unwrap();
-
-    let after_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // Hold and create entry - clock stays at 1_700_000_000_100
+    let entry_id = {
+        let _hold = clock.hold();
+        let tx = database.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("my_subtree").await.unwrap();
+        store.set("value", "test").await.unwrap();
+        tx.commit().await.unwrap()
+    };
 
     // Fetch the entry to check its height
     let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
 
-    // Subtree height should also be a timestamp
+    // Subtree height should also be a timestamp from our fixed clock
     let subtree_height = entry.subtree_height("my_subtree").unwrap();
-    assert!(
-        subtree_height >= before_ms && subtree_height <= after_ms + 1000,
-        "Subtree height {} should be a timestamp between {} and {}",
-        subtree_height,
-        before_ms,
-        after_ms
+    assert_eq!(
+        subtree_height, 1_700_000_000_100,
+        "Subtree height should match the fixed clock timestamp"
     );
 }
 
@@ -206,44 +215,41 @@ async fn test_height_strategy_persisted_in_settings() {
 
 #[tokio::test]
 async fn test_height_strategy_works_in_same_transaction() {
-    let (_instance, database) = create_test_database().await;
+    // Use a fixed clock with a known timestamp
+    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000));
+    let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
-    // Set timestamp strategy AND create entry in the SAME transaction
-    let before_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    // Set clock to known value (undoes any auto-advance from setup)
+    clock.set(1_700_000_000_100);
 
-    let tx = database.new_transaction().await.unwrap();
+    // Hold and create entry with same-transaction strategy change
+    let entry_id = {
+        let _hold = clock.hold();
 
-    // Set strategy
-    let settings = tx.get_settings().unwrap();
-    settings
-        .set_height_strategy(HeightStrategy::Timestamp)
-        .await
-        .unwrap();
+        let tx = database.new_transaction().await.unwrap();
 
-    // Create entry in same transaction
-    let store = tx.get_store::<DocStore>("test_data").await.unwrap();
-    store.set("value", "test").await.unwrap();
+        // Set strategy
+        let settings = tx.get_settings().unwrap();
+        settings
+            .set_height_strategy(HeightStrategy::Timestamp)
+            .await
+            .unwrap();
 
-    let entry_id = tx.commit().await.unwrap();
+        // Create entry in same transaction
+        let store = tx.get_store::<DocStore>("test_data").await.unwrap();
+        store.set("value", "test").await.unwrap();
 
-    let after_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+        tx.commit().await.unwrap()
+    };
 
     // Fetch the entry to check its height
     let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
 
-    // Height should be a timestamp (not sequential like 1, 2, 3)
-    assert!(
-        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
-        "Entry height {} should be a timestamp between {} and {} (same-transaction strategy change)",
+    // Height should be the timestamp from our fixed clock
+    assert_eq!(
         entry.height(),
-        before_ms,
-        after_ms
+        1_700_000_000_100,
+        "Entry height should match fixed clock timestamp (same-transaction strategy change)"
     );
 }
 
@@ -304,6 +310,7 @@ async fn test_per_subtree_strategy_via_index() {
 
 #[tokio::test]
 async fn test_unregistered_subtree_inherits_tree_height() {
+    // Uses FixedClock which defaults to 1704067200000 (2024-01-01 00:00:00 UTC)
     let (_instance, database) = create_test_database().await;
 
     // Set database to use timestamp strategy
@@ -318,28 +325,19 @@ async fn test_unregistered_subtree_inherits_tree_height() {
     }
 
     // Create an entry with a store (which auto-registers in _index)
-    let before_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
     let tx = database.new_transaction().await.unwrap();
     let store = tx.get_store::<DocStore>("new_store").await.unwrap();
     store.set("key", "value").await.unwrap();
     let entry_id = tx.commit().await.unwrap();
 
-    let after_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
     // Fetch the entry
     let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
 
-    // Tree height should be a timestamp
+    // Tree height should be a timestamp-like value (FixedClock produces values around 1704067200000)
     assert!(
-        entry.height() >= before_ms && entry.height() <= after_ms + 1000,
-        "Tree height should be a timestamp"
+        entry.height() >= 1_000_000_000_000,
+        "Tree height {} should be a timestamp from FixedClock",
+        entry.height()
     );
 
     // Subtree should inherit tree height (returned via subtree_height())
@@ -353,6 +351,7 @@ async fn test_unregistered_subtree_inherits_tree_height() {
 
 #[tokio::test]
 async fn test_mixed_subtree_strategies() {
+    // Uses FixedClock which defaults to 1704067200000 (2024-01-01 00:00:00 UTC)
     let (_instance, database) = create_test_database().await;
 
     // Set database to use timestamp strategy
@@ -398,11 +397,6 @@ async fn test_mixed_subtree_strategies() {
     }
 
     // Create an entry that writes to both stores
-    let before_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
     let tx = database.new_transaction().await.unwrap();
     let inherit_store = tx.get_store::<DocStore>("inherit_store").await.unwrap();
     inherit_store.set("key", "new_value").await.unwrap();
@@ -412,19 +406,15 @@ async fn test_mixed_subtree_strategies() {
 
     let entry_id = tx.commit().await.unwrap();
 
-    let after_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-
     // Fetch the entry
     let entry = database.backend().unwrap().get(&entry_id).await.unwrap();
 
-    // Tree height should be a timestamp
+    // Tree height should be a timestamp-like value (FixedClock produces values around 1704067200000)
     let tree_height = entry.height();
     assert!(
-        tree_height >= before_ms && tree_height <= after_ms + 1000,
-        "Tree height should be a timestamp"
+        tree_height >= 1_000_000_000_000,
+        "Tree height {} should be a timestamp from FixedClock",
+        tree_height
     );
 
     // inherit_store should have same height as tree (inherited)

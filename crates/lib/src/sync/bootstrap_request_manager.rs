@@ -191,22 +191,19 @@ impl<'a> BootstrapRequestManager<'a> {
     }
 }
 
-/// Get current timestamp in ISO 8601 format
-pub(super) fn current_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        Database, Instance, auth::types::Permission, backend::database::InMemory,
-        instance::LegacyInstanceOps, sync::DEVICE_KEY_NAME,
+        Clock, Database, Instance, auth::types::Permission, backend::database::InMemory,
+        clock::FixedClock, instance::LegacyInstanceOps, sync::DEVICE_KEY_NAME,
     };
+    use std::sync::Arc;
 
-    async fn create_test_sync_tree() -> (Instance, Database) {
+    async fn create_test_sync_tree() -> (Instance, Database, Arc<FixedClock>) {
+        let clock = Arc::new(FixedClock::default());
         let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend)
+        let instance = Instance::open_with_clock(backend, clock.clone())
             .await
             .expect("Failed to create test instance");
 
@@ -220,17 +217,17 @@ mod tests {
             .await
             .unwrap();
 
-        (instance, database)
+        (instance, database, clock)
     }
 
-    fn create_test_request() -> BootstrapRequest {
+    fn create_test_request(clock: &FixedClock) -> BootstrapRequest {
         BootstrapRequest {
             // Use a valid, prefixed ID so parsing validates correctly
             tree_id: ID::from_bytes("test_tree_id"),
             requesting_pubkey: "ed25519:test_public_key".to_string(),
             requesting_key_name: "laptop_key".to_string(),
             requested_permission: Permission::Write(5),
-            timestamp: current_timestamp(),
+            timestamp: clock.now_rfc3339(),
             status: RequestStatus::Pending,
             peer_address: Address {
                 transport_type: "http".to_string(),
@@ -241,11 +238,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_and_get_request() {
-        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let (_instance, sync_tree, clock) = create_test_sync_tree().await;
         let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
-        let request = create_test_request();
+        let request = create_test_request(&clock);
 
         // Store the request and get the generated UUID
         let request_id = manager.store_request(request.clone()).await.unwrap();
@@ -262,17 +259,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_requests() {
-        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let (_instance, sync_tree, clock) = create_test_sync_tree().await;
         let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
         // Store multiple requests
-        let request1 = create_test_request();
+        let request1 = create_test_request(&clock);
 
-        let mut request2 = create_test_request();
+        let mut request2 = create_test_request(&clock);
         request2.status = RequestStatus::Approved {
             approved_by: "admin".to_string(),
-            approval_time: current_timestamp(),
+            approval_time: clock.now_rfc3339(),
         };
 
         manager.store_request(request1).await.unwrap();
@@ -299,11 +296,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_status() {
-        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let (_instance, sync_tree, clock) = create_test_sync_tree().await;
         let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 
-        let request = create_test_request();
+        let request = create_test_request(&clock);
 
         // Store the request and get the generated UUID
         let request_id = manager.store_request(request).await.unwrap();
@@ -311,7 +308,7 @@ mod tests {
         // Update status to approved
         let new_status = RequestStatus::Approved {
             approved_by: "admin".to_string(),
-            approval_time: current_timestamp(),
+            approval_time: clock.now_rfc3339(),
         };
         manager
             .update_status(&request_id, new_status.clone())
@@ -325,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nonexistent_request() {
-        let (_instance, sync_tree) = create_test_sync_tree().await;
+        let (_instance, sync_tree, _clock) = create_test_sync_tree().await;
         let op = sync_tree.new_transaction().await.unwrap();
         let manager = BootstrapRequestManager::new(&op);
 

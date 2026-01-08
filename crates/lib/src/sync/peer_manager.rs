@@ -43,7 +43,8 @@ impl<'a> PeerManager<'a> {
         display_name: Option<&str>,
     ) -> Result<()> {
         let pubkey = pubkey.into();
-        let peer_info = PeerInfo::new(&pubkey, display_name);
+        let now = self.op.now_rfc3339()?;
+        let peer_info = PeerInfo::new_at(&pubkey, display_name, now);
         let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         debug!(peer = %pubkey, display_name = ?display_name, "Registering new peer");
@@ -237,7 +238,7 @@ impl<'a> PeerManager<'a> {
             .await?;
 
         // Update last_seen timestamp
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = self.op.now_rfc3339()?;
         peers
             .set_path(path!(pubkey.as_ref(), "last_seen"), now)
             .await?;
@@ -643,7 +644,7 @@ impl<'a> PeerManager<'a> {
                 .await?;
 
             // Update last_seen timestamp
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = self.op.now_rfc3339()?;
             peers
                 .set_path(path!(peer_pubkey.as_ref(), "last_seen"), now)
                 .await?;
@@ -695,7 +696,7 @@ impl<'a> PeerManager<'a> {
                 .await?;
 
             // Update last_seen timestamp
-            let now = chrono::Utc::now().to_rfc3339();
+            let now = self.op.now_rfc3339()?;
             peers
                 .set_path(path!(peer_pubkey.as_ref(), "last_seen"), now)
                 .await?;

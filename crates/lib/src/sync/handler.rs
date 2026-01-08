@@ -9,9 +9,7 @@ use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::{
     DEVICE_KEY_NAME,
-    bootstrap_request_manager::{
-        BootstrapRequest, BootstrapRequestManager, RequestStatus, current_timestamp,
-    },
+    bootstrap_request_manager::{BootstrapRequest, BootstrapRequestManager, RequestStatus},
     peer_manager::PeerManager,
     peer_types::Address,
     protocol::{
@@ -128,7 +126,7 @@ impl SyncHandlerImpl {
             requesting_pubkey: requesting_key.to_string(),
             requesting_key_name: requesting_key_name.to_string(),
             requested_permission: requested_permission.clone(),
-            timestamp: current_timestamp(),
+            timestamp: self.instance()?.clock().now_rfc3339(),
             status: RequestStatus::Pending,
             // TODO: We need to get the actual peer address from the transport layer
             // For now, use a placeholder that will need to be fixed when implementing notifications

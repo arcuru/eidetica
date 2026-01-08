@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod clock;
 pub mod constants;
 pub mod crdt;
 pub mod database;
@@ -30,6 +31,9 @@ pub mod sync;
 pub mod transaction;
 pub mod user;
 
+pub use clock::{Clock, SystemClock};
+#[cfg(any(test, feature = "testing"))]
+pub use clock::{ClockHold, FixedClock};
 pub use database::Database;
 pub use entry::Entry;
 pub use height::HeightStrategy;

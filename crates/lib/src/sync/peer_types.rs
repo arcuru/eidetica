@@ -153,14 +153,15 @@ pub enum PeerStatus {
 }
 
 impl PeerInfo {
-    /// Create a new PeerInfo with current timestamp.
-    pub fn new(id: impl Into<PeerId>, display_name: Option<&str>) -> Self {
-        let now = chrono::Utc::now().to_rfc3339();
+    /// Create a new PeerInfo with the given timestamp.
+    ///
+    /// Use `instance.now_rfc3339()` or `transaction.now_rfc3339()` to get the timestamp.
+    pub fn new_at(id: impl Into<PeerId>, display_name: Option<&str>, timestamp: String) -> Self {
         Self {
             id: id.into(),
             display_name: display_name.map(|s| s.to_string()),
-            first_seen: now.clone(),
-            last_seen: now,
+            first_seen: timestamp.clone(),
+            last_seen: timestamp,
             status: PeerStatus::Active,
             addresses: Vec::new(),
             connection_state: ConnectionState::Disconnected,
@@ -170,9 +171,11 @@ impl PeerInfo {
         }
     }
 
-    /// Update the last_seen timestamp to now.
-    pub fn touch(&mut self) {
-        self.last_seen = chrono::Utc::now().to_rfc3339();
+    /// Update the last_seen timestamp.
+    ///
+    /// Use `instance.now_rfc3339()` or `transaction.now_rfc3339()` to get the timestamp.
+    pub fn touch_at(&mut self, timestamp: String) {
+        self.last_seen = timestamp;
     }
 
     /// Add an address if not already present

@@ -15,8 +15,8 @@ use ed25519_dalek::VerifyingKey;
 use handle_trait::Handle;
 
 use crate::{
-    Database, Entry, Result, auth::crypto::format_public_key, backend::BackendImpl, entry::ID,
-    sync::Sync, user::User,
+    Clock, Database, Entry, Result, SystemClock, auth::crypto::format_public_key,
+    backend::BackendImpl, entry::ID, sync::Sync, user::User,
 };
 
 pub mod backend;
@@ -74,6 +74,8 @@ type CallbackKey = (WriteSource, ID);
 pub(crate) struct InstanceInternal {
     /// The database storage backend
     backend: Backend,
+    /// Time provider for timestamps
+    clock: Arc<dyn Clock>,
     /// Synchronization module for this database instance
     /// TODO: Overengineered, Sync can be created by default but disabled
     sync: std::sync::OnceLock<Arc<Sync>>,
@@ -91,6 +93,7 @@ impl std::fmt::Debug for InstanceInternal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InstanceInternal")
             .field("backend", &"<BackendDB>")
+            .field("clock", &self.clock)
             .field("sync", &self.sync)
             .field("users_db_id", &self.users_db_id)
             .field("databases_db_id", &self.databases_db_id)
@@ -200,6 +203,33 @@ impl Instance {
     /// # }
     /// ```
     pub async fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
+        Self::open_impl(backend, Arc::new(SystemClock)).await
+    }
+
+    /// Load an existing Instance or create a new one with a custom clock.
+    ///
+    /// This is the same as [`Instance::open`] but allows injecting a custom clock
+    /// for controllable timestamps in tests. The clock is used for timestamps in
+    /// height calculations and peer tracking.
+    ///
+    /// Only available with the `testing` feature or in test builds.
+    ///
+    /// # Arguments
+    /// * `backend` - The storage backend to use
+    /// * `clock` - The time provider to use (typically [`FixedClock`](crate::FixedClock))
+    ///
+    /// # Returns
+    /// A Result containing the configured Instance
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn open_with_clock(
+        backend: Box<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        Self::open_impl(backend, clock).await
+    }
+
+    /// Internal implementation of open that works with any clock.
+    async fn open_impl(backend: Box<dyn BackendImpl>, clock: Arc<dyn Clock>) -> Result<Self> {
         use crate::constants::{DATABASES, USERS};
 
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
@@ -209,7 +239,7 @@ impl Instance {
             Some(key) => key,
             None => {
                 // New backend: initialize like create()
-                return Self::create_internal(backend).await;
+                return Self::create_internal(backend, clock).await;
             }
         };
 
@@ -235,6 +265,7 @@ impl Instance {
             let temp_instance = Self {
                 inner: Arc::new(InstanceInternal {
                     backend: Backend::new(Arc::clone(&backend)),
+                    clock: Arc::clone(&clock),
                     sync: std::sync::OnceLock::new(),
                     users_db_id: ID::from(""), // Placeholder - not accessed during name lookup
                     databases_db_id: ID::from(""), // Placeholder - not accessed during name lookup
@@ -285,6 +316,7 @@ impl Instance {
 
         let inner = Arc::new(InstanceInternal {
             backend: Backend::new(backend),
+            clock,
             sync: std::sync::OnceLock::new(),
             users_db_id: users_db_root,
             databases_db_id: databases_db_root,
@@ -347,11 +379,14 @@ impl Instance {
         }
 
         // Create new instance
-        Self::create_internal(backend).await
+        Self::create_internal(backend, Arc::new(SystemClock)).await
     }
 
     /// Internal implementation of new that works with Arc<dyn BackendImpl>
-    pub(crate) async fn create_internal(backend: Arc<dyn BackendImpl>) -> Result<Self> {
+    pub(crate) async fn create_internal(
+        backend: Arc<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
         use crate::{
             auth::crypto::{format_public_key, generate_keypair},
             user::system_databases::{create_databases_tracking, create_users_database},
@@ -377,6 +412,7 @@ impl Instance {
         let temp_instance = Self {
             inner: Arc::new(InstanceInternal {
                 backend: Backend::new(Arc::clone(&backend)),
+                clock: Arc::clone(&clock),
                 sync: std::sync::OnceLock::new(),
                 users_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
                 databases_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
@@ -392,6 +428,7 @@ impl Instance {
         // 3. Store root IDs and return instance
         let inner = Arc::new(InstanceInternal {
             backend: Backend::new(backend),
+            clock,
             sync: std::sync::OnceLock::new(),
             users_db_id: users_db.root_id().clone(),
             databases_db_id: databases_db.root_id().clone(),
@@ -405,6 +442,13 @@ impl Instance {
     /// Get a reference to the backend
     pub fn backend(&self) -> &Backend {
         &self.inner.backend
+    }
+
+    /// Get a reference to the clock.
+    ///
+    /// The clock is used for timestamps in height calculations and peer tracking.
+    pub(crate) fn clock(&self) -> &dyn Clock {
+        &*self.inner.clock
     }
 
     // === Backend pass-through methods (pub(crate) for internal use) ===
@@ -910,6 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
     async fn test_create_user() -> Result<(), Error> {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).await?;
@@ -930,6 +975,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
     async fn test_login_user() -> Result<(), Error> {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).await?;
@@ -1076,9 +1122,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_load_new_backend() -> Result<(), Error> {
+        use crate::clock::FixedClock;
+
         // Test that Instance::load() creates new system state for empty backend
         let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend)).await?;
+        let instance =
+            Instance::open_with_clock(Box::new(backend), Arc::new(FixedClock::default())).await?;
 
         // Verify device key was created
         assert!(instance.device_id().await.is_ok());
@@ -1092,14 +1141,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_load_existing_backend() -> Result<(), Error> {
+        use crate::clock::FixedClock;
+
         // Use a temporary file path for testing
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_instance_load.json");
 
         // Create an instance and user, then save the backend
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let instance1 =
+            Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
         instance1.create_user("bob", None).await?;
         let mut user1 = instance1.login_user("bob", None).await?;
 
@@ -1120,7 +1173,8 @@ mod tests {
 
         // Load a new backend from the saved file
         let backend2 = load_in_memory_backend(&path).await?;
-        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let instance2 =
+            Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
 
         // Verify the user still exists
         let users = instance2.list_users().await?;
@@ -1140,6 +1194,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
         // Test that device_id remains the same across reloads
         let temp_dir = std::env::temp_dir();
@@ -1173,6 +1228,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
     async fn test_instance_load_with_password_protected_users() -> Result<(), Error> {
         // Test that password-protected users work correctly after reload
         let temp_dir = std::env::temp_dir();
@@ -1226,6 +1282,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
     async fn test_instance_load_multiple_users() -> Result<(), Error> {
         // Test that multiple users persist correctly
         let temp_dir = std::env::temp_dir();
@@ -1276,14 +1333,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_load_user_databases_persist() -> Result<(), Error> {
+        use crate::clock::FixedClock;
+
         // Test that user-created databases persist across reloads
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_user_dbs.json");
 
         // Create instance, user, and multiple databases
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let instance1 =
+            Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
         instance1.create_user("eve", None).await?;
         let mut user1 = instance1.login_user("eve", None).await?;
 
@@ -1313,7 +1374,8 @@ mod tests {
 
         // Reload and verify databases still exist
         let backend2 = load_in_memory_backend(&path).await?;
-        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let instance2 =
+            Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
         let _user2 = instance2.login_user("eve", None).await?;
 
         // Load databases by root_id and verify their settings
@@ -1336,14 +1398,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_load_idempotency() -> Result<(), Error> {
+        use crate::clock::FixedClock;
+
         // Test that loading the same backend multiple times gives consistent results
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_idempotency.json");
 
         // Create and save initial state
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let instance1 =
+            Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
         instance1.create_user("frank", None).await?;
         let device_id1 = instance1.device_id_string().await?;
 
@@ -1353,7 +1419,9 @@ mod tests {
         // Load the same backend multiple times and verify consistency
         for i in 0..3 {
             let backend = load_in_memory_backend(&path).await?;
-            let instance = Instance::open(Box::new(backend)).await?;
+            let instance =
+                Instance::open_with_clock(Box::new(backend), Arc::new(FixedClock::default()))
+                    .await?;
 
             // Device ID should be the same every time
             let device_id = instance.device_id_string().await?;
@@ -1384,14 +1452,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
+        use crate::clock::FixedClock;
+
         // Test the difference between loading new and existing backends
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_new_vs_existing.json");
 
         // Create first instance (new backend)
         let backend1 = InMemory::new();
-        let instance1 = Instance::open(Box::new(backend1)).await?;
+        let instance1 =
+            Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
         let device_id1 = instance1.device_id_string().await?;
         instance1.create_user("grace", None).await?;
 
@@ -1400,7 +1472,8 @@ mod tests {
 
         // Load existing backend
         let backend2 = load_in_memory_backend(&path).await?;
-        let instance2 = Instance::open(Box::new(backend2)).await?;
+        let instance2 =
+            Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
         let device_id2 = instance2.device_id_string().await?;
 
         // Device ID should match (existing backend)
@@ -1414,7 +1487,8 @@ mod tests {
 
         // Create completely new instance (different backend)
         let backend3 = InMemory::new();
-        let instance3 = Instance::open(Box::new(backend3)).await?;
+        let instance3 =
+            Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
         let device_id3 = instance3.device_id_string().await?;
 
         // Device ID should be different (new backend)
@@ -1433,14 +1507,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
     async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
         // Test that Instance::create() fails on already-initialized backend
+        use crate::clock::FixedClock;
+
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("eidetica_test_create_strict.json");
 
         // Create first instance
-        let backend1 = InMemory::new();
-        let instance1 = Instance::create(Box::new(backend1)).await?;
+        let backend1 = Arc::new(InMemory::new());
+        let instance1 =
+            Instance::create_internal(backend1, Arc::new(FixedClock::default())).await?;
         instance1.create_user("alice", None).await?;
 
         // Save backend
@@ -1448,6 +1526,7 @@ mod tests {
         drop(instance1);
 
         // Try to create() on the existing backend - should fail
+        // (fails immediately before clock is used, so SystemClock is fine)
         let backend2 = load_in_memory_backend(&path).await?;
         let result = Instance::create(Box::new(backend2)).await;
         assert!(result.is_err(), "create() should fail on existing backend");
@@ -1466,7 +1545,8 @@ mod tests {
 
         // Verify open() still works
         let backend3 = load_in_memory_backend(&path).await?;
-        let instance3 = Instance::open(Box::new(backend3)).await?;
+        let instance3 =
+            Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
         let users = instance3.list_users().await?;
         assert_eq!(users.len(), 1);
         assert_eq!(users[0], "alice");
@@ -1480,6 +1560,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses SystemTime for timestamps in create_user
     async fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
         // Test that Instance::create() succeeds on fresh backend
         let backend = InMemory::new();

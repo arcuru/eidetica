@@ -21,6 +21,7 @@ async fn load_backend(path: &Path) -> Result<InMemory> {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_in_memory_backend_save_and_load() {
     // Create a temporary file path
     let temp_dir = env!("CARGO_MANIFEST_DIR");
@@ -56,6 +57,7 @@ async fn test_in_memory_backend_save_and_load() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_non_existent_file() {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data/non_existent_file.json");
@@ -70,6 +72,7 @@ async fn test_load_non_existent_file() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_invalid_file() {
     // Ensure target directory exists
     let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
@@ -93,6 +96,7 @@ async fn test_load_invalid_file() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_save_load_with_various_entries() {
     // Create a temporary file path
     let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
@@ -192,6 +196,7 @@ async fn test_save_load_with_various_entries() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_wrong_version_fails() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join("wrong_version.json");
@@ -214,6 +219,7 @@ async fn test_load_wrong_version_fails() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_missing_version_defaults_to_v0() {
     let temp_dir = TempDir::new().unwrap();
     let path = temp_dir.path().join("missing_version.json");

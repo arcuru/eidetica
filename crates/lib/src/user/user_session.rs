@@ -531,15 +531,14 @@ impl User {
     pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
         use crate::auth::crypto::{format_public_key, generate_keypair};
         use crate::store::Table;
-        use crate::user::crypto::current_timestamp;
         use crate::user::types::{KeyEncryption, UserKey};
 
         // Generate new keypair
         let (private_key, public_key) = generate_keypair();
         let key_id = format_public_key(&public_key);
 
-        // Get current timestamp
-        let timestamp = current_timestamp()?;
+        // Get current timestamp using the instance's clock
+        let timestamp = self.instance.clock().now_secs();
 
         // Prepare UserKey based on encryption type
         let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
@@ -965,12 +964,11 @@ impl User {
 mod tests {
     use super::*;
     use crate::{
+        Clock, SystemClock,
         auth::crypto::{format_public_key, generate_keypair},
         backend::{BackendImpl, database::InMemory},
         user::{
-            crypto::{
-                current_timestamp, derive_encryption_key, encrypt_private_key, hash_password,
-            },
+            crypto::{derive_encryption_key, encrypt_private_key, hash_password},
             types::{UserKey, UserStatus},
         },
     };
@@ -1005,7 +1003,9 @@ mod tests {
         db_settings.set("auth", auth_settings.as_doc().clone());
 
         // Create Instance for test
-        let instance = Instance::create_internal(backend.handle()).await.unwrap();
+        let instance = Instance::create_internal(backend.handle(), Arc::new(SystemClock))
+            .await
+            .unwrap();
 
         let user_database = Database::create(
             db_settings,
@@ -1025,7 +1025,7 @@ mod tests {
             user_database_id: user_database.root_id().clone(),
             password_hash: Some(password_hash),
             password_salt: Some(password_salt.clone()),
-            created_at: current_timestamp().unwrap(),
+            created_at: SystemClock.now_secs(),
             status: UserStatus::Active,
         };
 
@@ -1038,7 +1038,7 @@ mod tests {
             private_key_bytes: encrypted_key,
             encryption: crate::user::types::KeyEncryption::Encrypted { nonce },
             display_name: Some("Device Key".to_string()),
-            created_at: current_timestamp().unwrap(),
+            created_at: SystemClock.now_secs(),
             last_used: None,
             is_default: true,
             database_sigkeys: HashMap::new(),
@@ -1058,6 +1058,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_user_creation() {
         let user = create_test_user_session().await;
         assert_eq!(user.username(), "test_user");
@@ -1065,6 +1066,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_user_getters() {
         let user = create_test_user_session().await;
 
@@ -1075,6 +1077,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_user_logout() {
         let user = create_test_user_session().await;
         let username = user.username().to_string();
@@ -1087,6 +1090,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_user_drop() {
         {
             let _user = create_test_user_session().await;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use eidetica::{
-    Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value,
+    FixedClock, Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value,
     instance::LegacyInstanceOps, store::DocStore, user::User,
 };
 
@@ -82,9 +82,12 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
     }
 }
 
-/// Creates a basic Instance with no users or keys
+/// Creates a basic Instance with no users or keys.
+///
+/// Uses a [`FixedClock`] for controllable timestamps in tests.
 pub async fn test_instance() -> Instance {
-    Instance::open(test_backend().await)
+    let clock = Arc::new(FixedClock::default());
+    Instance::open_with_clock(test_backend().await, clock)
         .await
         .expect("Failed to create test instance")
 }

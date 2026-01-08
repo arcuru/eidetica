@@ -830,7 +830,7 @@ impl Sync {
 
         // Update connection state
         peer_info.connection_state = state;
-        peer_info.touch();
+        peer_info.touch_at(op.now_rfc3339()?);
 
         // Save updated peer info
         peer_manager
@@ -2385,7 +2385,12 @@ impl Sync {
         tx.commit().await?;
 
         // Update request status to approved
-        let approval_time = bootstrap_request_manager::current_timestamp();
+        let approval_time = self
+            .instance
+            .upgrade()
+            .ok_or(SyncError::InstanceDropped)?
+            .clock()
+            .now_rfc3339();
         manager
             .update_status(
                 request_id,
@@ -2493,7 +2498,12 @@ impl Sync {
         tx.commit().await?;
 
         // Update request status to approved
-        let approval_time = bootstrap_request_manager::current_timestamp();
+        let approval_time = self
+            .instance
+            .upgrade()
+            .ok_or(SyncError::InstanceDropped)?
+            .clock()
+            .now_rfc3339();
         manager
             .update_status(
                 request_id,
@@ -2550,7 +2560,12 @@ impl Sync {
         }
 
         // Update status to rejected
-        let rejection_time = bootstrap_request_manager::current_timestamp();
+        let rejection_time = self
+            .instance
+            .upgrade()
+            .ok_or(SyncError::InstanceDropped)?
+            .clock()
+            .now_rfc3339();
         manager
             .update_status(
                 request_id,
@@ -2636,7 +2651,12 @@ impl Sync {
         }
 
         // User has Admin permission, proceed with rejection
-        let rejection_time = bootstrap_request_manager::current_timestamp();
+        let rejection_time = self
+            .instance
+            .upgrade()
+            .ok_or(SyncError::InstanceDropped)?
+            .clock()
+            .now_rfc3339();
         manager
             .update_status(
                 request_id,

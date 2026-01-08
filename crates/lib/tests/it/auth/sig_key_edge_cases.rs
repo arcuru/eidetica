@@ -212,6 +212,7 @@ async fn test_sig_info_with_key_no_signature() {
 
 /// Test very deep delegation path (not exceeding limit but close)
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses Instant::now() which Miri blocks
 async fn test_deep_delegation_path_performance() -> Result<()> {
     // Create a delegation path with 9 levels (just under the limit of 10)
     let mut delegation_steps = Vec::new();

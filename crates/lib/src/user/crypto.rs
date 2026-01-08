@@ -4,8 +4,6 @@
 //! - Argon2id for password hashing
 //! - AES-256-GCM for key encryption
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, AeadCore, OsRng},
@@ -252,34 +250,13 @@ pub fn decrypt_private_key(
     Ok(signing_key)
 }
 
-/// Get the current Unix timestamp in seconds.
-///
-/// This is a safe wrapper around SystemTime that properly handles times
-/// both before and after the Unix epoch (January 1, 1970).
-///
-/// # Returns
-/// The current Unix timestamp in seconds as a signed integer:
-/// - Positive for dates after 1970-01-01 00:00:00 UTC
-/// - Negative for dates before 1970-01-01 00:00:00 UTC
-/// - Zero for exactly the epoch
-///
-/// This matches the standard POSIX time_t representation.
-pub fn current_timestamp() -> Result<i64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .or_else(|e| {
-            // Time is before Unix epoch - return negative timestamp
-            Ok(-(e.duration().as_secs() as i64))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_password_hash_and_verify() {
         let password = "test_password_123";
 
@@ -293,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_password_hash_unique() {
         let password = "test_password_123";
 
@@ -308,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_encryption_round_trip() {
         let (private_key, _) = generate_keypair();
         let password = "encryption_password";
@@ -327,6 +306,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_encryption_wrong_key_fails() {
         let (private_key, _) = generate_keypair();
         let password1 = "password1";
@@ -346,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_nonce_uniqueness() {
         let (private_key, _) = generate_keypair();
         let password = "password";

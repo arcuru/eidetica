@@ -317,7 +317,8 @@ impl ZeroizeOnDrop for UserKeyManager {}
 mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
-    use crate::user::crypto::{current_timestamp, encrypt_private_key, hash_password};
+    use crate::user::crypto::{encrypt_private_key, hash_password};
+    use crate::{Clock, SystemClock};
 
     fn create_test_user_key(
         key_id: &str,
@@ -331,7 +332,7 @@ mod tests {
             private_key_bytes: encrypted_key,
             encryption: KeyEncryption::Encrypted { nonce },
             display_name: Some(format!("Test key {key_id}")),
-            created_at: current_timestamp().unwrap(),
+            created_at: SystemClock.now_secs(),
             last_used: None,
             is_default: false,
             database_sigkeys: HashMap::new(),
@@ -339,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_new() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -361,6 +363,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_signing_key() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -377,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_public_key() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -396,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_public_key_multiple_keys() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -425,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Uses SystemTime for timestamp
     fn test_key_manager_get_public_key_passwordless() {
         // Create passwordless keys
         let (key1, pub_key1) = generate_keypair();
@@ -435,7 +441,7 @@ mod tests {
             private_key_bytes: key1.to_bytes().to_vec(),
             encryption: KeyEncryption::Unencrypted,
             display_name: Some("Key 1".to_string()),
-            created_at: current_timestamp().unwrap(),
+            created_at: SystemClock.now_secs(),
             last_used: None,
             is_default: true,
             database_sigkeys: HashMap::new(),
@@ -446,7 +452,7 @@ mod tests {
             private_key_bytes: key2.to_bytes().to_vec(),
             encryption: KeyEncryption::Unencrypted,
             display_name: Some("Key 2".to_string()),
-            created_at: current_timestamp().unwrap(),
+            created_at: SystemClock.now_secs(),
             last_used: None,
             is_default: false,
             database_sigkeys: HashMap::new(),
@@ -460,6 +466,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_public_key_consistency_with_signing_key() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -480,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_add_key() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -502,6 +510,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_serialize_keys() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -532,6 +541,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_serialize_keys_sorted() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -561,6 +571,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_clear() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -583,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_list_key_ids() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -602,6 +614,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_list_key_ids_sorted_by_timestamp() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -667,6 +680,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_metadata() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
@@ -683,6 +697,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_wrong_password() {
         let correct_password = "correct_password";
         let wrong_password = "wrong_password";

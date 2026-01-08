@@ -4,10 +4,7 @@
 //! in a single background thread, removing circular dependency issues and providing
 //! automatic retry, periodic sync, and reconnection handling.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -20,7 +17,7 @@ use super::{
     error::SyncError,
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
-    peer_types::{Address, PeerId, PeerInfo},
+    peer_types::{Address, PeerId},
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
@@ -154,7 +151,8 @@ struct RetryEntry {
     peer: PeerId,
     entries: Vec<Entry>,
     attempts: u32,
-    last_attempt: SystemTime,
+    /// Timestamp of last attempt in milliseconds since Unix epoch
+    last_attempt_ms: u64,
 }
 
 /// Background sync engine that owns all sync state and handles operations
@@ -355,7 +353,8 @@ impl BackgroundSync {
         match command {
             SyncCommand::SendEntries { peer, entries } => {
                 if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
-                    self.add_to_retry_queue(peer, entries, e);
+                    let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
+                    self.add_to_retry_queue(peer, entries, e, now_ms);
                 }
             }
 
@@ -498,14 +497,20 @@ impl BackgroundSync {
     }
 
     /// Add failed send to retry queue
-    fn add_to_retry_queue(&mut self, peer: PeerId, entries: Vec<Entry>, error: crate::Error) {
+    fn add_to_retry_queue(
+        &mut self,
+        peer: PeerId,
+        entries: Vec<Entry>,
+        error: crate::Error,
+        now_ms: u64,
+    ) {
         // Log send failure and add to retry queue
         tracing::warn!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
             peer,
             entries,
             attempts: 1,
-            last_attempt: SystemTime::now(),
+            last_attempt_ms: now_ms,
         });
     }
 
@@ -547,7 +552,8 @@ impl BackgroundSync {
 
             // Send batched entries to peer
             if let Err(e) = self.send_to_peer(&peer, entries.clone()).await {
-                self.add_to_retry_queue(peer, entries, e);
+                let now_ms = instance.clock().now_millis();
+                self.add_to_retry_queue(peer, entries, e, now_ms);
                 failures += 1;
             }
         }
@@ -556,7 +562,7 @@ impl BackgroundSync {
 
     /// Process retry queue with exponential backoff
     async fn process_retry_queue(&mut self) {
-        let now = SystemTime::now();
+        let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
         let mut still_failed = Vec::new();
 
         // Take the retry queue to avoid borrowing issues
@@ -564,13 +570,15 @@ impl BackgroundSync {
 
         // Process entries that are ready for retry
         for mut entry in retry_queue {
-            let backoff = Duration::from_secs(2u64.pow(entry.attempts.min(6))); // Max 64 second backoff
+            // Backoff in milliseconds: 2^attempts * 1000ms, max 64 seconds
+            let backoff_ms = 2u64.pow(entry.attempts.min(6)) * 1000;
+            let elapsed_ms = now_ms.saturating_sub(entry.last_attempt_ms);
 
-            if now.duration_since(entry.last_attempt).unwrap() >= backoff {
+            if elapsed_ms >= backoff_ms {
                 // Try sending again
                 if let Err(_e) = self.send_to_peer(&entry.peer, entry.entries.clone()).await {
                     entry.attempts += 1;
-                    entry.last_attempt = now;
+                    entry.last_attempt_ms = now_ms;
 
                     if entry.attempts < 10 {
                         // Max 10 attempts
@@ -595,7 +603,7 @@ impl BackgroundSync {
     /// Returns the number of entries that still failed after retry.
     async fn flush_retry_queue(&mut self) -> usize {
         let mut still_failed = Vec::new();
-        let now = SystemTime::now();
+        let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
 
         // Take the retry queue to process
         let retry_queue = std::mem::take(&mut self.retry_queue);
@@ -607,7 +615,7 @@ impl BackgroundSync {
                 .await
             {
                 retry_entry.attempts += 1;
-                retry_entry.last_attempt = now;
+                retry_entry.last_attempt_ms = now_ms;
 
                 if retry_entry.attempts < 10 {
                     still_failed.push(retry_entry);
@@ -1000,12 +1008,6 @@ impl BackgroundSync {
                         .into());
                     }
                 }
-
-                // Create peer info (store in sync tree instead of using it directly)
-                let _peer_info = PeerInfo::new(
-                    &handshake_resp.public_key,
-                    handshake_resp.display_name.as_deref(),
-                );
 
                 // Add peer to sync tree
                 let sync_tree = self.get_sync_tree().await?;

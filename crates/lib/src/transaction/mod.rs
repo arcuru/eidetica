@@ -246,6 +246,13 @@ impl Transaction {
         self.auth_key_name.as_deref()
     }
 
+    /// Get current time as RFC3339 string.
+    ///
+    /// Delegates to the underlying instance's clock.
+    pub(crate) fn now_rfc3339(&self) -> Result<String> {
+        Ok(self.db.instance()?.clock().now_rfc3339())
+    }
+
     /// Register an encryptor for transparent encryption/decryption of a specific subtree.
     ///
     /// Once registered, the transaction will automatically:
@@ -1180,6 +1187,8 @@ impl Transaction {
         // Compute heights from parent entries using the configured strategy
         {
             let backend = self.db.backend()?;
+            let instance = self.db.instance()?;
+            let clock = instance.clock();
 
             // Compute main tree height using the height strategy
             let main_parents = builder.parents().unwrap_or_default();
@@ -1194,7 +1203,7 @@ impl Transaction {
                 }
                 Some(max_height)
             };
-            let tree_height = height_strategy.calculate_height(max_parent_height);
+            let tree_height = height_strategy.calculate_height(max_parent_height, clock);
             builder.set_height_mut(tree_height);
 
             // Compute subtree heights based on per-subtree settings from _index
@@ -1243,7 +1252,8 @@ impl Transaction {
                             }
                             Some(max_height)
                         };
-                        let subtree_height = strategy.calculate_height(max_subtree_parent_height);
+                        let subtree_height =
+                            strategy.calculate_height(max_subtree_parent_height, clock);
                         builder.set_subtree_height_mut(&subtree_name, Some(subtree_height));
                     }
                 }
