@@ -1,0 +1,23 @@
+# TSAN suppressions
+#
+# ThreadSanitizer reports false positives in lock-free data structures that use
+# epoch-based memory reclamation. These are known issues in the crossbeam
+# ecosystem and are safe by design.
+#
+# References:
+# - https://github.com/crossbeam-rs/crossbeam/issues/663
+# - https://github.com/crossbeam-rs/crossbeam/blob/master/ci/tsan
+
+# The epoch-based GC uses fences that TSAN cannot fully track.
+# This affects moka (used by hickory-resolver for DNS caching) and other
+# lock-free data structures.
+race:crossbeam_epoch
+
+# Push and steal operations in crossbeam-deque may cause data races, but such
+# data races are safe. If a data race happens, the value read by `steal` is
+# forgotten and the steal operation is then retried.
+race:crossbeam_deque*push
+race:crossbeam_deque*steal
+
+# Non-lock-free AtomicCell uses SeqLock which uses fences.
+race:crossbeam_utils::atomic::atomic_cell::atomic_compare_exchange_weak

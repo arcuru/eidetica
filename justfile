@@ -196,15 +196,20 @@ sanitize *targets:
                 ;;
             asan)
                 echo "=== Running AddressSanitizer ==="
-                RUSTFLAGS="-Zsanitizer=address" cargo test --workspace --all-features --target x86_64-unknown-linux-gnu
+                RUSTFLAGS="-Zsanitizer=address" cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
             tsan)
                 echo "=== Running ThreadSanitizer ==="
-                RUSTFLAGS="-Zsanitizer=thread" cargo test --workspace --all-features --target x86_64-unknown-linux-gnu
+                CARGO_TARGET_DIR=target/tsan \
+                RUSTFLAGS="-Zsanitizer=thread -Zsanitizer-memory-track-origins=1" \
+                TSAN_OPTIONS="suppressions=$(pwd)/.config/tsan" \
+                RUSTC_BOOTSTRAP=1 \
+                cargo test -Zbuild-std --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
+
             lsan)
                 echo "=== Running LeakSanitizer ==="
-                RUSTFLAGS="-Zsanitizer=leak" cargo test --workspace --all-features --target x86_64-unknown-linux-gnu
+                RUSTFLAGS="-Zsanitizer=leak" cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
             all)
                 just sanitize miri careful asan tsan lsan
