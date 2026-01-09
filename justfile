@@ -123,6 +123,7 @@ test *args:
 # Run linter(s): clippy, audit, udeps, min-versions, all
 lint +tools='clippy audit':
     #!/usr/bin/env bash
+    set -e
     for tool in {{ tools }}; do
         case "$tool" in
             clippy)
@@ -171,6 +172,7 @@ fmt:
 # Run sanitizer(s): miri, careful, asan, tsan, lsan, all
 sanitize *targets:
     #!/usr/bin/env bash
+    set -e
     if [ -z "{{ targets }}" ]; then
         echo "Available sanitizers:"
         echo "  just sanitize miri     - Miri: Stacked Borrows, UB detection"
@@ -229,6 +231,7 @@ sanitize *targets:
 # Build documentation: api, api-full, book, serve, test, clean, links, links-online, stats
 doc action='api':
     #!/usr/bin/env bash
+    set -e
     case "{{ action }}" in
         api)
             cargo doc --workspace --all-features --no-deps --quiet
@@ -282,6 +285,7 @@ doc action='api':
 # Generate coverage data for a backend: inmemory, sqlite, postgres, all
 coverage backend='inmemory':
     #!/usr/bin/env bash
+    set -e
     case "{{ backend }}" in
         inmemory)
             cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
@@ -346,6 +350,7 @@ coverage backend='inmemory':
 # Run CI locally: local (default), full (containers), nix
 ci mode='local':
     #!/usr/bin/env bash
+    set -e
     case "{{ mode }}" in
         local)
             just fix
@@ -375,6 +380,7 @@ ci mode='local':
 # Nix commands: build, check, integration, full
 nix action='check':
     #!/usr/bin/env bash
+    set -e
     case "{{ action }}" in
         build)
             nix build
@@ -404,6 +410,7 @@ nix action='check':
 # Build container image: docker, nix
 container type='docker':
     #!/usr/bin/env bash
+    set -e
     case "{{ type }}" in
         docker)
             docker build -t eidetica:dev .
