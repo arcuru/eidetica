@@ -451,6 +451,13 @@ impl Instance {
         &*self.inner.clock
     }
 
+    /// Get a cloned Arc of the clock.
+    ///
+    /// Used when passing the clock to components that need ownership (e.g., HeightCalculator).
+    pub(crate) fn clock_arc(&self) -> Arc<dyn Clock> {
+        self.inner.clock.clone()
+    }
+
     // === Backend pass-through methods (pub(crate) for internal use) ===
 
     /// Get an entry from the backend

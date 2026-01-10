@@ -1188,7 +1188,7 @@ impl Transaction {
         {
             let backend = self.db.backend()?;
             let instance = self.db.instance()?;
-            let clock = instance.clock();
+            let calculator = height_strategy.into_calculator(instance.clock_arc());
 
             // Compute main tree height using the height strategy
             let main_parents = builder.parents().unwrap_or_default();
@@ -1203,7 +1203,7 @@ impl Transaction {
                 }
                 Some(max_height)
             };
-            let tree_height = height_strategy.calculate_height(max_parent_height, clock);
+            let tree_height = calculator.calculate_height(max_parent_height);
             builder.set_height_mut(tree_height);
 
             // Compute subtree heights based on per-subtree settings from _index
@@ -1237,6 +1237,7 @@ impl Transaction {
                     }
                     Some(strategy) => {
                         // Calculate independent height from subtree parents
+                        let subtree_calculator = strategy.into_calculator(instance.clock_arc());
                         let subtree_parents =
                             builder.subtree_parents(&subtree_name).unwrap_or_default();
                         let max_subtree_parent_height = if subtree_parents.is_empty() {
@@ -1253,7 +1254,7 @@ impl Transaction {
                             Some(max_height)
                         };
                         let subtree_height =
-                            strategy.calculate_height(max_subtree_parent_height, clock);
+                            subtree_calculator.calculate_height(max_subtree_parent_height);
                         builder.set_subtree_height_mut(&subtree_name, Some(subtree_height));
                     }
                 }

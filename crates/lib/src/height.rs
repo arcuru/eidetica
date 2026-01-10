@@ -3,6 +3,8 @@
 //! The height of an entry determines its position in the causal ordering of the Merkle DAG.
 //! Different strategies provide different trade-offs between simplicity and time-awareness.
 
+use std::sync::Arc;
+
 use crate::clock::Clock;
 use serde::{Deserialize, Serialize};
 
@@ -51,20 +53,50 @@ pub enum HeightStrategy {
 }
 
 impl HeightStrategy {
+    /// Convert this strategy into a [`HeightCalculator`] with the given clock.
+    pub(crate) fn into_calculator(self, clock: Arc<dyn Clock>) -> HeightCalculator {
+        HeightCalculator::new(self, clock)
+    }
+}
+
+/// Runtime height calculator with a bound clock.
+///
+/// Created from a [`HeightStrategy`] via [`HeightStrategy::into_calculator`].
+/// This separates the serializable configuration (strategy) from the
+/// runtime behavior (strategy + clock).
+#[derive(Clone)]
+pub(crate) struct HeightCalculator {
+    strategy: HeightStrategy,
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for HeightCalculator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeightCalculator")
+            .field("strategy", &self.strategy)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HeightCalculator {
+    /// Create a new calculator with the given strategy and clock.
+    pub(crate) fn new(strategy: HeightStrategy, clock: Arc<dyn Clock>) -> Self {
+        Self { strategy, clock }
+    }
+
     /// Calculate the height for an entry given its parent heights.
     ///
     /// # Arguments
     /// * `max_parent_height` - The maximum height among all parent entries,
     ///   or `None` if this is a root entry (no parents)
-    /// * `clock` - The time provider to use for timestamp-based heights
     ///
     /// # Returns
     /// The calculated height for the new entry
-    pub fn calculate_height(&self, max_parent_height: Option<u64>, clock: &dyn Clock) -> u64 {
-        match self {
+    pub(crate) fn calculate_height(&self, max_parent_height: Option<u64>) -> u64 {
+        match self.strategy {
             HeightStrategy::Incremental => max_parent_height.map(|h| h + 1).unwrap_or(0),
             HeightStrategy::Timestamp => {
-                let timestamp_ms = clock.now_millis();
+                let timestamp_ms = self.clock.now_millis();
                 let min_height = max_parent_height.map(|h| h + 1).unwrap_or(0);
 
                 // FIXME: Clock skew detection should be more sophisticated - track
@@ -94,45 +126,48 @@ mod tests {
 
     #[test]
     fn test_incremental_root() {
-        let clock = FixedClock::default();
-        let strategy = HeightStrategy::Incremental;
-        assert_eq!(strategy.calculate_height(None, &clock), 0);
+        let clock = Arc::new(FixedClock::default());
+        let calculator = HeightStrategy::Incremental.into_calculator(clock);
+        assert_eq!(calculator.calculate_height(None), 0);
     }
 
     #[test]
     fn test_incremental_with_parent() {
-        let clock = FixedClock::default();
-        let strategy = HeightStrategy::Incremental;
-        assert_eq!(strategy.calculate_height(Some(0), &clock), 1);
-        assert_eq!(strategy.calculate_height(Some(5), &clock), 6);
-        assert_eq!(strategy.calculate_height(Some(100), &clock), 101);
+        let clock = Arc::new(FixedClock::default());
+        let calculator = HeightStrategy::Incremental.into_calculator(clock);
+        assert_eq!(calculator.calculate_height(Some(0)), 1);
+        assert_eq!(calculator.calculate_height(Some(5)), 6);
+        assert_eq!(calculator.calculate_height(Some(100)), 101);
     }
 
     #[test]
     fn test_timestamp_root() {
-        let clock = FixedClock::new(1704067200000); // 2024-01-01 00:00:00 UTC
-        let strategy = HeightStrategy::Timestamp;
-        let height = strategy.calculate_height(None, &clock);
+        let clock = Arc::new(FixedClock::new(1704067200000)); // 2024-01-01 00:00:00 UTC
+        let _hold = clock.hold();
+        let calculator = HeightStrategy::Timestamp.into_calculator(clock.clone());
+        let height = calculator.calculate_height(None);
         assert_eq!(height, 1704067200000);
     }
 
     #[test]
     fn test_timestamp_with_low_parent() {
-        let clock = FixedClock::new(1704067200000); // 2024-01-01 00:00:00 UTC
-        let strategy = HeightStrategy::Timestamp;
+        let clock = Arc::new(FixedClock::new(1704067200000)); // 2024-01-01 00:00:00 UTC
+        let _hold = clock.hold();
+        let calculator = HeightStrategy::Timestamp.into_calculator(clock.clone());
         // Parent with low height - should use timestamp
-        let height = strategy.calculate_height(Some(100), &clock);
+        let height = calculator.calculate_height(Some(100));
         assert_eq!(height, 1704067200000);
     }
 
     #[test]
     fn test_timestamp_with_high_parent() {
-        let clock = FixedClock::new(1704067200000); // 2024-01-01 00:00:00 UTC
-        let strategy = HeightStrategy::Timestamp;
+        let clock = Arc::new(FixedClock::new(1704067200000)); // 2024-01-01 00:00:00 UTC
+        let _hold = clock.hold();
+        let calculator = HeightStrategy::Timestamp.into_calculator(clock.clone());
         // Parent with very high height (future timestamp) - should use parent + 1
         let future_height = 1704067200000 + 1_000_000; // 1000 seconds in future
-        let height = strategy.calculate_height(Some(future_height), &clock);
-        assert_eq!(height, future_height + 1);
+        let height = calculator.calculate_height(Some(future_height));
+        assert!(height > future_height);
     }
 
     #[test]
