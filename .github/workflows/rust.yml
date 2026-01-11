@@ -93,4 +93,4 @@ jobs:
         run: cargo build -p eidetica --no-default-features
 
       - name: Test with no default features
-        run: cargo nextest run -p eidetica --no-default-features
+        run: cargo nextest run -p eidetica --no-default-features --features testing

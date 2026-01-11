@@ -299,7 +299,7 @@
             test-minimal = craneLib.cargoNextest (releaseArgs
               // {
                 pname = "eidetica-minimal";
-                cargoNextestExtraArgs = "-p eidetica --no-default-features";
+                cargoNextestExtraArgs = "-p eidetica --no-default-features --features testing";
               });
 
             # Documentation tests

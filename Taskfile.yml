@@ -92,7 +92,7 @@ tasks:
     desc: Test library with no default features
     cmds:
       - cargo build -p eidetica --no-default-features
-      - cargo test -p eidetica --no-default-features
+      - cargo test -p eidetica --no-default-features --features testing
   doc:
     desc: Build the documentation
     cmd: cargo doc --workspace --all-features --no-deps --quiet
