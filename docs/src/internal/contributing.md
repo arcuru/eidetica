@@ -42,11 +42,16 @@ task --list   # See all available tasks
 
 Direct Nix commands are available when needed:
 
-| Command           | Description                 |
-| ----------------- | --------------------------- |
-| `nix develop`     | Enter the development shell |
-| `nix build`       | Build the default package   |
-| `nix flake check` | Run all CI checks           |
+| Command                 | Description                          |
+| ----------------------- | ------------------------------------ |
+| `nix develop`           | Enter the development shell          |
+| `nix build`             | Build the default package            |
+| `nix flake check`       | Run all CI checks                    |
+| `nix build .#test`      | Run fast tests (inmemory + minimal)  |
+| `nix build .#test.full` | Run all tests including all backends |
+| `nix build .#lint`      | Run fast lints (clippy + deny + fmt) |
+
+Packages are organized into groups: `test`, `doc`, `lint`, `coverage`, `sanitize`. Each group supports `.#<group>` (fast), `.#<group>.full` (all), and `.#<group>.<name>` (specific). See [CI/Build Infrastructure](ci.md) for details.
 
 Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by providing pre-built dependencies.
 

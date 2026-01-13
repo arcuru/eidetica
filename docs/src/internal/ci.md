@@ -32,15 +32,32 @@ The Nix flake defines reproducible builds and CI checks that run identically loc
 
 Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by providing pre-built dependencies.
 
+## Nix Package Groups
+
+The Nix flake organizes packages into groups with a consistent pattern:
+
+- `.#<group>` — runs the fast/CI-appropriate subset
+- `.#<group>.full` — runs ALL items in the group
+- `.#<group>.<name>` — runs a specific item
+
+| Group      | Default (fast)         | Full                    |
+| ---------- | ---------------------- | ----------------------- |
+| `test`     | inmemory + minimal     | all backends            |
+| `doc`      | api + test + book-test | includes api-full, book |
+| `lint`     | clippy + deny + fmt    | includes udeps          |
+| `coverage` | inmemory               | all backends            |
+| `sanitize` | asan + lsan            | includes miri           |
+
 ## Code Coverage
 
 Code coverage runs against all storage backends to ensure comprehensive test coverage:
 
-| Backend    | CI  | Taskfile                 | Nix                           |
-| ---------- | --- | ------------------------ | ----------------------------- |
-| InMemory   | ✓   | `task coverage`          | `nix build .#coverage`        |
-| SQLite     | ✓   | `task coverage:sqlite`   | `nix build .#coverage-sqlite` |
-| PostgreSQL | ✓   | `task coverage:postgres` | —                             |
+| Backend    | CI  | Taskfile                 | Nix                             |
+| ---------- | --- | ------------------------ | ------------------------------- |
+| InMemory   | ✓   | `task coverage`          | `nix build .#coverage`          |
+| SQLite     | ✓   | `task coverage:sqlite`   | `nix build .#coverage.sqlite`   |
+| PostgreSQL | ✓   | `task coverage:postgres` | `nix build .#coverage.postgres` |
+| All        | —   | `task coverage:all`      | `nix build .#coverage.full`     |
 
 ### Local Coverage Commands
 

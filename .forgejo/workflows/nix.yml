@@ -90,8 +90,8 @@ jobs:
             --no-nom \
             --no-link \
             --flake \".#checks.x86_64-linux\" \
-            --flake \".#packages.x86_64-linux.eidetica-lib\" \
-            --flake \".#packages.x86_64-linux.eidetica-bin\""
+            --flake \".#eidetica-lib\" \
+            --flake \".#eidetica-bin\""
 
           # Add Attic if client is available and logged in
           if command -v attic &> /dev/null; then
