@@ -158,6 +158,7 @@ async fn test_verification_status_not_found_errors() {
 }
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_verification_status_serialization() {
     let backend = Arc::new(InMemory::new());
 

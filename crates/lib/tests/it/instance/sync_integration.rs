@@ -1,6 +1,7 @@
 use super::super::sync::helpers;
 
 #[tokio::test]
+#[cfg_attr(miri, ignore)] // tracing uses SystemTime::now() which Miri blocks
 async fn test_instance_sync_initialization() {
     let base_db = helpers::setup_instance_with_initialized().await;
 

@@ -181,7 +181,7 @@ sanitize *targets:
         echo "  just sanitize tsan     - ThreadSanitizer: data races"
         echo "  just sanitize lsan     - LeakSanitizer: memory leaks"
         echo ""
-        echo "  just sanitize all      - Run ALL sanitizers (slow, ~30+ min)"
+        echo "  just sanitize all      - Run all sanitizers except miri"
         echo ""
         echo "Multiple: just sanitize miri asan"
         exit 0
@@ -214,7 +214,7 @@ sanitize *targets:
                 RUSTFLAGS="-Zsanitizer=leak" cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
             all)
-                just sanitize miri careful asan tsan lsan
+                just sanitize careful asan tsan lsan
                 ;;
             *)
                 echo "Unknown sanitizer: $target"
