@@ -8,7 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  lint:
+    name: Lint (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -20,21 +21,128 @@ jobs:
       fail-fast: false
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        uses: actions/checkout@v4
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+        uses: DeterminateSystems/nix-installer-action@v21
 
       - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@v13
 
-      - name: Build checks
+      - name: Build lint checks
         run: |
-          nix run nixpkgs#nix-fast-build -- \
-            --skip-cached \
-            --no-nom \
-            --no-link \
-            --cachix-cache eidetica \
-            --flake ".#checks.${{ matrix.system }}"
+          nix build .#lint --no-link
+          nix build ".#checks.${{ matrix.system }}.treefmt" --no-link
+          nix build ".#checks.${{ matrix.system }}.eval-nixos" --no-link
+          nix build ".#checks.${{ matrix.system }}.eval-hm" --no-link
+
+  test:
+    name: Test (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Build test checks
+        run: nix build .#test --no-link
+
+  doc:
+    name: Doc (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Build doc checks
+        run: nix build .#doc --no-link
+
+  build:
+    name: Build (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Build packages
+        run: |
+          nix build .#eidetica --no-link
+          nix build .#eidetica-lib --no-link
+
+  artifacts:
+    name: Artifacts (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, doc, build]
+    strategy:
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Install Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Build and push artifacts
+        run: |
+          nix build .#eidetica --no-link --print-out-paths | cachix push eidetica
+          nix build .#eidetica-lib --no-link --print-out-paths | cachix push eidetica
+          nix build .#eidetica-image --no-link --print-out-paths | cachix push eidetica
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"

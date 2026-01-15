@@ -94,7 +94,7 @@
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib rootSrc;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLib noDepsArgs asanArgs lsanArgs fenixStable pkgs lib;};
-        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs releaseArgs noDepsArgs pkgs rootSrc;};
+        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs noDepsArgs pkgs rootSrc;};
         lintPkgs = import ./nix/packages/lint.nix {inherit craneLib debugArgs noDepsArgs pkgs;};
         standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs baseArgs pkgs;};
 

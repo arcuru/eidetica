@@ -2,7 +2,6 @@
 {
   craneLib,
   debugArgs,
-  releaseArgs,
   noDepsArgs,
   pkgs,
   rootSrc,
@@ -66,7 +65,7 @@
       '';
     });
 
-  doc-test = craneLib.cargoTest (releaseArgs
+  doc-test = craneLib.cargoTest (debugArgs
     // {
       cargoTestExtraArgs = "--doc --workspace --all-features";
     });

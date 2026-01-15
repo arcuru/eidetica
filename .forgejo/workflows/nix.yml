@@ -15,6 +15,127 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
+            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
+          fi
+
+          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
+            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
+          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build lint checks
+        run: |
+          nix build .#lint --no-link
+          nix build .#checks.x86_64-linux.treefmt --no-link
+          nix build .#checks.x86_64-linux.eval-nixos --no-link
+          nix build .#checks.x86_64-linux.eval-hm --no-link
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
+            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
+          fi
+
+          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
+            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
+          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build test checks
+        run: nix build .#test --no-link
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
+            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
+          fi
+
+          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
+            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
+          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build doc checks
+        run: nix build .#doc --no-link
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -23,24 +144,17 @@ jobs:
     steps:
       - name: Configure Nix with caches
         run: |
-          # Enable flakes and configure substituters
           mkdir -p ~/.config/nix
 
-          # Build substituters list with explicit priorities (lower number = higher priority)
-          # Default: cache.nixos.org (priority 40), eidetica.cachix.org (priority 50)
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          # Add extra substituters if configured (for private caches like Attic)
-          # Tip: Add ?priority=10 to your private cache URLs to check them first
           if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
             SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-            echo "Added extra substituters: $NIX_EXTRA_SUBSTITUTERS"
           fi
 
           if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
             TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
-            echo "Added extra trusted public keys"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -48,66 +162,91 @@ jobs:
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
-
-          echo "Nix configuration:"
-          cat ~/.config/nix/nix.conf
-
-          # Verify Nix is available
-          nix --version
         env:
           NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
           NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
 
-      # Configure Attic login if token is available
-      - name: Configure Attic
-        if: "${{ secrets.ATTIC_AUTH_TOKEN != ''  && secrets.ATTIC_SERVER_URL != '' }}"
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build packages
         run: |
-          # Install attic client
+          nix build .#eidetica --no-link
+          nix build .#eidetica-lib --no-link
+
+  artifacts:
+    name: Artifacts
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    needs: [lint, test, doc, build]
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
+            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
+          fi
+
+          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
+            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
+          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
           nix profile add nixpkgs#attic-client
-
-          echo "Logging in to Attic at $ATTIC_SERVER_URL"
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-
-          echo "Attic login successful"
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
-      - name: Install Actions Deps
+      - name: Install Cachix
+        if: "${{ secrets.CACHIX_AUTH_TOKEN != '' }}"
         run: |
-          nix profile add nixpkgs#nodejs
+          nix profile add nixpkgs#cachix
+          cachix authtoken "$CACHIX_AUTH_TOKEN"
+        env:
+          CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@v4
 
-      # Build all checks with nix-fast-build
-      # Attic and Cachix integration are optional via auth token secrets
-      - name: Build checks
+      - name: Build and push artifacts
         run: |
-          # Build command
-          BUILD_CMD="nix run nixpkgs#nix-fast-build -- \
-            --skip-cached \
-            --no-nom \
-            --no-link \
-            --flake \".#checks.x86_64-linux\""
+          for pkg in eidetica eidetica-lib eidetica-image; do
+            echo "Building $pkg..."
+            PATHS=$(nix build .#$pkg --no-link --print-out-paths)
 
-          # Add Attic if client is available and logged in
-          if command -v attic &> /dev/null; then
-            echo "Attic client found, using Attic cache: eidetica"
-            BUILD_CMD="$BUILD_CMD --attic-cache eidetica"
-          else
-            echo "Attic client not available, skipping Attic push"
-          fi
+            if command -v attic &> /dev/null; then
+              echo "Pushing to Attic..."
+              echo "$PATHS" | xargs attic push eidetica
+            fi
 
-          # Add Cachix if token is available
-          if [ -n "$CACHIX_AUTH_TOKEN" ]; then
-            echo "Using Cachix cache: eidetica"
-            BUILD_CMD="$BUILD_CMD --cachix-cache eidetica"
-          else
-            echo "CACHIX_AUTH_TOKEN not set, skipping Cachix push"
-          fi
-
-          # Execute build
-          eval "$BUILD_CMD"
+            if [ -n "$CACHIX_AUTH_TOKEN" ]; then
+              echo "Pushing to Cachix..."
+              echo "$PATHS" | cachix push eidetica
+            fi
+          done
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
