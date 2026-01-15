@@ -45,7 +45,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -58,10 +57,12 @@ jobs:
 
       - name: Build lint checks
         run: |
-          nix build .#lint --no-link
-          nix build .#checks.x86_64-linux.treefmt --no-link
-          nix build .#checks.x86_64-linux.eval-nixos --no-link
-          nix build .#checks.x86_64-linux.eval-hm --no-link
+          for pkg in .#lint .#checks.x86_64-linux.treefmt .#checks.x86_64-linux.eval-nixos .#checks.x86_64-linux.eval-hm; do
+            PATHS=$(nix build "$pkg" --no-link --print-out-paths)
+            if command -v attic &> /dev/null; then
+              echo "$PATHS" | xargs attic push eidetica
+            fi
+          done
 
   test:
     name: Test
@@ -93,7 +94,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -105,7 +105,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build test checks
-        run: nix build .#test --no-link
+        run: |
+          PATHS=$(nix build .#test --no-link --print-out-paths)
+          if command -v attic &> /dev/null; then
+            echo "$PATHS" | xargs attic push eidetica
+          fi
 
   doc:
     name: Doc
@@ -137,7 +141,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -149,7 +152,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build doc checks
-        run: nix build .#doc --no-link
+        run: |
+          PATHS=$(nix build .#doc --no-link --print-out-paths)
+          if command -v attic &> /dev/null; then
+            echo "$PATHS" | xargs attic push eidetica
+          fi
 
   build:
     name: Build
@@ -181,7 +188,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -194,8 +200,12 @@ jobs:
 
       - name: Build packages
         run: |
-          nix build .#eidetica --no-link
-          nix build .#eidetica-lib --no-link
+          for pkg in .#eidetica .#eidetica-lib; do
+            PATHS=$(nix build "$pkg" --no-link --print-out-paths)
+            if command -v attic &> /dev/null; then
+              echo "$PATHS" | xargs attic push eidetica
+            fi
+          done
 
   coverage:
     name: Coverage
@@ -228,7 +238,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -243,11 +252,17 @@ jobs:
         run: |
           nix build .#coverage.inmemory -o coverage-inmemory
           cp coverage-inmemory/lcov.info lcov-inmemory.info
+          if command -v attic &> /dev/null; then
+            attic push eidetica coverage-inmemory
+          fi
 
       - name: Run coverage (sqlite)
         run: |
           nix build .#coverage.sqlite -o coverage-sqlite
           cp coverage-sqlite/lcov.info lcov-sqlite.info
+          if command -v attic &> /dev/null; then
+            attic push eidetica coverage-sqlite
+          fi
 
       - name: Upload coverage to Codecov
         uses: https://github.com/codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
@@ -289,7 +304,6 @@ jobs:
         run: |
           nix profile add nixpkgs#attic-client
           attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
-          attic watch-store eidetica &
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
@@ -301,7 +315,11 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Run sanitizers
-        run: nix build .#sanitize --no-link
+        run: |
+          PATHS=$(nix build .#sanitize --no-link --print-out-paths)
+          if command -v attic &> /dev/null; then
+            echo "$PATHS" | xargs attic push eidetica
+          fi
 
   artifacts:
     name: Artifacts
