@@ -219,6 +219,8 @@
         devShells.default = import ./nix/dev-shell.nix {
           inherit pkgs rustSrc;
           checks = config.checks;
+          # Additional package groups for inputsFrom (not in checks but need deps in shell)
+          extraPackages = coveragePkgs.coverageFast // sanitizePkgs.sanitizeFast;
         };
       };
     };
