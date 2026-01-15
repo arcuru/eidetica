@@ -1,11 +1,10 @@
 # Forgejo CI workflow for Nix builds
 #
-# Optional Repository Secrets (configure in Forgejo Settings → Secrets → Actions):
-#   NIX_EXTRA_SUBSTITUTERS: Space-separated list of additional binary caches
-#   NIX_EXTRA_TRUSTED_PUBLIC_KEYS: Space-separated public keys for extra substituters
-#   ATTIC_SERVER_URL: Attic server URL for login (required if using ATTIC_AUTH_TOKEN)
-#   ATTIC_AUTH_TOKEN: Token for pushing to Attic (eidetica cache)
+# Repository Secrets (configure in Forgejo Settings → Secrets → Actions):
+#   ATTIC_SERVER_URL: Attic server URL (required for caching)
+#   ATTIC_AUTH_TOKEN: Token for Attic cache
 #   CACHIX_AUTH_TOKEN: Token for pushing to Cachix (eidetica cache)
+#   CODECOV_TOKEN: Token for uploading coverage to Codecov
 #
 name: Nix
 
@@ -28,12 +27,9 @@ jobs:
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
-            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-          fi
-
-          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
-            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          # Add Attic as high-priority substituter if available
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -42,14 +38,23 @@ jobs:
           trusted-public-keys = $TRUSTED_KEYS
           EOF
         env:
-          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
-          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Install Actions Deps
         run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build lint checks
         run: |
@@ -71,12 +76,8 @@ jobs:
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
-            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-          fi
-
-          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
-            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -85,14 +86,23 @@ jobs:
           trusted-public-keys = $TRUSTED_KEYS
           EOF
         env:
-          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
-          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Install Actions Deps
         run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build test checks
         run: nix build .#test --no-link
@@ -110,12 +120,8 @@ jobs:
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
-            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-          fi
-
-          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
-            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -124,14 +130,23 @@ jobs:
           trusted-public-keys = $TRUSTED_KEYS
           EOF
         env:
-          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
-          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Install Actions Deps
         run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build doc checks
         run: nix build .#doc --no-link
@@ -149,12 +164,8 @@ jobs:
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
-            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-          fi
-
-          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
-            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -163,19 +174,134 @@ jobs:
           trusted-public-keys = $TRUSTED_KEYS
           EOF
         env:
-          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
-          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Install Actions Deps
         run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build packages
         run: |
           nix build .#eidetica --no-link
           nix build .#eidetica-lib --no-link
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run coverage (inmemory)
+        run: |
+          nix build .#coverage.inmemory -o coverage-inmemory
+          cp coverage-inmemory/lcov.info lcov-inmemory.info
+
+      - name: Run coverage (sqlite)
+        run: |
+          nix build .#coverage.sqlite -o coverage-sqlite
+          cp coverage-sqlite/lcov.info lcov-sqlite.info
+
+      - name: Upload coverage to Codecov
+        uses: https://github.com/codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        continue-on-error: true
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: arcuru/eidetica
+          files: lcov-inmemory.info,lcov-sqlite.info
+          fail_ci_if_error: false
+
+  sanitize:
+    name: Sanitizers
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    container:
+      image: nixos/nix:latest@sha256:081b65e50a5c4e6ef4a9094a462da3b83ff76bfec70236eb010047fcee36e11c
+    steps:
+      - name: Configure Nix with caches
+        run: |
+          mkdir -p ~/.config/nix
+
+          SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
+          TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
+
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
+          fi
+
+          cat > ~/.config/nix/nix.conf <<EOF
+          experimental-features = nix-command flakes
+          substituters = $SUBSTITUTERS
+          trusted-public-keys = $TRUSTED_KEYS
+          EOF
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+
+      - name: Configure Attic
+        if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
+        run: |
+          nix profile add nixpkgs#attic-client
+          attic login eidetica "$ATTIC_SERVER_URL" "$ATTIC_AUTH_TOKEN"
+          attic watch-store eidetica &
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Install Actions Deps
+        run: nix profile add nixpkgs#nodejs
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run sanitizers
+        run: nix build .#sanitize --no-link
 
   artifacts:
     name: Artifacts
@@ -192,12 +318,8 @@ jobs:
           SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
           TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="
 
-          if [ -n "$NIX_EXTRA_SUBSTITUTERS" ]; then
-            SUBSTITUTERS="$NIX_EXTRA_SUBSTITUTERS $SUBSTITUTERS"
-          fi
-
-          if [ -n "$NIX_EXTRA_TRUSTED_PUBLIC_KEYS" ]; then
-            TRUSTED_KEYS="$TRUSTED_KEYS $NIX_EXTRA_TRUSTED_PUBLIC_KEYS"
+          if [ -n "$ATTIC_SERVER_URL" ]; then
+            SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
           fi
 
           cat > ~/.config/nix/nix.conf <<EOF
@@ -206,8 +328,7 @@ jobs:
           trusted-public-keys = $TRUSTED_KEYS
           EOF
         env:
-          NIX_EXTRA_SUBSTITUTERS: "${{ secrets.NIX_EXTRA_SUBSTITUTERS }}"
-          NIX_EXTRA_TRUSTED_PUBLIC_KEYS: "${{ secrets.NIX_EXTRA_TRUSTED_PUBLIC_KEYS }}"
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
 
       - name: Configure Attic
         if: "${{ secrets.ATTIC_AUTH_TOKEN != '' && secrets.ATTIC_SERVER_URL != '' }}"
@@ -230,7 +351,7 @@ jobs:
         run: nix profile add nixpkgs#nodejs
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Build and push artifacts
         run: |
