@@ -80,18 +80,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Build all packages with nix-fast-build
+      # Build all checks with nix-fast-build
       # Attic and Cachix integration are optional via auth token secrets
-      - name: Build all packages with nix-fast-build
+      - name: Build checks
         run: |
           # Build command
           BUILD_CMD="nix run nixpkgs#nix-fast-build -- \
             --skip-cached \
             --no-nom \
             --no-link \
-            --flake \".#checks.x86_64-linux\" \
-            --flake \".#eidetica-lib\" \
-            --flake \".#eidetica-bin\""
+            --flake \".#checks.x86_64-linux\""
 
           # Add Attic if client is available and logged in
           if command -v attic &> /dev/null; then

@@ -28,16 +28,13 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
-      - name: Build packages and checks
+      - name: Build checks
         run: |
           nix run nixpkgs#nix-fast-build -- \
             --skip-cached \
             --no-nom \
             --no-link \
             --cachix-cache eidetica \
-            --flake ".#checks.${{ matrix.system }}" \
-            --flake ".#packages.${{ matrix.system }}.eidetica-image" \
-            --flake ".#packages.${{ matrix.system }}.eidetica-lib" \
-            --flake ".#packages.${{ matrix.system }}.eidetica-bin"
+            --flake ".#checks.${{ matrix.system }}"
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
