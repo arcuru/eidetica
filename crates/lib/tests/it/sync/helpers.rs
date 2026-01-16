@@ -276,10 +276,6 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, Sync, tree_id)
-///
-/// # Implementation Note
-/// This function uses the admin for sync handler operations. The device key
-/// is accessed via Instance internals and will be migrated to InstanceMetadata in Phase 2.
 pub async fn setup_global_wildcard_server() -> (
     Instance,
     eidetica::user::User,
@@ -429,14 +425,14 @@ pub async fn create_pending_bootstrap_request(
     }
 }
 
-/// Approve a bootstrap request using a specific approver key
+/// Approve a bootstrap request using a User's key
 pub async fn approve_request(
+    user: &eidetica::user::User,
     sync: &Sync,
     request_id: &str,
-    approving_key: &ed25519_dalek::SigningKey,
-    approving_sigkey: &str,
+    approver_key_id: &str,
 ) -> Result<()> {
-    sync.approve_bootstrap_request_with_key(request_id, approving_key, approving_sigkey)
+    user.approve_bootstrap_request(sync, request_id, approver_key_id)
         .await
 }
 
@@ -736,7 +732,6 @@ pub async fn setup_sync_enabled_server(
     let tree_id = server_database.root_id().clone();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    // Get the device key from instance
     let device_key_name = "admin";
     let device_pubkey = server_instance.device_id_string();
 

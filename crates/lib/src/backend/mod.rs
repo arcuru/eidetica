@@ -371,53 +371,6 @@ pub trait BackendImpl: Send + Sync + Any {
     /// sorted topologically, or an error.
     async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
 
-    // === Private Key Storage Methods ===
-    //
-    // These methods provide secure local storage for private keys outside of the Database structures.
-    // Private keys are stored separately from the content-addressable entries to maintain security
-    // and allow for different storage policies (e.g., encryption, hardware security modules).
-
-    /// Store a private key in the backend's local key storage.
-    ///
-    /// Private keys are stored separately from entries and are not part of the content-addressable
-    /// database. They are used for signing new entries but are never shared or synchronized.
-    ///
-    /// # Arguments
-    /// * `key_name` - A unique identifier for the private key (e.g., "KEY_LAPTOP")
-    /// * `private_key` - The Ed25519 private key to store
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error during storage.
-    ///
-    /// # Security Note
-    /// This is a basic implementation suitable for development and testing.
-    /// Production systems should consider encryption at rest and hardware security modules.
-    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()>;
-
-    /// Retrieve a private key from the backend's local key storage.
-    ///
-    /// # Arguments
-    /// * `key_name` - The unique identifier of the private key to retrieve
-    ///
-    /// # Returns
-    /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
-    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>>;
-
-    /// List all private key identifiers stored in the backend.
-    ///
-    /// # Returns
-    /// A `Result` containing a vector of key identifiers, or an error.
-    async fn list_private_keys(&self) -> Result<Vec<String>>;
-
-    /// Remove a private key from the backend's local key storage.
-    ///
-    /// # Arguments
-    /// * `key_name` - The unique identifier of the private key to remove
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    async fn remove_private_key(&self, key_name: &str) -> Result<()>;
-
     // === CRDT State Cache Methods ===
     //
     // These methods provide caching for computed CRDT state at specific

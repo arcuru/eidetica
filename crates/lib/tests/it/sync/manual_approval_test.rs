@@ -95,7 +95,7 @@ async fn test_auto_approve_still_works() {
 
 #[tokio::test]
 async fn test_approve_bootstrap_request() {
-    let (instance, _user, _key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
 
     // Server already has admin key from setup_manual_approval_server
 
@@ -114,8 +114,8 @@ async fn test_approve_bootstrap_request() {
     // Verify request is pending
     assert_request_stored(&sync, 1).await;
 
-    // Approve the request using the device key
-    approve_request(&sync, &request_id, instance.device_key(), "admin")
+    // Approve the request using the user's key
+    approve_request(&user, &sync, &request_id, &key_id)
         .await
         .expect("Failed to approve bootstrap request");
 
@@ -130,7 +130,7 @@ async fn test_approve_bootstrap_request() {
 
     match approved_request.status {
         RequestStatus::Approved { approved_by, .. } => {
-            assert_eq!(approved_by, "admin");
+            assert_eq!(approved_by, key_id);
         }
         other => panic!("Expected Approved status, got: {other:?}"),
     }
@@ -167,8 +167,7 @@ async fn test_approve_bootstrap_request() {
 
 #[tokio::test]
 async fn test_reject_bootstrap_request() {
-    let (_instance, _user, _key_id, database, sync, _tree_id) =
-        setup_manual_approval_server().await;
+    let (_instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Create sync handler
@@ -204,7 +203,7 @@ async fn test_reject_bootstrap_request() {
     assert_eq!(pending_requests.len(), 1);
 
     // Reject the request
-    sync.reject_bootstrap_request(&request_id, "admin")
+    user.reject_bootstrap_request(&sync, &request_id, &key_id)
         .await
         .expect("Failed to reject bootstrap request");
 
@@ -219,7 +218,7 @@ async fn test_reject_bootstrap_request() {
 
     match rejected_request.status {
         RequestStatus::Rejected { rejected_by, .. } => {
-            assert_eq!(rejected_by, "admin");
+            assert_eq!(rejected_by, key_id);
         }
         other => panic!("Expected Rejected status, got: {other:?}"),
     }
@@ -250,7 +249,7 @@ async fn test_reject_bootstrap_request() {
 
 #[tokio::test]
 async fn test_list_bootstrap_requests_by_status() {
-    let (instance, _user, _key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
+    let (_instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Server already has admin key from setup_manual_approval_server
@@ -279,13 +278,13 @@ async fn test_list_bootstrap_requests_by_status() {
         other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
-    // Approve the request using the device key
-    approve_request(&sync, &request_id, instance.device_key(), "admin")
+    // Approve the request using the user's key
+    approve_request(&user, &sync, &request_id, &key_id)
         .await
         .expect("Failed to approve request");
 
     // Try to approve again - should fail
-    let result = approve_request(&sync, &request_id, instance.device_key(), "admin").await;
+    let result = approve_request(&user, &sync, &request_id, &key_id).await;
     assert!(result.is_err());
     assert!(
         result
@@ -295,7 +294,9 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Try to reject already approved request - should fail
-    let result = sync.reject_bootstrap_request(&request_id, "admin").await;
+    let result = user
+        .reject_bootstrap_request(&sync, &request_id, &key_id)
+        .await;
     assert!(result.is_err());
     assert!(
         result
@@ -390,17 +391,10 @@ async fn test_duplicate_bootstrap_requests_same_client() {
 
 #[tokio::test]
 async fn test_approval_with_nonexistent_request_id() {
-    let (instance, _user, _key_id, _database, sync, _tree_id) =
-        setup_manual_approval_server().await;
+    let (_instance, user, key_id, _database, sync, _tree_id) = setup_manual_approval_server().await;
 
     // Try to approve a request that doesn't exist
-    let result = approve_request(
-        &sync,
-        "nonexistent_request_id",
-        instance.device_key(),
-        "admin",
-    )
-    .await;
+    let result = approve_request(&user, &sync, "nonexistent_request_id", &key_id).await;
 
     assert!(
         result.is_err(),
@@ -414,8 +408,8 @@ async fn test_approval_with_nonexistent_request_id() {
     );
 
     // Try to reject a request that doesn't exist
-    let result = sync
-        .reject_bootstrap_request("nonexistent_request_id", "server_admin")
+    let result = user
+        .reject_bootstrap_request(&sync, "nonexistent_request_id", &key_id)
         .await;
 
     assert!(
@@ -1307,7 +1301,7 @@ async fn test_client_retry_after_approval() {
     println!("\n🧪 TEST: Client retry after bootstrap approval");
 
     // Setup server with manual approval
-    let (server_instance, _user, key_id, _database, server_sync, tree_id) =
+    let (server_instance, server_user, server_key_id, _database, server_sync, tree_id) =
         setup_manual_approval_server().await;
 
     // Start server
@@ -1348,9 +1342,9 @@ async fn test_client_retry_after_approval() {
     let (request_id, _) = &pending_requests[0];
     println!("🔍 Found pending request: {request_id}");
 
-    // Approve the request using the admin (used by sync handler)
-    server_sync
-        .approve_bootstrap_request_with_key(request_id, server_instance.device_key(), "admin")
+    // Approve the request using the server user's key
+    server_user
+        .approve_bootstrap_request(&server_sync, request_id, &server_key_id)
         .await
         .expect("Failed to approve request");
     println!("✅ Request approved by admin");
@@ -1395,7 +1389,7 @@ async fn test_client_retry_after_approval() {
     // Cleanup
     server_sync.stop_server().await.unwrap();
     drop(server_instance);
-    drop(key_id);
+    drop(server_key_id);
 
     println!("✅ TEST PASSED: Client retry after approval");
 }
@@ -1412,7 +1406,7 @@ async fn test_client_denied_after_rejection() {
     println!("\n🧪 TEST: Client denied after bootstrap rejection");
 
     // Setup server with manual approval
-    let (server_instance, _user, key_id, _database, server_sync, tree_id) =
+    let (server_instance, server_user, server_key_id, _database, server_sync, tree_id) =
         setup_manual_approval_server().await;
 
     // Start server
@@ -1453,8 +1447,8 @@ async fn test_client_denied_after_rejection() {
     let (request_id, _) = &pending_requests[0];
     println!("🔍 Found pending request: {request_id}");
 
-    server_sync
-        .reject_bootstrap_request(request_id, "admin")
+    server_user
+        .reject_bootstrap_request(&server_sync, request_id, &server_key_id)
         .await
         .expect("Failed to reject request");
     println!("✅ Request rejected by admin");
@@ -1484,7 +1478,7 @@ async fn test_client_denied_after_rejection() {
     // Cleanup
     server_sync.stop_server().await.unwrap();
     drop(server_instance);
-    drop(key_id);
+    drop(server_key_id);
 
     println!("✅ TEST PASSED: Client denied after rejection");
 }

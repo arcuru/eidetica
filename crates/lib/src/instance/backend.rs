@@ -6,7 +6,6 @@
 
 use std::{any::Any, sync::Arc};
 
-use ed25519_dalek::SigningKey;
 use handle_trait::Handle;
 
 use crate::{
@@ -150,28 +149,6 @@ impl Backend {
         self.backend_impl
             .get_store_from_tips(tree, store, tips)
             .await
-    }
-
-    /// Store a private key
-    pub async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        self.backend_impl
-            .store_private_key(key_name, private_key)
-            .await
-    }
-
-    /// Get a private key
-    pub async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        self.backend_impl.get_private_key(key_name).await
-    }
-
-    /// List all private keys
-    pub async fn list_private_keys(&self) -> Result<Vec<String>> {
-        self.backend_impl.list_private_keys().await
-    }
-
-    /// Remove a private key
-    pub async fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        self.backend_impl.remove_private_key(key_name).await
     }
 
     /// Get cached CRDT state

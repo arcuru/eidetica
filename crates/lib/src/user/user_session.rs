@@ -965,8 +965,7 @@ mod tests {
     use super::*;
     use crate::{
         Clock, SystemClock,
-        auth::crypto::{format_public_key, generate_keypair},
-        backend::{BackendImpl, database::InMemory},
+        backend::database::InMemory,
         user::{
             crypto::{derive_encryption_key, encrypt_private_key, hash_password},
             types::{UserKey, UserStatus},
@@ -977,14 +976,14 @@ mod tests {
     async fn create_test_user_session() -> User {
         let backend = Arc::new(InMemory::new());
 
-        // Create user database
-        let (device_key, device_pubkey) = generate_keypair();
-        let device_pubkey_str = format_public_key(&device_pubkey);
-
-        backend
-            .store_private_key("admin", device_key.clone())
+        // Create Instance for test
+        let instance = Instance::create_internal(backend.handle(), Arc::new(SystemClock))
             .await
             .unwrap();
+
+        // Get device key from instance
+        let device_key = instance.device_key().clone();
+        let device_pubkey_str = instance.device_id_string();
 
         let mut db_settings = crate::crdt::Doc::new();
         db_settings.set("name", "test_user_db");
@@ -1001,11 +1000,6 @@ mod tests {
             )
             .unwrap();
         db_settings.set("auth", auth_settings.as_doc().clone());
-
-        // Create Instance for test
-        let instance = Instance::create_internal(backend.handle(), Arc::new(SystemClock))
-            .await
-            .unwrap();
 
         let user_database = Database::create(
             db_settings,

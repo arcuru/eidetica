@@ -97,9 +97,10 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
         // Attempt bootstrap with key approval request - should be REJECTED by default
         let result = client_sync
-            .sync_with_peer_for_bootstrap(
+            .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &restricted_tree_id,
+                &client_key_id,
                 "unauthorized_client", // Client's key name
                 Permission::Write(10), // Requested permission level
             )
@@ -213,10 +214,11 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
 
         // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
         let result = client_sync
-            .sync_with_peer_for_bootstrap(
+            .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &unprotected_tree_id,
                 &client_key_id,
+                "client_key",
                 Permission::Write(10),
             )
             .await;
@@ -329,10 +331,11 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     // Attempt bootstrap - current implementation may accept any key name
     let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
             &client_key_id,
+            "client_with_spaces_and_symbols!@#",
             Permission::Write(10),
         )
         .await;
@@ -454,10 +457,11 @@ async fn test_bootstrap_with_revoked_key() {
 
     // Attempt bootstrap with a different key (since we can't use the actual revoked key easily)
     let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
             &client_key_id,
+            "attempting_revoked_access",
             Permission::Write(10),
         )
         .await;
@@ -560,10 +564,11 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     // Attempt bootstrap requesting Admin permissions (excessive for a new client)
     let bootstrap_result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
             &client_key_id,
+            "greedy_client",
             Permission::Admin(0), // Requesting highest admin level
         )
         .await;

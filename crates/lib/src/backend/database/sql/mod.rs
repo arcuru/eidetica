@@ -32,7 +32,6 @@ use std::any::Any;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use sqlx::AnyPool;
 use sqlx::Executor;
 use sqlx::any::AnyPoolOptions;
@@ -438,22 +437,6 @@ impl BackendImpl for SqlxBackend {
 
     async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
         traversal::get_store_from_tips(self, tree, store, tips).await
-    }
-
-    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        storage::store_private_key(self, key_name, private_key).await
-    }
-
-    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        storage::get_private_key(self, key_name).await
-    }
-
-    async fn list_private_keys(&self) -> Result<Vec<String>> {
-        storage::list_private_keys(self).await
-    }
-
-    async fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        storage::remove_private_key(self, key_name).await
     }
 
     async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {

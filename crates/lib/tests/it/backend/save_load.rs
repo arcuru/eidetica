@@ -206,7 +206,7 @@ async fn test_load_wrong_version_fails() {
         let mut file = fs::File::create(&path).unwrap();
         writeln!(
             file,
-            r#"{{"_v":99,"entries":{{}},"verification_status":{{}},"private_keys_bytes":{{}},"tips":{{}}}}"#
+            r#"{{"_v":99,"entries":{{}},"verification_status":{{}},"tips":{{}}}}"#
         )
         .unwrap();
     }
@@ -229,7 +229,7 @@ async fn test_load_missing_version_defaults_to_v0() {
         let mut file = fs::File::create(&path).unwrap();
         writeln!(
             file,
-            r#"{{"entries":{{}},"verification_status":{{}},"private_keys_bytes":{{}},"tips":{{}}}}"#
+            r#"{{"entries":{{}},"verification_status":{{}},"tips":{{}}}}"#
         )
         .unwrap();
     }

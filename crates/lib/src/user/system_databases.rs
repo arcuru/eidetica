@@ -483,8 +483,6 @@ pub async fn list_users(users_db: &Database) -> Result<Vec<String>> {
 mod tests {
     use super::*;
     use crate::Instance;
-    use crate::auth::crypto::{format_public_key, generate_keypair};
-    use crate::backend::BackendImpl;
     use crate::backend::database::InMemory;
     use crate::store::DocStore;
     use crate::store::SettingsStore;
@@ -498,17 +496,15 @@ mod tests {
         use crate::clock::FixedClock;
 
         let backend = Arc::new(InMemory::new());
-        let (device_key, device_pubkey) = generate_keypair();
-        let pubkey_str = format_public_key(&device_pubkey);
-        backend
-            .store_private_key("admin", device_key.clone())
-            .await
-            .unwrap();
 
         // Create Instance with FixedClock for controllable timestamps
         let instance = Instance::create_internal(backend, Arc::new(FixedClock::default()))
             .await
             .unwrap();
+
+        // Get the device key from the instance
+        let device_key = instance.device_key().clone();
+        let pubkey_str = instance.device_id_string();
 
         (instance, device_key, pubkey_str)
     }

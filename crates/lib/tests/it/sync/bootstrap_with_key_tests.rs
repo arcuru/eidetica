@@ -85,9 +85,9 @@ async fn test_bootstrap_with_provided_key() {
     server_sync.stop_server().await.unwrap();
 }
 
-/// Test bootstrap with provided key and verify the key is NOT stored in backend
+/// Test bootstrap with provided key succeeds
 #[tokio::test]
-async fn test_bootstrap_key_not_stored_in_backend() {
+async fn test_bootstrap_with_provided_key_succeeds() {
     // Setup server
     let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
         setup_global_wildcard_server().await;
@@ -105,19 +105,8 @@ async fn test_bootstrap_key_not_stored_in_backend() {
     let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
-    let (client_instance, client_sync) = setup().await;
+    let (_client_instance, client_sync) = setup().await;
     client_sync.enable_http_transport().await.unwrap();
-
-    // Verify the key is NOT in the backend before sync
-    assert!(
-        client_instance
-            .backend()
-            .get_private_key(&client_key_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "Key should not be in backend before sync"
-    );
 
     // Sync with provided public key
     client_sync
@@ -134,18 +123,7 @@ async fn test_bootstrap_key_not_stored_in_backend() {
     // Flush any pending sync work
     client_sync.flush().await.ok();
 
-    // Verify the key is STILL not in the backend after sync
-    assert!(
-        client_instance
-            .backend()
-            .get_private_key(&client_key_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "Key should not be stored in backend by sync_with_peer_for_bootstrap_with_key"
-    );
-
-    // But the sync should have succeeded
+    // Verify the sync succeeded
     assert!(
         client_sync
             .backend()
@@ -272,17 +250,6 @@ async fn test_multiple_clients_with_different_keys() {
                 .await
                 .is_ok(),
             "Client {i} should have the tree after bootstrap (tree_id: {tree_id})"
-        );
-
-        // Verify key is not in backend
-        assert!(
-            instance
-                .backend()
-                .get_private_key(&key_id)
-                .await
-                .unwrap()
-                .is_none(),
-            "Client {i} key should not be in backend"
         );
 
         println!("✅ Client {i} bootstrap completed");
@@ -584,18 +551,6 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         "✅ Server: Global wildcard permission grants access (no individual client key added)"
     );
 
-    // Verify the key is NOT in the client backend
-    assert!(
-        client_instance
-            .backend()
-            .get_private_key(&client_key_id)
-            .await
-            .unwrap()
-            .is_none(),
-        "Client key should not be in backend storage"
-    );
-
-    println!("✅ Client: Key remains in memory-only (not stored in backend)");
     println!("✅ TEST: Full end-to-end bootstrap with authentication completed successfully");
 
     // Cleanup

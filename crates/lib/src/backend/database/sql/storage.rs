@@ -2,8 +2,6 @@
 //!
 //! This module implements the core CRUD operations for entries using sqlx.
 
-use ed25519_dalek::SigningKey;
-
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{InstanceMetadata, VerificationStatus};
@@ -410,44 +408,6 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
     super::cache::sort_entries_by_subtree_height(&mut entries, store)?;
 
     Ok(entries)
-}
-
-// === Private Key Storage (deprecated - backward compatibility) ===
-
-/// Store a private key (no-op - private keys are in InstanceMetadata or User API).
-pub async fn store_private_key(
-    _backend: &SqlxBackend,
-    _key_name: &str,
-    _private_key: SigningKey,
-) -> Result<()> {
-    // Private keys are no longer stored separately - device key is in InstanceMetadata
-    // User private keys are stored in the _users database via the User API
-    Ok(())
-}
-
-/// Get a private key by name.
-///
-/// Note: User private keys are managed through the User API, not stored directly in backend.
-/// This function exists for interface compatibility but always returns None.
-pub async fn get_private_key(
-    _backend: &SqlxBackend,
-    _key_name: &str,
-) -> Result<Option<SigningKey>> {
-    Ok(None)
-}
-
-/// List all private key names.
-///
-/// Note: User private keys are managed through the User API, not stored directly in backend.
-/// This function exists for interface compatibility but always returns empty.
-pub async fn list_private_keys(_backend: &SqlxBackend) -> Result<Vec<String>> {
-    Ok(vec![])
-}
-
-/// Remove a private key by name (no-op).
-pub async fn remove_private_key(_backend: &SqlxBackend, _key_name: &str) -> Result<()> {
-    // Private keys are no longer stored separately
-    Ok(())
 }
 
 // === Instance Metadata ===

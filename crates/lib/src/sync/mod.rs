@@ -63,7 +63,7 @@ use crate::{
     crdt::{Doc, doc::Value},
     entry::ID,
     instance::backend::Backend,
-    store::{DocStore, Registry, SettingsStore},
+    store::{DocStore, Registry},
 };
 
 pub mod background;
@@ -2021,22 +2021,12 @@ impl Sync {
 
     // === Bootstrap Sync Methods ===
     //
-    // Eidetica provides two bootstrap sync methods for different key management scenarios:
+    // Bootstrap sync allows a device to request access to a database it doesn't
+    // have permission to yet. The device sends its public key and requested
+    // permission level to the peer, creating a pending bootstrap request that
+    // an administrator can approve or reject.
     //
-    // 1. `sync_with_peer_for_bootstrap_with_key()` - **Preferred** for user-managed keys
-    //    - Signing key provided directly as parameter
-    //    - Keys remain in memory (not stored in backend)
-    //    - Required for User API which manages its own key lifecycle
-    //    - **Use this method for new code** - it provides better key isolation and security
-    //
-    // 2. `sync_with_peer_for_bootstrap()` - For legacy backend-managed keys
-    //    - Keys are stored in backend storage
-    //    - Method looks up the signing key automatically
-    //    - Suitable for simple applications and direct sync API usage
-    //    - Consider migrating to the `_with_key()` variant for better security
-    //
-    // Both methods delegate to `sync_with_peer_for_bootstrap_internal()` which contains
-    // the common bootstrap logic. Prefer `_with_key()` for new implementations.
+    // Use `sync_with_peer_for_bootstrap_with_key()` with User API managed keys.
 
     /// Internal helper for bootstrap sync operations.
     ///
@@ -2124,60 +2114,13 @@ impl Sync {
         Ok(())
     }
 
-    /// Sync with a peer, requesting access with authentication for bootstrap scenarios.
-    ///
-    /// This method is specifically designed for bootstrap scenarios where the local
-    /// device doesn't have access to the target tree yet and needs to request
-    /// permission during the initial sync. The signing key is looked up from backend
-    /// storage using the provided key name.
-    ///
-    /// # Arguments
-    /// * `peer_address` - The address of the peer to sync with
-    /// * `tree_id` - The ID of the tree to sync
-    /// * `requesting_key_name` - The name/ID of the local authentication key in backend storage
-    /// * `requested_permission` - The permission level being requested
-    ///
-    /// # Returns
-    /// A Result indicating success or failure.
-    pub async fn sync_with_peer_for_bootstrap(
-        &self,
-        peer_address: &str,
-        tree_id: &crate::entry::ID,
-        requesting_key_name: &str,
-        requested_permission: crate::auth::Permission,
-    ) -> Result<()> {
-        // Get our public key for the requesting key from backend
-        let backend = self.backend()?;
-        let signing_key = backend
-            .get_private_key(requesting_key_name)
-            .await?
-            .ok_or_else(|| {
-                SyncError::BackendError(format!(
-                    "Private key not found for key name: {requesting_key_name}"
-                ))
-            })?;
-
-        let verifying_key = signing_key.verifying_key();
-        let requesting_public_key = crate::auth::crypto::format_public_key(&verifying_key);
-
-        // Delegate to internal method
-        self.sync_with_peer_for_bootstrap_internal(
-            peer_address,
-            tree_id,
-            requesting_public_key,
-            requesting_key_name,
-            requested_permission,
-        )
-        .await
-    }
-
     /// Sync with a peer for bootstrap using a user-provided public key.
     ///
     /// This method is specifically designed for bootstrap scenarios where the local
     /// device doesn't have access to the target tree yet and needs to request
-    /// permission during the initial sync. Unlike `sync_with_peer_for_bootstrap`,
-    /// this variant accepts a public key directly instead of looking it up from
-    /// backend storage, making it compatible with User API managed keys.
+    /// permission during the initial sync. The public key is provided directly
+    /// rather than looked up from backend storage, making it compatible with
+    /// User API managed keys.
     ///
     /// # Arguments
     /// * `peer_address` - The address of the peer to sync with
@@ -2270,109 +2213,6 @@ impl Sync {
             Some(request) => Ok(Some((request_id.to_string(), request))),
             None => Ok(None),
         }
-    }
-
-    /// Approve a bootstrap request and add the key to the target database.
-    ///
-    /// This method loads the bootstrap request, validates it exists and is pending,
-    /// then adds the requesting key to the target database using the specified
-    /// approving key for authentication.
-    ///
-    /// # Arguments
-    /// * `request_id` - The unique identifier of the request to approve
-    /// * `approving_key_name` - The name of the local key to use for the approval
-    ///
-    /// # Returns
-    /// Result indicating success or failure of the approval operation.
-    pub async fn approve_bootstrap_request(
-        &self,
-        request_id: &str,
-        approving_key_name: &str,
-    ) -> Result<()> {
-        // Load the request from sync database
-        let sync_op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&sync_op);
-
-        let request = manager
-            .get_request(request_id)
-            .await?
-            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
-
-        // Validate request is still pending
-        if !matches!(request.status, RequestStatus::Pending) {
-            return Err(SyncError::InvalidRequestState {
-                request_id: request_id.to_string(),
-                current_status: format!("{:?}", request.status),
-                expected_status: "Pending".to_string(),
-            }
-            .into());
-        }
-
-        // Load target database with the approving key
-        let approving_signing_key = self
-            .backend()?
-            .get_private_key(approving_key_name)
-            .await?
-            .ok_or_else(|| {
-                SyncError::BackendError(format!(
-                    "Approving key not found: {approving_key_name}. Use approve_bootstrap_request_with_key() instead."
-                ))
-            })?;
-
-        let database = Database::open(
-            self.instance()?,
-            &request.tree_id,
-            approving_signing_key,
-            approving_key_name.to_string(),
-        )
-        .await?;
-        let tx = database.new_transaction().await?;
-
-        // Get settings store and update auth configuration using SettingsStore API
-        let settings_store = SettingsStore::new(&tx)?;
-
-        // Create the auth key for the requesting device
-        let auth_key = AuthKey::active(
-            request.requesting_pubkey.clone(),
-            request.requested_permission.clone(),
-        )?;
-
-        // Add the new key to auth settings using SettingsStore API
-        // This provides proper upsert behavior and validation
-        settings_store
-            .set_auth_key(&request.requesting_key_name, auth_key)
-            .await?;
-
-        tx.commit().await?;
-
-        // Update request status to approved
-        let approval_time = self
-            .instance
-            .upgrade()
-            .ok_or(SyncError::InstanceDropped)?
-            .clock()
-            .now_rfc3339();
-        manager
-            .update_status(
-                request_id,
-                RequestStatus::Approved {
-                    approved_by: approving_key_name.to_string(),
-                    approval_time,
-                },
-            )
-            .await?;
-        sync_op.commit().await?;
-
-        info!(
-            request_id = %request_id,
-            tree_id = %request.tree_id,
-            approved_by = %approving_key_name,
-            "Bootstrap request approved and key added to database"
-        );
-
-        // TODO: Implement notification to requesting peer (future enhancement)
-
-        Ok(())
     }
 
     /// Approve a bootstrap request using a user-provided signing key.
@@ -2483,70 +2323,6 @@ impl Sync {
             approved_by = %approving_sigkey,
             "Bootstrap request approved and key added to database using user-provided key"
         );
-
-        Ok(())
-    }
-
-    /// Reject a bootstrap request.
-    ///
-    /// This method marks the request as rejected without adding any keys
-    /// to the target database.
-    ///
-    /// # Arguments
-    /// * `request_id` - The unique identifier of the request to reject
-    /// * `rejecting_key_name` - The name of the local key making the rejection
-    ///
-    /// # Returns
-    /// Result indicating success or failure of the rejection operation.
-    pub async fn reject_bootstrap_request(
-        &self,
-        request_id: &str,
-        rejecting_key_name: &str,
-    ) -> Result<()> {
-        let op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
-
-        // Validate request exists and is pending
-        let request = manager
-            .get_request(request_id)
-            .await?
-            .ok_or_else(|| SyncError::RequestNotFound(request_id.to_string()))?;
-
-        if !matches!(request.status, RequestStatus::Pending) {
-            return Err(SyncError::InvalidRequestState {
-                request_id: request_id.to_string(),
-                current_status: format!("{:?}", request.status),
-                expected_status: "Pending".to_string(),
-            }
-            .into());
-        }
-
-        // Update status to rejected
-        let rejection_time = self
-            .instance
-            .upgrade()
-            .ok_or(SyncError::InstanceDropped)?
-            .clock()
-            .now_rfc3339();
-        manager
-            .update_status(
-                request_id,
-                RequestStatus::Rejected {
-                    rejected_by: rejecting_key_name.to_string(),
-                    rejection_time,
-                },
-            )
-            .await?;
-        op.commit().await?;
-
-        info!(
-            request_id = %request_id,
-            tree_id = %request.tree_id,
-            rejected_by = %rejecting_key_name,
-            "Bootstrap request rejected"
-        );
-
-        // TODO: Implement notification to requesting peer (future enhancement)
 
         Ok(())
     }

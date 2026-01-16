@@ -139,7 +139,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let (device2_instance, device2_user, _device2_key_id) =
+    let (device2_instance, device2_user, device2_key_id) =
         test_instance_with_user_and_key("device2_user", Some(CHAT_APP_KEY)).await;
 
     device2_instance
@@ -156,9 +156,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .expect("Failed to enable HTTP transport");
 
         device2_sync
-            .sync_with_peer_for_bootstrap(
+            .sync_with_peer_for_bootstrap_with_key(
                 &device1_server_addr,
                 &room_id,
+                &device2_key_id,
                 CHAT_APP_KEY,
                 Permission::Write(10),
             )

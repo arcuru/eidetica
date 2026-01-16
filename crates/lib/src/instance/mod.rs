@@ -628,17 +628,6 @@ impl Instance {
         }
     }
 
-    // === Authentication Key Management ===
-
-    /// List all private key IDs.
-    ///
-    /// # Returns
-    /// A `Result` containing a vector of key IDs or an error.
-    pub async fn list_private_keys(&self) -> Result<Vec<String>> {
-        // List keys from backend storage
-        self.inner.backend.list_private_keys().await
-    }
-
     // === Synchronization Management ===
     //
     // These methods provide access to the Sync module for managing synchronization

@@ -3,7 +3,10 @@
 //! This module tests the new bootstrap-first sync protocol where one peer
 //! can join and bootstrap a database from another peer without any prior setup.
 
-use eidetica::store::DocStore;
+use eidetica::{
+    auth::crypto::{format_public_key, generate_keypair},
+    store::DocStore,
+};
 
 use super::helpers::*;
 
@@ -265,12 +268,17 @@ async fn test_bootstrap_malformed_request_data() {
 
     client_sync.enable_http_transport().await.unwrap();
 
+    // Generate a test keypair for bootstrap requests
+    let (_, test_verifying_key) = generate_keypair();
+    let test_pubkey = format_public_key(&test_verifying_key);
+
     // Test 1: Invalid tree ID format
     let malformed_tree_id = eidetica::entry::ID::from("invalid_tree_format");
     let result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &malformed_tree_id,
+            &test_pubkey,
             "client_key",
             eidetica::auth::Permission::Write(5),
         )
@@ -284,9 +292,10 @@ async fn test_bootstrap_malformed_request_data() {
 
     // Test 2: Empty key name (should be handled gracefully)
     let result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &test_tree_id,
+            &test_pubkey,
             "", // Empty key name
             eidetica::auth::Permission::Write(5),
         )
@@ -321,12 +330,17 @@ async fn test_bootstrap_conflicting_tree_ids() {
 
     client_sync.enable_http_transport().await.unwrap();
 
+    // Generate a test keypair for bootstrap request
+    let (_, test_verifying_key) = generate_keypair();
+    let test_pubkey = format_public_key(&test_verifying_key);
+
     // Try to bootstrap with a different tree ID than what exists
     let different_tree_id = eidetica::entry::ID::from("different_tree_that_doesnt_exist");
     let result = client_sync
-        .sync_with_peer_for_bootstrap(
+        .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &different_tree_id,
+            &test_pubkey,
             "client_key",
             eidetica::auth::Permission::Write(5),
         )

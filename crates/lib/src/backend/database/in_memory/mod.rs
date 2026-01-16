@@ -16,7 +16,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -309,55 +308,6 @@ impl BackendImpl for InMemory {
         tips: &[ID],
     ) -> Result<Vec<Entry>> {
         storage::get_store_from_tips(self, tree, subtree, tips).await
-    }
-
-    /// Store a private key in the database's local key storage.
-    ///
-    /// Private keys are stored separately from entries and are not part of the content-addressable
-    /// database. They are used for signing new entries but are never shared or synchronized.
-    ///
-    /// # Arguments
-    /// * `key_name` - A unique identifier for the private key (e.g., "KEY_LAPTOP")
-    /// * `private_key` - The Ed25519 private key to store
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error during storage.
-    ///
-    /// # Security Note
-    /// This is a basic implementation suitable for development and testing.
-    /// Production systems should consider encryption at rest and hardware security modules.
-    async fn store_private_key(&self, _key_name: &str, _private_key: SigningKey) -> Result<()> {
-        // Private keys are no longer stored separately - device key is in InstanceMetadata
-        // User private keys are stored in the _users database via the User API
-        Ok(())
-    }
-
-    /// Retrieve a private key from the database's local key storage.
-    ///
-    /// Note: User private keys are managed through the User API, not stored directly in backend.
-    /// This method exists for interface compatibility but always returns None.
-    async fn get_private_key(&self, _key_name: &str) -> Result<Option<SigningKey>> {
-        Ok(None)
-    }
-
-    /// List all private key identifiers stored in the database.
-    ///
-    /// Note: User private keys are managed through the User API, not stored directly in backend.
-    /// This method exists for interface compatibility but always returns empty.
-    async fn list_private_keys(&self) -> Result<Vec<String>> {
-        Ok(vec![])
-    }
-
-    /// Remove a private key from the database's local key storage.
-    ///
-    /// # Arguments
-    /// * `key_name` - The unique identifier of the private key to remove
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    async fn remove_private_key(&self, _key_name: &str) -> Result<()> {
-        // Private keys are no longer stored separately
-        Ok(())
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {

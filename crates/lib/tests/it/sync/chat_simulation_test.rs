@@ -143,7 +143,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     };
 
     // Setup client instance (like Device 2 joining the room)
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some(CLIENT_KEY_NAME)).await;
     client_instance
         .enable_sync()
@@ -168,9 +168,10 @@ async fn test_chat_app_authenticated_bootstrap() {
 
         println!("\n🔄 Client attempting authenticated bootstrap...");
         let bootstrap_result = client_sync
-            .sync_with_peer_for_bootstrap(
+            .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &room_id,
+                &client_key_id,
                 CLIENT_KEY_NAME,
                 eidetica::auth::Permission::Write(10),
             )
@@ -254,12 +255,9 @@ async fn test_chat_app_authenticated_bootstrap() {
     }
 
     // Load database with the client's key
-    let signing_key = client_instance
-        .backend()
-        .get_private_key(CLIENT_KEY_NAME)
-        .await
-        .expect("Failed to get client signing key")
-        .expect("Client key should exist in backend");
+    let signing_key = client_user
+        .get_signing_key(&client_key_id)
+        .expect("Failed to get client signing key");
 
     let client_database = match eidetica::Database::open(
         client_instance.clone(),
@@ -771,7 +769,7 @@ async fn test_multiple_databases_sync() {
     };
 
     // Setup client
-    let (client_instance, _client_user, _client_key_id) =
+    let (client_instance, _client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some(CLIENT_KEY_NAME)).await;
     client_instance
         .enable_sync()
@@ -790,9 +788,10 @@ async fn test_multiple_databases_sync() {
             println!("\n🔄 Bootstrapping room {}...", i + 1);
 
             client_sync
-                .sync_with_peer_for_bootstrap(
+                .sync_with_peer_for_bootstrap_with_key(
                     &server_addr,
                     room_id,
+                    &client_key_id,
                     CLIENT_KEY_NAME,
                     eidetica::auth::Permission::Write(10),
                 )
