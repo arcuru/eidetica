@@ -48,8 +48,7 @@ async fn test_transaction_with_delete() {
 
 #[tokio::test]
 async fn test_transaction_nested_values() {
-    const TEST_KEY: &str = "test_key";
-    let (_instance, tree) = setup_db_and_tree_with_key(TEST_KEY).await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Create an operation
     let op1 = tree.new_transaction().await.unwrap();

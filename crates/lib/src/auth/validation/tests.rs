@@ -1,6 +1,9 @@
 //! Tests for authentication validation
+//!
+//! TODO: Migrate to instance.device_key() and User API once InstanceMetadata is implemented.
+//! This file requires direct access to the device signing key for testing delegation workflows
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
+#![allow(deprecated)] // Uses LegacyInstanceOps for _device_key access
 
 use super::entry::AuthValidator;
 use crate::{

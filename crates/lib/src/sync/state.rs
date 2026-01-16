@@ -483,13 +483,9 @@ impl<'a> SyncStateManager<'a> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
-    use crate::{
-        Entry, Instance, backend::database::InMemory, instance::LegacyInstanceOps,
-        sync::DEVICE_KEY_NAME,
-    };
+    use crate::{Entry, Instance, backend::database::InMemory, crdt::Doc};
 
     #[test]
     fn test_sync_cursor() {
@@ -550,20 +546,20 @@ mod tests {
 
         let clock = Arc::new(FixedClock::default());
         let backend = InMemory::new();
-        let db = Instance::open_with_clock(Box::new(backend), clock.clone())
+        let instance = Instance::open_with_clock(Box::new(backend), clock.clone())
             .await
             .expect("Failed to create test instance");
-        db.enable_sync().await.unwrap();
+        instance.enable_sync().await.unwrap();
 
-        // Create a user tree for testing tree ID
-        let user_tree = db
-            .new_database(crate::crdt::Doc::new(), DEVICE_KEY_NAME)
-            .await
-            .unwrap();
+        // Create a user tree for testing tree ID using User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+        let user_tree = user.create_database(Doc::new(), &key_id).await.unwrap();
         let tree_id = user_tree.root_id().clone();
 
         // Get the sync instance and its tree
-        let sync = db.sync().unwrap();
+        let sync = instance.sync().unwrap();
         let sync_tree = &sync.sync_tree;
         let op = sync_tree.new_transaction().await.unwrap();
 

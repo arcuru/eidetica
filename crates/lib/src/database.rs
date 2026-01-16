@@ -700,13 +700,14 @@ impl Database {
     /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
-    /// # use eidetica::instance::LegacyInstanceOps;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::open(backend).await?;
-    /// # db.add_private_key("TEST_KEY").await?;
-    /// # let tree = db.new_database(Doc::new(), "TEST_KEY").await?;
+    /// # let instance = Instance::open(backend).await?;
+    /// # instance.create_user("test", None).await?;
+    /// # let mut user = instance.login_user("test", None).await?;
+    /// # let key_id = user.add_private_key(None).await?;
+    /// # let tree = user.create_database(Doc::new(), &key_id).await?;
     /// # let op = tree.new_transaction().await?;
     /// let entry_id = op.commit().await?;
     /// let entry = tree.get_entry(&entry_id).await?;           // Using &String
@@ -754,13 +755,14 @@ impl Database {
     /// # use eidetica::Instance;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::crdt::Doc;
-    /// # use eidetica::instance::LegacyInstanceOps;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
-    /// # let db = Instance::open(backend).await?;
-    /// # db.add_private_key("TEST_KEY").await?;
-    /// # let tree = db.new_database(Doc::new(), "TEST_KEY").await?;
+    /// # let instance = Instance::open(backend).await?;
+    /// # instance.create_user("test", None).await?;
+    /// # let mut user = instance.login_user("test", None).await?;
+    /// # let key_id = user.add_private_key(None).await?;
+    /// # let tree = user.create_database(Doc::new(), &key_id).await?;
     /// let entry_ids = vec!["id1", "id2", "id3"];
     /// let entries = tree.get_entries(entry_ids).await?;
     /// # Ok(())

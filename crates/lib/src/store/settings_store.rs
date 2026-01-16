@@ -312,7 +312,6 @@ impl SettingsStore {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
     use crate::{
@@ -322,7 +321,7 @@ mod tests {
             types::{KeyStatus, Permission},
         },
         backend::database::InMemory,
-        instance::LegacyInstanceOps,
+        crdt::Doc,
         store::Store,
     };
 
@@ -332,7 +331,11 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        let database = instance.new_database_default("_device_key").await.unwrap();
+        // Use User API to create database
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+        let database = user.create_database(Doc::new(), &key_id).await.unwrap();
 
         // Set initial database name using transaction
         let transaction = database.new_transaction().await.unwrap();

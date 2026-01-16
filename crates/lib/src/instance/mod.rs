@@ -966,10 +966,9 @@ impl WeakInstance {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
-    use crate::{Error, backend::database::InMemory, crdt::Doc, instance::LegacyInstanceOps};
+    use crate::{Error, backend::database::InMemory, crdt::Doc};
     use std::path::Path;
 
     async fn save_in_memory_backend(instance: &Instance, path: &Path) -> Result<(), Error> {
@@ -1038,30 +1037,36 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        // Create database with deprecated API
+        // Create database with User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+
         let mut settings = Doc::new();
         settings.set("name", "test_db");
-
-        let database = instance
-            .new_database(settings, "_device_key")
-            .await
-            .unwrap();
+        let database = user.create_database(settings, &key_id).await.unwrap();
         assert_eq!(database.get_name().await.unwrap(), "test_db");
     }
 
     #[tokio::test]
-    async fn test_new_database_default() {
+    async fn test_create_database_with_default_settings() {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend))
             .await
             .expect("Failed to create test instance");
 
-        // Create database with default settings
-        let database = instance.new_database_default("_device_key").await.unwrap();
-        let settings = database.get_settings().await.unwrap();
+        // Create database with User API (default settings via Doc::new())
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+        let database = user.create_database(Doc::new(), &key_id).await.unwrap();
 
-        // Should have auto-generated database_id
-        assert!(settings.get_string("database_id").await.is_ok());
+        // Database should have a valid root_id
+        assert!(!database.root_id().is_empty());
+
+        // Database should be loadable via instance
+        let loaded = instance.load_database(database.root_id()).await.unwrap();
+        assert_eq!(loaded.root_id(), database.root_id());
     }
 
     #[tokio::test]
@@ -1069,12 +1074,16 @@ mod tests {
         let backend = InMemory::new();
         let instance = Instance::open(Box::new(backend)).await?;
 
-        // Create database requires a signing key
+        // Create user but try to use nonexistent key
+        instance.create_user("test", None).await?;
+        let mut user = instance.login_user("test", None).await?;
+
+        // Create database requires a valid signing key
         let mut settings = Doc::new();
         settings.set("name", "test_db");
 
-        // This will succeed if a valid key is provided, but we're testing without a valid key
-        let result = instance.new_database(settings, "nonexistent_key").await;
+        // This should fail with a nonexistent key_id
+        let result = user.create_database(settings, "nonexistent_key").await;
         assert!(result.is_err());
         Ok(())
     }
@@ -1086,13 +1095,14 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        // Create a database
+        // Create a database using User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+
         let mut settings = Doc::new();
         settings.set("name", "test_db");
-        let database = instance
-            .new_database(settings, "_device_key")
-            .await
-            .unwrap();
+        let database = user.create_database(settings, &key_id).await.unwrap();
         let root_id = database.root_id().clone();
 
         // Load the database
@@ -1107,20 +1117,18 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        // Create multiple databases
+        // Create multiple databases using User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+
         let mut settings1 = Doc::new();
         settings1.set("name", "db1");
-        instance
-            .new_database(settings1, "_device_key")
-            .await
-            .unwrap();
+        user.create_database(settings1, &key_id).await.unwrap();
 
         let mut settings2 = Doc::new();
         settings2.set("name", "db2");
-        instance
-            .new_database(settings2, "_device_key")
-            .await
-            .unwrap();
+        user.create_database(settings2, &key_id).await.unwrap();
 
         // Get all databases (should include system databases + user databases)
         let databases = instance.all_databases().await.unwrap();
@@ -1134,13 +1142,14 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        // Create database with name
+        // Create database with name using User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+
         let mut settings = Doc::new();
         settings.set("name", "my_special_db");
-        instance
-            .new_database(settings, "_device_key")
-            .await
-            .unwrap();
+        user.create_database(settings, &key_id).await.unwrap();
 
         // Find by name
         let found = instance.find_database("my_special_db").await.unwrap();

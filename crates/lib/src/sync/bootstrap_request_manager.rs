@@ -192,12 +192,11 @@ impl<'a> BootstrapRequestManager<'a> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)] // Uses LegacyInstanceOps
 mod tests {
     use super::*;
     use crate::{
         Clock, Database, Instance, auth::types::Permission, backend::database::InMemory,
-        clock::FixedClock, instance::LegacyInstanceOps, sync::DEVICE_KEY_NAME,
+        clock::FixedClock, crdt::Doc,
     };
     use std::sync::Arc;
 
@@ -208,15 +207,16 @@ mod tests {
             .await
             .expect("Failed to create test instance");
 
-        // Create sync tree similar to how Sync::new does it
-        let mut sync_settings = crate::crdt::Doc::new();
+        // Create user and database using User API
+        instance.create_user("test", None).await.unwrap();
+        let mut user = instance.login_user("test", None).await.unwrap();
+        let key_id = user.add_private_key(None).await.unwrap();
+
+        let mut sync_settings = Doc::new();
         sync_settings.set("name", "_sync");
         sync_settings.set("type", "sync_settings");
 
-        let database = instance
-            .new_database(sync_settings, DEVICE_KEY_NAME)
-            .await
-            .unwrap();
+        let database = user.create_database(sync_settings, &key_id).await.unwrap();
 
         (instance, database, clock)
     }

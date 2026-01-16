@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use eidetica::{
     FixedClock, Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value,
-    instance::LegacyInstanceOps, store::DocStore, user::User,
+    store::DocStore, user::User,
 };
 
 // Re-export tokio test macro for convenience
@@ -114,20 +114,6 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
     (instance, user)
 }
 
-/// Creates an Instance with deprecated key management (MIGRATION ONLY)
-///
-/// **DEPRECATED**: This helper exists only for migrating old tests. New tests should
-/// use `test_instance_with_user()` and the User API for key management.
-#[allow(deprecated)]
-pub async fn test_instance_with_legacy_key(key_name: &str) -> Instance {
-    let instance = test_instance().await;
-    instance
-        .add_private_key(key_name)
-        .await
-        .expect("Failed to add legacy key");
-    instance
-}
-
 /// Creates an Instance with a user and key, returning user and key_id for User API tests.
 ///
 /// The key_id is the public key string (e.g., "ed25519:abc123...") which is used
@@ -197,14 +183,6 @@ pub async fn setup_empty_db() -> Instance {
     test_instance().await
 }
 
-/// Creates an authenticated database with a specific key name (DEPRECATED PATTERN)
-///
-/// **DEPRECATED**: New tests should use `test_instance_with_user()` and User API.
-/// This helper maintains compatibility with tests not yet migrated to User API.
-pub async fn setup_db_with_key(key_name: &str) -> Instance {
-    test_instance_with_legacy_key(key_name).await
-}
-
 /// Creates a basic tree using User API with default key
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
@@ -221,19 +199,6 @@ pub async fn setup_tree() -> (Instance, eidetica::Database) {
         .await
         .expect("Failed to create tree for testing");
     (instance, tree)
-}
-
-/// Creates a tree and database with a specific key (DEPRECATED PATTERN)
-///
-/// **DEPRECATED**: New tests should use User API for key management.
-#[allow(deprecated)]
-pub async fn setup_db_and_tree_with_key(key_name: &str) -> (Instance, eidetica::Database) {
-    let db = setup_db_with_key(key_name).await;
-    let tree = db
-        .new_database_default(key_name)
-        .await
-        .expect("Failed to create tree for testing");
-    (db, tree)
 }
 
 /// Creates a tree with initial settings using User API
