@@ -98,7 +98,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 
     // Verify database was NOT synced to client
     assert!(
-        client_instance.backend().get(&tree_id).await.is_err(),
+        !client_instance.has_database(&tree_id).await,
         "Database should not exist on client after rejected bootstrap"
     );
 
@@ -194,7 +194,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Verify database was bootstrapped to client
     assert!(
-        client_instance.backend().get(&tree_id).await.is_ok(),
+        client_instance.has_database(&tree_id).await,
         "Database should exist on client after bootstrap"
     );
 

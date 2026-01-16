@@ -454,7 +454,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
 
     // Verify initial sync worked
     assert!(
-        instance2.backend().get(&entry1_id).await.is_ok(),
+        instance2.has_entry(&entry1_id).await,
         "Initial sync should work"
     );
 

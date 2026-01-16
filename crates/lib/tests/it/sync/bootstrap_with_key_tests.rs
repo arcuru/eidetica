@@ -42,7 +42,7 @@ async fn test_bootstrap_with_provided_key() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.backend().get(&tree_id).await.is_err(),
+        !client_instance.has_database(&tree_id).await,
         "Client should not have the database initially (tree_id: {tree_id})"
     );
 
@@ -246,7 +246,7 @@ async fn test_multiple_clients_with_different_keys() {
 
         // Verify client doesn't have database initially
         assert!(
-            instance.backend().get(&tree_id).await.is_err(),
+            !instance.has_database(&tree_id).await,
             "Client {i} should not have database initially (tree_id: {tree_id})"
         );
 
@@ -505,7 +505,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.backend().get(&tree_id).await.is_err(),
+        !client_instance.has_database(&tree_id).await,
         "Client should not have database initially (tree_id: {tree_id})"
     );
 

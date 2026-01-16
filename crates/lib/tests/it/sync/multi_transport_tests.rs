@@ -178,7 +178,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Verify HTTP client has the tree
     assert!(
-        http_client_instance.backend().get(&tree_id).await.is_ok(),
+        http_client_instance.has_database(&tree_id).await,
         "HTTP client should have the tree after bootstrap"
     );
     println!("✅ HTTP client bootstrapped database from server");
@@ -219,7 +219,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Verify server received the entry
     assert!(
-        server_instance.backend().get(&entry_id).await.is_ok(),
+        server_instance.has_entry(&entry_id).await,
         "Server should have received the entry via HTTP"
     );
     println!("✅ Server received entry via HTTP");
@@ -245,7 +245,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
 
     // Verify entry is NOT on Iroh client yet
     assert!(
-        iroh_client_instance.backend().get(&entry_id).await.is_err(),
+        !iroh_client_instance.has_entry(&entry_id).await,
         "Entry should NOT be on Iroh client yet"
     );
 

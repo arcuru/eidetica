@@ -58,7 +58,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 
             // Verify client doesn't have the database initially
             assert!(
-                client_instance.backend().get(&tree_id).await.is_err(),
+                !client_instance.has_database(&tree_id).await,
                 "Client {i} should not have the database initially"
             );
 
@@ -77,7 +77,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
 
             // Verify client now has the database
             assert!(
-                client_instance.backend().get(&tree_id).await.is_ok(),
+                client_instance.has_database(&tree_id).await,
                 "Client {i} should have the database after bootstrap"
             );
 

@@ -444,6 +444,23 @@ impl Instance {
         &self.inner.backend
     }
 
+    /// Check if an entry exists in storage.
+    pub async fn has_entry(&self, id: &ID) -> bool {
+        self.inner.backend.get(id).await.is_ok()
+    }
+
+    /// Check if a database is present locally.
+    ///
+    /// This differs from `has_entry` in that it checks for the active tracking
+    /// of the database by the Instance. This method checks if we're tracking
+    /// the database's tip state.
+    pub async fn has_database(&self, root_id: &ID) -> bool {
+        match self.inner.backend.get_tips(root_id).await {
+            Ok(tips) => !tips.is_empty(),
+            Err(_) => false,
+        }
+    }
+
     /// Get a reference to the clock.
     ///
     /// The clock is used for timestamps in height calculations and peer tracking.

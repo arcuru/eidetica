@@ -350,7 +350,7 @@ async fn test_iroh_e2e_with_relays() {
             println!("🔍 Verifying entries arrived at destination...");
             let mut synced_count = 0;
             for entry in &entries {
-                if base_db2.backend().get(&entry.id()).await.is_ok() {
+                if base_db2.has_entry(&entry.id()).await {
                     synced_count += 1;
                 }
             }

@@ -470,7 +470,7 @@ async fn test_unauthenticated_sync_should_fail() {
         Ok(_) => {
             // Sync should NOT succeed without authentication!
             // Check if client actually received the data
-            let can_read_data = client_instance.backend().get(&tree_id).await.is_ok();
+            let can_read_data = client_instance.has_database(&tree_id).await;
 
             if can_read_data {
                 panic!(

@@ -320,7 +320,7 @@ async fn test_sync_flow_integration() {
     // 2. Identify missing entries (backend2 is missing everything)
     let mut missing_entries = Vec::new();
     for entry in &dag_entries {
-        if base_db2.backend().get(&entry.id()).await.is_err() {
+        if !base_db2.has_entry(&entry.id()).await {
             missing_entries.push(entry.clone());
         }
     }
@@ -398,7 +398,7 @@ async fn test_bidirectional_sync_flow() {
     let mut missing_in_2 = Vec::new();
     for entry in &chain1[1..] {
         // Skip root which backend2 already has
-        if base_db2.backend().get(&entry.id()).await.is_err() {
+        if !base_db2.has_entry(&entry.id()).await {
             missing_in_2.push(entry.clone());
         }
     }
@@ -412,7 +412,7 @@ async fn test_bidirectional_sync_flow() {
     let mut missing_in_1 = Vec::new();
     for entry in &chain2[1..] {
         // Skip root which backend1 already has
-        if base_db1.backend().get(&entry.id()).await.is_err() {
+        if !base_db1.has_entry(&entry.id()).await {
             missing_in_1.push(entry.clone());
         }
     }
@@ -425,12 +425,12 @@ async fn test_bidirectional_sync_flow() {
     // Verify both databases have all entries
     for entry in chain1.iter().chain(chain2.iter()) {
         assert!(
-            base_db1.backend().get(&entry.id()).await.is_ok(),
+            base_db1.has_entry(&entry.id()).await,
             "Backend1 should have entry {}",
             entry.id()
         );
         assert!(
-            base_db2.backend().get(&entry.id()).await.is_ok(),
+            base_db2.has_entry(&entry.id()).await,
             "Backend2 should have entry {}",
             entry.id()
         );
@@ -507,7 +507,7 @@ async fn test_real_sync_transport_setup() {
     // entries should actually be stored in database 2's backend
     for entry_id in &entry_ids {
         assert!(
-            _base_db2.backend().get(entry_id).await.is_ok(),
+            _base_db2.has_entry(entry_id).await,
             "Entry {entry_id} should exist in database 2 after sync"
         );
     }
@@ -554,17 +554,17 @@ async fn test_sync_protocol_implementation() {
 
     // Verify data exists in db1 but not in db2 yet
     assert!(
-        base_db1.backend().get(&test_entry_id).await.is_ok(),
+        base_db1.has_entry(&test_entry_id).await,
         "Entry should exist in db1"
     );
     assert!(
-        base_db2.backend().get(&test_entry_id).await.is_err(),
+        !base_db2.has_entry(&test_entry_id).await,
         "Entry should not exist in db2 yet"
     );
 
     // Also verify the tree root doesn't exist in db2 yet
     assert!(
-        base_db2.backend().get(&tree_root_id).await.is_err(),
+        !base_db2.has_database(&tree_root_id).await,
         "Tree root should not exist in db2 yet"
     );
 
@@ -589,19 +589,19 @@ async fn test_sync_protocol_implementation() {
     println!("🧪 DEBUG: Checking what entries exist:");
     println!(
         "  - db1 has tree root: {}",
-        base_db1.backend().get(&tree_root_id).await.is_ok()
+        base_db1.has_database(&tree_root_id).await
     );
     println!(
         "  - db1 has test entry: {}",
-        base_db1.backend().get(&test_entry_id).await.is_ok()
+        base_db1.has_entry(&test_entry_id).await
     );
     println!(
         "  - db2 has tree root: {}",
-        base_db2.backend().get(&tree_root_id).await.is_ok()
+        base_db2.has_database(&tree_root_id).await
     );
     println!(
         "  - db2 has test entry: {}",
-        base_db2.backend().get(&test_entry_id).await.is_ok()
+        base_db2.has_entry(&test_entry_id).await
     );
 
     // Verify the data was actually synced to db2
@@ -625,11 +625,11 @@ async fn test_sync_protocol_implementation() {
 
     // Verify second entry exists in db1 but not in db2
     assert!(
-        base_db1.backend().get(&second_entry_id).await.is_ok(),
+        base_db1.has_entry(&second_entry_id).await,
         "Second entry should exist in db1"
     );
     assert!(
-        base_db2.backend().get(&second_entry_id).await.is_err(),
+        !base_db2.has_entry(&second_entry_id).await,
         "Second entry should not exist in db2 before second sync"
     );
 
@@ -648,7 +648,7 @@ async fn test_sync_protocol_implementation() {
 
     // Verify the second entry was synced
     assert!(
-        base_db2.backend().get(&second_entry_id).await.is_ok(),
+        base_db2.has_entry(&second_entry_id).await,
         "Second entry should now exist in db2 after second sync"
     );
 
@@ -805,7 +805,7 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     // Verify entries were actually stored in database 2
     for entry_id in &entry_ids {
         assert!(
-            base_db2.backend().get(entry_id).await.is_ok(),
+            base_db2.has_entry(entry_id).await,
             "Entry {entry_id} should exist in database 2 after Iroh sync"
         );
     }

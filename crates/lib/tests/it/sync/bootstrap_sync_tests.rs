@@ -49,7 +49,7 @@ async fn test_bootstrap_sync_from_zero_state() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.backend().get(&test_tree_id).await.is_err(),
+        !client_instance.has_database(&test_tree_id).await,
         "Client should not have the database initially"
     );
 
@@ -138,7 +138,7 @@ async fn test_incremental_sync_after_bootstrap() {
 
     // Verify client has bootstrapped tree
     assert!(
-        client_instance.backend().get(&test_tree_id).await.is_ok(),
+        client_instance.has_database(&test_tree_id).await,
         "Client should have the tree"
     );
 

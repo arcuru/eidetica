@@ -1383,7 +1383,7 @@ async fn test_client_retry_after_approval() {
     client_sync.flush().await.ok();
 
     // Verify client has the database
-    let has_db = client_instance.backend().get(&tree_id).await.is_ok();
+    let has_db = client_instance.has_database(&tree_id).await;
     assert!(
         has_db,
         "Client should have database after successful bootstrap"
@@ -1476,7 +1476,7 @@ async fn test_client_denied_after_rejection() {
     println!("✅ Retry correctly failed after rejection");
 
     // Client should not have the database
-    let has_db = client_instance.backend().get(&tree_id).await.is_ok();
+    let has_db = client_instance.has_database(&tree_id).await;
     assert!(!has_db, "Client should NOT have database after rejection");
     println!("✅ Client correctly doesn't have database");
 
@@ -1590,11 +1590,11 @@ async fn test_bootstrap_api_equivalence() {
 
     // Both clients should have the database
     assert!(
-        client1_instance.backend().get(&tree_id).await.is_ok(),
+        client1_instance.has_database(&tree_id).await,
         "Client 1 should have database"
     );
     assert!(
-        client2_instance.backend().get(&tree_id).await.is_ok(),
+        client2_instance.has_database(&tree_id).await,
         "Client 2 should have database"
     );
 

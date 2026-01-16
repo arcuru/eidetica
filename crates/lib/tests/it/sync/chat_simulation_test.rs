@@ -156,7 +156,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // Verify client doesn't have the database initially
     assert!(
-        client_instance.backend().get(&room_id).await.is_err(),
+        !client_instance.has_database(&room_id).await,
         "Client should not have the database initially"
     );
 
