@@ -153,7 +153,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("Server Iroh address: {iroh_addr}");
     println!("Server tree_id: {tree_id}");
 
-    let server_pubkey = server_sync.get_device_public_key().await?;
+    let server_pubkey = server_sync.get_device_id()?;
 
     // === LEG 1: HTTP client bootstraps and adds data via HTTP ===
     println!("\n--- LEG 1: HTTP client syncs data TO server via HTTP ---");
@@ -189,11 +189,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     let http_client_db = eidetica::Database::open(
         http_client_instance.clone(),
         &tree_id,
-        http_client_instance
-            .backend()
-            .get_private_key("_device_key")
-            .await?
-            .expect("Should have device key"),
+        http_client_instance.device_key().clone(),
         "*".to_string(), // Use wildcard permission
     )
     .await?;

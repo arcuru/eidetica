@@ -3,8 +3,6 @@
 //! These tests reproduce the exact sync patterns used by the chat example
 //! to debug authentication and sync issues.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use super::helpers::enable_sync_for_instance_database;
 use crate::helpers::test_instance_with_user_and_key;
 use eidetica::{
@@ -47,7 +45,7 @@ async fn has_global_permission_configured(settings: &SettingsStore) -> bool {
 /// Test authenticated bootstrap with Database operations (simulating chat app)
 ///
 /// IGNORED: This test fails due to a key management architectural issue.
-/// The sync handler tries to authenticate with "_device_key" when operating on
+/// The sync handler tries to authenticate with "admin" when operating on
 /// target databases, but target databases (like chat rooms) don't have this key.
 /// The sync system needs proper key-to-database mapping to know which admin key
 /// to use for each database. This requires additional infrastructure work.

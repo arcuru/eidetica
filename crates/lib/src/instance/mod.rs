@@ -11,26 +11,25 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use handle_trait::Handle;
 
 use crate::{
-    Clock, Database, Entry, Result, SystemClock, auth::crypto::format_public_key,
-    backend::BackendImpl, entry::ID, sync::Sync, user::User,
+    Clock, Database, Entry, Result, SystemClock,
+    auth::crypto::format_public_key,
+    backend::{BackendImpl, InstanceMetadata},
+    entry::ID,
+    sync::Sync,
+    user::User,
 };
 
 pub mod backend;
 pub mod errors;
-pub mod legacy_ops;
 pub mod settings_merge;
 
 // Re-export main types for easier access
 use backend::Backend;
 pub use errors::InstanceError;
-pub use legacy_ops::LegacyInstanceOps;
-
-/// Private constants for device identity management
-const DEVICE_KEY_NAME: &str = "_device_key";
 
 /// Indicates whether an entry write originated locally or from a remote source (e.g., sync).
 ///
@@ -83,6 +82,8 @@ pub(crate) struct InstanceInternal {
     users_db_id: ID,
     /// Root ID of the _databases system database
     databases_db_id: ID,
+    /// Device signing key - the instance's cryptographic identity
+    device_key: SigningKey,
     /// Per-database callbacks keyed by (WriteSource, tree_id)
     write_callbacks: Mutex<HashMap<CallbackKey, CallbackVec>>,
     /// Global callbacks keyed by WriteSource (triggered regardless of database)
@@ -117,7 +118,7 @@ impl std::fmt::Debug for InstanceInternal {
 /// Database implementation on top of the storage backend.
 ///
 /// Instance manages infrastructure only:
-/// - Backend storage and device identity (_device_key)
+/// - Backend storage and device identity
 /// - System databases (_users, _databases, _sync)
 /// - User account management (create, login, list)
 ///
@@ -170,7 +171,7 @@ impl Instance {
     /// and loads them, or creates new ones if starting fresh.
     ///
     /// Instance manages infrastructure only:
-    /// - Backend storage and device identity (_device_key)
+    /// - Backend storage and device identity
     /// - System databases (_users, _databases, _sync)
     /// - User account management (create, login, list)
     ///
@@ -230,101 +231,29 @@ impl Instance {
 
     /// Internal implementation of open that works with any clock.
     async fn open_impl(backend: Box<dyn BackendImpl>, clock: Arc<dyn Clock>) -> Result<Self> {
-        use crate::constants::{DATABASES, USERS};
-
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
-        // Load device_key first
-        let _device_key = match backend.get_private_key(DEVICE_KEY_NAME).await? {
-            Some(key) => key,
-            None => {
-                // New backend: initialize like create()
-                return Self::create_internal(backend, clock).await;
-            }
-        };
-
-        // Existing backend: load system databases
-        let all_roots = backend.all_roots().await?;
-
-        // Find system databases by name
-        let mut users_db_root = None;
-        let mut databases_db_root = None;
-
-        for root_id in all_roots {
-            // FIXME(security): handle the security and loading of these databases in a better way
-            // Use open_readonly temporarily to check name without setting up auth
-            // Note: We can't use self.clone() here because self doesn't exist yet during construction
-            // So we create a temporary Instance just for this lookup
-            //
-            // SAFETY: The temporary instance has empty users_db_id and databases_db_id placeholders.
-            // This is safe because:
-            // 1. We only use it for Database::open_readonly() which doesn't access these fields
-            // 2. The Database only calls get_name() which reads from the settings store
-            // 3. The temporary instance is dropped immediately after name lookup
-            // 4. No other code paths will access the invalid system database IDs
-            let temp_instance = Self {
-                inner: Arc::new(InstanceInternal {
-                    backend: Backend::new(Arc::clone(&backend)),
-                    clock: Arc::clone(&clock),
+        // Check for existing InstanceMetadata
+        match backend.get_instance_metadata().await? {
+            Some(metadata) => {
+                // Existing backend: load from metadata
+                let inner = Arc::new(InstanceInternal {
+                    backend: Backend::new(backend),
+                    clock,
                     sync: std::sync::OnceLock::new(),
-                    users_db_id: ID::from(""), // Placeholder - not accessed during name lookup
-                    databases_db_id: ID::from(""), // Placeholder - not accessed during name lookup
+                    users_db_id: metadata.users_db,
+                    databases_db_id: metadata.databases_db,
+                    device_key: metadata.device_key,
                     write_callbacks: Mutex::new(HashMap::new()),
                     global_write_callbacks: Mutex::new(HashMap::new()),
-                }),
-            };
-            let temp_db = Database::open_unauthenticated(root_id.clone(), &temp_instance)?;
-            if let Ok(name) = temp_db.get_name().await {
-                match name.as_str() {
-                    USERS => {
-                        if users_db_root.is_some() {
-                            panic!(
-                                "CRITICAL SECURITY ERROR: Multiple {USERS} databases found in backend. \
-                                     This indicates database corruption or a potential security breach. \
-                                     Backend integrity compromised."
-                            );
-                        }
-                        users_db_root = Some(root_id);
-                    }
-                    DATABASES => {
-                        if databases_db_root.is_some() {
-                            panic!(
-                                "CRITICAL SECURITY ERROR: Multiple {DATABASES} databases found in backend. \
-                                     This indicates database corruption or a potential security breach. \
-                                     Backend integrity compromised."
-                            );
-                        }
-                        databases_db_root = Some(root_id);
-                    }
-                    _ => {} // Ignore other databases
-                }
+                });
+                Ok(Self { inner })
             }
-
-            // Stop searching if we found both
-            if users_db_root.is_some() && databases_db_root.is_some() {
-                break;
+            None => {
+                // New backend: initialize
+                Self::create_internal(backend, clock).await
             }
         }
-
-        // Verify we found both system databases
-        let users_db_root = users_db_root.ok_or(InstanceError::SystemDatabaseNotFound {
-            database_name: USERS.to_string(),
-        })?;
-        let databases_db_root = databases_db_root.ok_or(InstanceError::SystemDatabaseNotFound {
-            database_name: DATABASES.to_string(),
-        })?;
-
-        let inner = Arc::new(InstanceInternal {
-            backend: Backend::new(backend),
-            clock,
-            sync: std::sync::OnceLock::new(),
-            users_db_id: users_db_root,
-            databases_db_id: databases_db_root,
-            write_callbacks: Mutex::new(HashMap::new()),
-            global_write_callbacks: Mutex::new(HashMap::new()),
-        });
-
-        Ok(Self { inner })
     }
 
     /// Create a new Instance on a fresh backend (strict creation).
@@ -334,7 +263,7 @@ impl Instance {
     /// you're creating a fresh instance.
     ///
     /// Instance manages infrastructure only:
-    /// - Backend storage and device identity (_device_key)
+    /// - Backend storage and device identity
     /// - System databases (_users, _databases, _sync)
     /// - User account management (create, login, list)
     ///
@@ -374,7 +303,7 @@ impl Instance {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Check if already initialized
-        if backend.get_private_key(DEVICE_KEY_NAME).await?.is_some() {
+        if backend.get_instance_metadata().await?.is_some() {
             return Err(InstanceError::InstanceAlreadyExists.into());
         }
 
@@ -392,12 +321,9 @@ impl Instance {
             user::system_databases::{create_databases_tracking, create_users_database},
         };
 
-        // 1. Generate and store instance device key (_device_key)
+        // 1. Generate device key
         let (device_key, device_pubkey) = generate_keypair();
         let device_pubkey_str = format_public_key(&device_pubkey);
-        backend
-            .store_private_key(DEVICE_KEY_NAME, device_key.clone())
-            .await?;
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -416,6 +342,7 @@ impl Instance {
                 sync: std::sync::OnceLock::new(),
                 users_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
                 databases_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
+                device_key: device_key.clone(), // Use the actual key for signing
                 write_callbacks: Mutex::new(HashMap::new()),
                 global_write_callbacks: Mutex::new(HashMap::new()),
             }),
@@ -425,13 +352,23 @@ impl Instance {
         let databases_db =
             create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str).await?;
 
-        // 3. Store root IDs and return instance
+        // 3. Save metadata (marks instance as initialized)
+        let metadata = InstanceMetadata {
+            device_key: device_key.clone(),
+            users_db: users_db.root_id().clone(),
+            databases_db: databases_db.root_id().clone(),
+            sync_db: None,
+        };
+        backend.set_instance_metadata(&metadata).await?;
+
+        // 4. Build real instance and return
         let inner = Arc::new(InstanceInternal {
             backend: Backend::new(backend),
             clock,
             sync: std::sync::OnceLock::new(),
             users_db_id: users_db.root_id().clone(),
             databases_db_id: databases_db.root_id().clone(),
+            device_key,
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(HashMap::new()),
         });
@@ -502,18 +439,11 @@ impl Instance {
     ///
     /// This constructs a Database instance on-the-fly to avoid circular references.
     pub(crate) async fn users_db(&self) -> Result<Database> {
-        let device_key = self
-            .inner
-            .backend
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or(InstanceError::DeviceKeyNotFound)?;
-
         Database::open(
             self.clone(),
             &self.inner.users_db_id,
-            device_key,
-            "_device_key".to_string(),
+            self.inner.device_key.clone(),
+            "admin".to_string(),
         )
         .await
     }
@@ -572,22 +502,40 @@ impl Instance {
 
     // === Device Identity Management ===
     //
-    // The Instance's device identity (_device_key) is stored in the backend.
+    // The Instance's device identity is stored in InstanceMetadata and cached in memory.
+
+    /// Get the device signing key.
+    ///
+    /// # Internal Use Only
+    ///
+    /// This method provides direct access to the instance's cryptographic identity
+    /// and is intended for internal operations that require the device key (sync,
+    /// system database creation, authentication validation, etc.).
+    ///
+    /// These operations should only be performed by the server/instance administrator,
+    /// but we don't verify that yet. Future versions may add admin permission checks.
+    ///
+    /// Similar to `Database::open_unauthenticated`, this is a controlled escape hatch
+    /// for internal library operations. Use with care - prefer User API for normal operations.
+    #[cfg(not(any(test, feature = "testing")))]
+    pub(crate) fn device_key(&self) -> &SigningKey {
+        &self.inner.device_key
+    }
+
+    /// Test-only: Get the device signing key.
+    ///
+    /// This is exposed for testing purposes only. In production, use the User API.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn device_key(&self) -> &SigningKey {
+        &self.inner.device_key
+    }
 
     /// Get the device ID (public key).
     ///
-    /// The device key (_device_key) is stored in the backend.
-    ///
     /// # Returns
-    /// A `Result` containing the device's public key (device ID).
-    pub async fn device_id(&self) -> Result<VerifyingKey> {
-        let device_key = self
-            .inner
-            .backend
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| crate::Error::from(InstanceError::DeviceKeyNotFound))?;
-        Ok(device_key.verifying_key())
+    /// The device's public key (device ID).
+    pub fn device_id(&self) -> VerifyingKey {
+        self.inner.device_key.verifying_key()
     }
 
     /// Get the device ID as a formatted string.
@@ -596,10 +544,9 @@ impl Instance {
     /// in a standard formatted string representation.
     ///
     /// # Returns
-    /// A `Result` containing the formatted device ID string.
-    pub async fn device_id_string(&self) -> Result<String> {
-        let device_key = self.device_id().await?;
-        Ok(format_public_key(&device_key))
+    /// The formatted device ID string.
+    pub fn device_id_string(&self) -> String {
+        format_public_key(&self.inner.device_key.verifying_key())
     }
 
     /// Load an existing database from the backend by its root ID (read-only).
@@ -706,11 +653,33 @@ impl Instance {
     /// Returns an error if the sync settings database cannot be created or if device key
     /// generation/storage fails.
     pub async fn enable_sync(&self) -> Result<()> {
-        // Check if there is an existing Sync database already configured
+        // Check if there is an existing Sync already loaded
         if self.inner.sync.get().is_some() {
             return Ok(());
         }
-        let sync = Sync::new(self.clone()).await?;
+
+        // Check InstanceMetadata for existing sync_db
+        let metadata = self
+            .backend()
+            .get_instance_metadata()
+            .await?
+            .ok_or(InstanceError::DeviceKeyNotFound)?; // Metadata must exist if instance is initialized
+
+        let sync = if let Some(ref sync_db) = metadata.sync_db {
+            // Load existing sync tree
+            Sync::load(self.clone(), sync_db).await?
+        } else {
+            // Create new sync tree
+            let sync = Sync::new(self.clone()).await?;
+
+            // Save sync_db to metadata
+            let mut new_metadata = metadata;
+            new_metadata.sync_db = Some(sync.sync_tree_root_id().clone());
+            self.backend().set_instance_metadata(&new_metadata).await?;
+
+            sync
+        };
+
         let sync_arc = Arc::new(sync);
 
         // Register global callback for automatic sync on local writes
@@ -1170,9 +1139,6 @@ mod tests {
         let instance =
             Instance::open_with_clock(Box::new(backend), Arc::new(FixedClock::default())).await?;
 
-        // Verify device key was created
-        assert!(instance.device_id().await.is_ok());
-
         // Verify we can create and login a user
         instance.create_user("alice", None).await?;
         let user = instance.login_user("alice", None).await?;
@@ -1244,7 +1210,7 @@ mod tests {
         // Create instance and get device_id
         let backend1 = InMemory::new();
         let instance1 = Instance::open(Box::new(backend1)).await?;
-        let device_id1 = instance1.device_id_string().await?;
+        let device_id1 = instance1.device_id_string();
 
         // Save backend
         save_in_memory_backend(&instance1, &path).await?;
@@ -1253,7 +1219,7 @@ mod tests {
         // Load backend and verify device_id is the same
         let backend2 = load_in_memory_backend(&path).await?;
         let instance2 = Instance::open(Box::new(backend2)).await?;
-        let device_id2 = instance2.device_id_string().await?;
+        let device_id2 = instance2.device_id_string();
 
         assert_eq!(
             device_id1, device_id2,
@@ -1452,7 +1418,7 @@ mod tests {
         let instance1 =
             Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
         instance1.create_user("frank", None).await?;
-        let device_id1 = instance1.device_id_string().await?;
+        let device_id1 = instance1.device_id_string();
 
         save_in_memory_backend(&instance1, &path).await?;
         drop(instance1);
@@ -1465,7 +1431,7 @@ mod tests {
                     .await?;
 
             // Device ID should be the same every time
-            let device_id = instance.device_id_string().await?;
+            let device_id = instance.device_id_string();
             assert_eq!(
                 device_id, device_id1,
                 "Device ID should be consistent on reload {i}"
@@ -1505,7 +1471,7 @@ mod tests {
         let backend1 = InMemory::new();
         let instance1 =
             Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
-        let device_id1 = instance1.device_id_string().await?;
+        let device_id1 = instance1.device_id_string();
         instance1.create_user("grace", None).await?;
 
         save_in_memory_backend(&instance1, &path).await?;
@@ -1515,7 +1481,7 @@ mod tests {
         let backend2 = load_in_memory_backend(&path).await?;
         let instance2 =
             Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
-        let device_id2 = instance2.device_id_string().await?;
+        let device_id2 = instance2.device_id_string();
 
         // Device ID should match (existing backend)
         assert_eq!(device_id1, device_id2);
@@ -1530,7 +1496,7 @@ mod tests {
         let backend3 = InMemory::new();
         let instance3 =
             Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
-        let device_id3 = instance3.device_id_string().await?;
+        let device_id3 = instance3.device_id_string();
 
         // Device ID should be different (new backend)
         assert_ne!(device_id1, device_id3);
@@ -1606,9 +1572,6 @@ mod tests {
         // Test that Instance::create() succeeds on fresh backend
         let backend = InMemory::new();
         let instance = Instance::create(Box::new(backend)).await?;
-
-        // Verify instance is properly initialized
-        assert!(instance.device_id().await.is_ok());
 
         // Verify we can create users
         instance.create_user("bob", None).await?;

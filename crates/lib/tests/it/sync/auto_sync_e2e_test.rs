@@ -38,8 +38,8 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
     sleep(Duration::from_millis(100)).await;
 
     // Get peer public keys
-    let peer1_pubkey = sync1.get_device_public_key().await?;
-    let peer2_pubkey = sync2.get_device_public_key().await?;
+    let peer1_pubkey = sync1.get_device_id()?;
+    let peer2_pubkey = sync2.get_device_id()?;
 
     println!("Instance 1 pubkey: {peer1_pubkey}");
     println!("Instance 2 pubkey: {peer2_pubkey}");
@@ -160,8 +160,8 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
 
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_public_key().await?;
-    let peer2_pubkey = sync2.get_device_public_key().await?;
+    let peer1_pubkey = sync1.get_device_id()?;
+    let peer2_pubkey = sync2.get_device_id()?;
 
     // Register peers bidirectionally
     let address1 = Address::http(server1_addr);
@@ -333,8 +333,8 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
     let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_public_key().await?;
-    let peer2_pubkey = sync2.get_device_public_key().await?;
+    let peer1_pubkey = sync1.get_device_id()?;
+    let peer2_pubkey = sync2.get_device_id()?;
 
     sync1
         .register_peer(&peer2_pubkey, Some("instance2"))
@@ -401,8 +401,8 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
     let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_public_key().await?;
-    let peer2_pubkey = sync2.get_device_public_key().await?;
+    let peer1_pubkey = sync1.get_device_id()?;
+    let peer2_pubkey = sync2.get_device_id()?;
 
     sync1
         .register_peer(&peer2_pubkey, Some("instance2"))

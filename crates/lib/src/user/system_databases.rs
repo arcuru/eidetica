@@ -26,12 +26,12 @@ use crate::{
 /// Create the _instance system database
 ///
 /// This database stores Instance-level configuration and metadata.
-/// It is authenticated with the Instance's _device_key.
+/// It is authenticated with the Instance's admin.
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for _device_key (used as admin)
+/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The _instance Database
@@ -49,7 +49,7 @@ pub async fn create_instance_database(
     // Set up auth with device key as admin
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "_device_key",
+        "admin",
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
     settings.set("auth", auth_settings.as_doc().clone());
@@ -59,7 +59,7 @@ pub async fn create_instance_database(
         settings,
         instance,
         device_signing_key.clone(),
-        "_device_key".to_string(),
+        "admin".to_string(),
     )
     .await?;
 
@@ -69,12 +69,12 @@ pub async fn create_instance_database(
 /// Create the _users system database
 ///
 /// This database stores the user directory mapping user_id → UserInfo.
-/// It is authenticated with the Instance's _device_key.
+/// It is authenticated with the Instance's admin.
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for _device_key (used as admin)
+/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The created _users Database
@@ -92,7 +92,7 @@ pub async fn create_users_database(
     // Create auth settings with device key as admin
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "_device_key",
+        "admin",
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
 
@@ -103,7 +103,7 @@ pub async fn create_users_database(
         settings,
         instance,
         device_signing_key.clone(),
-        "_device_key".to_string(),
+        "admin".to_string(),
     )
     .await?;
 
@@ -114,12 +114,12 @@ pub async fn create_users_database(
 ///
 /// This database stores the database tracking information mapping
 /// database_id → DatabaseTracking.
-/// It is authenticated with the Instance's _device_key.
+/// It is authenticated with the Instance's admin.
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for _device_key (used as admin)
+/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The created _databases Database
@@ -137,7 +137,7 @@ pub async fn create_databases_tracking(
     // Create auth settings with device key as admin
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "_device_key",
+        "admin",
         AuthKey::active(device_pubkey, Permission::Admin(0))?,
     )?;
 
@@ -148,7 +148,7 @@ pub async fn create_databases_tracking(
         settings,
         instance,
         device_signing_key.clone(),
-        "_device_key".to_string(),
+        "admin".to_string(),
     )
     .await?;
 
@@ -210,20 +210,14 @@ pub async fn create_user(
     let (user_private_key, user_public_key) = generate_keypair();
     let user_public_key_str = crate::auth::crypto::format_public_key(&user_public_key);
 
-    // 3. Create user database with authentication for both _device_key and user's key
+    // 3. Create user database with authentication for both admin and user's key
     let mut user_db_settings = Doc::new();
     user_db_settings.set("name", format!("_user_{username}"));
     user_db_settings.set("type", "user");
     user_db_settings.set("description", format!("User database for {username}"));
 
     // Get device key for auth settings and database creation
-    let device_private_key = instance
-        .backend()
-        .get_private_key("_device_key")
-        .await?
-        .ok_or_else(|| UserError::KeyNotFound {
-            key_id: "_device_key".to_string(),
-        })?;
+    let device_private_key = instance.device_key().clone();
     let device_pubkey = device_private_key.verifying_key();
     let device_pubkey_str = crate::auth::crypto::format_public_key(&device_pubkey);
 
@@ -233,7 +227,7 @@ pub async fn create_user(
     // Then the device can read it to let the user login but that's it
     // (Though at the moment it wouldn't need explicit read access, every local DB is readable)
     auth_settings.add_key(
-        "_device_key",
+        "admin",
         AuthKey::active(&device_pubkey_str, Permission::Admin(0))?,
     )?;
     auth_settings.add_key(
@@ -247,7 +241,7 @@ pub async fn create_user(
         user_db_settings,
         instance,
         device_private_key,
-        "_device_key".to_string(),
+        "admin".to_string(),
     )
     .await?;
     let user_database_id = user_database.root_id().clone();
@@ -507,7 +501,7 @@ mod tests {
         let (device_key, device_pubkey) = generate_keypair();
         let pubkey_str = format_public_key(&device_pubkey);
         backend
-            .store_private_key("_device_key", device_key.clone())
+            .store_private_key("admin", device_key.clone())
             .await
             .unwrap();
 
@@ -542,7 +536,7 @@ mod tests {
         // Verify auth settings
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
-        let device_key = auth_settings.get_key("_device_key").unwrap();
+        let device_key = auth_settings.get_key("admin").unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
         assert_eq!(device_key.pubkey(), &pubkey_str);
     }
@@ -590,18 +584,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_system_databases_have_device_key_auth() {
+    async fn test_system_databases_haveadmin_auth() {
         let (instance, device_key, pubkey_str) = setup_instance().await;
 
         let users_db = create_users_database(&instance, &device_key, &pubkey_str)
             .await
             .unwrap();
 
-        // Verify _device_key has admin access
+        // Verify admin has admin access
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
-        let device_key = auth_settings.get_key("_device_key").unwrap();
+        let device_key = auth_settings.get_key("admin").unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
         assert_eq!(device_key.pubkey(), &pubkey_str);

@@ -11,8 +11,8 @@ use eidetica::{
 };
 
 use super::helpers::{
-    assert_operation_permissions, setup_authenticated_tree, setup_test_db_with_keys,
-    test_operation_fails, test_operation_succeeds,
+    assert_operation_permissions, setup_complete_auth_environment_with_user, test_operation_fails,
+    test_operation_succeeds,
 };
 use crate::create_auth_keys;
 use crate::helpers::setup_db;
@@ -23,17 +23,12 @@ async fn test_authentication_validation_revoked_key() {
         ("ADMIN_KEY", Permission::Admin(0), KeyStatus::Active),
         ("REVOKED_KEY", Permission::Write(10), KeyStatus::Revoked)
     ];
-    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
+    let (instance, user, tree, key_ids) =
+        setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get the revoked signing key from the user's key manager
-    let (_db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
-    let revoked_key_id = user
-        .add_private_key(Some("REVOKED_KEY"))
-        .await
-        .expect("Failed to add revoked key");
+    // Get the revoked signing key (index 1 = REVOKED_KEY)
     let revoked_signing_key = user
-        .get_signing_key(&revoked_key_id)
+        .get_signing_key(&key_ids[1])
         .expect("Failed to get revoked key")
         .clone();
 
@@ -74,16 +69,14 @@ async fn test_permission_checking_admin_operations() {
             KeyStatus::Active
         )
     ];
-    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
+    let (instance, user, tree, key_ids) =
+        setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys from the same instance that added them
-    let write_signing_key = instance
-        .backend()
-        .get_private_key("WRITE_KEY")
-        .await
+    // Get signing keys using User API (index 1 = WRITE_KEY)
+    let write_signing_key = user
+        .get_signing_key(&key_ids[1])
         .expect("Failed to get write key")
-        .expect("Write key should exist");
+        .clone();
 
     let tree_with_write_key = eidetica::Database::open(
         instance.clone(),
@@ -101,13 +94,11 @@ async fn test_permission_checking_admin_operations() {
     )
     .await;
 
-    // Test with SECONDARY_ADMIN_KEY
-    let secondary_admin_signing_key = instance
-        .backend()
-        .get_private_key("SECONDARY_ADMIN_KEY")
-        .await
+    // Test with SECONDARY_ADMIN_KEY (index 2)
+    let secondary_admin_signing_key = user
+        .get_signing_key(&key_ids[2])
         .expect("Failed to get secondary admin key")
-        .expect("Secondary admin key should exist");
+        .clone();
 
     let tree_with_secondary_admin_key = eidetica::Database::open(
         instance.clone(),
@@ -282,16 +273,14 @@ async fn test_entry_validation_with_mixed_key_states() {
         ("REVOKED_KEY", Permission::Write(20), KeyStatus::Revoked),
     ];
 
-    let (instance, public_keys) = setup_test_db_with_keys(&keys).await;
-    let tree = setup_authenticated_tree(&instance, &keys, &public_keys).await;
+    let (instance, user, tree, key_ids) =
+        setup_complete_auth_environment_with_user("test_user", &keys).await;
 
-    // Get signing keys from the same instance that added them
-    let active_signing_key = instance
-        .backend()
-        .get_private_key("ACTIVE_KEY")
-        .await
+    // Get signing keys using User API (index 1 = ACTIVE_KEY)
+    let active_signing_key = user
+        .get_signing_key(&key_ids[1])
         .expect("Failed to get active key")
-        .expect("Active key should exist");
+        .clone();
 
     let tree_with_active_key = eidetica::Database::open(
         instance.clone(),
@@ -310,13 +299,11 @@ async fn test_entry_validation_with_mixed_key_states() {
     )
     .await;
 
-    // Test revoked key should fail
-    let revoked_signing_key = instance
-        .backend()
-        .get_private_key("REVOKED_KEY")
-        .await
+    // Test revoked key should fail (index 2 = REVOKED_KEY)
+    let revoked_signing_key = user
+        .get_signing_key(&key_ids[2])
         .expect("Failed to get revoked key")
-        .expect("Revoked key should exist");
+        .clone();
 
     let tree_with_revoked_key = eidetica::Database::open(
         instance.clone(),

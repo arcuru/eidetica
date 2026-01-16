@@ -22,7 +22,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     Result,
-    backend::{BackendImpl, VerificationStatus, errors::BackendError},
+    backend::{BackendImpl, InstanceMetadata, VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
 };
 
@@ -42,7 +42,7 @@ pub(crate) struct TreeTipsCache {
 /// It provides basic persistence capabilities via `save_to_file` and
 /// `load_from_file`, serializing the `HashMap` to JSON.
 ///
-/// **Security Note**: Private keys are stored in memory in plaintext in this implementation.
+/// **Security Note**: The device key is stored in memory in plaintext in this implementation.
 /// This is acceptable for development and testing but should not be used in production
 /// without proper encryption or hardware security module integration.
 #[derive(Debug)]
@@ -51,12 +51,15 @@ pub struct InMemory {
     pub(crate) entries: RwLock<HashMap<ID, Entry>>,
     /// Verification status for each entry
     pub(crate) verification_status: RwLock<HashMap<ID, VerificationStatus>>,
-    /// Private key storage for authentication
+    /// Instance metadata containing device key and system database IDs.
     ///
-    /// **Security Warning**: Keys are stored in memory without encryption.
+    /// When `None`, the backend is uninitialized. When `Some`, contains the
+    /// device key and root IDs for system databases.
+    ///
+    /// **Security Warning**: The device key is stored in memory without encryption.
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
-    pub(crate) private_keys: RwLock<HashMap<String, SigningKey>>,
+    pub(crate) instance_metadata: RwLock<Option<InstanceMetadata>>,
     /// Generic key-value cache for frequently computed results
     pub(crate) cache: RwLock<HashMap<String, String>>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
@@ -69,7 +72,7 @@ impl InMemory {
         Self {
             entries: RwLock::new(HashMap::new()),
             verification_status: RwLock::new(HashMap::new()),
-            private_keys: RwLock::new(HashMap::new()),
+            instance_metadata: RwLock::new(None),
             cache: RwLock::new(HashMap::new()),
             tips: RwLock::new(HashMap::new()),
         }
@@ -323,31 +326,26 @@ impl BackendImpl for InMemory {
     /// # Security Note
     /// This is a basic implementation suitable for development and testing.
     /// Production systems should consider encryption at rest and hardware security modules.
-    async fn store_private_key(&self, key_name: &str, private_key: SigningKey) -> Result<()> {
-        let mut private_keys = self.private_keys.write().await;
-        private_keys.insert(key_name.to_string(), private_key);
+    async fn store_private_key(&self, _key_name: &str, _private_key: SigningKey) -> Result<()> {
+        // Private keys are no longer stored separately - device key is in InstanceMetadata
+        // User private keys are stored in the _users database via the User API
         Ok(())
     }
 
     /// Retrieve a private key from the database's local key storage.
     ///
-    /// # Arguments
-    /// * `key_name` - The unique identifier of the private key to retrieve
-    ///
-    /// # Returns
-    /// A `Result` containing an `Option<SigningKey>`. Returns `None` if the key is not found.
-    async fn get_private_key(&self, key_name: &str) -> Result<Option<SigningKey>> {
-        let private_keys = self.private_keys.read().await;
-        Ok(private_keys.get(key_name).cloned())
+    /// Note: User private keys are managed through the User API, not stored directly in backend.
+    /// This method exists for interface compatibility but always returns None.
+    async fn get_private_key(&self, _key_name: &str) -> Result<Option<SigningKey>> {
+        Ok(None)
     }
 
     /// List all private key identifiers stored in the database.
     ///
-    /// # Returns
-    /// A `Result` containing a vector of key identifiers, or an error.
+    /// Note: User private keys are managed through the User API, not stored directly in backend.
+    /// This method exists for interface compatibility but always returns empty.
     async fn list_private_keys(&self) -> Result<Vec<String>> {
-        let private_keys = self.private_keys.read().await;
-        Ok(private_keys.keys().cloned().collect())
+        Ok(vec![])
     }
 
     /// Remove a private key from the database's local key storage.
@@ -357,9 +355,19 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` indicating success or an error. Succeeds even if the key doesn't exist.
-    async fn remove_private_key(&self, key_name: &str) -> Result<()> {
-        let mut private_keys = self.private_keys.write().await;
-        private_keys.remove(key_name);
+    async fn remove_private_key(&self, _key_name: &str) -> Result<()> {
+        // Private keys are no longer stored separately
+        Ok(())
+    }
+
+    async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
+        let metadata = self.instance_metadata.read().await;
+        Ok(metadata.clone())
+    }
+
+    async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()> {
+        let mut instance_metadata = self.instance_metadata.write().await;
+        *instance_metadata = Some(metadata.clone());
         Ok(())
     }
 

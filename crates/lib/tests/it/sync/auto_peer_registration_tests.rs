@@ -3,8 +3,6 @@
 //! This module tests the automatic peer registration behavior that occurs
 //! during handshakes and sync tree requests.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     auth::crypto::{format_public_key, generate_challenge, generate_keypair},
     crdt::Doc,

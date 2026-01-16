@@ -1,9 +1,6 @@
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     entry::{Entry, ID},
-    instance::LegacyInstanceOps,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
@@ -74,7 +71,7 @@ async fn setup_iroh_sync_pair() -> (
 
     // Setup peer relationship
     let addr2 = sync2.get_server_address().await.unwrap();
-    let pubkey2 = sync2.get_device_public_key().await.unwrap();
+    let pubkey2 = sync2.get_device_id().unwrap();
 
     sync1
         .register_peer(&pubkey2, Some("bench_peer"))
@@ -94,11 +91,6 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
     // Setup connection once for all benchmarks
     let (base_db1, sync1, _base_db2, sync2, addr2) =
         rt.block_on(async { setup_iroh_sync_pair().await });
-
-    // Add authentication key
-    rt.block_on(async {
-        base_db1.add_private_key("bench_key").await.unwrap();
-    });
 
     let mut group = c.benchmark_group("iroh_sync_throughput");
 

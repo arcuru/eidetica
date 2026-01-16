@@ -12,11 +12,45 @@ use std::any::Any;
 
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Result,
     entry::{Entry, ID},
 };
+
+/// Persistent metadata for an Eidetica instance.
+///
+/// This struct consolidates all instance-level state that needs to persist across restarts:
+/// - The device signing key (cryptographic identity)
+/// - System database root IDs
+/// - Optional sync database root ID
+///
+/// The presence of `InstanceMetadata` in a backend indicates an initialized instance.
+/// A backend without metadata is treated as uninitialized and may trigger instance creation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceMetadata {
+    /// Device signing key (Ed25519) - the instance's cryptographic identity.
+    ///
+    /// This key is generated once during instance creation and persists for the lifetime
+    /// of the instance. It is used to sign system database entries and for sync identity.
+    pub device_key: SigningKey,
+
+    /// Root ID of the _users system database.
+    ///
+    /// This database tracks user accounts and their associated data.
+    pub users_db: ID,
+
+    /// Root ID of the _databases system database.
+    ///
+    /// This database tracks metadata about all databases in the instance.
+    pub databases_db: ID,
+
+    /// Root ID of the _sync database (None until `enable_sync()` is called).
+    ///
+    /// This database stores all sync-related state.
+    pub sync_db: Option<ID>,
+}
 
 // Category modules
 pub mod database;
@@ -462,4 +496,34 @@ pub trait BackendImpl: Send + Sync + Any {
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
+
+    // === Instance Metadata Methods ===
+    //
+    // These methods manage persistent instance-level state including the device key
+    // and system database IDs. The presence of metadata indicates an initialized instance.
+
+    /// Get the instance metadata.
+    ///
+    /// Returns `None` for a fresh/uninitialized backend, `Some(metadata)` for an
+    /// initialized instance. This is used during `Instance::open()` to determine
+    /// whether to create a new instance or load an existing one.
+    ///
+    /// # Returns
+    /// A `Result` containing `Option<InstanceMetadata>`:
+    /// - `Some(metadata)` if the instance has been initialized
+    /// - `None` if the backend is fresh/uninitialized
+    async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>>;
+
+    /// Set the instance metadata.
+    ///
+    /// This is called during instance creation to persist the device key and
+    /// system database IDs. It may also be called when enabling sync to update
+    /// the `sync_db` field.
+    ///
+    /// # Arguments
+    /// * `metadata` - The instance metadata to persist
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()>;
 }

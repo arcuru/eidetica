@@ -3,8 +3,6 @@
 //! This test suite verifies that users can approve and reject bootstrap requests
 //! using their keys, with proper permission validation and error handling.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     Instance,
     auth::{
@@ -62,17 +60,12 @@ async fn setup_user_with_database() -> eidetica::Result<(
         .expect("Failed to create database");
     let tree_id = database.root_id().clone();
 
-    // Add _device_key to the database's auth configuration so sync handler can modify the database
-    let device_key_name = "_device_key";
-    let device_signing_key = instance
-        .backend()
-        .get_private_key(device_key_name)
-        .await
-        .expect("Failed to get device key")
-        .expect("Device key should exist");
+    // Add admin to the database's auth configuration so sync handler can modify the database
+    let device_key_name = "admin";
+    let device_signing_key = instance.device_key().clone();
     let device_pubkey = format_public_key(&device_signing_key.verifying_key());
 
-    // Add _device_key as Admin to the database
+    // Add admin as Admin to the database
     let tx = database
         .new_transaction()
         .await
@@ -532,14 +525,9 @@ async fn test_multiple_users() {
         .expect("Failed to create Bob's database");
     let bob_tree_id = bob_db.root_id().clone();
 
-    // Add _device_key to Alice's database for sync
-    let device_key_name = "_device_key";
-    let device_signing_key = instance
-        .backend()
-        .get_private_key(device_key_name)
-        .await
-        .expect("Failed to get device key")
-        .expect("Device key should exist");
+    // Add admin to Alice's database for sync
+    let device_key_name = "admin";
+    let device_signing_key = instance.device_key().clone();
     let device_pubkey = format_public_key(&device_signing_key.verifying_key());
     let alice_tx = alice_db
         .new_transaction()
@@ -562,7 +550,7 @@ async fn test_multiple_users() {
         .await
         .expect("Failed to commit Alice auth");
 
-    // Add _device_key to Bob's database for sync
+    // Add admin to Bob's database for sync
     let bob_tx = bob_db
         .new_transaction()
         .await
@@ -756,14 +744,9 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to create Alice's database");
     let tree_id = alice_db.root_id().clone();
 
-    // Add _device_key to Alice's database for sync
-    let device_key_name = "_device_key";
-    let device_signing_key = instance
-        .backend()
-        .get_private_key(device_key_name)
-        .await
-        .expect("Failed to get device key")
-        .expect("Device key should exist");
+    // Add admin to Alice's database for sync
+    let device_key_name = "admin";
+    let device_signing_key = instance.device_key().clone();
     let device_pubkey = format_public_key(&device_signing_key.verifying_key());
     let alice_tx = alice_db
         .new_transaction()

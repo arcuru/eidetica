@@ -7,13 +7,10 @@
 //! 4. Device 2 syncs back to Device 1
 //! 5. Device 1 tries to add message C -> "no common ancestor found" error
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     Result,
     auth::{AuthSettings, Permission, types::AuthKey},
     crdt::Doc,
-    instance::LegacyInstanceOps,
     store::Table,
 };
 use serde::{Deserialize, Serialize};
@@ -83,14 +80,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .expect("Failed to add admin auth");
 
     // Add device key to auth settings for sync handler operations
-    let device1_device_pubkey = device1_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .expect("Failed to get device1 device public key");
+    let device1_device_pubkey = device1_instance.device_id_string();
 
     auth_settings
         .add_key(
-            "_device_key",
+            "admin",
             AuthKey::active(&device1_device_pubkey, Permission::Admin(10))
                 .expect("Failed to create device key"),
         )

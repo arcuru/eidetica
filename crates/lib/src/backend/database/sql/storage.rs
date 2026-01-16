@@ -5,8 +5,8 @@
 use ed25519_dalek::SigningKey;
 
 use crate::Result;
-use crate::backend::VerificationStatus;
 use crate::backend::errors::BackendError;
+use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
@@ -412,82 +412,91 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
     Ok(entries)
 }
 
-// === Private Key Storage ===
+// === Private Key Storage (deprecated - backward compatibility) ===
 
-/// Store a private key.
+/// Store a private key (no-op - private keys are in InstanceMetadata or User API).
 pub async fn store_private_key(
-    backend: &SqlxBackend,
-    key_name: &str,
-    private_key: SigningKey,
+    _backend: &SqlxBackend,
+    _key_name: &str,
+    _private_key: SigningKey,
 ) -> Result<()> {
-    let pool = backend.pool();
-    let key_bytes = private_key.to_bytes().to_vec();
-
-    if backend.is_sqlite() {
-        sqlx::query("INSERT OR REPLACE INTO private_keys (key_name, key_bytes) VALUES ($1, $2)")
-            .bind(key_name)
-            .bind(&key_bytes)
-            .execute(pool)
-            .await
-            .sql_context("Failed to store private key")?;
-    } else {
-        sqlx::query(
-            "INSERT INTO private_keys (key_name, key_bytes) VALUES ($1, $2)
-             ON CONFLICT (key_name) DO UPDATE SET key_bytes = EXCLUDED.key_bytes",
-        )
-        .bind(key_name)
-        .bind(&key_bytes)
-        .execute(pool)
-        .await
-        .sql_context("Failed to store private key")?;
-    }
-
+    // Private keys are no longer stored separately - device key is in InstanceMetadata
+    // User private keys are stored in the _users database via the User API
     Ok(())
 }
 
 /// Get a private key by name.
-pub async fn get_private_key(backend: &SqlxBackend, key_name: &str) -> Result<Option<SigningKey>> {
+///
+/// Note: User private keys are managed through the User API, not stored directly in backend.
+/// This function exists for interface compatibility but always returns None.
+pub async fn get_private_key(
+    _backend: &SqlxBackend,
+    _key_name: &str,
+) -> Result<Option<SigningKey>> {
+    Ok(None)
+}
+
+/// List all private key names.
+///
+/// Note: User private keys are managed through the User API, not stored directly in backend.
+/// This function exists for interface compatibility but always returns empty.
+pub async fn list_private_keys(_backend: &SqlxBackend) -> Result<Vec<String>> {
+    Ok(vec![])
+}
+
+/// Remove a private key by name (no-op).
+pub async fn remove_private_key(_backend: &SqlxBackend, _key_name: &str) -> Result<()> {
+    // Private keys are no longer stored separately
+    Ok(())
+}
+
+// === Instance Metadata ===
+
+/// Get instance metadata if it exists.
+pub async fn get_instance_metadata(backend: &SqlxBackend) -> Result<Option<InstanceMetadata>> {
     let pool = backend.pool();
 
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT key_bytes FROM private_keys WHERE key_name = $1")
-            .bind(key_name)
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT data FROM instance_metadata WHERE singleton = 1")
             .fetch_optional(pool)
             .await
-            .sql_context("Failed to get private key")?;
+            .sql_context("Failed to get instance metadata")?;
 
     match row {
-        Some((bytes,)) => {
-            let key_bytes: [u8; 32] = bytes.try_into().map_err(|_| BackendError::CacheError {
-                reason: "Invalid key bytes length".to_string(),
-            })?;
-            Ok(Some(SigningKey::from_bytes(&key_bytes)))
+        Some((json,)) => {
+            let metadata: InstanceMetadata = serde_json::from_str(&json)
+                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+            Ok(Some(metadata))
         }
         None => Ok(None),
     }
 }
 
-/// List all private key names.
-pub async fn list_private_keys(backend: &SqlxBackend) -> Result<Vec<String>> {
+/// Set instance metadata.
+pub async fn set_instance_metadata(
+    backend: &SqlxBackend,
+    metadata: &InstanceMetadata,
+) -> Result<()> {
     let pool = backend.pool();
+    let json = serde_json::to_string(metadata)
+        .map_err(|e| BackendError::SerializationFailed { source: e })?;
 
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT key_name FROM private_keys")
-        .fetch_all(pool)
-        .await
-        .sql_context("Failed to list private keys")?;
-
-    Ok(rows.into_iter().map(|(name,)| name).collect())
-}
-
-/// Remove a private key by name.
-pub async fn remove_private_key(backend: &SqlxBackend, key_name: &str) -> Result<()> {
-    let pool = backend.pool();
-
-    sqlx::query("DELETE FROM private_keys WHERE key_name = $1")
-        .bind(key_name)
+    if backend.is_sqlite() {
+        sqlx::query("INSERT OR REPLACE INTO instance_metadata (singleton, data) VALUES (1, $1)")
+            .bind(&json)
+            .execute(pool)
+            .await
+            .sql_context("Failed to set instance metadata")?;
+    } else {
+        sqlx::query(
+            "INSERT INTO instance_metadata (singleton, data) VALUES (1, $1)
+             ON CONFLICT (singleton) DO UPDATE SET data = EXCLUDED.data",
+        )
+        .bind(&json)
         .execute(pool)
         .await
-        .sql_context("Failed to remove private key")?;
+        .sql_context("Failed to set instance metadata")?;
+    }
 
     Ok(())
 }

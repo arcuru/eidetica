@@ -5,15 +5,13 @@
 
 use std::{collections::HashMap, path::Path};
 
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::RwLock;
 
 use super::{InMemory, TreeTipsCache};
 use crate::{
     Error, Result,
-    auth::crypto::ED25519_PRIVATE_KEY_SIZE,
-    backend::{VerificationStatus, errors::BackendError},
+    backend::{InstanceMetadata, VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
 };
 
@@ -55,9 +53,9 @@ struct SerializableDatabase {
     entries: HashMap<ID, Entry>,
     #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
-    /// Private keys stored as ED25519_PRIVATE_KEY_SIZE-byte arrays for serialization
+    /// Instance metadata containing device key and system database IDs
     #[serde(default)]
-    private_keys_bytes: HashMap<String, [u8; ED25519_PRIVATE_KEY_SIZE]>,
+    instance_metadata: Option<InstanceMetadata>,
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
     cache: HashMap<String, String>,
@@ -74,11 +72,7 @@ impl Serialize for InMemory {
         // Use blocking_read since serde's Serialize is sync
         let entries = self.entries.blocking_read().clone();
         let verification_status = self.verification_status.blocking_read().clone();
-        let private_keys = self.private_keys.blocking_read();
-        let private_keys_bytes = private_keys
-            .iter()
-            .map(|(k, v)| (k.clone(), v.to_bytes()))
-            .collect();
+        let instance_metadata = self.instance_metadata.blocking_read().clone();
         let cache = self.cache.blocking_read().clone();
         let tips = self.tips.blocking_read().clone();
 
@@ -86,7 +80,7 @@ impl Serialize for InMemory {
             version: PERSISTENCE_VERSION,
             entries,
             verification_status,
-            private_keys_bytes,
+            instance_metadata,
             cache,
             tips,
         };
@@ -103,19 +97,10 @@ impl<'de> Deserialize<'de> for InMemory {
         // Version validation happens via deserialize_with on SerializableDatabase._v
         let serializable = SerializableDatabase::deserialize(deserializer)?;
 
-        let private_keys = serializable
-            .private_keys_bytes
-            .into_iter()
-            .map(|(k, bytes)| {
-                let signing_key = SigningKey::from_bytes(&bytes);
-                (k, signing_key)
-            })
-            .collect();
-
         Ok(InMemory {
             entries: RwLock::new(serializable.entries),
             verification_status: RwLock::new(serializable.verification_status),
-            private_keys: RwLock::new(private_keys),
+            instance_metadata: RwLock::new(serializable.instance_metadata),
             cache: RwLock::new(serializable.cache),
             tips: RwLock::new(serializable.tips),
         })
@@ -134,12 +119,7 @@ pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) ->
     // Extract data from locks asynchronously (can't use blocking_read in async context)
     let entries = backend.entries.read().await.clone();
     let verification_status = backend.verification_status.read().await.clone();
-    let private_keys = backend.private_keys.read().await;
-    let private_keys_bytes = private_keys
-        .iter()
-        .map(|(k, v)| (k.clone(), v.to_bytes()))
-        .collect();
-    drop(private_keys);
+    let instance_metadata = backend.instance_metadata.read().await.clone();
     let cache = backend.cache.read().await.clone();
     let tips = backend.tips.read().await.clone();
 
@@ -147,7 +127,7 @@ pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) ->
         version: PERSISTENCE_VERSION,
         entries,
         verification_status,
-        private_keys_bytes,
+        instance_metadata,
         cache,
         tips,
     };

@@ -3,8 +3,6 @@
 //! This test suite verifies the complete manual approval workflow for bootstrap requests,
 //! including storing pending requests, listing them, and approving/rejecting them.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use super::helpers::*;
 
 /// Generate a valid test public key
@@ -97,7 +95,7 @@ async fn test_auto_approve_still_works() {
 
 #[tokio::test]
 async fn test_approve_bootstrap_request() {
-    let (_instance, _user, _key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let (instance, _user, _key_id, database, sync, tree_id) = setup_manual_approval_server().await;
 
     // Server already has admin key from setup_manual_approval_server
 
@@ -116,8 +114,8 @@ async fn test_approve_bootstrap_request() {
     // Verify request is pending
     assert_request_stored(&sync, 1).await;
 
-    // Approve the request using _device_key (stored via LegacyInstanceOps, accessible via backend)
-    approve_request(&sync, &request_id, "_device_key")
+    // Approve the request using the device key
+    approve_request(&sync, &request_id, instance.device_key(), "admin")
         .await
         .expect("Failed to approve bootstrap request");
 
@@ -132,7 +130,7 @@ async fn test_approve_bootstrap_request() {
 
     match approved_request.status {
         RequestStatus::Approved { approved_by, .. } => {
-            assert_eq!(approved_by, "_device_key");
+            assert_eq!(approved_by, "admin");
         }
         other => panic!("Expected Approved status, got: {other:?}"),
     }
@@ -206,7 +204,7 @@ async fn test_reject_bootstrap_request() {
     assert_eq!(pending_requests.len(), 1);
 
     // Reject the request
-    sync.reject_bootstrap_request(&request_id, "_device_key")
+    sync.reject_bootstrap_request(&request_id, "admin")
         .await
         .expect("Failed to reject bootstrap request");
 
@@ -221,7 +219,7 @@ async fn test_reject_bootstrap_request() {
 
     match rejected_request.status {
         RequestStatus::Rejected { rejected_by, .. } => {
-            assert_eq!(rejected_by, "_device_key");
+            assert_eq!(rejected_by, "admin");
         }
         other => panic!("Expected Rejected status, got: {other:?}"),
     }
@@ -252,8 +250,7 @@ async fn test_reject_bootstrap_request() {
 
 #[tokio::test]
 async fn test_list_bootstrap_requests_by_status() {
-    let (_instance, _user, _key_id, database, sync, _tree_id) =
-        setup_manual_approval_server().await;
+    let (instance, _user, _key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Server already has admin key from setup_manual_approval_server
@@ -282,13 +279,13 @@ async fn test_list_bootstrap_requests_by_status() {
         other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
 
-    // Approve the request using _device_key (stored via LegacyInstanceOps, accessible via backend)
-    approve_request(&sync, &request_id, "_device_key")
+    // Approve the request using the device key
+    approve_request(&sync, &request_id, instance.device_key(), "admin")
         .await
         .expect("Failed to approve request");
 
     // Try to approve again - should fail
-    let result = approve_request(&sync, &request_id, "_device_key").await;
+    let result = approve_request(&sync, &request_id, instance.device_key(), "admin").await;
     assert!(result.is_err());
     assert!(
         result
@@ -298,9 +295,7 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Try to reject already approved request - should fail
-    let result = sync
-        .reject_bootstrap_request(&request_id, "_device_key")
-        .await;
+    let result = sync.reject_bootstrap_request(&request_id, "admin").await;
     assert!(result.is_err());
     assert!(
         result
@@ -395,11 +390,17 @@ async fn test_duplicate_bootstrap_requests_same_client() {
 
 #[tokio::test]
 async fn test_approval_with_nonexistent_request_id() {
-    let (_instance, _user, _key_id, _database, sync, _tree_id) =
+    let (instance, _user, _key_id, _database, sync, _tree_id) =
         setup_manual_approval_server().await;
 
     // Try to approve a request that doesn't exist
-    let result = approve_request(&sync, "nonexistent_request_id", "server_admin").await;
+    let result = approve_request(
+        &sync,
+        "nonexistent_request_id",
+        instance.device_key(),
+        "admin",
+    )
+    .await;
 
     assert!(
         result.is_err(),
@@ -1347,9 +1348,9 @@ async fn test_client_retry_after_approval() {
     let (request_id, _) = &pending_requests[0];
     println!("🔍 Found pending request: {request_id}");
 
-    // Approve the request using the _device_key (used by sync handler)
+    // Approve the request using the admin (used by sync handler)
     server_sync
-        .approve_bootstrap_request(request_id, "_device_key")
+        .approve_bootstrap_request_with_key(request_id, server_instance.device_key(), "admin")
         .await
         .expect("Failed to approve request");
     println!("✅ Request approved by admin");
@@ -1453,7 +1454,7 @@ async fn test_client_denied_after_rejection() {
     println!("🔍 Found pending request: {request_id}");
 
     server_sync
-        .reject_bootstrap_request(request_id, "_device_key")
+        .reject_bootstrap_request(request_id, "admin")
         .await
         .expect("Failed to reject request");
     println!("✅ Request rejected by admin");
@@ -1488,14 +1489,12 @@ async fn test_client_denied_after_rejection() {
     println!("✅ TEST PASSED: Client denied after rejection");
 }
 
-/// Test that bootstrap with backend-stored key and user-provided key produce equivalent results
+/// Test bootstrap with user-provided key API
 ///
-/// This verifies API contract: both `sync_with_peer_for_bootstrap` (backend key lookup)
-/// and `sync_with_peer_for_bootstrap_with_key` (user-provided key) should behave identically
-/// when given the same key.
+/// This verifies the `sync_with_peer_for_bootstrap_with_key` API works correctly.
 #[tokio::test]
 async fn test_bootstrap_api_equivalence() {
-    println!("\n🧪 TEST: Bootstrap API equivalence (backend key vs provided key)");
+    println!("\n🧪 TEST: Bootstrap with user-provided key API");
 
     // Setup server with global wildcard permission (auto-approve)
     let (_server_instance, _user, _key_id, _server_db, server_sync, tree_id) =
@@ -1516,92 +1515,42 @@ async fn test_bootstrap_api_equivalence() {
 
     let server_addr = start_sync_server(&server_sync).await;
 
-    // Client 1: Use sync_with_peer_for_bootstrap (backend key lookup)
-    println!("🔍 Client 1: Testing backend key lookup API...");
-    let client1_instance = setup_instance_with_initialized().await;
-    client1_instance.create_user("client1", None).await.unwrap();
-    let mut client1_user = client1_instance.login_user("client1", None).await.unwrap();
-    let client1_key_id = client1_user
-        .add_private_key(Some("client1_key"))
-        .await
-        .unwrap();
+    // Client: Use sync_with_peer_for_bootstrap_with_key (user-provided key)
+    println!("🔍 Client: Testing user-provided key API...");
+    let (client_instance, _client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client", "client_key").await;
+    client_sync.enable_http_transport().await.unwrap();
 
-    // Store the key in backend for the legacy API to find it
-    let client1_signing_key = client1_user
-        .get_signing_key(&client1_key_id)
-        .expect("Should get signing key");
-    client1_instance
-        .backend()
-        .store_private_key(&client1_key_id, client1_signing_key)
-        .await
-        .expect("Failed to store key in backend");
-
-    let client1_sync = client1_instance.sync().expect("Sync should be initialized");
-    client1_sync.enable_http_transport().await.unwrap();
-
-    client1_sync
-        .sync_with_peer_for_bootstrap(
-            &server_addr,
-            &tree_id,
-            &client1_key_id,
-            AuthPermission::Write(5),
-        )
-        .await
-        .expect("Client 1 bootstrap should succeed");
-    client1_sync.flush().await.ok();
-    println!("✅ Client 1 bootstrap succeeded with backend key lookup");
-
-    // Verify client 1 has the data
-    let client1_has_root = client1_sync
-        .backend()
-        .expect("Failed to get backend")
-        .get(&tree_id)
-        .await
-        .is_ok();
-    assert!(client1_has_root, "Client 1 should have root entry");
-
-    // Client 2: Use sync_with_peer_for_bootstrap_with_key (user-provided key)
-    println!("🔍 Client 2: Testing user-provided key API...");
-    let (client2_instance, _client2_user, client2_key_id, client2_sync) =
-        setup_sync_enabled_client("client2", "client2_key").await;
-    client2_sync.enable_http_transport().await.unwrap();
-
-    client2_sync
+    client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client2_key_id,
-            &client2_key_id,
+            &client_key_id,
+            &client_key_id,
             AuthPermission::Write(5),
         )
         .await
-        .expect("Client 2 bootstrap should succeed");
-    client2_sync.flush().await.ok();
-    println!("✅ Client 2 bootstrap succeeded with user-provided key");
+        .expect("Client bootstrap should succeed");
+    client_sync.flush().await.ok();
+    println!("✅ Client bootstrap succeeded with user-provided key");
 
-    // Verify client 2 has the data
-    let client2_has_root = client2_sync
+    // Verify client has the data
+    let client_has_root = client_sync
         .backend()
         .expect("Failed to get backend")
         .get(&tree_id)
         .await
         .is_ok();
-    assert!(client2_has_root, "Client 2 should have root entry");
+    assert!(client_has_root, "Client should have root entry");
 
-    // Both clients should have the database
+    // Client should have the database
     assert!(
-        client1_instance.has_database(&tree_id).await,
-        "Client 1 should have database"
+        client_instance.has_database(&tree_id).await,
+        "Client should have database"
     );
-    assert!(
-        client2_instance.has_database(&tree_id).await,
-        "Client 2 should have database"
-    );
-
-    println!("✅ Both APIs produced equivalent results");
 
     // Cleanup
     server_sync.stop_server().await.unwrap();
 
-    println!("✅ TEST PASSED: Bootstrap API equivalence");
+    println!("✅ TEST PASSED: Bootstrap with user-provided key");
 }

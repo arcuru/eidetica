@@ -3,8 +3,6 @@
 //! These tests cover error propagation, validation failures, backend issues,
 //! and security edge cases in the delegation system.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     Result,
     auth::{

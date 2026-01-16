@@ -3,13 +3,11 @@
 //! These tests verify that height calculation strategies work correctly
 //! when entries are created through the Transaction layer.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use std::sync::Arc;
 
 use eidetica::{
-    Clock, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory,
-    instance::LegacyInstanceOps, store::DocStore,
+    Clock, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory, crdt::Doc,
+    store::DocStore,
 };
 
 /// Helper to create a test instance and database
@@ -23,7 +21,20 @@ async fn create_test_database() -> (Instance, eidetica::Database) {
         .await
         .expect("Failed to create test instance");
 
-    let database = instance.new_database_default("_device_key").await.unwrap();
+    // Use User API to create a database
+    instance
+        .create_user("test", None)
+        .await
+        .expect("Failed to create user");
+    let mut user = instance
+        .login_user("test", None)
+        .await
+        .expect("Failed to login user");
+    let key_id = user.get_default_key().expect("Failed to get default key");
+    let database = user
+        .create_database(Doc::new(), &key_id)
+        .await
+        .expect("Failed to create database");
 
     (instance, database)
 }
@@ -35,7 +46,20 @@ async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, ei
         .await
         .expect("Failed to create test instance");
 
-    let database = instance.new_database_default("_device_key").await.unwrap();
+    // Use User API to create a database
+    instance
+        .create_user("test", None)
+        .await
+        .expect("Failed to create user");
+    let mut user = instance
+        .login_user("test", None)
+        .await
+        .expect("Failed to login user");
+    let key_id = user.get_default_key().expect("Failed to get default key");
+    let database = user
+        .create_database(Doc::new(), &key_id)
+        .await
+        .expect("Failed to create database");
 
     (instance, database)
 }

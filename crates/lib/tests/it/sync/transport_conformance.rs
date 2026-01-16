@@ -3,8 +3,6 @@
 //! These tests verify that all transport implementations provide consistent behavior
 //! for syncing entries between Instance instances.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use std::time::Duration;
 
 use eidetica::{Instance, Result, sync::PeerId, user::User};
@@ -52,8 +50,8 @@ where
     let address2 = factory.create_address(&addr2);
 
     // Connect peers
-    let peer1_pubkey = sync1.get_device_public_key().await?;
-    let peer2_pubkey = sync2.get_device_public_key().await?;
+    let peer1_pubkey = sync1.get_device_id()?;
+    let peer2_pubkey = sync2.get_device_id()?;
 
     // Register peers with each other
     sync1

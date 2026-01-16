@@ -4,8 +4,6 @@
 //! access attempts, invalid keys, and permission boundary violations. These tests
 //! expect secure behavior and will fail until proper security is implemented.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use super::helpers::*;
 use crate::helpers::test_instance_with_user_and_key;
 use eidetica::{
@@ -14,7 +12,6 @@ use eidetica::{
         types::{AuthKey, KeyStatus},
     },
     crdt::{Doc, doc::Value},
-    instance::LegacyInstanceOps,
 };
 
 /// Test bootstrap behavior when the requesting key lacks sufficient admin permissions.
@@ -23,7 +20,6 @@ use eidetica::{
 /// and unauthorized clients should not receive database content or be added
 /// to the auth configuration.
 #[tokio::test]
-#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_permission_denied_insufficient_admin() {
     println!("\n🧪 TEST: Bootstrap with insufficient admin permissions (should be rejected)");
 
@@ -54,14 +50,11 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
         .expect("Failed to add server admin auth");
 
     // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .expect("Failed to get device public key");
+    let device_pubkey = server_instance.device_id_string();
 
     auth_settings
         .add_key(
-            "_device_key",
+            "admin",
             AuthKey::active(&device_pubkey, Permission::Admin(0))
                 .expect("Failed to create device key"),
         )
@@ -171,7 +164,6 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 /// framework to approve keys against, or succeed only if the database explicitly
 /// allows unauthenticated access with proper validation.
 #[tokio::test]
-#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_permission_denied_no_auth_config() {
     println!(
         "\n🧪 TEST: Bootstrap key approval with no auth config (should have defined behavior)"
@@ -368,7 +360,6 @@ async fn test_bootstrap_invalid_public_key_format() {
 /// This test expects SECURE behavior: Bootstrap should fail for revoked or
 /// inactive keys with proper status validation.
 #[tokio::test]
-#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_with_revoked_key() {
     println!("\n🧪 TEST: Bootstrap attempt with revoked key");
 
@@ -419,14 +410,11 @@ async fn test_bootstrap_with_revoked_key() {
         .expect("Failed to add revoked client auth");
 
     // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .expect("Failed to get device public key");
+    let device_pubkey = server_instance.device_id_string();
 
     auth_settings
         .add_key(
-            "_device_key",
+            "admin",
             AuthKey::active(&device_pubkey, Permission::Admin(0))
                 .expect("Failed to create device key"),
         )
@@ -501,7 +489,6 @@ async fn test_bootstrap_with_revoked_key() {
 /// This test expects SECURE behavior: Bootstrap should either reject excessive
 /// permission requests or grant only appropriate permission levels based on policy.
 #[tokio::test]
-#[allow(deprecated)] // Uses get_formatted_public_key for _device_key
 async fn test_bootstrap_exceeds_granted_permissions() {
     println!("\n🧪 TEST: Bootstrap requesting excessive permissions");
 
@@ -531,14 +518,11 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .expect("Failed to add server admin auth");
 
     // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance
-        .get_formatted_public_key("_device_key")
-        .await
-        .expect("Failed to get device public key");
+    let device_pubkey = server_instance.device_id_string();
 
     auth_settings
         .add_key(
-            "_device_key",
+            "admin",
             AuthKey::active(&device_pubkey, Permission::Admin(0))
                 .expect("Failed to create device key"),
         )

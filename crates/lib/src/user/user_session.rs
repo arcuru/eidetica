@@ -982,7 +982,7 @@ mod tests {
         let device_pubkey_str = format_public_key(&device_pubkey);
 
         backend
-            .store_private_key("_device_key", device_key.clone())
+            .store_private_key("admin", device_key.clone())
             .await
             .unwrap();
 
@@ -992,7 +992,7 @@ mod tests {
         let mut auth_settings = crate::auth::settings::AuthSettings::new();
         auth_settings
             .add_key(
-                "_device_key",
+                "admin",
                 crate::auth::types::AuthKey::active(
                     &device_pubkey_str,
                     crate::auth::types::Permission::Admin(0),
@@ -1011,7 +1011,7 @@ mod tests {
             db_settings,
             &instance,
             device_key.clone(),
-            "_device_key".to_string(),
+            "admin".to_string(),
         )
         .await
         .unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
         let (encrypted_key, nonce) = encrypt_private_key(&device_key, &encryption_key).unwrap();
 
         let user_key = UserKey {
-            key_id: "_device_key".to_string(),
+            key_id: "admin".to_string(),
             private_key_bytes: encrypted_key,
             encryption: crate::user::types::KeyEncryption::Encrypted { nonce },
             display_name: Some("Device Key".to_string()),

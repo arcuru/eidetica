@@ -1214,6 +1214,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "serde",
  "signature 2.2.0",
 ]
 
@@ -1237,6 +1238,7 @@ dependencies = [
  "curve25519-dalek 4.1.3",
  "ed25519 2.2.3",
  "rand_core 0.6.4",
+ "serde",
  "sha2 0.10.9",
  "subtle",
 ]

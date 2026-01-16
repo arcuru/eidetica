@@ -80,8 +80,8 @@ pub enum InstanceError {
     #[error("Authentication required but no key configured")]
     AuthenticationRequired,
 
-    /// Device key (_device_key) not found in backend storage.
-    #[error("Device key (_device_key) not found in backend")]
+    /// Device key not found in instance metadata.
+    #[error("Device key not found in instance metadata")]
     DeviceKeyNotFound,
 
     /// No authentication configuration found.

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::{
-    DEVICE_KEY_NAME,
+    ADMIN_KEY_NAME,
     bootstrap_request_manager::{BootstrapRequest, BootstrapRequestManager, RequestStatus},
     peer_manager::PeerManager,
     peer_types::Address,
@@ -84,19 +84,13 @@ impl SyncHandlerImpl {
     async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
-        let signing_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
+        let signing_key = instance.device_key().clone();
 
         Database::open(
             self.instance()?,
             &self.sync_tree_id,
             signing_key,
-            DEVICE_KEY_NAME.to_string(),
+            ADMIN_KEY_NAME.to_string(),
         )
         .await
     }
@@ -348,16 +342,13 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME).await {
-            Ok(Some(key)) => key,
-            _ => return false, // Fail closed
-        };
+        let signing_key = instance.device_key().clone();
 
         let sync_database = match Database::open(
             instance.clone(),
             &self.sync_tree_id,
             signing_key,
-            DEVICE_KEY_NAME.to_string(),
+            ADMIN_KEY_NAME.to_string(),
         )
         .await
         {
@@ -492,20 +483,7 @@ impl SyncHandlerImpl {
                     return SyncResponse::Error(format!("Failed to get instance: {e}"));
                 }
             };
-            let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME).await {
-                Ok(Some(key)) => {
-                    debug!(device_key_name = %DEVICE_KEY_NAME, "Retrieved device signing key");
-                    key
-                }
-                Ok(None) => {
-                    error!(device_key_name = %DEVICE_KEY_NAME, "Device key not found");
-                    return SyncResponse::Error("Device key not found".to_string());
-                }
-                Err(e) => {
-                    error!(device_key_name = %DEVICE_KEY_NAME, error = %e, "Failed to get signing key");
-                    return SyncResponse::Error(format!("Failed to get signing key: {e}"));
-                }
-            };
+            let signing_key = instance.device_key().clone();
 
             // Generate device ID and public key from signing key
             let verifying_key = signing_key.verifying_key();

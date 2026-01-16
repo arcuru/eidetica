@@ -1,32 +1,14 @@
-#![allow(deprecated)] // Uses LegacyInstanceOps
+mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
-    Instance,
     backend::{BackendImpl, database::InMemory},
     entry::ID,
-    instance::LegacyInstanceOps,
     store::DocStore,
 };
 use std::hint::black_box;
 
-/// Creates a fresh empty tree with in-memory backend for benchmarking
-/// Returns both Instance and Database to keep Instance alive
-async fn setup_tree_async() -> (Instance, eidetica::Database) {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend)
-        .await
-        .expect("Benchmark setup failed");
-    instance
-        .add_private_key("BENCH_KEY")
-        .await
-        .expect("Failed to add benchmark key");
-    let db = instance
-        .new_database_default("BENCH_KEY")
-        .await
-        .expect("Failed to create tree");
-    (instance, db)
-}
+use helpers::setup_tree_async;
 
 /// Create a linear chain of entries for testing merge base performance
 async fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
@@ -228,7 +210,7 @@ pub fn bench_merge_base_linear_chains(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let (_instance, tree) = setup_tree_async().await;
+                            let (_instance, _user, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, length).await;
                             (_instance, tree, entry_ids)
                         })
@@ -278,7 +260,7 @@ pub fn bench_merge_base_diamond_merge(c: &mut Criterion) {
         b.iter_with_setup(
             || {
                 rt.block_on(async {
-                    let (_instance, tree) = setup_tree_async().await;
+                    let (_instance, _user, tree) = setup_tree_async().await;
                     let (test_entries, expected_merge_base) = create_diamond_pattern(&tree).await;
                     (_instance, tree, test_entries, expected_merge_base)
                 })
@@ -320,7 +302,7 @@ pub fn bench_tips_finding(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let (_instance, tree) = setup_tree_async().await;
+                            let (_instance, _user, tree) = setup_tree_async().await;
                             let _ = create_branching_tree(&tree, num, 3).await; // Create branches as tips
                             (_instance, tree)
                         })
@@ -365,7 +347,7 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                     b.iter_with_setup(
                         || {
                             rt.block_on(async {
-                                let (_instance, tree) = setup_tree_async().await;
+                                let (_instance, _user, tree) = setup_tree_async().await;
                                 let _ = create_large_tree(&tree, size, structure).await;
                                 (_instance, tree)
                             })
@@ -405,7 +387,7 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let (_instance, tree) = setup_tree_async().await;
+                            let (_instance, _user, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, depth).await;
                             let tip_entry = entry_ids.last().unwrap().clone();
                             (_instance, tree, tip_entry)
@@ -454,7 +436,7 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let (_instance, tree) = setup_tree_async().await;
+                            let (_instance, _user, tree) = setup_tree_async().await;
                             let entry_ids = create_linear_chain(&tree, size).await;
                             let last_entry_id = entry_ids.last().unwrap().clone();
                             (_instance, tree, last_entry_id)

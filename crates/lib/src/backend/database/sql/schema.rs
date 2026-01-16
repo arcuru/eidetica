@@ -74,11 +74,12 @@ pub const CREATE_TABLES: &[&str] = &[
         store_name TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (entry_id, tree_id, store_name)
     )",
-    // Private key storage
-    // BYTEA is PostgreSQL binary type and SQLite maps it to BLOB affinity
-    "CREATE TABLE IF NOT EXISTS private_keys (
-        key_name TEXT PRIMARY KEY NOT NULL,
-        key_bytes BYTEA NOT NULL
+    // Instance metadata (singleton row pattern)
+    // Contains device key and system database IDs.
+    // Uses singleton=1 constraint to ensure only one row exists.
+    "CREATE TABLE IF NOT EXISTS instance_metadata (
+        singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
+        data TEXT NOT NULL
     )",
     // CRDT state cache
     "CREATE TABLE IF NOT EXISTS crdt_cache (

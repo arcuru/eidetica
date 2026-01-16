@@ -13,7 +13,7 @@ use tokio::{
 use tracing::{Instrument, debug, info, info_span, trace};
 
 use super::{
-    DEVICE_KEY_NAME,
+    ADMIN_KEY_NAME,
     error::SyncError,
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
     Database, Result,
-    auth::crypto::{format_public_key, generate_challenge, verify_challenge_response},
+    auth::crypto::{generate_challenge, verify_challenge_response},
     entry::{Entry, ID},
 };
 
@@ -208,19 +208,13 @@ impl BackgroundSync {
     async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
-        let signing_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
+        let signing_key = instance.device_key().clone();
 
         Database::open(
             instance,
             &self.sync_tree_id,
             signing_key,
-            DEVICE_KEY_NAME.to_string(),
+            ADMIN_KEY_NAME.to_string(),
         )
         .await
     }
@@ -767,12 +761,7 @@ impl BackgroundSync {
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME).await? {
-                let verifying_key = signing_key.verifying_key();
-                Some(format_public_key(&verifying_key))
-            } else {
-                None
-            };
+            let our_device_pubkey = Some(instance.device_id_string());
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 
@@ -931,19 +920,10 @@ impl BackgroundSync {
         // Generate challenge for authentication
         let challenge = generate_challenge();
 
-        // Get our device info from backend
-        let device_id = "background_sync_device".to_string(); // TODO: Get actual device ID
+        // Get our device info from instance
         let instance = self.instance()?;
-        let public_key =
-            if let Some(signing_key) = instance.backend().get_private_key(DEVICE_KEY_NAME).await? {
-                let verifying_key = signing_key.verifying_key();
-                format_public_key(&verifying_key)
-            } else {
-                return Err(SyncError::DeviceKeyNotFound {
-                    key_name: DEVICE_KEY_NAME.to_string(),
-                }
-                .into());
-            };
+        let public_key = instance.device_id_string();
+        let device_id = public_key.clone();
 
         // Build listen addresses from all running servers
         let listen_addresses: Vec<Address> = self

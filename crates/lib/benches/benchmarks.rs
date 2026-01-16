@@ -1,38 +1,22 @@
-#![allow(deprecated)] // Uses LegacyInstanceOps
+mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use eidetica::{
-    Instance, backend::database::InMemory, instance::LegacyInstanceOps, store::DocStore,
-};
+use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
 use std::hint::black_box;
 use tokio::runtime::Runtime;
 
-/// Creates a fresh empty tree with in-memory backend for benchmarking
-/// Returns both Instance and Database to keep Instance alive
-async fn setup_tree_async() -> (Instance, eidetica::Database) {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open(backend)
-        .await
-        .expect("Benchmark setup failed");
-    instance
-        .add_private_key("BENCH_KEY")
-        .await
-        .expect("Failed to add benchmark key");
-    let db = instance
-        .new_database_default("BENCH_KEY")
-        .await
-        .expect("Failed to create tree");
-    (instance, db)
-}
+use helpers::setup_tree_async;
 
-fn setup_tree(rt: &Runtime) -> (Instance, eidetica::Database) {
+fn setup_tree(rt: &Runtime) -> (Instance, eidetica::user::User, eidetica::Database) {
     rt.block_on(setup_tree_async())
 }
 
 /// Creates a tree pre-populated with the specified number of key-value entries
 /// Each entry has format "key_N" -> "value_N" where N is the entry index
-async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, eidetica::Database) {
-    let (instance, tree) = setup_tree_async().await;
+async fn setup_tree_with_entries_async(
+    entry_count: usize,
+) -> (Instance, eidetica::user::User, eidetica::Database) {
+    let (instance, user, tree) = setup_tree_async().await;
 
     for i in 0..entry_count {
         let op = tree
@@ -52,10 +36,13 @@ async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, eidetic
         op.commit().await.expect("Failed to commit operation");
     }
 
-    (instance, tree)
+    (instance, user, tree)
 }
 
-fn setup_tree_with_entries(rt: &Runtime, entry_count: usize) -> (Instance, eidetica::Database) {
+fn setup_tree_with_entries(
+    rt: &Runtime,
+    entry_count: usize,
+) -> (Instance, eidetica::user::User, eidetica::Database) {
     rt.block_on(setup_tree_with_entries_async(entry_count))
 }
 
@@ -76,7 +63,7 @@ fn bench_add_entries(c: &mut Criterion) {
             |b, &tree_size| {
                 b.iter_with_setup(
                     || setup_tree_with_entries(&rt, tree_size),
-                    |(_instance, tree)| {
+                    |(_instance, _user, tree)| {
                         rt.block_on(async {
                             let op = tree
                                 .new_transaction()
@@ -124,7 +111,7 @@ fn bench_batch_add_entries(c: &mut Criterion) {
             |b, &batch_size| {
                 b.iter_with_setup(
                     || setup_tree(&rt),
-                    |(_instance, tree)| {
+                    |(_instance, _user, tree)| {
                         rt.block_on(async {
                             let op = tree
                                 .new_transaction()
@@ -172,7 +159,7 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
             BenchmarkId::new("incremental_single", initial_size),
             initial_size,
             |b, &initial_size| {
-                let (_instance, tree) = setup_tree_with_entries(&rt, initial_size);
+                let (_instance, _user, tree) = setup_tree_with_entries(&rt, initial_size);
                 let mut counter = initial_size;
 
                 b.iter(|| {
@@ -220,7 +207,7 @@ fn bench_access_entries(c: &mut Criterion) {
             BenchmarkId::new("random_access", tree_size),
             tree_size,
             |b, &tree_size| {
-                let (_instance, tree) = setup_tree_with_entries(&rt, tree_size);
+                let (_instance, _user, tree) = setup_tree_with_entries(&rt, tree_size);
                 let target_key = format!("key_{}", tree_size / 2);
 
                 b.iter(|| {
@@ -261,16 +248,25 @@ fn bench_tree_operations(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let backend = Box::new(InMemory::new());
-                let db = Instance::open(backend)
+                let instance = Instance::open(backend)
                     .await
                     .expect("Benchmark setup failed");
-                db.add_private_key("BENCH_KEY")
+
+                // Create and login user
+                instance
+                    .create_user("bench_user", None)
                     .await
-                    .expect("Failed to add benchmark key");
+                    .expect("Failed to create user");
+                let mut user = instance
+                    .login_user("bench_user", None)
+                    .await
+                    .expect("Failed to login user");
+
+                let key_id = user.get_default_key().expect("Failed to get default key");
                 black_box(
-                    db.new_database_default("BENCH_KEY")
+                    user.create_database(Doc::new(), &key_id)
                         .await
-                        .expect("Failed to create tree"),
+                        .expect("Failed to create database"),
                 );
             });
         });
@@ -281,7 +277,7 @@ fn bench_tree_operations(c: &mut Criterion) {
             BenchmarkId::new("create_operation", tree_size),
             tree_size,
             |b, &tree_size| {
-                let (_instance, tree) = setup_tree_with_entries(&rt, tree_size);
+                let (_instance, _user, tree) = setup_tree_with_entries(&rt, tree_size);
 
                 b.iter(|| {
                     rt.block_on(async {

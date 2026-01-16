@@ -4,8 +4,6 @@
 //! requirement for all sync operations, preventing unauthorized access to databases
 //! that don't have sync enabled in user preferences.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     Database,
     auth::{AuthSettings, Permission, types::AuthKey},

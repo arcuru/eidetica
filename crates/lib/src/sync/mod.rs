@@ -59,7 +59,7 @@ use tracing::{debug, info};
 
 use crate::{
     Database, Entry, Instance, Result, WeakInstance,
-    auth::{crypto::format_public_key, types::AuthKey},
+    auth::types::AuthKey,
     crdt::{Doc, doc::Value},
     entry::ID,
     instance::backend::Backend,
@@ -103,9 +103,9 @@ const SETTINGS_SUBTREE: &str = "settings_map";
 /// Private constant for the transports registry subtree name
 const TRANSPORTS_SUBTREE: &str = "transports";
 
-/// Constant for the device identity key name
-/// This is the name of the Device Key used as the shared identifier for this Device.
-pub(crate) const DEVICE_KEY_NAME: &str = "_device_key";
+/// Constant for the admin key identifier used in database authentication.
+/// The instance's device key is configured as "admin" in system database auth settings.
+const ADMIN_KEY_NAME: &str = "admin";
 
 /// Authentication parameters for sync operations.
 #[derive(Debug, Clone)]
@@ -254,19 +254,8 @@ impl Sync {
     /// # Returns
     /// A new Sync instance with its own settings tree.
     pub async fn new(instance: Instance) -> Result<Self> {
-        // Ensure device key exists in the backend
-        // If no device key exists, generate one automatically
-        let signing_key = match instance.backend().get_private_key(DEVICE_KEY_NAME).await? {
-            Some(key) => key,
-            None => {
-                let (signing_key, _) = crate::auth::crypto::generate_keypair();
-                instance
-                    .backend()
-                    .store_private_key(DEVICE_KEY_NAME, signing_key.clone())
-                    .await?;
-                signing_key
-            }
-        };
+        // Get device key from instance
+        let signing_key = instance.device_key().clone();
 
         let mut sync_settings = Doc::new();
         sync_settings.set("name", "_sync");
@@ -276,7 +265,7 @@ impl Sync {
             sync_settings,
             &instance,
             signing_key,
-            DEVICE_KEY_NAME.to_string(),
+            ADMIN_KEY_NAME.to_string(),
         )
         .await?;
 
@@ -302,19 +291,13 @@ impl Sync {
     /// # Returns
     /// A Sync instance loaded from the existing tree.
     pub async fn load(instance: Instance, sync_tree_root_id: &ID) -> Result<Self> {
-        let device_key = instance
-            .backend()
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| SyncError::DeviceKeyNotFound {
-                key_name: DEVICE_KEY_NAME.to_string(),
-            })?;
+        let device_key = instance.device_key().clone();
 
         let sync_tree = Database::open(
             instance.handle(),
             sync_tree_root_id,
             device_key,
-            DEVICE_KEY_NAME.to_string(),
+            ADMIN_KEY_NAME.to_string(),
         )
         .await?;
 
@@ -480,38 +463,12 @@ impl Sync {
         &self.sync_tree
     }
 
-    /// Get the device ID for this sync instance.
-    ///
-    /// The device ID is the device's public key in ed25519:base64 format.
-    pub async fn get_device_id(&self) -> Result<String> {
-        self.get_device_public_key().await
-    }
-
     /// Get the device public key for this sync instance.
     ///
     /// # Returns
     /// The device's public key in ed25519:base64 format.
-    pub async fn get_device_public_key(&self) -> Result<String> {
-        let signing_key = self.get_device_signing_key().await?;
-        let verifying_key = signing_key.verifying_key();
-        Ok(format_public_key(&verifying_key))
-    }
-
-    /// Get the device signing key for cryptographic operations.
-    ///
-    /// # Returns
-    /// The device's private signing key if available.
-    pub(crate) async fn get_device_signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
-        let backend = self.backend()?;
-        backend
-            .get_private_key(DEVICE_KEY_NAME)
-            .await?
-            .ok_or_else(|| {
-                SyncError::DeviceKeyNotFound {
-                    key_name: DEVICE_KEY_NAME.to_string(),
-                }
-                .into()
-            })
+    pub fn get_device_id(&self) -> Result<String> {
+        Ok(self.instance()?.device_id_string())
     }
 
     // === Peer Management Methods ===
@@ -1380,7 +1337,7 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_public_key().await.ok();
+        let our_device_pubkey = self.get_device_id().ok();
 
         // Send unified sync request
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -1973,7 +1930,7 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_public_key().await.ok();
+        let our_device_pubkey = self.get_device_id().ok();
 
         // Send unified sync request with auth parameters
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -2352,12 +2309,14 @@ impl Sync {
         }
 
         // Load target database with the approving key
-        let backend = self.backend()?;
-        let approving_signing_key = backend
+        let approving_signing_key = self
+            .backend()?
             .get_private_key(approving_key_name)
             .await?
             .ok_or_else(|| {
-                SyncError::BackendError(format!("Approving key not found: {approving_key_name}"))
+                SyncError::BackendError(format!(
+                    "Approving key not found: {approving_key_name}. Use approve_bootstrap_request_with_key() instead."
+                ))
             })?;
 
         let database = Database::open(

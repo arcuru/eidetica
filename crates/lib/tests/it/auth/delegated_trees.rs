@@ -4,8 +4,6 @@
 //! authentication, including tree creation, key delegation, permission
 //! clamping, and various authorization scenarios.
 
-#![allow(deprecated)] // Uses LegacyInstanceOps
-
 use eidetica::{
     Result,
     auth::{

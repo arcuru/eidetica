@@ -19,7 +19,7 @@ name = "eidetica"
 # Shared dependencies
 chrono = "0.4"
 base64ct = { version = "1.8", features = ["std"] }
-ed25519-dalek = { version = "2", default-features = false, features = ["rand_core"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "serde"] }
 rand = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"

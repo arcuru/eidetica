@@ -11,7 +11,7 @@ use handle_trait::Handle;
 
 use crate::{
     Result,
-    backend::{BackendImpl, VerificationStatus},
+    backend::{BackendImpl, InstanceMetadata, VerificationStatus},
     entry::{Entry, ID},
 };
 
@@ -220,6 +220,16 @@ impl Backend {
         self.backend_impl
             .get_path_from_to(tree_id, store, from_id, to_ids)
             .await
+    }
+
+    /// Get instance metadata
+    pub async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
+        self.backend_impl.get_instance_metadata().await
+    }
+
+    /// Set instance metadata
+    pub async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()> {
+        self.backend_impl.set_instance_metadata(metadata).await
     }
 
     /// Get access to the underlying BackendImpl

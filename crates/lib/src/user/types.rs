@@ -88,7 +88,7 @@ pub enum KeyEncryption {
 /// unencrypted (for passwordless single-user mode).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (public key or special name like "_device_key")
+    /// Local key identifier (user-chosen name or auto-generated)
     pub key_id: String,
 
     /// Private key bytes (encrypted or unencrypted based on encryption field)

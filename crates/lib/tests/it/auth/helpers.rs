@@ -1,4 +1,3 @@
-use ed25519_dalek::VerifyingKey;
 use eidetica::{
     Database, Instance,
     auth::{
@@ -12,7 +11,6 @@ use eidetica::{
     },
     crdt::Doc,
     entry::ID,
-    instance::LegacyInstanceOps,
     store::DocStore,
     user::User,
 };
@@ -159,64 +157,6 @@ pub async fn configure_database_auth(
     }
     op.commit().await?;
     Ok(())
-}
-
-/// Create a DB with keys pre-configured for testing (uses deprecated API for auth testing)
-#[allow(deprecated)]
-pub async fn setup_test_db_with_keys(
-    keys: &[(&str, Permission, KeyStatus)],
-) -> (Instance, Vec<VerifyingKey>) {
-    let db = crate::helpers::test_instance().await;
-
-    let mut public_keys = Vec::new();
-    for (key_name, _permission, _status) in keys {
-        let public_key = db
-            .add_private_key(key_name)
-            .await
-            .expect("Failed to add key");
-        public_keys.push(public_key);
-    }
-
-    (db, public_keys)
-}
-
-/// Create a tree with auth settings pre-configured (uses deprecated API for auth testing)
-#[allow(deprecated)]
-pub async fn setup_authenticated_tree(
-    db: &Instance,
-    keys: &[(&str, Permission, KeyStatus)],
-    public_keys: &[VerifyingKey],
-) -> Database {
-    let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
-
-    for ((key_name, permission, status), public_key) in keys.iter().zip(public_keys.iter()) {
-        auth_settings
-            .set_json(
-                key_name,
-                auth_key(
-                    &format_public_key(public_key),
-                    permission.clone(),
-                    status.clone(),
-                ),
-            )
-            .unwrap();
-    }
-
-    settings.set("auth", auth_settings);
-
-    // Find the first key with Admin permissions for tree creation
-    let admin_key = keys
-        .iter()
-        .find(|(_, permission, _)| matches!(permission, Permission::Admin(_)))
-        .map(|(key_name, _, _)| *key_name)
-        .unwrap_or_else(|| {
-            panic!("setup_authenticated_tree requires at least one key with Admin permissions for tree creation")
-        });
-
-    db.new_database(settings, admin_key)
-        .await
-        .expect("Failed to create tree")
 }
 
 // ===== DELEGATION HELPERS =====
