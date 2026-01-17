@@ -170,10 +170,12 @@ user.track_database(tracked).await?;
 For joining databases that require authentication:
 
 ```rust,ignore
-sync.sync_with_peer_for_bootstrap(
+// Request database access through User API
+user.request_database_access(
+    &sync,
     "127.0.0.1:8080",
-    &tree_id,
-    "device_key",
+    &database_id,
+    &key_id,  // User's key ID from user.add_private_key()
     eidetica::auth::Permission::Write,
 ).await?;
 ```

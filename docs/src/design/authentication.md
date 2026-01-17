@@ -365,9 +365,7 @@ Auth settings can also contain multiple names for the same public key, each pote
 
 **Use Cases**:
 
-- **Instance API bootstrap**: When using `instance.new_database(settings, key_name)`, the database is automatically bootstrapped with the signing key added to auth settings using the **public key string** as the name (e.g., `"Ed25519:abc123..."`). This is the name used for signature verification.
-
-- **User API bootstrap**: When using `user.new_database(settings, key_id)`, the behavior is similar - the key is added with its public key string as the name, regardless of any display name stored in user key metadata.
+- **User API bootstrap**: When using `user.create_database(settings, key_id)`, the database is automatically bootstrapped with the specified signing key added to auth settings using the **public key string** as the name (e.g., `"Ed25519:abc123..."`). This is the name used for signature verification.
 
 - **Delegation paths**: Delegation references keys by their **name** in auth settings. To enable readable delegation paths like `["alice@example.com", "alice_laptop"]` instead of `["alice@example.com", "Ed25519:abc123..."]`, add friendly name aliases to the delegated database's auth settings.
 
@@ -377,8 +375,9 @@ Auth settings can also contain multiple names for the same public key, each pote
 
 ```rust,ignore
 // Bootstrap creates entry with public key string as name
-let database = instance.new_database(settings, "alice_key")?;
-// Auth now contains: { "Ed25519:abc123...": AuthKey(...) }
+let key_id = user.get_default_key()?;
+let database = user.create_database(Doc::new(), &key_id).await?;
+// Auth now contains: { "Ed25519:abc123...": AuthKey(...) } (user's key)
 
 // Add friendly name alias for delegation
 let transaction = database.new_transaction()?;
@@ -815,7 +814,7 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 - `SyncTreeRequest` includes: `requesting_key`, `requesting_key_name`, `requested_permission`
 - `BootstrapResponse` includes: `key_approved`, `granted_permission`
 - `BootstrapPending` response for manual approval scenarios
-- New sync API: `sync_with_peer_for_bootstrap()` for authenticated bootstrap scenarios
+- User API: `user.request_database_access()` for authenticated bootstrap scenarios
 
 **Security**:
 

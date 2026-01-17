@@ -32,27 +32,26 @@ Configure a database with global write permission:
 
 ```rust,ignore
 use eidetica::crdt::Doc;
+use eidetica::auth::{AuthSettings, AuthKey, Permission};
 
-// Create database with global permission
+// Create database settings with global permission
 let mut settings = Doc::new();
-let mut auth_doc = Doc::new();
+settings.set("name", "shared_database");
 
-// Add admin key for database management
-auth_doc.set_json("admin_key", serde_json::json!({
-    "pubkey": "ed25519:admin_public_key_here",
-    "permissions": {"Admin": 1},
-    "status": "Active"
-}))?;
+// Configure auth settings
+let mut auth_settings = AuthSettings::new();
 
 // Add global permission for automatic bootstrap approval
-auth_doc.set_json("*", serde_json::json!({
-    "pubkey": "*",
-    "permissions": {"Write": 10},  // Allows Read and Write(11+) requests
-    "status": "Active"
-}))?;
+auth_settings.add_key(
+    "*",  // Wildcard matches any key
+    AuthKey::active("*", Permission::Write(10))?,  // Allows Read and Write(11+) requests
+)?;
 
-settings.set("auth", auth_doc);
-let database = instance.new_database(settings, "admin_key").await?;
+settings.set("auth", auth_settings.to_doc());
+
+// Create database through User API (specified key gets Admin)
+let key_id = user.get_default_key()?;
+let database = user.create_database(settings, &key_id).await?;
 ```
 
 ### Permission Levels
@@ -75,10 +74,12 @@ The client initiates a bootstrap request when it needs access to a synchronized 
 <!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
 
 ```rust,ignore
-client_sync.sync_with_peer_for_bootstrap(
+// Request database access through User API
+user.request_database_access(
+    &sync,
     &server_address,
-    &tree_id,
-    "client_device_key",     // Client's key name
+    &database_id,
+    &key_id,                 // Client's key ID (from user.add_private_key())
     Permission::Write(5)     // Requested permission level
 ).await
 ```
@@ -110,7 +111,7 @@ While the request is pending, the client has several options:
 
 **If Approved:**
 
-- The initial `sync_with_peer_for_bootstrap()` will still return an error
+- The initial `user.request_database_access()` will still return an error
 - Client must use normal `sync_with_peer()` to access the database
 - Once synced, client can load and use the database normally
 
@@ -126,14 +127,15 @@ While the request is pending, the client has several options:
 
 ```rust,ignore
 async fn bootstrap_with_retry(
-    client_sync: &mut Sync,
+    user: &User,
+    sync: &Sync,
     server_addr: &str,
-    tree_id: &ID,
-    key_name: &str,
+    database_id: &ID,
+    key_id: &str,
 ) -> Result<()> {
     // Initial bootstrap request
-    if let Err(_) = client_sync.sync_with_peer_for_bootstrap(
-        server_addr, tree_id, key_name, Permission::Write(5)
+    if let Err(_) = user.request_database_access(
+        sync, server_addr, database_id, key_id, Permission::Write(5)
     ).await {
         println!("Bootstrap request pending approval...");
 
@@ -142,7 +144,7 @@ async fn bootstrap_with_retry(
             tokio::time::sleep(Duration::from_secs(30 * (attempt + 1))).await;
 
             // Try normal sync after potential approval
-            if client_sync.sync_with_peer(server_addr, Some(tree_id)).await.is_ok() {
+            if sync.sync_with_peer(server_addr, Some(database_id)).await.is_ok() {
                 println!("Access granted!");
                 return Ok(());
             }
@@ -175,17 +177,19 @@ for (request_id, request) in pending {
     );
 }
 
-// 2. Approve a request
-sync.approve_bootstrap_request(
+// 2. Approve a request (using User API)
+user.approve_bootstrap_request(
+    &sync,
     "bootstrap_a1b2c3d4...",
-    "admin_key"  // Your admin key name
-)?;
+    &admin_key_id  // Your admin key ID (must have Admin permission)
+).await?;
 
 // 3. Or reject a request
-sync.reject_bootstrap_request(
+user.reject_bootstrap_request(
+    &sync,
     "bootstrap_e5f6g7h8...",
-    "admin_key"
-)?;
+    &admin_key_id
+).await?;
 ```
 
 ### Complete Client Bootstrap Example
@@ -194,10 +198,11 @@ sync.reject_bootstrap_request(
 
 ```rust,ignore
 // Step 1: Initial bootstrap attempt with authentication
-let bootstrap_result = client_sync.sync_with_peer_for_bootstrap(
+let bootstrap_result = user.request_database_access(
+    &sync,
     &server_address,
-    &tree_id,
-    "my_device_key",
+    &database_id,
+    &key_id,  // User's key ID from user.add_private_key()
     Permission::Write(5)
 ).await;
 
@@ -223,11 +228,11 @@ match bootstrap_result {
         tokio::time::sleep(Duration::from_secs(30)).await;
 
         // After approval, normal sync will succeed
-        match client_sync.sync_with_peer(&server_address, Some(&tree_id)).await {
+        match sync.sync_with_peer(&server_address, Some(&database_id)).await {
             Ok(_) => {
                 println!("Access granted! Database synchronized.");
                 // Client can now load and use the database
-                let db = client_instance.load_database(&tree_id).await?;
+                let db = user.open_database(&database_id).await?;
             },
             Err(_) => {
                 println!("Still pending or rejected. Check with admin.");

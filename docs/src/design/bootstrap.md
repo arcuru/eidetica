@@ -106,7 +106,7 @@ Client                    Server                     User (with Admin key)
 When a client needs access to a database:
 
 1. Client attempts normal sync
-2. If auth is required, client calls `sync_with_peer_for_bootstrap()` with key name and requested permission
+2. If auth is required, client calls `user.request_database_access()`
 3. Server stores bootstrap request in `_sync` database
 4. Client receives pending status and waits for approval
 
@@ -256,18 +256,29 @@ impl Sync {
     /// Get specific bootstrap request
     pub fn get_bootstrap_request(&self, request_id: &str) -> Result<Option<(String, BootstrapRequest)>>;
 
-    /// Approve a bootstrap request using a backend-stored key
-    pub fn approve_bootstrap_request(&self, request_id: &str, approving_key_name: &str) -> Result<()>;
+    /// Approve a bootstrap request (low-level, requires signing key)
+    pub fn approve_bootstrap_request_with_key(
+        &self,
+        request_id: &str,
+        signing_key: SigningKey,
+        approving_key_id: &str,
+    ) -> Result<()>;
 
-    /// Reject a bootstrap request using a backend-stored key
-    pub fn reject_bootstrap_request(&self, request_id: &str, rejecting_key_name: &str) -> Result<()>;
+    /// Reject a bootstrap request (low-level, requires signing key)
+    pub fn reject_bootstrap_request_with_key(
+        &self,
+        request_id: &str,
+        signing_key: SigningKey,
+        rejecting_key_id: &str,
+    ) -> Result<()>;
 
-    /// Request bootstrap access to a database (client-side)
-    pub async fn sync_with_peer_for_bootstrap(
+    /// Request bootstrap access (low-level, requires key details)
+    pub async fn sync_with_peer_for_bootstrap_with_key(
         &self,
         peer_addr: &str,
         tree_id: &ID,
-        key_name: &str,
+        public_key: &str,
+        key_id: &str,
         requested_permission: Permission,
     ) -> Result<()>;
 }
@@ -344,7 +355,7 @@ impl User {
 
 ### Phase 3: Client Bootstrap Protocol
 
-1. Implement `sync_with_peer_for_bootstrap()` client method
+1. Implement `User::request_database_access()` client method (wraps low-level sync API)
 2. Add bootstrap request submission to sync protocol
 3. Implement pending status handling
 4. Tests for client bootstrap flow

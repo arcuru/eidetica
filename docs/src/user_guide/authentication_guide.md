@@ -718,11 +718,12 @@ By default, bootstrap requests are **rejected** for security:
 
 ```rust,ignore
 // Bootstrap will fail without explicit policy configuration
-client_sync.sync_with_peer_for_bootstrap(
+user.request_database_access(
+    &sync,
     "127.0.0.1:8080",
-    &database_tree_id,
-    Some("device_key_name"),
-    Some(Permission::Write(100)),
+    &database_id,
+    &key_id,  // User's key ID
+    Permission::Write(100),
 ).await; // Returns PermissionDenied error
 ```
 

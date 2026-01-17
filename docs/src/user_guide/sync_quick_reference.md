@@ -124,10 +124,11 @@ handle.add_address(Address {
 
 ```rust,ignore
 // For new devices joining existing databases with authentication
-sync.sync_with_peer_for_bootstrap(
+user.request_database_access(
+    &sync,
     "peer.example.com:8080",
-    &tree_id,
-    "device_key",                    // Local authentication key
+    &database_id,
+    &key_id,                         // User's key ID from user.add_private_key()
     eidetica::auth::Permission::Write // Requested permission level
 ).await?;
 
